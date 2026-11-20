@@ -268,7 +268,7 @@ func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 		{"session_id": "live", "title": "planner", "last_seen": 1800000000000},
 	})
 	listener.lastSeen = map[string]int64{"live": 1700000100000, "known_dead": 1700000200000}
-	s := &server{deps: Deps{Envoy: envoy.New(envoyURL), Store: storetest.Open(t)}}
+	s := &server{deps: Deps{Envoy: envoy.New(envoyURL)}}
 
 	response := httptest.NewRecorder()
 	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil),

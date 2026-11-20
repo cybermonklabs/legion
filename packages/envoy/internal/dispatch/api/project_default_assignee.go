@@ -141,10 +141,11 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	// lock is taken for it - the lock assigns no transaction id, and the update below is the
 	// first statement that writes. An unknown project, and one the caller does not see, is 404
 	// NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything is written: the read is
-	// as who reads it (access.ProjectClause), so a hidden project's lock costs the write what an
-	// unknown key's lock costs.
+	// as who reads it (access.ProjectClause), and it runs once before the lock is asked for
+	// (lockOwnerOnceFound), so a hidden project is refused without waiting behind its writers, as
+	// an unknown key is.
 	var previous string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(key), `
+	if err := lockOwnerOnceFound(r.Context(), tx, store.ProjectOwner(key), `
 		select default_assignee from projects where key = $1 and `+access.ProjectClause("key", "$2")+`
 	`, []any{key, refs.VisibilityArg(who)}, &previous); err != nil {
 		s.writeHandlerError(w, err)

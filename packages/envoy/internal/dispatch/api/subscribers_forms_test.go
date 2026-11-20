@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -62,5 +64,54 @@ func TestASubscriberFollowingTheNewIssueFormIsListedAndRemovable(t *testing.T) {
 		if _, ok := got[id]; ok {
 			t.Errorf("subscriber %s is listed for TEST-1, which it does not follow; rows %+v", id, rows)
 		}
+	}
+}
+
+// A topic scoped to one issue names its key in either form, so to a caller that does not see the
+// issue's project it is a topic of a key no issue holds: the old form
+// (notifications.dispatch.issue.PRIV-1.>) and the form that names the project too
+// (notifications.dispatch.issue.PRIV.PRIV-1.>) alike. GET /api/v1/issues/PRIV-1/subscribers then
+// answers alice, an open viewer who does not see PRIV, the bytes GET
+// /api/v1/issues/NOPE-1/subscribers answers her: only the subscriber of a broader wildcard, which
+// delivers both keys' events. carol, who sees PRIV, reads all three subscribers of PRIV-1.
+func TestAHiddenIssuesSubscriberInEitherFormAnswersAsAKeyNobodyHolds(t *testing.T) {
+	envoyURL, _ := newFakeListener(t, map[string][]string{
+		"old-form": {"notifications.dispatch.issue.PRIV-1.>"},
+		"new-form": {"notifications.dispatch.issue.PRIV.PRIV-1.>"},
+		"wide":     {"notifications.dispatch.>"},
+	}, []map[string]any{
+		{"session_id": "old-form", "title": "Old form", "projects": []string{}, "last_seen": 1800000000002},
+		{"session_id": "new-form", "title": "New form", "projects": []string{}, "last_seen": 1800000000001},
+		{"session_id": "wide", "title": "Wide", "projects": []string{}, "last_seen": 1800000000000},
+	})
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: envoyURL})
+	if key := seed.issue[seedPrivate]; key != "PRIV-1" {
+		t.Fatalf("PRIV's issue is %s; the listener's topics name PRIV-1", key)
+	}
+	// Dispatch holds the listener's record of each session, none naming a project, as it does once
+	// a list of the sessions has read them: while a project is private an open viewer reaches a
+	// session that has acted in no project only through that record (access.SessionClause), so
+	// without it alice would see no subscriber of either key.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+	sessions := func(response *httptest.ResponseRecorder) []string {
+		t.Helper()
+		ids := []string{}
+		for _, row := range decodeBody[[]subscriber](t, response) {
+			ids = append(ids, row.SessionID)
+		}
+		return ids
+	}
+	hidden := seed.mustRequest(t, callerAlice, http.MethodGet, "/api/v1/issues/PRIV-1/subscribers", nil, http.StatusOK)
+	missing := seed.mustRequest(t, callerAlice, http.MethodGet, "/api/v1/issues/NOPE-1/subscribers", nil, http.StatusOK)
+	if hidden.Body.String() != missing.Body.String() {
+		t.Errorf("alice reads PRIV-1's subscribers as %s, and NOPE-1's, a key nobody holds, as %s",
+			strings.TrimSpace(hidden.Body.String()), strings.TrimSpace(missing.Body.String()))
+	}
+	if got := sessions(missing); len(got) != 1 || got[0] != "wide" {
+		t.Errorf("alice reads NOPE-1's subscribers as %v, want the broader wildcard's alone, [wide]", got)
+	}
+	got := sessions(seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/issues/PRIV-1/subscribers", nil, http.StatusOK))
+	if want := []string{"old-form", "new-form", "wide"}; !slices.Equal(got, want) {
+		t.Errorf("carol reads PRIV-1's subscribers as %v, want %v", got, want)
 	}
 }

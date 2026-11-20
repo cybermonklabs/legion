@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -11,10 +12,15 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -32,13 +38,19 @@ import (
 // listener holds live, so a claim that asked the listener about its holder first would ask it here.
 //
 // Five callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV,
-// and every session. alice's token that lists PRIV sees no project at all, since alice does not see
-// PRIV, and is not open: the deployment's rows are refused it whatever they name, and a session is
-// hidden from it unless it is its own or has acted in a project it sees (access.SessionClause).
-// alice's token that lists PUB sees PUB alone and is not open, so it is held as her other token is.
-// bob, a restricted member, and carol's token that lists PRIV each see PRIV alone, so a session that
-// has acted in PUB alone is hidden from them too: they walk the rows whose one hidden object is a
-// session. Every row is walked by at least one of them.
+// and every session but one that has acted in PRIV (privateSession). alice's token that lists PRIV
+// sees no project at all, since alice does not see PRIV, and is not open: the deployment's rows are
+// refused it whatever they name, and a session is hidden from it unless it is its own or has acted
+// in a project it sees (access.SessionClause). alice's token that lists PUB sees PUB alone and is
+// not open, so it is held as her other token is. bob, a restricted member, and carol's token that
+// lists PRIV each see PRIV alone, so a session that has acted in PUB alone is hidden from them too:
+// they walk the rows whose one hidden object is a session. Every row is walked by at least one of
+// them.
+//
+// A row whose path names a session beside another object - a subscriber of an issue or a document,
+// a follower of an ask - is walked once more by each caller that sees a project, with that other
+// object one of the project it sees and the session alone hidden from it (compareSessionBeside): a
+// row that reads the other object first answers a hidden one before it ever reads the session.
 func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	rows := objectWriteRows()
@@ -46,19 +58,27 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 		t.Fatalf("writeProbes does not describe the write rows that name an object:\n%s", strings.Join(problems, "\n"))
 	}
 	walked := map[string]bool{}
+	besides := 0
 	for _, caller := range []struct {
 		who          privateCaller
 		open         bool
 		sessionsOnly bool
+		// sees is the project whose objects the caller sees, "" for none.
+		sees string
 	}{
-		{callerAlice, true, false},
-		{callerAlicePrivToken, false, false},
-		{callerAlicePubToken, false, false},
-		{callerBob, false, true},
-		{callerCarolPrivToken, false, true},
+		{callerAlice, true, false, seedPublic},
+		{callerAlicePrivToken, false, false, ""},
+		{callerAlicePubToken, false, false, seedPublic},
+		{callerBob, false, true, seedPrivate},
+		{callerCarolPrivToken, false, true, seedPrivate},
 	} {
 		for _, name := range rows {
 			probe := writeProbes[name]
+			if caller.sees != "" && probe.namesASessionBeside() {
+				walked[name] = true
+				besides++
+				walk.compareSessionBeside(t, caller.who, caller.open, caller.sees, name)
+			}
 			if !probe.hides(caller.open) || caller.sessionsOnly && !probe.hidesOnlySessions(caller.open) {
 				continue
 			}
@@ -71,17 +91,28 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 			t.Errorf("%s: no caller of the walk has an object of it hidden, so nothing called it", name)
 		}
 	}
-	t.Logf("walked %d of the %d write rows that name an object", len(walked), len(rows))
+	if besides == 0 {
+		t.Errorf("no row names a session beside another object, so no session was walked beside an object its caller sees")
+	}
+	t.Logf("walked %d of the %d write rows that name an object, %d calls of them with a session alone hidden", len(walked), len(rows), besides)
 
-	// What makes the subscriber rows able to fail: the walk's listener holds s1 subscribed to
-	// PRIV's issue and document, so carol, who sees PRIV, removes it. A listener that held no such
-	// interest would answer every removal "not subscribed", PRIV's and a missing one's alike.
+	// What makes the subscriber and follower rows able to fail: the walk's listener holds s1, s-pub
+	// and privateSession subscribed to both projects' issue and document, s-pub follows PRIV's ask
+	// and privateSession PUB's, so carol, who sees both projects and every session, removes each. A
+	// listener that held no such interest, or an ask no hidden session followed, would answer every
+	// removal "not subscribed" or "does not follow", a hidden session's and a missing one's alike.
 	for _, path := range []string{
 		"/api/v1/issues/" + walk.fills[probeIssue].hidden + "/subscribers/s1",
 		"/api/v1/artifacts/" + walk.fills[probeDocument].hidden + "/subscribers/s1",
+		"/api/v1/issues/" + walk.fills[probeIssue].hidden + "/subscribers/s-pub",
+		"/api/v1/artifacts/" + walk.fills[probeDocument].hidden + "/subscribers/s-pub",
+		"/api/v1/asks/" + walk.fills[probeAsk].hidden + "/followers/s-pub",
+		"/api/v1/issues/" + walk.fills[probeIssue].public + "/subscribers/" + privateSession,
+		"/api/v1/artifacts/" + walk.fills[probeDocument].public + "/subscribers/" + privateSession,
+		"/api/v1/asks/" + walk.fills[probeAsk].public + "/followers/" + privateSession,
 	} {
 		if removed := walk.request(t, callerCarol, http.MethodDelete, path, nil); removed.Code != http.StatusNoContent {
-			t.Errorf("carol: DELETE %s = %d %s, want 204: the walk's listener does not hold s1 subscribed to PRIV, so its subscriber rows prove nothing",
+			t.Errorf("carol: DELETE %s = %d %s, want 204: the walk's listener or its asks hold no such subscriber or follower, so its rows that name it prove nothing",
 				path, removed.Code, strings.TrimSpace(removed.Body.String()))
 		}
 	}
@@ -93,7 +124,9 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 // object nobody holds rather than refusing it: the design gates store a document's id they do not
 // read, so both calls write, and must write the same tables. An external reference names a
 // repository PRIV maps, acme/p_x, or acme/p.x, which no mapping holds: a mapping of a project the
-// caller cannot see answers as no mapping.
+// caller cannot see answers as no mapping. A broadcast's session names privateSession, which has
+// acted in PRIV, to alice, and s-pub, which has acted in no project, to her token that lists PUB
+// (probeFill.hiddenValue).
 var bodyReferences = []struct {
 	row, field, path string
 	object           probeObject
@@ -113,6 +146,7 @@ var bodyReferences = []struct {
 	{"POST /api/v1/projects/{key}/related", "exclude_issue", "/api/v1/projects/PUB/related", probeIssue, `{"text":"walked","exclude_issue":"%s"}`, false},
 	{"POST /api/v1/issues", "external", "/api/v1/issues", probeMappedRepository, `{"project":"PUB","title":"A walked import","external":"acme/%s#7"}`, false},
 	{"POST /api/v1/issues", "external (no project)", "/api/v1/issues", probeMappedRepository, `{"title":"A walked import","external":"acme/%s#7"}`, false},
+	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession, `{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false},
 }
 
 // TestNoBodyReachesAHiddenObject: every field of a write's body that names an object
@@ -125,20 +159,24 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	if walk.issue[seedPublic] != "PUB-1" {
 		t.Fatalf("PUB's issue is %s; the walk's paths name PUB-1", walk.issue[seedPublic])
 	}
-	for _, caller := range []privateCaller{callerAlice, callerAlicePubToken} {
+	for _, caller := range []struct {
+		who  privateCaller
+		open bool
+	}{{callerAlice, true}, {callerAlicePubToken, false}} {
 		for _, reference := range bodyReferences {
 			name := reference.row + " (" + reference.field + ")"
 			fill := walk.fills[reference.object]
+			hidden := fill.hiddenValue(caller.open)
 			method, _, _ := strings.Cut(reference.row, " ")
 			body := reference.body
-			if caller.login() == "" {
+			if caller.who.login() == "" {
 				body = withProbeActor(body)
 			}
-			missing := walk.callPair(t, caller, name, method, reference.path, reference.path,
-				json.RawMessage(fmt.Sprintf(body, fill.hidden)), json.RawMessage(fmt.Sprintf(body, fill.missing)),
-				map[string]string{fill.missing: fill.hidden}, reference.accepted)
+			missing := walk.callPair(t, caller.who, name, method, reference.path, reference.path,
+				json.RawMessage(fmt.Sprintf(body, hidden)), json.RawMessage(fmt.Sprintf(body, fill.missing)),
+				map[string]string{fill.missing: hidden}, reference.accepted)
 			if refused := missing.Code >= http.StatusBadRequest; refused == reference.accepted {
-				t.Errorf("%s as %s: an object nobody holds answered %d %s; want a refusal: %t", name, caller, missing.Code,
+				t.Errorf("%s as %s: an object nobody holds answered %d %s; want a refusal: %t", name, caller.who, missing.Code,
 					strings.TrimSpace(missing.Body.String()), !reference.accepted)
 			}
 		}
@@ -301,89 +339,109 @@ const walkedRole = "walked-role"
 const probeRole probeObject = "role"
 
 // personAndSessionReferences is every field of a write's body that names a person or a session,
-// with a call a caller that sees PRIV alone may make that names it, on PRIV's objects: the row,
-// the path, the body with %s where the person or session goes. owner is a call only PRIV's owner
-// makes, walked as carol's token alone. writes is a call that writes either way - a message or a
-// mention, each recorded and its delivery failed - and is compared by its deliveries
-// (deliveryPart); every other call is refused either way, writing nothing, and compared whole. A
-// delivery's `target` (POST /api/v1/comments/{id}/deliveries) names no session of its own: it picks
-// one of the comment's mentions, and its send resolves through the same resolveDeliveryTarget.
+// with a call a caller that sees one project alone may make that names it, on that project's
+// objects: the row, the path (hiddenWriteSeed.on), the body with %s where the person or session
+// goes. owner is a call only PRIV's owner makes, walked as carol's token alone. writes is a call
+// that writes either way - a message or a mention, each recorded and its delivery failed - and is
+// compared by its deliveries (deliveryPart); every other call is refused either way, writing
+// nothing, and compared whole. open is a call alice makes too, an open viewer who sees PUB, on
+// PUB's objects, naming privateSession, which has acted in PRIV; her broadcast to it is walked with
+// the body references (bodyReferences), which hold the listener calls of a pair too. A delivery's
+// `target` (POST /api/v1/comments/{id}/deliveries) names no session of its own: it picks one of
+// the comment's mentions, and its send resolves through the same resolveDeliveryTarget.
 var personAndSessionReferences = []struct {
-	row, field string
-	path       func(w hiddenWriteSeed) string
-	object     probeObject
-	body       string
-	owner      bool
-	writes     bool
+	row, field, path string
+	object           probeObject
+	body             string
+	owner            bool
+	writes           bool
+	open             bool
 }{
-	{"POST /api/v1/issues", "assignee", func(hiddenWriteSeed) string { return "/api/v1/issues" }, probePerson,
-		`{` + probeActor + `,"project":"PRIV","title":"A walked issue","assignee":"%s"}`, false, false},
-	{"PATCH /api/v1/issues/{key}", "assignee", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] }, probePerson,
-		`{` + probeActor + `,"assignee":"%s"}`, false, false},
-	{"PUT /api/v1/asks/{id}/asked-of", "asked_of", func(w hiddenWriteSeed) string { return "/api/v1/asks/" + w.fills[probeAsk].hidden + "/asked-of" }, probePerson,
-		`{"asked_of":"%s"}`, false, false},
-	{"PUT /api/v1/projects/{key}/default-assignee", "assignee", func(hiddenWriteSeed) string { return "/api/v1/projects/PRIV/default-assignee" }, probePerson,
-		`{"assignee":"%s"}`, false, false},
-	{"PATCH /api/v1/projects/{key}/access", "owner", func(hiddenWriteSeed) string { return "/api/v1/projects/PRIV/access" }, probePerson,
-		`{"owner":"%s"}`, true, false},
-	{"POST /api/v1/priorities", "owner", func(hiddenWriteSeed) string { return "/api/v1/priorities" }, probePerson,
-		`{` + probeActor + `,"title":"A walked priority","owner":"%s"}`, false, false},
-	{"PUT /api/v1/access-groups/{name}", "members", func(hiddenWriteSeed) string { return "/api/v1/access-groups/walked-group" }, probePerson,
-		`{"members":["%s"]}`, false, false},
-	{"POST /api/v1/issues/{key}/messages", "target", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/messages" }, probeSession,
-		`{` + probeActor + `,"body":"A walked message.","target":"session:%s","delivery":"btw"}`, false, true},
-	{"POST /api/v1/issues/{key}/comments", "mentions[].target", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/comments" }, probeSession,
-		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"session:%s"}]}`, false, true},
-	{"POST /api/v1/issues/{key}/messages", "target (a role)", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/messages" }, probeRole,
-		`{` + probeActor + `,"body":"A walked message.","target":"role:%s","delivery":"btw"}`, false, true},
-	{"POST /api/v1/issues/{key}/comments", "mentions[].target (a role)", func(w hiddenWriteSeed) string { return "/api/v1/issues/" + w.issue[seedPrivate] + "/comments" }, probeRole,
-		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"role:%s"}]}`, false, true},
-	{"POST /api/v1/broadcasts", "session_ids", func(hiddenWriteSeed) string { return "/api/v1/broadcasts" }, probeSession,
-		`{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false, false},
-	{"POST /api/v1/delivery/session-groups", "sessions", func(hiddenWriteSeed) string { return "/api/v1/delivery/session-groups" }, probeSession,
-		`{` + probeActor + `,"name":"walked","sessions":["%s"]}`, false, false},
+	{"POST /api/v1/issues", "assignee", "/api/v1/issues", probePerson,
+		`{` + probeActor + `,"project":"PRIV","title":"A walked issue","assignee":"%s"}`, false, false, false},
+	{"PATCH /api/v1/issues/{key}", "assignee", "/api/v1/issues/{issue}", probePerson,
+		`{` + probeActor + `,"assignee":"%s"}`, false, false, false},
+	{"PUT /api/v1/asks/{id}/asked-of", "asked_of", "/api/v1/asks/{ask}/asked-of", probePerson,
+		`{"asked_of":"%s"}`, false, false, false},
+	{"PUT /api/v1/projects/{key}/default-assignee", "assignee", "/api/v1/projects/{project}/default-assignee", probePerson,
+		`{"assignee":"%s"}`, false, false, false},
+	{"PATCH /api/v1/projects/{key}/access", "owner", "/api/v1/projects/{project}/access", probePerson,
+		`{"owner":"%s"}`, true, false, false},
+	{"POST /api/v1/priorities", "owner", "/api/v1/priorities", probePerson,
+		`{` + probeActor + `,"title":"A walked priority","owner":"%s"}`, false, false, false},
+	{"PUT /api/v1/access-groups/{name}", "members", "/api/v1/access-groups/walked-group", probePerson,
+		`{"members":["%s"]}`, false, false, false},
+	{"POST /api/v1/issues/{key}/messages", "target", "/api/v1/issues/{issue}/messages", probeSession,
+		`{` + probeActor + `,"body":"A walked message.","target":"session:%s","delivery":"btw"}`, false, true, true},
+	{"POST /api/v1/issues/{key}/comments", "mentions[].target", "/api/v1/issues/{issue}/comments", probeSession,
+		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"session:%s"}]}`, false, true, true},
+	{"POST /api/v1/issues/{key}/messages", "target (a role)", "/api/v1/issues/{issue}/messages", probeRole,
+		`{` + probeActor + `,"body":"A walked message.","target":"role:%s","delivery":"btw"}`, false, true, false},
+	{"POST /api/v1/issues/{key}/comments", "mentions[].target (a role)", "/api/v1/issues/{issue}/comments", probeRole,
+		`{` + probeActor + `,"body":"A walked mention.","mentions":[{"target":"role:%s"}]}`, false, true, false},
+	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession,
+		`{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false, false, false},
+	{"POST /api/v1/delivery/session-groups", "sessions", "/api/v1/delivery/session-groups", probeSession,
+		`{` + probeActor + `,"name":"walked","sessions":["%s"]}`, false, false, true},
+}
+
+// on is path with {project}, {issue} and {ask} written as project's own: its key, its issue and
+// its ask.
+func (w hiddenWriteSeed) on(path, project string) string {
+	return strings.NewReplacer("{project}", project, "{issue}", w.issue[project], "{ask}", w.fills[probeAsk].ofProject(project)).Replace(path)
 }
 
 // TestNoBodyNamesAHiddenPersonOrSession: every field of a write's body that names a person or a
 // session (personAndSessionReferences) answers one the caller may not see exactly as one nobody
 // holds, to the callers that see PRIV alone and are not open - bob, a restricted member, and
-// carol's token that lists PRIV - and a role whose holder it may not see as a role nobody holds.
+// carol's token that lists PRIV - and a role whose holder it may not see as a role nobody holds;
+// and a session to alice, an open viewer, who does not see privateSession, which has acted in PRIV.
 // An open viewer is answered as before: alice's message to s-pub and to the role it holds are
 // delivered, which also shows the walk's listener holds both, and she assigns dana.
 func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 	walk := seedHiddenWrites(t)
+	type walker struct {
+		who     privateCaller
+		open    bool
+		project string
+	}
 	for _, reference := range personAndSessionReferences {
-		callers := []privateCaller{callerBob, callerCarolPrivToken}
+		callers := []walker{{callerBob, false, seedPrivate}, {callerCarolPrivToken, false, seedPrivate}}
 		if reference.owner {
-			callers = []privateCaller{callerCarolPrivToken}
+			callers = []walker{{callerCarolPrivToken, false, seedPrivate}}
+		}
+		if reference.open {
+			callers = append(callers, walker{callerAlice, true, seedPublic})
 		}
 		fill := walk.fills[reference.object]
 		method, _, _ := strings.Cut(reference.row, " ")
 		for _, caller := range callers {
 			name := reference.row + " (" + reference.field + ")"
+			hiddenID := fill.hiddenValue(caller.open)
+			path := walk.on(reference.path, caller.project)
 			// A call refused either way writes nothing: the tables are digested around it, once the
 			// work an earlier call left running (a mention's delivery) has settled (tableDigests).
 			var before map[string]string
 			if !reference.writes {
 				before = walk.tableDigests(t)
 			}
-			hidden := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.hidden)))
-			missing := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.missing)))
+			hidden := walk.request(t, caller.who, method, path, json.RawMessage(fmt.Sprintf(reference.body, hiddenID)))
+			missing := walk.request(t, caller.who, method, path, json.RawMessage(fmt.Sprintf(reference.body, fill.missing)))
 			if !reference.writes {
 				if changed := changedTables(before, walk.tableDigests(t)); len(changed) > 0 {
-					t.Errorf("%s as %s: a call refused either way changed %v", name, caller, changed)
+					t.Errorf("%s as %s: a call refused either way changed %v", name, caller.who, changed)
 				}
 			}
-			got, want := hidden.Body.String(), strings.ReplaceAll(missing.Body.String(), fill.missing, fill.hidden)
+			got, want := hidden.Body.String(), strings.ReplaceAll(missing.Body.String(), fill.missing, hiddenID)
 			if reference.writes {
-				got, want = deliveryPart(t, hidden.Body.Bytes()), strings.ReplaceAll(deliveryPart(t, missing.Body.Bytes()), fill.missing, fill.hidden)
+				got, want = deliveryPart(t, hidden.Body.Bytes()), strings.ReplaceAll(deliveryPart(t, missing.Body.Bytes()), fill.missing, hiddenID)
 			}
 			if hidden.Code != missing.Code || got != want {
-				t.Errorf("%s as %s: %s answers %d %s, and one nobody holds %d %s", name, caller, fill.hidden,
+				t.Errorf("%s as %s: %s answers %d %s, and one nobody holds %d %s", name, caller.who, hiddenID,
 					hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
 			}
 			if succeeded := missing.Code < http.StatusBadRequest; succeeded != reference.writes {
-				t.Errorf("%s as %s: one nobody holds answered %d %s; want a write: %t", name, caller,
+				t.Errorf("%s as %s: one nobody holds answered %d %s; want a write: %t", name, caller.who,
 					missing.Code, strings.TrimSpace(missing.Body.String()), reference.writes)
 			}
 		}
@@ -402,6 +460,221 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 	}
 	t.Logf("walked %d body fields that name a person or a session", len(personAndSessionReferences))
 }
+
+// TestWithNoPrivateProjectASessionWriteAnswersAsToday (R9): with PRIV made public no project is
+// private, so alice, an open viewer, sees every session, and each write of hers below that names a
+// session answers as it did before a project could be private and reads nothing of whether she sees
+// that session: she unfollows privateSession from PUB's ask and follows it again, removes it from
+// PUB's issue and document, which the walk's listener holds it subscribed to, and broadcasts to it,
+// reaching it. None of them issues either statement that reads whether the caller sees sessions a
+// request names (sessionVisibilityRead); the reads of the ask and the document keep their own rule,
+// as before. What makes that check able to fail: while PRIV is private, her write to a session's
+// own row (withinSessionScope) issues the first, and her read of PUB's subscribers the second.
+func TestWithNoPrivateProjectASessionWriteAnswersAsToday(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	reads := func(statements []string) bool {
+		return slices.ContainsFunc(statements, sessionVisibilityRead.MatchString)
+	}
+	for _, control := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPut, "/api/v1/me/agents/s1/state", json.RawMessage(`{"pinned":true}`)},
+		{http.MethodGet, "/api/v1/issues/" + walk.fills[probeIssue].public + "/subscribers", nil},
+	} {
+		if _, statements, _ := walk.recorded(t, callerAlice, control.method, control.path, control.body); !reads(statements) {
+			t.Fatalf("while PRIV is private, alice's %s %s read no session's visibility: %v", control.method, control.path, statements)
+		}
+	}
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, call := range []struct {
+		method, path string
+		body         any
+		status       int
+	}{
+		{http.MethodDelete, "/api/v1/asks/" + walk.fills[probeAsk].public + "/followers/" + privateSession, nil, http.StatusNoContent},
+		{http.MethodPut, "/api/v1/asks/" + walk.fills[probeAsk].public + "/followers/" + privateSession, nil, http.StatusNoContent},
+		{http.MethodDelete, "/api/v1/issues/" + walk.fills[probeIssue].public + "/subscribers/" + privateSession, nil, http.StatusNoContent},
+		{http.MethodDelete, "/api/v1/artifacts/" + walk.fills[probeDocument].public + "/subscribers/" + privateSession, nil, http.StatusNoContent},
+		{http.MethodPost, "/api/v1/broadcasts", map[string]any{
+			"body": "To a walked session.", "delivery": "btw", "session_ids": []string{privateSession},
+		}, http.StatusCreated},
+	} {
+		answer, statements, _ := walk.recorded(t, callerAlice, call.method, call.path, call.body)
+		if answer.Code != call.status {
+			t.Errorf("PRIV public: alice %s %s = %d %s, want %d", call.method, call.path, answer.Code, strings.TrimSpace(answer.Body.String()), call.status)
+		}
+		if reads(statements) {
+			t.Errorf("PRIV public: alice %s %s read a session's visibility, which every session passes for her: %v", call.method, call.path, statements)
+		}
+		if call.status == http.StatusCreated {
+			if sent := decodeBody[broadcastResponse](t, answer); !slices.Equal(sendTargets(sent), []string{privateSession}) {
+				t.Errorf("PRIV public: alice's broadcast to %s reaches %v and leaves out %+v, want it reached", privateSession, sendTargets(sent), sent.Excluded)
+			}
+		}
+		awaitBackgroundWrites(t, walk.server)
+	}
+}
+
+// TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds: a session group's write
+// that names a session its writer may not see answers as the same write naming a session nobody
+// holds - the same status and bytes, the same work, and no table written (callPair) - and so names
+// no group that holds it. carol, who sees PRIV, groups privateSession; alice, an open viewer who does
+// not see PRIV, may not see it. Her group of it, her edit adding it to a group of her own, and her
+// edit removing it from carol's group each answer as the same write naming s-nobody does: a refusal
+// of a session another group holds would name carol's group, and a removal would empty it.
+func TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	carols := createdID(t, walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated))
+	alices := createdID(t, walk.mustRequest(t, callerAlice, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "alice's sessions", "sessions": []string{"s-pub"}}, http.StatusCreated))
+	for _, call := range []struct{ name, method, path, body string }{
+		{"a group of the session", http.MethodPost, "/api/v1/delivery/session-groups", `{"name":"walked","sessions":["%s"]}`},
+		{"an edit adding it", http.MethodPatch, "/api/v1/delivery/session-groups/" + alices, `{"add":["%s"]}`},
+		{"an edit removing it", http.MethodPatch, "/api/v1/delivery/session-groups/" + carols, `{"remove":["%s"]}`},
+	} {
+		missing := walk.callPair(t, callerAlice, call.name, call.method, call.path, call.path,
+			json.RawMessage(fmt.Sprintf(call.body, privateSession)), json.RawMessage(fmt.Sprintf(call.body, "s-nobody")),
+			map[string]string{"s-nobody": privateSession}, false)
+		if missing.Code != http.StatusNotFound {
+			t.Errorf("%s: alice's write naming s-nobody answered %d %s, want 404: a session nobody holds is one she does not see while PRIV is private",
+				call.name, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+	}
+}
+
+// TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday (R9): with PRIV made public alice sees
+// every session, so a group write of hers answers as before and reads nothing of whether she sees a
+// session it names (sessionVisibilityRead): her group of privateSession, which carol's group holds,
+// is refused naming carol's group, and her group of a session no group holds is made.
+func TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated)
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, call := range []struct {
+		session string
+		status  int
+		code    string
+	}{
+		{privateSession, http.StatusConflict, "SESSION_IN_GROUP"},
+		{"s-nobody", http.StatusCreated, ""},
+	} {
+		answer, statements, _ := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/delivery/session-groups",
+			map[string]any{"name": "alice's " + call.session, "sessions": []string{call.session}})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
+		if answer.Code != call.status || refusal.Code != call.code {
+			t.Errorf("PRIV public: alice's group of %s answered %d %s, want %d %s", call.session, answer.Code,
+				strings.TrimSpace(answer.Body.String()), call.status, call.code)
+		}
+		if call.code != "" && !strings.Contains(refusal.Error, `"PRIV workers"`) {
+			t.Errorf("PRIV public: alice's group of %s is refused %q, want carol's group named, as before", call.session, refusal.Error)
+		}
+		if slices.ContainsFunc(statements, sessionVisibilityRead.MatchString) {
+			t.Errorf("PRIV public: alice's group of %s read a session's visibility, which every session passes for her: %v", call.session, statements)
+		}
+	}
+}
+
+// stampSessionTitle gives session title the way Dispatch learns one, an event the session wrote on
+// issue carrying its origin's session_title, and names the session in a delivery pull request, as
+// the title rule reads the sessions population pull requests name (delivery.ListPopulationSessionIDs).
+// The event is written to the store, so it records no session_projects pair.
+func stampSessionTitle(t *testing.T, walk hiddenWriteSeed, issue, session, title string) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := walk.database.Pool.Exec(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select $1::text, coalesce(max(seq), 0) + 1, 'message.created',
+			jsonb_build_object('kind', 'session', 'id', $2::text, 'origin', jsonb_build_object('session_title', $3::text)),
+			'{}', false, now()
+		from events where issue_key = $1::text`, issue, session, title); err != nil {
+		t.Fatalf("stamp %s's title on %s: %v", session, issue, err)
+	}
+	var number int
+	if err := walk.database.Pool.QueryRow(ctx, `select coalesce(max(number), 0) + 1 from delivery_pull_requests where repo = 'acme/titles'`).Scan(&number); err != nil {
+		t.Fatalf("the next titles pull request: %v", err)
+	}
+	merged := time.Now()
+	if err := delivery.UpsertPullRequest(ctx, walk.database.Pool, delivery.DeliveryPullRequest{
+		Repo: "acme/titles", Number: number, Title: "work by " + session, URL: fmt.Sprintf("https://github.com/acme/titles/pull/%d", number),
+		Author: "octocat", MergedAt: &merged, CreatedAt: &merged, Sessions: []string{session},
+	}); err != nil {
+		t.Fatalf("a pull request naming %s: %v", session, err)
+	}
+}
+
+// TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees: the title rule holds a group's name
+// only to the sessions its writer sees, each by the titles it reads, so no refusal names a session,
+// or answers a title, the writer may not see. privateSession, which has acted in PRIV and so is
+// hidden from alice, took the title "priv worker" on an event of PUB's issue; s-pub, which alice
+// sees, took "pub codename" on an event of PRIV's issue, which she does not read. A pull request
+// names each. carol, who sees both, is refused a rename of the seed's group of s1 to either title,
+// naming the session that holds it: the titles stand. alice's rename of that group to each answers
+// as her rename to a title no session holds: 200, the same bytes but for the name and the times,
+// and the same statements.
+func TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
+	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
+	path := "/api/v1/delivery/session-groups/" + walk.fills[probeSessionGroup].hidden
+	for index, title := range []struct{ name, session string }{{"priv worker", privateSession}, {"pub codename", "s-pub"}} {
+		refused := walk.request(t, callerCarol, http.MethodPatch, path, map[string]any{"name": title.name})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
+		if refused.Code != http.StatusConflict || refusal.Code != "SESSION_GROUP_NAME_IS_SESSION_TITLE" || !strings.Contains(refusal.Error, title.session) {
+			t.Fatalf("carol renames the group %q: %d %s, want 409 SESSION_GROUP_NAME_IS_SESSION_TITLE naming %s: the row holds no title",
+				title.name, refused.Code, strings.TrimSpace(refused.Body.String()), title.session)
+		}
+		untitled := fmt.Sprintf("a title no session holds %d", index)
+		missing, missingStatements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": untitled})
+		hidden, hiddenStatements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": title.name})
+		want := maskTimes(strings.ReplaceAll(missing.Body.String(), untitled, title.name))
+		if hidden.Code != missing.Code || maskTimes(hidden.Body.String()) != want {
+			t.Errorf("alice renames the group %q, %s's title: %d %s, and to %q: %d %s", title.name, title.session,
+				hidden.Code, strings.TrimSpace(hidden.Body.String()), untitled, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+		if missing.Code != http.StatusOK {
+			t.Errorf("alice renames the group %q: %d %s, want 200", untitled, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+		if !slices.Equal(hiddenStatements, missingStatements) {
+			t.Errorf("alice's rename to %q did other work than her rename to %q, %s", title.name, untitled,
+				firstDifference(hiddenStatements, missingStatements))
+		}
+	}
+}
+
+// TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday (R9): with PRIV made public alice
+// sees every session and reads every event, so the title rule holds a name of hers to every title
+// as before and reads nothing of whether she sees a session (sessionVisibilityRead): her rename of
+// the seed's group to each title of TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees is
+// refused naming the session that holds it.
+func TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
+	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	path := "/api/v1/delivery/session-groups/" + walk.fills[probeSessionGroup].hidden
+	for _, title := range []struct{ name, session string }{{"priv worker", privateSession}, {"pub codename", "s-pub"}} {
+		answer, statements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": title.name})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
+		if answer.Code != http.StatusConflict || refusal.Code != "SESSION_GROUP_NAME_IS_SESSION_TITLE" || !strings.Contains(refusal.Error, title.session) {
+			t.Errorf("PRIV public: alice renames the group %q: %d %s, want 409 SESSION_GROUP_NAME_IS_SESSION_TITLE naming %s, as before",
+				title.name, answer.Code, strings.TrimSpace(answer.Body.String()), title.session)
+		}
+		if slices.ContainsFunc(statements, sessionVisibilityRead.MatchString) {
+			t.Errorf("PRIV public: alice's rename to %q read a session's visibility, which every session passes for her: %v", title.name, statements)
+		}
+	}
+}
+
+// sessionVisibilityRead matches the statements that read whether the caller sees sessions a request
+// names, as the trace writes them: one session's (sessionHiddenFrom) and a list's (seenSessions).
+var sessionVisibilityRead = regexp.MustCompile(`^select (` + regexp.QuoteMeta(access.Marker+"SessionClause */") +
+	`|\w+\.id from unnest\(\$1::text\[\]\) as \w+\(id\) where ` + regexp.QuoteMeta(access.Marker+"SessionClause */") + `)`)
 
 // deliveryPart is what a write that records a delivery answers about it: each delivery's state,
 // session and failure, each mention's session, or the one attempt's, as JSON.
@@ -594,16 +867,19 @@ func writeProbeProblems(rows []string) []string {
 
 // hiddenFrom reports whether the walk names a hidden object of kind in place of one nobody holds,
 // for an open caller or not: an object of a project is hidden from every caller of the walk, a
-// personal token is someone else's, and a row of the deployment and a session that acted in PUB
-// alone are hidden from a caller that is not open. Every other kind is part of an object the path
-// already names - a document's slug, a version, a block, an attempt, a phase, a person or group on
-// a list, a repository, a pause point - and is PRIV's own in both calls.
+// personal token is someone else's, and a row of the deployment is hidden from a caller that is not
+// open. A session is hidden from every caller: privateSession, which has a session_projects pair of
+// PRIV, a private project, from an open caller, which does not see PRIV, and s-pub, which has acted
+// in no project, from a caller that is not open (access.SessionClause; probeFill.hiddenValue). Every
+// other kind is part of an object the path already names - a document's slug, a version, a block,
+// an attempt, a phase, a person or group on a list, a repository, a pause point - and is PRIV's own
+// in both calls.
 func hiddenFrom(object probeObject, open bool) bool {
 	switch object {
 	case probeProject, probeIssue, probeDocument, probeAsk, probeComment, probeMessage, probeThread,
-		probeResult, probeAgentToken:
+		probeResult, probeAgentToken, probeSession:
 		return true
-	case probeSession, probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
+	case probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
 		probeMachineLogin, probeSignin:
 		return !open
 	}
@@ -630,16 +906,46 @@ func (p writeProbe) hidesOnlySessions(open bool) bool {
 	return true
 }
 
-// probeFill is one kind's values: the hidden object, one of that kind nobody holds, and the one a
-// call names beside another kind's hidden object ("" for the hidden one): a session subscribed to
-// PRIV's issue is the one a subscriber row names beside that issue, and a session of PUB alone is
-// the one hidden from a caller that sees PRIV alone.
-type probeFill struct{ hidden, missing, beside string }
+// namesASessionBeside reports whether the probe names a session beside another object: a subscriber
+// of an issue or a document, or a follower of an ask.
+func (p writeProbe) namesASessionBeside() bool {
+	for _, object := range p.Probe {
+		if object == probeSession {
+			return len(p.Probe) > 1
+		}
+	}
+	return false
+}
+
+// probeFill is one kind's values: the hidden object, one of that kind nobody holds, the one a call
+// names beside another kind's hidden object ("" for the hidden one), the one hidden from an open
+// caller where that is another ("" for the hidden one), and PUB's own ("" for a kind with none): a
+// session subscribed to PRIV's issue is the one a subscriber row names beside that issue, a session
+// of PUB alone is the one hidden from a caller that sees PRIV alone, and a session of PRIV the one
+// hidden from an open caller, which does not see PRIV.
+type probeFill struct{ hidden, missing, beside, hiddenFromOpen, public string }
 
 // besideValue is the value a call names for a kind that is not the object it hides.
 func (f probeFill) besideValue() string {
 	if f.beside != "" {
 		return f.beside
+	}
+	return f.hidden
+}
+
+// hiddenValue is the object of the kind hidden from an open caller or one that is not.
+func (f probeFill) hiddenValue(open bool) string {
+	if open && f.hiddenFromOpen != "" {
+		return f.hiddenFromOpen
+	}
+	return f.hidden
+}
+
+// ofProject is the object of the kind that project holds: PRIV's is the hidden one, which a caller
+// that sees PRIV sees, and PUB's its own.
+func (f probeFill) ofProject(project string) string {
+	if project == seedPublic {
+		return f.public
 	}
 	return f.hidden
 }
@@ -708,22 +1014,32 @@ func volatileStatement(statement string) bool {
 	return strings.HasPrefix(statement, "update agent_tokens set last_used_at = now()")
 }
 
-// walkListener is a fake Envoy listener holding session s1 live and subscribed to PRIV's issue and
-// project document, so a write that removes a subscriber reaches the removal. It records every
+// privateSession is a session that has acted in PRIV under the one credential that proves it
+// (asSession), so it has a session_projects pair of PRIV, and an open viewer that does not see
+// PRIV does not see it (access.SessionClause).
+const privateSession = "s-priv"
+
+// walkListener is a fake Envoy listener holding sessions s1, s-pub and privateSession live and
+// each subscribed to every topic topics holds (both projects' issue and project document), so a
+// write that removes a subscriber reaches the removal, whichever of them it names. It records every
 // request it is sent in calls.
 func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptest.Server {
 	t.Helper()
 	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
-	// s-pub is live too, so a delivery a caller may not make to it would reach it: the person and
-	// session walk holds a delivery to it to the failure one to a session nobody holds records.
+	// s-pub and privateSession are live too, so a delivery a caller may not make to one would
+	// reach it: the person and session walk holds such a delivery to the failure one to a session
+	// nobody holds records, and a broadcast to one to the refusal of a send to one nobody holds.
 	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
+	const sPriv = `{"session_id":"` + privateSession + `","title":"priv worker","dir":"/w/priv","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":["PRIV"],"last_seen":42}`
+	records := map[string]string{"s1": s1, "s-pub": sPub, privateSession: sPriv}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.add(r)
+		registered, held := records[strings.TrimPrefix(r.URL.Path, "/v1/registry/")]
+		interested := strings.TrimPrefix(r.URL.Path, "/v1/interests/")
+		_, subscribed := records[interested]
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
-			_, _ = w.Write([]byte(s1))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s-pub":
-			_, _ = w.Write([]byte(sPub))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/") && held:
+			_, _ = w.Write([]byte(registered))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/"+walkedRole:
 			_, _ = w.Write([]byte(`{"role":"` + walkedRole + `","holder":"s-pub","holder_state":"live",` + sPub[1:]))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
@@ -731,11 +1047,18 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role ` + role + `","reason":"unclaimed","claim_revision":0}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			_, _ = w.Write([]byte(`[` + s1 + `,` + sPub + `]`))
+			_, _ = w.Write([]byte(`[` + s1 + `,` + sPub + `,` + sPriv + `]`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/interests/s1":
-			encoded, _ := json.Marshal(map[string]any{"session_id": "s1", "topics": *topics, "updated_at": 1})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/interests/") && subscribed:
+			encoded, _ := json.Marshal(map[string]any{"session_id": interested, "topics": *topics, "updated_at": 1})
+			_, _ = w.Write(encoded)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/interests/":
+			rows := []map[string]any{}
+			for _, session := range slices.Sorted(maps.Keys(records)) {
+				rows = append(rows, map[string]any{"session_id": session, "topics": *topics, "updated_at": 1})
+			}
+			encoded, _ := json.Marshal(rows)
 			_, _ = w.Write(encoded)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/interests/unsubscribe":
 			var request struct {
@@ -755,7 +1078,9 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 // kind a write row names, through the routes. The seed's store is traced and its listener records
 // its calls, so a pair of calls can be held to the same work (callPair). PRIV's issue is claimed by
 // s1 and links privateHeldURL; PRIV maps acme/p_x, and PUB maps acme/w_pub, whose issue 9
-// privateHeldURL is.
+// privateHeldURL is. PUB holds a project document and an ask of its own too, the objects a session
+// hidden from a caller that sees PUB is named beside (compareSessionBeside): privateSession acts in
+// PRIV and follows PUB's ask, and s-pub follows PRIV's.
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
 	topics := []string{}
@@ -782,7 +1107,12 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	if issueDocument.Artifact.Slug != projectDocument.Artifact.Slug {
 		t.Fatalf("the issue's document is %q and the project's %q: one slug fills both owners' rows", issueDocument.Artifact.Slug, projectDocument.Artifact.Slug)
 	}
-	topics = []string{issueSubscriberBase(issue) + ".>", documentSubscriberBase(seedPrivate, projectDocument.Artifact.Slug) + ".>"}
+	publicDocument := decodeBody[uploadedArtifact](t, asCarol(http.MethodPost, "/api/v1/projects/"+seedPublic+"/artifacts",
+		map[string]string{"name": "walked-notes.md", "content": "# Notes\n\nA passage of PUB.\n"}))
+	topics = []string{
+		issueSubscriberBase(issue) + ".>", documentSubscriberBase(seedPrivate, projectDocument.Artifact.Slug) + ".>",
+		issueSubscriberBase(seed.issue[seedPublic]) + ".>", documentSubscriberBase(seedPublic, publicDocument.Artifact.Slug) + ".>",
+	}
 	blocks := decodeBody[[]struct {
 		ID string `json:"id"`
 	}](t, asCarol(http.MethodGet, "/api/v1/artifacts/"+projectDocument.Artifact.ID+"/blocks", nil))
@@ -790,6 +1120,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		t.Fatalf("PRIV's project document holds no block")
 	}
 	ask := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{"question": "Which way for PRIV?"}))
+	publicAsk := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/asks", map[string]any{"question": "Which way for PUB?"}))
 	comment := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A remark on PRIV."}))
 	message := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{
 		"body": "A note on PRIV.", "target": "session:s1", "delivery": "btw",
@@ -800,9 +1131,6 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	asCarol(http.MethodPut, "/api/v1/access-groups/"+group, map[string]any{"members": []string{seedCarol}})
 	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
-	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
-		"name": "PRIV's sessions", "sessions": []string{"s1"},
-	}))
 	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
 	// issue of which PRIV's issue links (privateHeldURL).
 	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
@@ -816,12 +1144,25 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
-	// Dispatch holds the listener's record of s1 and s-pub, each with a credential that lists no
-	// project ("projects":[]), as it does once any list of the sessions has read them (the
+	// privateSession acts in PRIV under the credential that proves it, which gives it a
+	// session_projects pair of PRIV: a session hidden from an open caller that does not see PRIV.
+	seed.asSession(t, privateSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": privateSession + " works on PRIV."}, http.StatusCreated)
+	// Dispatch holds the listener's record of s1 and s-pub, each naming no project, and of
+	// privateSession, naming PRIV, as it does once any list of the sessions has read them (the
 	// route_roster row): while a project is private, an open viewer reaches a session that has acted
-	// in no project only through that record, and a record with no projects key reaches none
-	// (access.SessionClause). No call of the walk reads the list again.
+	// in no project only through that record (access.SessionClause). No call of the walk reads the
+	// list again.
 	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+	// A Delivery session group of s1, which carol may name now that Dispatch holds s1's record: a
+	// group write reads its sessions as its writer sees them (refuseHiddenSessions).
+	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
+		"name": "PRIV's sessions", "sessions": []string{"s1"},
+	}))
+	// Each hidden session follows an ask of a project its callers see, so an unfollow that reached
+	// it would remove it.
+	asCarol(http.MethodPut, "/api/v1/asks/"+ask+"/followers/s-pub", nil)
+	asCarol(http.MethodPut, "/api/v1/asks/"+publicAsk+"/followers/"+privateSession, nil)
 	// dana is a full member no list of PRIV names: hidden from every caller that sees PRIV alone.
 	seedPeople(t, seed.database, hiddenPerson)
 	// An architecture source of PRIV from acme/walked, the repository the source rows' {owner}/{repo}
@@ -841,19 +1182,19 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	nobody := func(value string) probeFill { return probeFill{hidden: value, missing: uuid.NewString()} }
 	walk := hiddenWriteSeed{privateSeed: seed, trace: trace, calls: calls, fills: map[probeObject]probeFill{
 		probeProject:         {hidden: seedPrivate, missing: "NOPE"},
-		probeIssue:           {hidden: issue, missing: "NOPE-1"},
-		probeDocument:        nobody(projectDocument.Artifact.ID),
+		probeIssue:           {hidden: issue, missing: "NOPE-1", public: seed.issue[seedPublic]},
+		probeDocument:        {hidden: projectDocument.Artifact.ID, missing: uuid.NewString(), public: publicDocument.Artifact.ID},
 		probeDocumentSlug:    same(projectDocument.Artifact.Slug),
 		probeDocumentVersion: same("1"),
 		probeBlock:           same(blocks[0].ID),
-		probeAsk:             nobody(ask),
+		probeAsk:             {hidden: ask, missing: uuid.NewString(), public: publicAsk},
 		probeComment:         nobody(comment),
 		probeMessage:         nobody(message),
 		probeThread:          nobody(message),
 		probeResult:          nobody(result),
 		probeAttempt:         same("1"),
 		probeHandoffPhase:    same("build"),
-		probeSession:         {hidden: "s-pub", missing: "s-nobody", beside: "s1"},
+		probeSession:         {hidden: "s-pub", missing: "s-nobody", beside: "s1", hiddenFromOpen: privateSession},
 		probeEmail:           same(seedBob),
 		probePerson:          {hidden: hiddenPerson, missing: "nobody@example.com"},
 		probeRole:            {hidden: walkedRole, missing: "nobody-role"},
@@ -915,9 +1256,9 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 		case !hiddenFrom(object, open):
 			return value.besideValue()
 		case hidden:
-			return value.hidden
+			return value.hiddenValue(open)
 		}
-		written[value.missing] = value.hidden
+		written[value.missing] = value.hiddenValue(open)
 		return value.missing
 	})
 	return path, written
@@ -1001,12 +1342,49 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, open bool, 
 	}
 }
 
+// compareSessionBeside calls one row whose path names a session beside another object as caller,
+// with that object the one of its kind project holds, which the caller sees, and the session one
+// hidden from it, then with the same object and a session nobody holds, and holds the two to one
+// answer and no write (callPair), the call naming nothing to a missing object's answer.
+func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller, open bool, project, name string) {
+	t.Helper()
+	probe := writeProbes[name]
+	method, pattern, _ := strings.Cut(name, " ")
+	var body any
+	if probe.Body != "" {
+		body = json.RawMessage(probe.Body)
+	}
+	session := w.fills[probeSession]
+	hidden := session.hiddenValue(open)
+	path := func(sessionID string) string {
+		return patternWildcard.ReplaceAllStringFunc(pattern, func(match string) string {
+			object := probe.Probe[patternWildcard.FindStringSubmatch(match)[1]]
+			if object == probeSession {
+				return sessionID
+			}
+			value := w.fills[object].ofProject(project)
+			if value == "" {
+				t.Fatalf("%s: the walk holds no %s of %s", name, object, project)
+			}
+			return value
+		})
+	}
+	label := fmt.Sprintf("%s (%s beside an object of %s)", name, hidden, project)
+	missing := w.callPair(t, caller, label, method, path(hidden), path(session.missing), body, body,
+		map[string]string{session.missing: hidden}, false)
+	if !answersMissing(name, open, missing) {
+		t.Errorf("%s as %s: the call naming a session nobody holds (%s) answered %d %s, which is no answer for a missing session",
+			label, caller, path(session.missing), missing.Code, strings.TrimSpace(missing.Body.String()))
+	}
+}
+
 // callPair makes one call naming a hidden object and one naming an object nobody holds, as caller,
-// and holds them to one answer - the second's values written as the first's (written) - and to no
-// write of any table, or, for a row that writes either way (writes), to writes of the same tables.
-// A pair that writes nothing is held to the same work as well: the same listener calls, and the
-// same statements, each ending on the same command tag, so a row the hidden call read, locked or
-// wrote before its check, or a listener it asked, is named. It answers the second call's answer.
+// and holds them to one answer - the second's values written as the first's (written,
+// answerAsHidden) - and to no write of any table, or, for a row that writes either way (writes), to
+// writes of the same tables. A pair that writes nothing is held to the same work as well: the same
+// listener calls, and the same statements, each ending on the same command tag, so a row the hidden
+// call read, locked or wrote before its check, or a listener it asked, is named. It answers the
+// second call's answer.
 func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, method, hiddenPath, missingPath string,
 	hiddenBody, missingBody any, written map[string]string, writes bool) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1035,12 +1413,64 @@ func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, meth
 		t.Errorf("%s as %s: the call naming the hidden object did other work than the call naming nothing, %s",
 			name, caller, firstDifference(hiddenStatements, statements))
 	}
-	want := rewritten([]string{missing.Body.String()}, written)[0]
+	want := answerAsHidden(missing.Body.String(), written)
 	if hidden.Code != missing.Code || hidden.Body.String() != want {
 		t.Errorf("%s as %s: the hidden object answers %d %s, and an object nobody holds %d %s",
 			name, caller, hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
 	}
 	return missing
+}
+
+// answerWord is one run of a key's characters in an answer: a project key, an issue key, a session.
+var answerWord = regexp.MustCompile(`[A-Za-z0-9_-]+`)
+
+// answerAsHidden is answer, the call naming nothing's, as the call naming the hidden object would
+// read had it been answered as missing: each value written replaced (rewritten), and the project of
+// each issue key written replaced by the hidden key's where it stands as a word of its own ("project
+// NOPE", "legion-daemon:NOPE"). A key's project is the key up to its first -, which the caller sent
+// itself, so an answer that names it says nothing the key did not; any other text of the hidden
+// key's, its title say, is no word of the missing answer's, and still differs.
+func answerAsHidden(answer string, written map[string]string) string {
+	answer = rewritten([]string{answer}, written)[0]
+	for missing, hidden := range written {
+		missingProject, isKey := contracts.IssueProject(missing)
+		hiddenProject, alsoKey := contracts.IssueProject(hidden)
+		if !isKey || !alsoKey {
+			continue
+		}
+		answer = answerWord.ReplaceAllStringFunc(answer, func(word string) string {
+			if word == missingProject {
+				return hiddenProject
+			}
+			return word
+		})
+	}
+	return answer
+}
+
+// TestTheWalkExcusesAHiddenKeysOwnProjectAlone holds answerAsHidden, the reading callPair compares
+// a hidden key's answer to, to excusing no more than the key's own project. The refusal of a role
+// holder write is built from the key alone - its project, the key, the daemon's session - so PRIV-1's
+// reads as NOPE-1's, and only once the project is read as the key's (rewritten alone leaves NOPE).
+// A refusal that named PRIV-1's title as well, which the caller never sent, still differs from
+// NOPE-1's: the walk fails it.
+func TestTheWalkExcusesAHiddenKeysOwnProjectAlone(t *testing.T) {
+	written := map[string]string{"NOPE-1": "PRIV-1"}
+	refusal := func(key, more string) string {
+		project, _, _ := strings.Cut(key, "-")
+		return `{"code":"ROLE_HOLDER_FORBIDDEN","error":"only the Legion daemon of project ` + project +
+			` names the sessions that hold the roles of ` + key + more + `. That daemon writes as session legion-daemon:` + project + `."}`
+	}
+	hidden, missing := refusal("PRIV-1", ""), refusal("NOPE-1", "")
+	if got := answerAsHidden(missing, written); got != hidden {
+		t.Errorf("NOPE-1's refusal reads as %s, and PRIV-1's is %s: a refusal built from the key alone must read alike", got, hidden)
+	}
+	if got := rewritten([]string{missing}, written)[0]; got == hidden {
+		t.Errorf("NOPE-1's refusal with its key alone written reads as PRIV-1's, %s: the project's reading is tested by nothing", got)
+	}
+	if titled := refusal("PRIV-1", " (The issue of PRIV)"); answerAsHidden(missing, written) == titled {
+		t.Errorf("a refusal naming PRIV-1's title, %s, reads as NOPE-1's: the walk would excuse it", titled)
+	}
 }
 
 // answersMissing reports whether a call naming no object was answered as the row answers a missing

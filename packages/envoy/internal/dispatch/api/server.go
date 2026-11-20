@@ -1976,10 +1976,11 @@ const issueStatusRead = `select status, closed_at is null from issues where key 
 var visibleIssueStatusRead = issueStatusRead + ` and ` + access.ProjectClause("project_key", "$2")
 
 // issueStatus is that read made through read, as who reads it: under the issue's owner lock for
-// the check that decides (ownerStatus), and through the pool for the check a comment makes before
-// its transaction opens, which reads exactly what the locked check will. An issue of a project
-// who does not see is pgx.ErrNoRows, as a key no issue holds is. It refuses nothing: each write
-// that a closed issue refuses decides that from open.
+// the check that decides (ownerStatus; lockedOwnerReadOnceFound for a write that names the issue by
+// its key alone), and through the pool for the check a comment makes before its transaction opens,
+// which reads exactly what the locked check will. An issue of a project who does not see is
+// pgx.ErrNoRows, as a key no issue holds is. It refuses nothing: each write that a closed issue
+// refuses decides that from open.
 func issueStatus(ctx context.Context, who model.Actor, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
@@ -1987,6 +1988,31 @@ func issueStatus(ctx context.Context, who model.Actor, key string, read ownerRea
 		return "", false, err
 	}
 	return status, open, nil
+}
+
+// lockOwnerOnceFound takes owner's lock only once read, the owner's row as the caller reads it,
+// has found the owner: for a write that names its owner by a key it has not read yet. read runs
+// first with nothing locked, so an owner the caller does not see is refused there (pgx.ErrNoRows,
+// as Scan returns it) before any lock is asked for, as a key no row holds is: it never waits
+// behind the writers of its project, which a key no row holds never does either. Then the lock is
+// taken and read runs again in the statement after it (store.LockOwnerAndRead), since the lock's
+// previous holder may have changed the row meanwhile; dest holds that second read. read must bind
+// the caller's viewer (access.ProjectClause or its like), or a hidden owner would pass the first
+// read and wait.
+func lockOwnerOnceFound(ctx context.Context, tx pgx.Tx, owner store.Owner, read string, args []any, dest ...any) error {
+	if err := tx.QueryRow(ctx, read, args...).Scan(dest...); err != nil {
+		return err
+	}
+	return store.LockOwnerAndRead(ctx, tx, owner, read, args, dest...)
+}
+
+// lockedOwnerReadOnceFound is lockedOwnerRead for a write that names its owner by a key it has not
+// read yet: the owner is read as its caller reads it before the lock is taken (lockOwnerOnceFound).
+// Every read an owner check makes binds the caller's viewer (issueStatus, ownerStatus).
+func lockedOwnerReadOnceFound(tx pgx.Tx) ownerRead {
+	return func(ctx context.Context, owner store.Owner, sql string, args []any, dest ...any) error {
+		return lockOwnerOnceFound(ctx, tx, owner, sql, args, dest...)
+	}
 }
 
 // closedWrite says, of one write that takes the owner's lock through ownerStatus, whether a

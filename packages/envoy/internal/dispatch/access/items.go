@@ -1,5 +1,7 @@
 package access
 
+import "fmt"
+
 // The read rules of what a thread is made of - an ask, a comment and a message - over the row a
 // statement reads, for the viewer that statement binds at viewerParam. A row a project owns is
 // read through ProjectClause, and a row of a conversation no project owns through PartyClause
@@ -58,6 +60,30 @@ func MessagePartiesSQL(idExpr string) string {
 func MessageClause(alias, viewerParam string) string {
 	return clause("MessageClause", `(case when `+alias+`.issue_key is not null then `+IssueProjectClause(alias+`.issue_key`, viewerParam)+`
 		else `+PartyClause(MessagePartiesSQL(alias+`.id::text`), viewerParam)+` end)`)
+}
+
+// BroadcastClause passes the broadcast idExpr names (its uuid) - one person's message to many
+// sessions, a conversation of no project with each - when the viewer may see every session it was
+// sent to (SessionClause over each copy's target), and is open or is the person who sent it. A
+// viewer that is not open - a restricted member, or a credential that lists projects - reads its
+// own direct messages alone (R4), so it reads only its person's broadcasts; and a credential reads
+// its person's broadcast only where it sees every recipient, since it sees what its own list lets
+// it see and not all its person sees (R3). It reads the broadcast again by its id, so a statement
+// binds a copy it reads by the copy's own broadcast_id as it binds the broadcast by its id. A
+// broadcast no row holds passes no viewer. SessionClause answers true or false, never NULL, so its
+// negation lets no hidden recipient pass.
+func BroadcastClause(idExpr, viewerParam string) string {
+	return clause("BroadcastClause", fmt.Sprintf(`exists (
+		select 1 from broadcasts clause_broadcast
+		where clause_broadcast.id = (%[1]s)
+			and (%[2]s or (clause_broadcast.author->>'kind' = 'user' and clause_broadcast.author->>'id' = %[3]s))
+			and not exists (
+				select 1 from messages clause_broadcast_copy
+				where clause_broadcast_copy.broadcast_id = clause_broadcast.id
+					and not %[4]s
+				offset 0)
+		offset 0)`, idExpr, ViewerFlag(viewerParam, "open"), ViewerPerson(viewerParam),
+		SessionClause("substr(clause_broadcast_copy.target, 9)", viewerParam)))
 }
 
 // issueProjectSQL is the project of the issue keyExpr names, null where no issue holds the key.

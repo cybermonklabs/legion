@@ -10,13 +10,15 @@ name: CI job dispatch-project-access
 # The private-projects acceptance drivers, from packages/dispatch. project-access.sh --all-public
 # (verification's c-a-private-reads) seeds PUB and PRIV, every project public, and holds bob,
 # carol and carol's PRIV token to finding each object of PRIV and nothing of PUB, no agent outside
-# PRIV and no direct message that is not their own; the sections that need a private project are
-# printed as not run, since the switch answers 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus
-# writer it needs is in the tree, and they join this job with that writer. project-access-blob.sh
-# (c-blob-unchanged) builds the merge base beside this tree through
-# scripts/e2e/lib/two-builds.sh, seeds each alike on a database of its own with every project
-# public, and fails on any answer a caller reads differently at the two, and on any list it reads
-# that holds no row.
+# PRIV and no direct message that is not their own. project-access.sh --private-by-sql makes PRIV
+# private by the store write the switch makes, where the switch, its preconditions met, answers
+# 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus writer it needs is in the tree, and runs every
+# section that needs a private project: each caller PRIV is hidden from reads every route of the
+# route table, the sockets, search and the GitHub proxy, and writes every write route, and is
+# answered as for an id nobody holds. project-access-blob.sh (c-blob-unchanged) builds the merge
+# base beside this tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of
+# its own with every project public, and fails on any answer a caller reads differently at the
+# two, and on any list it reads that holds no row.
 # The merge base is the commit this run tests the change against: the merge group's base, else
 # the first parent of the commit checked out, which on a pull request is the merge commit's base
 # and on a dispatched run the commit before main's tip. two-builds.sh takes its tree with
@@ -86,6 +88,9 @@ jobs:
           psql "$DATABASE_URL" -c 'create extension vector'
       - name: Read PRIV's objects as its listed callers, every project public
         run: bash e2e/acceptance/project-access.sh --all-public
+        working-directory: packages/dispatch
+      - name: Read and write every route as the callers PRIV is hidden from, PRIV made private by the store write
+        run: bash e2e/acceptance/project-access.sh --private-by-sql
         working-directory: packages/dispatch
       - name: Compare what every caller reads at the merge base and at this tree
         run: |

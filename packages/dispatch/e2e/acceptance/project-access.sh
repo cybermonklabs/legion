@@ -12,12 +12,17 @@
 #         alice's token that lists PRIV, carol's token that lists no project, and the shared
 #         token. Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
-#         that the fake Envoy lists, and a repository its issue names as its own `repo`; PRIV
-#         also holds ses-priv-worker, a session main's fake Envoy alone lists, recorded as having
-#         acted in PRIV.
-#   twin  the same seed with PRIV never written: the same PUB, the same people, carol's token
-#         that lists no project, and alice's token, whose list names PRIV, a project the twin
-#         never holds.
+#         that the fake Envoy lists, and a repository its issue names as its own `repo`. PUB's
+#         issue holds a comment of carol's that names PRIV's issue and its spec, the seed's
+#         reference from PUB to PRIV. PRIV also holds ses-priv-worker, a session main's fake Envoy
+#         lists, recorded as having acted in PRIV; a broadcast to PRIV's session and a file of its
+#         conversation; and a pull request of the deploy repository naming PRIV's issue, with a
+#         PR-checks run of it.
+#   twin  the same seed with PRIV never written: the same PUB, its comment naming a key the twin
+#         never holds, the same people, carol's token that lists no project, and alice's token,
+#         whose list names PRIV, a project the twin never holds. Its fake Envoy lists PUB's
+#         session alone: a session whose credential lists PRIV is PRIV's, as hidden as its
+#         objects.
 # Then, in sections, each of which runs whatever the ones before found:
 #   private     the two commands an operator runs on the deploy (envoy-dispatch
 #               backfill-session-projects and scrub-access-events) run against main's database,
@@ -25,9 +30,14 @@
 #               sockets, proxy and writes need it, and are reported as not run when the route
 #               refuses, as it always does in a build with no writer of the private-projects
 #               record (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
-#               --private-by-sql, a route that refuses is stood in for by the store write it
-#               makes (`update projects set visibility = 'private'`), so every section below
-#               runs; the stand-in is written to what did not run, so such a run never passes.
+#               --private-by-sql, that refusal is stood in for by the store write the route makes
+#               (`update projects set visibility = 'private'`), so every section below runs, and
+#               the run passes when they do. The route checks, in the transaction it refuses, that
+#               PRIV is provisioned and that the store is complete (PRIV's census and the markers
+#               of the two commands) before it reaches the record, so that refusal says the
+#               switch's preconditions hold; any other answer of the route fails the run. The
+#               stand-in does not append the route's project.access_changed event, an event of
+#               PRIV, which no unseeing caller reads.
 #               With --all-public, PRIV is left public and listed and confined alone run: every
 #               other section prints `not run: <section> (slice A3b, #t-a-36)`, the slice that
 #               makes a project private, and the run passes when those two do.
@@ -37,9 +47,12 @@
 #   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
 #               token ("the unseeing callers"): every GET row of GET /api/v1 whose path names an
 #               object, filled once with PRIV's objects and once with ids that do not exist, each
-#               kind of object as the row's Probe names it, answers the same status and bytes; a
-#               row that names an object and has no Probe fails the run, named. A GET row that
-#               names no object is a list: its answer equals the twin's.
+#               kind of object as the row's Probe names it, answers the same status, headers and
+#               bytes; a row that names an object and has no Probe fails the run, named. A GET row
+#               that names no object is a list, and one whose every wildcard names a node of no
+#               project is filled alike on both servers: either answers as the twin answers it.
+#               Every GET row filled with PUB's objects answers as the twin answers it, so no read
+#               of PUB names PRIV's objects through the reference from PUB to PRIV.
 #   search      both legs of search, the keyword leg alone and the two together, answer each
 #               unseeing caller what the twin answers.
 #   sockets     the document socket answers an unseeing caller for PRIV's spec what it answers
@@ -52,9 +65,10 @@
 #   writes      last, since a write that is not hidden changes what every section above reads:
 #               every write row whose path names an object, walked as walk walks the GET rows.
 # The Probes are read from the server's own table (`go run ./internal/dispatch/api/cmd/routeprobes`),
-# never from a list here. Answers are compared after access-lib.sh's mask, and an answer to a
-# filled path also with the ids it was filled with masked as the wildcard they fill, which is the
-# only text in which a hidden object's answer and a missing one's may differ.
+# never from a list here. Answers are compared after access-lib.sh's mask, headers and body, and an
+# answer to a filled path also with the ids it was filled with masked as the wildcard they fill,
+# which is the only text in which a hidden object's answer and a missing one's may differ. Beside
+# the twin, each server's `Dispatch-Private-Projects` line is its own (main_header, twin_header).
 #
 # Usage, from packages/dispatch:
 #
@@ -179,20 +193,33 @@ declare -A missing=(
   # A step record's id no run holds (write_probes.go's probeStep); the issue the path names decides
   # what is hidden, so PRIV's side names the same id.
   [step]=00000000-0000-4000-8000-00000000000b
+  # A run of the deploy repository no run holds. PRIV's is priv_run, the PR-checks run the seed
+  # writes of the deploy repository's pull request naming PRIV-1.
+  [delivery-run]=731000009
+  # A priority nobody wrote. A priority is a node of no project (no_project_kinds), filled alike on
+  # both servers with the one both hold.
+  [priority]=no-such-priority
 )
-# The kinds no project owns: a row that names one reads or writes the same object for every
-# caller, so it has no object of PRIV to hide, and the walk names it rather than compares it.
-readonly projectless_kinds=" priority delivery-run live-pause session-group credential-request credential-grant machine-login signin "
+readonly priv_run=731000001
+# The kinds no project owns and no seed here writes: a Delivery session group, and the secrets
+# broker's credential requests, grants, machine logins and sign-ins, which no broker of this run
+# holds (a live-write pause point is a test hook's). A row that names one reads or writes the same
+# object for every caller, so it has no object of PRIV to hide, and the walk names it rather than
+# compares it.
+readonly projectless_kinds=" live-pause session-group credential-request credential-grant machine-login signin "
 # The kinds of no-project node a Probe names (spec v34, Design: "A node of no project"): both
 # servers hold the same ones, and the walk fills them alike on both sides. A personal token is a
 # row of its person's, which both servers hold under one label; only its list can name PRIV. A
-# broadcast goes to sessions, which are no-project nodes, and both servers hold the same one.
-readonly no_project_kinds=" session person agent-token broadcast "
+# priority is the deployment's, access-work on both servers; only its history names an issue of
+# PRIV, PRIV-2's advance of it.
+readonly no_project_kinds=" person agent-token priority "
 
 # priv_object KIND PATTERN prints PRIV's object of KIND in main's seed for a row of PATTERN, or
 # nothing when the seed holds none. A document is PRIV-1's spec, whose blocks the seed knows; a
 # document's slug is the slug of a document of what the path names: the project's playbook under
-# /projects/, the issue's notes under /issues/.
+# /projects/, the issue's notes under /issues/, the file of the conversation under /agents/. A
+# session is PRIV's, ses-priv-session, whose credential lists PRIV, and a broadcast and a file are
+# of its conversation.
 priv_object() {
   case "$1" in
     project) printf PRIV ;;
@@ -202,8 +229,7 @@ priv_object() {
       case "$2" in
         /api/v1/projects/*) printf playbook-md ;;
         /api/v1/issues/*) printf notes-md ;;
-        # A file of an agent's conversation belongs to no project: both servers hold the same one.
-        /api/v1/agents/*) printf '{session file slug}' ;;
+        /api/v1/agents/*) recalled main "PRIV session file slug" ;;
       esac
       ;;
     document-version) printf 1 ;;
@@ -216,8 +242,7 @@ priv_object() {
     going-run) recalled main "PRIV going run" ;;
     near-copy-check) recalled main "PRIV near-copy check" ;;
     group) printf priv-group ;;
-    # The labels resolve fills on each server with that server's own object.
-    broadcast) printf '{session broadcast}' ;;
+    broadcast) recalled main "PRIV broadcast" ;;
     attempt) printf 1 ;;
     email) printf '%s' "$bob" ;;
     # The label resolve fills on each server with that server's own token.
@@ -229,6 +254,37 @@ priv_object() {
     repository-name) printf priv-repo ;;
     mapped-repository) printf priv-repo ;;
     step) printf 00000000-0000-4000-8000-00000000000b ;;
+    delivery-run) printf '%s' "$priv_run" ;;
+    priority) printf access-work ;;
+  esac
+}
+
+# pub_object KIND PATTERN prints PUB's object of KIND for a row of PATTERN as a path names it on
+# both servers: a literal both hold alike, or a {LABEL} resolve fills with each server's own id.
+# It prints nothing for a kind PUB holds none of: a handoff, a check result, a going run, a
+# near-copy check, a broadcast, a run of the deploy repository, a file of a conversation, a step.
+# PUB's comment is the one that names PRIV-1 and its spec.
+pub_object() {
+  case "$1" in
+    project) printf PUB ;;
+    issue) printf PUB-1 ;;
+    document) printf '{PUB spec}' ;;
+    document-slug)
+      case "$2" in
+        /api/v1/projects/*) printf playbook-md ;;
+        /api/v1/issues/*) printf notes-md ;;
+      esac
+      ;;
+    document-version | attempt) printf 1 ;;
+    block) printf '{PUB block 1}' ;;
+    ask) printf '{PUB ask}' ;;
+    comment) printf '{PUB reference}' ;;
+    message | thread) printf '{PUB message}' ;;
+    handoff-phase) printf plan ;;
+    session) printf ses-pub-session ;;
+    repository-owner) printf acme ;;
+    repository-name | mapped-repository) printf pub-repo ;;
+    group | email | agent-token | person | priority) priv_object "$1" "$2" ;;
   esac
 }
 
@@ -275,15 +331,14 @@ for server in main twin; do
   nats_port=$(report_port "$evidence/logs/nats_$server.log" 'Listening for client connections on [^ ]*:') ||
     fail "the $server NATS logged no client port; see $evidence/logs/nats_$server.log"
   await_reported "envoy_$server" envoy_port 'fake envoy listener on 127\.0\.0\.1:' "the $server fake Envoy"
-  # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
-  # PRIV wrote, so the twin holds PRIV's session too. Main's alone also holds ses-priv-worker,
-  # which the seed records as having acted in PRIV: a restricted reader or a listing token is shown
-  # a session only for its history in a project it sees (agents.go's visibleRosterSessions), not
-  # for the projects the listener names, so ses-priv-session, which has none, is never in their
-  # agents list. A session with history in PRIV alone is PRIV's, as hidden as its objects, and the
-  # twin, which never holds PRIV, holds no such session.
+  # A session that has acted in no project is judged by the projects its listener record names,
+  # its credential's list (access.go's SessionClause): ses-priv-session's names PRIV, so it is
+  # PRIV's agent, as hidden as PRIV's objects, and the twin, which never holds PRIV, lists no such
+  # session. Main's also holds ses-priv-worker, which the seed records as having acted in PRIV.
+  # PUB's session, ses-pub-session, is on both.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
-  sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
+  [ "$server" = twin ] ||
+    sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   [ "$server" = twin ] ||
     sessions+=',{"session_id":"ses-priv-worker","title":"Worked in PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
@@ -343,35 +398,33 @@ for server in main twin; do
   seed_people "$server"
   make_project "$server" PUB
   seed_objects "$server" PUB alice
+  # The blocks of PUB's notes and playbook, which the walk of PUB's rows reads under each
+  # document's slug, each remembered as seed_objects remembers the spec's.
+  for document in notes playbook; do
+    send "$server" carol GET "$(resolve "$server" "/api/v1/artifacts/{PUB $document}/blocks")"
+    expect_status 200 "$server: carol reads the blocks of PUB's $document"
+    index=0
+    while IFS= read -r block; do
+      index=$((index + 1))
+      remember "$server" "PUB $document block $index" "$block"
+    done < <(jq -r '.[].id' "$work/body")
+  done
   give_repository "$server" PUB-1 acme/pub-repo
   mint_token "$server" carol carol-token
   send "$server" carol POST /api/v1/agents/ses-pub-session/messages \
     '{"body":"A direct message to the PUB session.","delivery":"btw"}'
   expect_status 201 "$server: carol messages the PUB session"
   remember "$server" "PUB direct message" "$(jq -r .id "$work/body")"
-  # Two objects of no project, alike on both servers: an access group, the deployment's, which
-  # PRIV's list names on main below; and a broadcast to PRIV's session, a no-project node. Every
-  # uuid the broadcast's answer names is remembered, in order, so both servers' read alike.
+  # The reference from PUB to PRIV: carol's comment on PUB-1 names PRIV's issue and its spec. It is
+  # written before main holds PRIV, so it is the same comment on both servers, with the same event
+  # number; once main holds PRIV it names PRIV's objects, and on the twin keys nobody holds.
+  send "$server" carol POST /api/v1/issues/PUB-1/comments \
+    '{"body":"This waits on dispatch://PRIV-1 and on its spec, dispatch://PRIV-1/spec."}'
+  expect_status 201 "$server: carol comments on PUB-1, naming PRIV-1 and its spec"
+  remember "$server" "PUB reference" "$(jq -r .id "$work/body")"
+  # An access group, the deployment's, alike on both servers, which PRIV's list names on main below.
   send "$server" carol PUT /api/v1/access-groups/priv-group "$(jq -cn --arg c "$carol" '{members: [$c]}')"
   [[ "$status" == 2?? ]] || fail "$server: carol makes the group priv-group: HTTP $status $(head -c 300 "$work/body")"
-  send "$server" carol POST /api/v1/broadcasts '{"body":"A broadcast to the PRIV session.","delivery":"btw","session_ids":["ses-priv-session"]}'
-  expect_status 201 "$server: carol broadcasts to the PRIV session"
-  remember "$server" "session broadcast" "$(jq -r .id "$work/body")"
-  index=0
-  while IFS= read -r uuid; do
-    index=$((index + 1))
-    remember "$server" "session broadcast uuid $index" "$uuid"
-  done < <(jq -r --arg id "$(recalled "$server" "session broadcast")" '[.. | strings | select(test("^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$") and . != $id)]
-    | reduce .[] as $u ([]; if index([$u]) then . else . + [$u] end) | .[]' "$work/body")
-  # A file of PRIV's session's conversation, a no-project node held to its parties, alike on both.
-  printf '\x89PNG\r\n\x1a\nproject-access' >"$work/session-file.png"
-  status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -H "@$work/auth/$server-shared" \
-    -F "name=priv-session-file.png" -F "actor=$(jq -cn --arg s "$seed_session" '{kind: "session", id: $s}')" \
-    -F "file=@$work/session-file.png;type=image/png" "${build_url[$server]}/api/v1/agents/ses-priv-session/artifacts" 2>"$work/curl") ||
-    status="curl failed: $(<"$work/curl")"
-  expect_status 201 "$server: the shared token sends a file in the PRIV session's conversation"
-  remember "$server" "session file slug" "$(jq -r '.artifact.slug' "$work/body")"
-  remember "$server" "session file" "$(jq -r '.artifact.id' "$work/body")"
   # Delivery, configured alike on both servers, so a delivery route answers a timeline rather than
   # 404 DELIVERY_NOT_CONFIGURED; and a priority, which no project owns, alike on both.
   send "$server" carol PUT /api/v1/settings/delivery \
@@ -402,9 +455,26 @@ expect_status 200 "main: carol names the group priv-group on PRIV's list"
 psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 \
   -c "insert into session_projects (session_id, project_key) values ('ses-priv-worker', 'PRIV')" >/dev/null ||
   fail "main: could not record ses-priv-worker's history in PRIV"
-# The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
-# going run. A file of an agent's conversation is no project's, so it is seeded on both servers
-# in the loop above.
+# The objects of PRIV the walk's Probes name beyond seed_objects': a broadcast to PRIV's session
+# and a file of its conversation, a handoff, a check result and a going run. Every uuid the
+# broadcast's answer names is remembered, in order, so the mask names each.
+send main carol POST /api/v1/broadcasts '{"body":"A broadcast to the PRIV session.","delivery":"btw","session_ids":["ses-priv-session"]}'
+expect_status 201 "main: carol broadcasts to the PRIV session"
+remember main "PRIV broadcast" "$(jq -r .id "$work/body")"
+index=0
+while IFS= read -r uuid; do
+  index=$((index + 1))
+  remember main "PRIV broadcast uuid $index" "$uuid"
+done < <(jq -r --arg id "$(recalled main "PRIV broadcast")" '[.. | strings | select(test("^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$") and . != $id)]
+  | reduce .[] as $u ([]; if index([$u]) then . else . + [$u] end) | .[]' "$work/body")
+printf '\x89PNG\r\n\x1a\nproject-access' >"$work/session-file.png"
+status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -H "@$work/auth/main-shared" \
+  -F "name=priv-session-file.png" -F "actor=$(jq -cn --arg s "$seed_session" '{kind: "session", id: $s}')" \
+  -F "file=@$work/session-file.png;type=image/png" "${build_url[main]}/api/v1/agents/ses-priv-session/artifacts" 2>"$work/curl") ||
+  status="curl failed: $(<"$work/curl")"
+expect_status 201 "main: the shared token sends a file in the PRIV session's conversation"
+remember main "PRIV session file slug" "$(jq -r '.artifact.slug' "$work/body")"
+remember main "PRIV session file" "$(jq -r '.artifact.id' "$work/body")"
 send main shared POST /api/v1/issues/PRIV-1/handoffs/plan "$(with_actor shared '{"body":"{\"next\":\"seeded\"}"}')"
 expect_status 201 "main: the shared token records a handoff on PRIV-1"
 remember main "PRIV handoff" "$(jq -r '.id // .handoff.id' "$work/body")"
@@ -442,6 +512,21 @@ psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "insert into delivery_pull
   values ('acme/priv-repo', 7, 'The change of PRIV-1', 'https://github.com/acme/priv-repo/pull/7', 'octocat',
     now() - interval '3 hours', now() - interval '1 hour', 'PRIV-1')" >/dev/null ||
   fail "main: could not write the pull request of PRIV's repository"
+# The run of PRIV that GET /api/v1/delivery/runs/{id} names: a PR-checks run of the deploy
+# repository is shown where its pull request is (delivery.go's deliveryRunShown), and the pull
+# request where its issue is, so a run of a pull request naming PRIV-1 is PRIV's. The delivery loop
+# writes both rows from GitHub, which the fake GitHub does not serve, so they are written as it
+# writes them, the run's jobs complete.
+psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "insert into delivery_pull_requests
+    (repo, number, title, url, author, created_at, merged_at, issue_key)
+  values ('acme/pub-repo', 8, 'A change for PRIV-1', 'https://github.com/acme/pub-repo/pull/8', 'octocat',
+    now() - interval '3 hours', now() - interval '2 hours', 'PRIV-1')" \
+  -c "insert into delivery_runs
+    (repo, run_id, kind, pr_number, head_sha, head_commit_at, started_at, completed_at, conclusion, url, jobs_complete)
+  values ('acme/pub-repo', $priv_run, 'pr_checks', 8, '2222222222222222222222222222222222222222',
+    now() - interval '3 hours', now() - interval '3 hours', now() - interval '170 minutes', 'success',
+    'https://github.com/acme/pub-repo/actions/runs/$priv_run', true)" >/dev/null ||
+  fail "main: could not write the deploy repository's pull request naming PRIV-1 and its PR-checks run"
 # A thread on PRIV-1, and one on PRIV's playbook, a document of the project, which takes its
 # comments on its own route (a document of an issue takes them through the issue's).
 for thread in /api/v1/issues/PRIV-1/comments "/api/v1/artifacts/$(recalled main "PRIV playbook")/comments"; do
@@ -504,15 +589,18 @@ else
     note "PRIV is private"
   else
     refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
-    if [ "$private_by_sql" = 1 ]; then
+    if [ "$private_by_sql" = 0 ]; then
+      unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
+      note "PRIV is not private: HTTP $status"
+    elif [ "$status" != 409 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != PRIVATE_PROJECTS_UNAVAILABLE ]; then
+      # The route reaches the record only once PRIV is provisioned and the store complete: any
+      # other refusal is a precondition the stand-in would skip.
+      fail "--private-by-sql stands in only for 409 PRIVATE_PROJECTS_UNAVAILABLE, the refusal of a switch whose preconditions hold: $refusal"
+    else
       psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
         fail "main: the stand-in could not make PRIV private"
       priv_private=1
-      unrun "PRIV was made private by the store write, not the route: $refusal"
-      note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
-    else
-      unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
-      note "PRIV is not private: HTTP $status"
+      note "PRIV is private by the store write the route makes (--private-by-sql): the route answered 409 PRIVATE_PROJECTS_UNAVAILABLE, its preconditions held"
     fi
   fi
   pass
@@ -549,6 +637,11 @@ compare_missing() {
   same_answers "$caller $method $template" hidden missing
 }
 
+# Every answer says whether the deployment holds a private project (KF7): main, which provisions
+# PRIV, says 1, and the twin, which provisions none, 0. Beside the twin, each server's answer must
+# say its own, and the line is dropped from both before the headers are compared.
+readonly main_header='dispatch-private-projects: 1' twin_header='dispatch-private-projects: 0'
+
 # compare_twin CALLER PATH [METHOD BODY]: as CALLER, main and the twin answer PATH the same, each
 # with its own ids filled in for the {LABEL}s PATH names. A write (METHOD other than GET) writes a
 # row of its own on each server, whose new id and time no seed names, so of a write the two
@@ -560,10 +653,14 @@ compare_twin() {
     keep_answer "$server" "$server"
   done
   if [ "$method" != GET ]; then
-    : >"$work/answers/main.body"
-    : >"$work/answers/twin.body"
+    for server in main twin; do
+      : >"$work/answers/$server.body"
+      : >"$work/answers/$server.headers"
+    done
+    same_answers "$caller $method $path (beside the twin)" main twin
+  else
+    same_answers "$caller $method $path (beside the twin)" main twin "$main_header" "$twin_header"
   fi
-  same_answers "$caller $method $path (beside the twin)" main twin
 }
 
 begin confined
@@ -639,16 +736,6 @@ done
 note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
 pass
 
-# Meaning search answers from vectors the embedding queue writes behind each write, so both
-# servers are read only once neither owes a vector.
-indexed() {
-  local server
-  for server in main twin; do
-    send "$server" carol GET /api/v1/search/coverage
-    [ "$status" = 200 ] && [ "$(jq '[.not_indexed // 0] | flatten | map(if type == "object" then (.count // 0) else . end) | add // 0' "$work/body")" = 0 ] || return 1
-  done
-}
-
 # Each server's delivery loop reconciles on its own timer once delivery is configured (every second
 # here, DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL, rather than five minutes), and a reconcile
 # writes what it found into the settings and the pipeline's freshness. So both servers are read
@@ -678,13 +765,6 @@ own_newest_event() {
     where actor->>'kind' = 'user' and actor->>'id' = '$(email_of "$2")'"
 }
 
-# event_log_reaches BUILD CALLER ID: BUILD's event log, as CALLER reads it, holds an event at ID or
-# above.
-event_log_reaches() {
-  send "$1" "$2" GET "/api/v1/events/log?after=$(($3 - 1))&limit=1"
-  [ "$status" = 200 ] && jq -e --argjson id "$3" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
-}
-
 # logs_hold_own_writes waits, bounded, on each server until the log as carol and as alice holds
 # that caller's own newest event.
 logs_hold_own_writes() {
@@ -707,7 +787,7 @@ logs_hold_own_writes() {
 # pairs by \x1e (read_probe). A field the Probe does not hold is empty.
 route_rows() {
   jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
-    | ($probes[0] | map(select(.method == $row.method and .pattern == $row.path))[0]) as $entry
+    | (first($probes[0][] | select(.method == $row.method and .pattern == $row.path)) // null) as $entry
     | [$row.method, $row.path,
        (if $entry == null then "" else "1" end),
        ($entry.test_hook // false | tostring),
@@ -734,9 +814,13 @@ read_probe() {
 # answered as the twin answers it. A row that names an object with no Probe, or one whose object
 # the seed does not hold, is written to what did not run. A test hook (RouteProbe's test_hook) is
 # left out, named: the server mounts it only under DISPATCH_TEST_HOOKS, which no deployment sets.
-# A session and a person are no-project nodes, which spec v34 (Design, "A node of no project")
-# shows to an open viewer as it does today, and both servers hold the same ones: a row whose every
-# wildcard is one of them is filled alike on both servers and answered as the twin answers it.
+# A person, a personal token and a priority are no-project nodes, which spec v34 (Design, "A node
+# of no project") shows to an open viewer as it does today, and both servers hold the same ones: a
+# row whose every wildcard is one of them is filled alike on both servers and answered as the twin
+# answers it. The rows whose object no project owns (RouteProbe's no_project) are walked first:
+# each must be refused, which changes nothing, and a write walked before them would change the
+# callers they are refused to, as DELETE /api/v1/me/agent-tokens/{id} does, which carol's token
+# walks on carol's PRIV token.
 walk_rows() {
   local method pattern has_entry test_hook no_project body has_probe pairs wildcards hidden none skip wildcard kind object caller target
   walked=0 lists=0 refused=0
@@ -792,18 +876,25 @@ walk_rows() {
       fi
       # A no-project node fills both sides alike: it is no object PRIV wrote. It goes into the
       # path as it is, so a {LABEL} it names is filled with each server's own id (compare_twin).
-      if [[ "$no_project_kinds" == *" $kind "* ]] ||
-        { [[ "$pattern" == /api/v1/agents/* ]] && [[ "$kind" == document-slug || "$kind" == document-version ]]; }; then
+      if [[ "$no_project_kinds" == *" $kind "* ]]; then
         hidden=${hidden//"{$wildcard}"/$object}
         none=${none//"{$wildcard}"/$object}
         continue
       fi
       hidden=${hidden//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
       none=${none//"{$wildcard}"/$(jq -rn --arg v "${missing[$kind]}" '$v|@uri')}
-      # A fill that is the same on both sides is no difference to mask.
+      # A fill that is the same on both sides is no difference to mask. An issue's key names its
+      # project up to its first -, which a refusal built from the key the caller sent names
+      # (ROLE_HOLDER_FORBIDDEN): it is masked too, after the key, so a hidden answer naming the
+      # project and a missing one naming ZZNONE read alike, and an answer naming another object
+      # of PRIV still differs.
       if [ "$object" != "${missing[$kind]}" ]; then
         printf '%s\t%s\n' "$wildcard" "$object" >>"$work/fill-hidden"
         printf '%s\t%s\n' "$wildcard" "${missing[$kind]}" >>"$work/fill-missing"
+        if [ "$kind" = issue ]; then
+          printf '%s project\t%s\n' "$wildcard" "${object%%-*}" >>"$work/fill-hidden"
+          printf '%s project\t%s\n' "$wildcard" "${missing[$kind]%%-*}" >>"$work/fill-missing"
+        fi
       fi
     done
     [ -z "$skip" ] || continue
@@ -819,16 +910,50 @@ walk_rows() {
       compare_missing "$caller" "$method" "$pattern" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing" "$body"
     done
     walked=$((walked + 1))
-  done < <(route_rows "$1")
+  done < <(route_rows "$1" | LC_ALL=C sort -s -r -t $'\x1f' -k5,5)
+}
+
+# walk_pub_rows walks every GET row whose path names an object of a project, filled with PUB's
+# objects (pub_object) alike on both servers, and holds each unseeing caller's answer to the
+# twin's. PUB is the same on both, but for the reference from PUB to PRIV, which on main names
+# PRIV's objects and on the twin keys nobody holds: a read of PUB that names an object of PRIV
+# through it, or answers otherwise for it, differs. A row whose object PUB holds none of is not
+# walked here, and one whose every wildcard is a no-project node is walked by walk_rows.
+walk_pub_rows() {
+  local pattern test_hook pairs wildcards wildcard kind object path of_project caller
+  pub_walked=0
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+    [ "$test_hook" != true ] || continue
+    wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
+    [ -n "$wildcards" ] || continue
+    read_probe "$pairs"
+    path=$pattern of_project=''
+    for wildcard in $wildcards; do
+      kind=${probe_kind[$wildcard]:-}
+      object=$(pub_object "$kind" "$pattern")
+      if [ -z "$object" ]; then
+        path=''
+        break
+      fi
+      [[ "$no_project_kinds" == *" $kind "* ]] || of_project=1
+      path=${path//"{$wildcard}"/$object}
+    done
+    [ -n "$path" ] && [ -n "$of_project" ] || continue
+    for caller in "${unseeing_callers[@]}"; do
+      compare_twin "$caller" "$path"
+    done
+    pub_walked=$((pub_walked + 1))
+  done < <(route_rows 'select(.method == "GET")')
 }
 
 # The query parameters of the GET rows, read from the OpenAPI this checkout's server serves (`go run
 # ./cmd/dispatch openapi --check` holds the checked-in document equal to the route table), each
 # classified once. A parameter that names an object of a project is filled with PRIV's and with a
 # missing one, as a path's wildcard is, and each unseeing caller is answered the same for both; one
-# that names a person or a session, nodes of no project, is answered as the twin answers it; one
-# that names no object is not filled. A parameter these tables do not classify did not run, so a
-# new one cannot pass unread. A key "ROUTE NAME" classifies NAME on ROUTE alone, ahead of NAME.
+# that names a person, a node of no project both servers hold, or a session, filled with PRIV's,
+# which the twin does not hold, is answered as the twin answers it; one that names no object is
+# not filled. A parameter these tables do not classify did not run, so a new one cannot pass
+# unread. A key "ROUTE NAME" classifies NAME on ROUTE alone, ahead of NAME.
 declare -A query_kind=(
   [project]=project
   [number_project]=project
@@ -863,7 +988,7 @@ declare -A query_fixed=(
 readonly query_no_project=" author author_session parent_agent assignee approver person "
 # exclude_issue and exclude_issues name an issue of the path's own project, so an issue of PRIV
 # goes under a path of PRIV, which the path walk answers as missing; thread is a flag (1 or none).
-readonly query_no_object=" advances after at before blocks closed_before closed_since component cursor deployed download exclude_issue exclude_issues from ids keywords_only kind label limit max_chars moved offset open order pinned priority q rework route_status session since source_kind state status summary text thread title to unlinked updated_since versions wait "
+readonly query_no_object=" advances after at before blocks closed_before closed_since component cursor deployed download exclude_issue exclude_issues from ids keywords_only kind label limit max_chars moved offset open order pinned priority q rework route_status session since source_kind state status summary text thread title to unlinked until updated_since versions wait "
 
 # query_fill KIND prints PRIV's object of KIND and the missing one, a tab between them.
 query_fill() {
@@ -926,8 +1051,8 @@ walk_queries() {
       fi
       fixed=${query_fixed[$pattern]:-}
       if [ -z "$kind" ]; then
-        # A person or a session: both servers hold the same ones, so it is answered as the twin
-        # answers it.
+        # A person, whom both servers hold alike, or PRIV's session, which the twin does not hold:
+        # either is answered as the twin answers it.
         case "$param" in
           author_session | parent_agent) kind=session ;;
           *) kind=person ;;
@@ -989,6 +1114,9 @@ if [ "$priv_private" = 1 ]; then
     # A walk that compared nothing has not passed: the route index or the Probes held no row.
     [ "$walked" -gt 0 ] || unrun "the walk compared no GET row that names an object: the route index carol read, or the Probes, held none"
     [ "$lists" -gt 0 ] || unrun "the walk compared no list: the route index carol read held no GET row that names no object"
+    walk_pub_rows
+    note "walked $pub_walked GET rows filled with PUB's objects, beside the twin, as each unseeing caller"
+    [ "$pub_walked" -gt 0 ] || unrun "the walk compared no GET row filled with PUB's objects: the route index carol read, or the Probes, held none"
     walk_queries
     note "walked $queried query parameters of GET rows that name an object, a person or a session, as each unseeing caller"
     [ "$queried" -gt 0 ] || unrun "the query walk compared no query parameter: the route index carol read, or the OpenAPI, held none that names an object"
@@ -998,7 +1126,9 @@ if [ "$priv_private" = 1 ]; then
   pass
 
   begin search
-  until_true 120 "both servers to owe no vector" indexed
+  # Meaning search answers from vectors the embedding queue writes behind each write, so both
+  # servers are read only once neither owes a vector (access-lib.sh's indexed).
+  until_true 120 "both servers to owe no vector" indexed main twin
   for caller in "${unseeing_callers[@]}"; do
     for query in "q=paragraph&keywords_only=true" "q=paragraph" "q=remark&keywords_only=true" "q=remark"; do
       compare_twin "$caller" "/api/v1/search/results?$query"

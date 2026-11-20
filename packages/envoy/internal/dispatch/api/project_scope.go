@@ -157,16 +157,20 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
 // restricted member, or a credential that lists projects — as the read of the deployment's rows
 // is (withinReadScope): what it writes belongs to no project such a viewer could be held to; and
-// to a credential whose writes are held to a list though it reads open (writesHeldTo). Every
-// other row reaches its handler, whose loaders answer an object the viewer does not see as missing
-// (the file comment), but for a broker token scoped to one project while no project is private,
-// whose write to an object outside its project is refused here as it was before
-// (writeOutsideTheBrokerProject).
+// to a credential whose writes are held to a list though it reads open (writesHeldTo). The rows
+// personsOwnAtTheBroker names end what is the caller's own at the secrets broker, so a restricted
+// member makes them as a full member does, and only a credential that lists projects, or whose
+// writes are held to a list, is refused them; the broker decides whose each grant or sign-in is, for
+// every caller alike. Every other row reaches its handler, whose loaders answer an object the
+// viewer does not see as missing (the file comment), but for a broker token scoped to one project
+// while no project is private, whose write to an object outside its project is refused here as it
+// was before (writeOutsideTheBrokerProject).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if route.Scope == scopeNoWrite {
 		return handler
 	}
 	deployment := route.Scope == scopeDeployment
+	theirOwn := personsOwnAtTheBroker[route.Method+" "+route.Pattern]
 	resolve, addressed := s.projectResolverFor(route.Pattern)
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
@@ -176,8 +180,9 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 		if deployment {
 			held := writesHeldTo(reader.Viewer, resolvedCredential(r.Context()))
-			if !reader.Viewer.Open || len(held) > 0 {
-				refuseDeploymentWrite(w, route, reader.Viewer.Restricted, held)
+			ownWithNoList := theirOwn && len(reader.Viewer.Lists) == 0 && len(held) == 0
+			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList {
+				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
 				return
 			}
 		}
@@ -240,9 +245,10 @@ func (s *server) withCallerResolved(r *http.Request) *http.Request {
 
 // refuseDeploymentWrite names the row and why the caller may not write it: a restricted member
 // is 403 RESTRICTED_MEMBER, the refusal every write of the deployment a restricted member makes
-// answers (creating a project or a group among them), and a credential whose writes are held to a
-// list, held, is 403 PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own, in the
-// words a broker token scoped to one project was answered before projects could be private (R9).
+// answers (creating a project or a group among them) but the revokes of their own grants and
+// sign-ins (personsOwnAtTheBroker), and a credential whose writes are held to a list, held, is 403
+// PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own, in the words a broker
+// token scoped to one project was answered before projects could be private (R9).
 func refuseDeploymentWrite(w http.ResponseWriter, route apiRoute, restricted bool, held []string) {
 	if restricted {
 		writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(

@@ -104,14 +104,25 @@ type claimConflict struct {
 	// forcible is personRule.forcible, carried through so the refusal offers only what its
 	// caller can use.
 	forcible bool
+	// hidden says the request's reader may not see the holder (claimHolderHidden): the refusal
+	// then names no holder, no title and nothing its registry record says, and carries no claim.
+	hidden bool
 }
 
 // Error is the refusal a caller reads, and it never says more than was established. A live
 // session is named with the title it is running under and can be asked to release the issue;
 // an unresponsive one is named with the state it is in and when it was last seen, because the
 // caller's question is whether to wait and this answers it; a human holder had no liveness to
-// check and no session to message, so the text names the person to ask instead.
+// check and no session to message, so the text names the person to ask instead. A holder the
+// caller may not see (hidden) is named by none of these: the claim still refuses the write, and
+// the text says only what the caller can do about it.
 func (c *claimConflict) Error() string {
+	if c.hidden {
+		if c.forcible {
+			return "a holder this caller may not see claimed this issue; a human can force the claim"
+		}
+		return "a holder this caller may not see claimed this issue; any human can release it"
+	}
 	at := c.claim.At.UTC().Format(time.RFC3339)
 	alternative := "or any human can"
 	if c.forcible {
@@ -151,19 +162,47 @@ type issueClaimedError struct {
 	Error string            `json:"error"`
 }
 
-// writeClaimError answers a claim refusal: the 409 ISSUE_CLAIMED body carries the claim
-// itself, and every other failure follows the usual handler mapping.
-func (s *server) writeClaimError(w http.ResponseWriter, err error) {
+// writeClaimError answers a claim refusal: the 409 ISSUE_CLAIMED body carries the claim itself,
+// unless who, the request's reader, may not see its holder (claimHolderHidden), when it carries
+// none and names none. Every other failure follows the usual handler mapping.
+func (s *server) writeClaimError(w http.ResponseWriter, r *http.Request, who model.Actor, err error) {
 	var conflict *claimConflict
 	if errors.As(err, &conflict) {
+		hidden, hiddenErr := claimHolderHidden(r.Context(), s.deps.Store.Pool, who, &conflict.claim)
+		if hiddenErr != nil {
+			s.writeHandlerError(w, hiddenErr)
+			return
+		}
+		conflict.hidden = hidden
+		claim := &conflict.claim
+		if hidden {
+			claim = nil
+		}
 		WriteJSON(w, http.StatusConflict, issueClaimedError{
-			Claim: &conflict.claim,
+			Claim: claim,
 			Code:  "ISSUE_CLAIMED",
 			Error: conflict.Error(),
 		})
 		return
 	}
 	s.writeHandlerError(w, err)
+}
+
+// claimHolderHidden reports whether who may not see the holder of claim, a session or a person
+// (the rule of references, references_seen.go): an issue read answers such a claim as none, and a
+// claim answer names no such holder. A reader that sees every object, and a nil claim, cost no
+// read.
+func claimHolderHidden(ctx context.Context, q queryer, who model.Actor, claim *model.IssueClaim) (bool, error) {
+	if claim == nil || seesEveryObject(who) {
+		return false, nil
+	}
+	named := references{}
+	named.nameActor(claim.Actor)
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return false, err
+	}
+	return !seen.holdsActor(claim.Actor), nil
 }
 
 // holderLiveness is what the listener answered about the claim's holder, read with no
@@ -710,7 +749,7 @@ func (s *server) claimCycle(
 		return
 	}
 	if err != nil {
-		s.writeClaimError(w, err)
+		s.writeClaimError(w, r, who, err)
 		return
 	}
 	if applied.event.ID != 0 {
@@ -729,7 +768,11 @@ type claimIssueInput struct {
 	Force bool         `json:"force"`
 }
 
-// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue.
+// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue. A holder
+// its caller may not see (access.SessionClause, access.PersonClause) is refused all the same,
+// with `claim: null` and a text that names no holder; the issue reads, the listing, the children
+// and the priority faults answer such a claim as none, and a route to a role of a private project
+// the reader does not see as no route.
 func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	var input claimIssueInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -783,12 +826,20 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 // ran, so no verdict was applied. It is never ISSUE_CLAIMED — nothing on this path established
 // that the holder is running, and naming a live title would mean another listener call — so it
 // has its own code, and carries the claim the row shows, as who reads the issue, for any caller
-// that wants it.
+// that wants it: a claim whose holder who may not see is answered as no claim (claimHolderHidden).
 func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, who model.Actor, key string) {
 	current, err := s.readIssueClaim(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	hidden, err := claimHolderHidden(r.Context(), s.deps.Store.Pool, who, current)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if hidden {
+		current = nil
 	}
 	message := "the claim on " + key + " changed twice while this request ran, so nothing was applied; read the issue and try again"
 	if current != nil {

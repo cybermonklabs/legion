@@ -254,6 +254,7 @@ func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 		"IssueProjectClause":   IssueProjectClause("i.key", "$1"),
 		"ItemOwnerClause":      ItemOwnerClause("c.issue_key", "c.artifact_id", "$1"),
 		"MessageClause":        MessageClause("m", "$1"),
+		"BroadcastClause":      BroadcastClause("b.id", "$1"),
 		"PersonClause":         PersonClause("u.email", "$1"),
 		"SessionClause":        SessionClause("s.id", "$1"),
 		"RoleClause":           RoleClause("r.id", "$1"),

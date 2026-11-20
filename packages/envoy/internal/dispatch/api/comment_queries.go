@@ -496,22 +496,24 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 
 // leaveOutHiddenCommentSessions writes comments as who reads them (the rule of references,
 // references_seen.go): a mention or a delivery attempt naming a session who does not see - by the
-// session it resolved to or reached, or by a `session:<id>` target - is left out, as the comment
-// would read had it never named that session.
+// session it resolved to or reached, or by a `session:<id>` target - or targeting a role of a
+// private project who does not see (a `role:legion-<project>-…` target), is left out, as the
+// comment would read had it never named it. Its one read is made whatever the comments name
+// (seenReferences); no comment reads nothing.
 func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) error {
-	if seesEveryObject(who) {
+	if seesEveryObject(who) || len(comments) == 0 {
 		return nil
 	}
 	named := references{}
 	for _, comment := range comments {
 		for _, mention := range comment.Mentions {
-			named.name(sessionReference, routeSession(mention.Target))
+			named.nameRoute(&mention.Target)
 			if mention.SessionID != nil {
 				named.name(sessionReference, *mention.SessionID)
 			}
 		}
 		for _, delivery := range comment.Deliveries {
-			named.name(sessionReference, routeSession(delivery.Target))
+			named.nameRoute(&delivery.Target)
 			if delivery.SessionID != nil {
 				named.name(sessionReference, *delivery.SessionID)
 			}
@@ -522,8 +524,7 @@ func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Act
 		return err
 	}
 	hidden := func(target string, session *string) bool {
-		return routeSession(target) != "" && !seen.holds(sessionReference, routeSession(target)) ||
-			session != nil && *session != "" && !seen.holds(sessionReference, *session)
+		return !seen.holdsRoute(target) || session != nil && *session != "" && !seen.holds(sessionReference, *session)
 	}
 	for index := range comments {
 		comments[index].Mentions = slices.DeleteFunc(comments[index].Mentions, func(mention model.Mention) bool {
