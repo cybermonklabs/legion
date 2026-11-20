@@ -52,7 +52,8 @@ func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string, interval t
 // is not connected is skipped, and none starts once the client has stopped, though a tick and the
 // stop came together. A pass that fails is logged and the next period tries again: the keeper never
 // stops the client or the process. A failure once the client has stopped is the stop's, and is not
-// logged.
+// logged. Each pass that ran is counted once it has ended (keepPasses); a tick skipped while the
+// client is not connected counts nothing.
 func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []string, interval time.Duration) {
 	defer close(done)
 	ticker := time.NewTicker(interval)
@@ -68,6 +69,7 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 		}
 		if c.Connected() {
 			c.keepPass(&cfg, buckets)
+			c.keepPasses.Add(1)
 		}
 	}
 }

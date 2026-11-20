@@ -393,6 +393,10 @@ type Client struct {
 	// client that runs none, or none yet: one that connects in the background starts it on its first
 	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
+	// keepPasses counts the keeper's passes that have ended (keep, keepPass), for a test that must
+	// know a whole pass ran after a change it made: a pass that finds nothing to restore logs
+	// nothing and sends no update, so the count is the one sign of it.
+	keepPasses atomic.Uint64
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
