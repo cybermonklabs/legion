@@ -37,24 +37,24 @@ const leakCheckRedirectToken = "plantedRedirectToken4k"
 // built as `legion start` builds it (redact.HandlerOptions).
 func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 	ctx := context.Background()
-	github := provisioningStandIn(t, provisioningInstallation{id: "78", owner: "theorem-labs", granted: leakCheckGrant,
+	github := provisioningStandIn(t, provisioningInstallation{id: "78", owner: leakCheckSetting.Repository.Owner(), granted: leakCheckGrant,
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
 	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
-	download := "http://" + dead + "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + leakCheckTag
+	download := "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/theorem-labs/agent-infra/tarball/"+leakCheckTag {
+		if r.URL.Path != leakCheckTarballRoute+leakCheckTag {
 			githubtest.Unexpected(t, w, r)
 			return
 		}
 		http.Redirect(w, r, download+"?token="+leakCheckRedirectToken, http.StatusFound)
 	}})
-	_, readErr := leakCheckSource(github.tokens, repo).Get(ctx, leakCheckTag)
+	_, readErr := leakCheckSource(github.tokens, repo, leakCheckSetting).Get(ctx, leakCheckTag)
 	if readErr == nil {
 		t.Fatalf("the read redirected to %s was served, want it refused", dead)
 	}
-	cause := leakguard.RefusalPrefix + "the daemon could not read theorem-labs/agent-infra at " + leakCheckTag + `: Get "` + download + `": `
+	cause := leakguard.RefusalPrefix + "the daemon could not read " + leakCheckSetting.Repository.String() + " at " + leakCheckTag + `: Get "` + download + `": `
 	if !strings.HasPrefix(readErr.Error(), cause) {
 		t.Fatalf("the read is refused with %q, want a cause beginning %q", readErr, cause)
 	}
@@ -138,7 +138,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 	}
 
 	logged := logs.String()
-	for _, line := range []string{`"msg":"supervise: launch failed"`, `"msg":"supervise: claim failed"`, "the daemon could not read theorem-labs/agent-infra"} {
+	for _, line := range []string{`"msg":"supervise: launch failed"`, `"msg":"supervise: claim failed"`, "the daemon could not read " + leakCheckSetting.Repository.String()} {
 		if !strings.Contains(logged, line) {
 			t.Errorf("the log holds no %s; want the failure's lines with the read's cause:\n%s", line, logged)
 		}

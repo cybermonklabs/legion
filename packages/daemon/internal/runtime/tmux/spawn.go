@@ -70,6 +70,9 @@ var runtimeOwned = map[string]bool{
 	"GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 	"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
 	"PI_SHELL_PREFIX": true, "PI_CONFIG_FILES": true,
+	// The deployment's manifest digest (Options.LeakCheckManifestSHA256), told where the deployment names a shared
+	// leak check: the daemon's setting alone, so no operator's pane variable and no spec moves it.
+	leakguard.CheckerVar: true,
 }
 
 // controllerOwned are the variables a controller pane is told in place of a tree pane's
@@ -234,9 +237,12 @@ type PaneInputs struct {
 	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
-	// the pane is then told no such variable and refuses every public write with the setup error
-	// naming the check.
-	LeakCheck string
+	// the pane is then told no such variable. LeakCheckManifestSHA256 is the deployment's checker
+	// (Options.LeakCheckManifestSHA256), the pane's leakguard.CheckerVar, "" where the deployment names
+	// no shared leak check. Told a checker and no check, the pane's `legion gh` refuses every
+	// public write with the setup error naming the check; told neither, it refuses none for the
+	// check's absence.
+	LeakCheck, LeakCheckManifestSHA256 string
 }
 
 // panePairs are a pane's -e pairs, in one order: the variables every Legion pane is told (the
@@ -257,7 +263,8 @@ type PaneInputs struct {
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
-// resolved none, the operator's pane variables sorted, less the composed one (composed), then
+// resolved none, the deployment's manifest digest where it names one (LeakCheckManifestSHA256), the operator's
+// pane variables sorted, less the composed one (composed), then
 // OTEL_RESOURCE_ATTRIBUTES itself, the operator's own spend attributes with this launch's issue
 // and role written after them (runtime.SpendResourceAttributes), so a pane's attributes name the
 // issue it serves, then the
@@ -323,6 +330,9 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 	}
 	if in.LeakCheck != "" {
 		add(leakguard.CheckVar, in.LeakCheck)
+	}
+	if in.LeakCheckManifestSHA256 != "" {
+		add(leakguard.CheckerVar, in.LeakCheckManifestSHA256)
 	}
 	for _, name := range sortedKeys(in.OperatorEnv) {
 		if !composed[name] {
@@ -575,19 +585,31 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
-	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
-	// from it is refused, naming the missing check, which is the honest answer on a machine that
-	// writes to public repositories with no check.
+	// none is no launch failure. A broken setup on this machine — a check named and not there, a
+	// file of the check's name on PATH that is no executable, a pointer file that cannot be read
+	// or names nothing — is told to the pane all the same, as the path it names
+	// (leakguard.BrokenAt), so the pane's `legion gh` refuses every public write for it, as the
+	// daemon's own guard would, whatever the deployment runs. Where
+	// no place names a check at all, the pane is told no PUBLIC_LEAK_CHECK: under a deployment
+	// that names a shared leak check (Options.LeakCheckManifestSHA256) its public writes are refused,
+	// naming the missing check, and under one that names none they run the guard's rules alone,
+	// and nothing is said of it here: boot has said once that no check is configured. Every
+	// broken setup is said at the launch.
 	leakCheck, err := resolveLeakCheck(r.ownEnviron)
 	if err != nil {
-		r.log.Warn("tmux runtime: no shared public leak check on this machine, so every write this pane makes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
-			"claim", spec.Claim, "why", err)
+		if broken, ok := leakguard.BrokenAt(err); ok {
+			leakCheck = broken
+		}
+		if r.leakCheckManifestSHA256 != "" || !leakguard.NoneNamed(err) {
+			r.log.Warn("tmux runtime: the shared public leak check could not be resolved on this machine, so this pane's writes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
+				"claim", spec.Claim, "why", err)
+		}
 	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		Variants: spec.Variants, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }
