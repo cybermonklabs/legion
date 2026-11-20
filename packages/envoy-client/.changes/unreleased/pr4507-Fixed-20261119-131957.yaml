@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    `dispatch artifact` without `--force` no longer writes a version into a document another writer
+    made between its read of what the owner holds and its upload. The upload asks Dispatch for a
+    create alone (`create_only`), so Dispatch refuses it under a name held by then and writes no
+    version. A create names no token, so that refusal is Dispatch's 409, never the 400
+    PRECONDITION_REQUIRED of a replacement that names none. The command answers with the refusal
+    it gives a name its read finds: the document, its newest version and who wrote it, and that
+    `--force` with the token of the version it replaces writes the next version. The command
+    needs Dispatch legion-envoy-v30.21.0 or later: an older Dispatch refuses the JSON member with
+    400 INVALID_JSON and writes nothing, and the command's refusal names that likely cause.
+time: 2026-11-19T13:19:57.436523683Z
+custom:
+    Issue: pr4507

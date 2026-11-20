@@ -34,15 +34,15 @@ import (
 // refusal instead is not safe, since the store is keyed by the bytes' hash and another version,
 // or another upload in flight, can name the same object. The transaction's own checks still
 // decide: an upload this check passes that a concurrent write then makes refusable (another
-// upload taking its name with another kind, the issue closing), or whose insert fails, leaves an
-// object no row names, which a later upload of the same bytes reuses. The row records the hash
-// the object is keyed by, and the bytes too only while a live server process has no bucket
-// (fleetServesFilesFromRows).
+// upload taking its name with another kind, or taking it at all where this one asks to create
+// only, the issue closing), or whose insert fails, leaves an object no row names, which a later
+// upload of the same bytes reuses. The row records the hash the object is keyed by, and the
+// bytes too only while a live server process has no bucket (fleetServesFilesFromRows).
 func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
-	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input.name, kind); err != nil {
+	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input, kind); err != nil {
 		s.writeHandlerError(w, err)
 		return false
 	}
@@ -55,23 +55,22 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 }
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
-// storeArtifact's transaction would make of a file or image upload to target under name: a
-// project that does not exist, an artifact the name or slug finds whose kind is not kind, or a new
-// artifact whose name or reference key is past its bound. It reads as that transaction reads, so
-// the two refuse alike whenever nothing writes the owner's artifacts between them.
-func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, name, kind string) error {
+// storeArtifact's transaction would make of a file or image upload to target: a project that does
+// not exist, an artifact the upload's name or slug finds that the upload may not write the next
+// version of (refuseUploadToAHeldArtifact, the rule the transaction reads too), or a new artifact
+// whose name or reference key is past its bound. It reads as that transaction reads, so the two
+// refuse alike whenever nothing writes the owner's artifacts between them.
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, input artifactUploadInput, kind string) error {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
 		if _, err := s.loadProject(ctx, pool, target.Project); err != nil {
 			return err
 		}
 	}
+	name := input.name
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
 	if err == nil {
-		if artifact.Kind != kind {
-			return artifactKindMismatch(name, artifact, kind)
-		}
-		return nil
+		return refuseUploadToAHeldArtifact(input, artifact, kind)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err

@@ -110,13 +110,27 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, renamed)
 }
 
-// artifactNameTakenRefusal is the 409 refusing a correction to name, which already names
-// artifact, another of this owner's artifacts, by its name or by its slug. A name reaches one
-// document of an owner, so the correction would leave a reference naming two.
+// artifactNameTakenRefusal is the 409 refusing a correction to name, or a create-only upload
+// under it (jsonArtifactUpload.CreateOnly), which already names artifact, another of this owner's
+// artifacts, by its name or by its slug. A name reaches one artifact of an owner, so the
+// correction would leave a reference naming two, and the upload would write a version into an
+// artifact its caller did not make. The sentence names that artifact's kind (artifactKindNoun).
 func artifactNameTakenRefusal(name string, artifact model.Artifact) error {
 	return errorf(http.StatusConflict, "ARTIFACT_NAME_TAKEN",
-		"%q names artifact %s (%s) of this owner; a document's name is its own here: give it another name",
-		name, artifact.Slug, artifact.Name)
+		"%q names artifact %s (%s) of this owner; %s's name is its own here: give it another name",
+		name, artifact.Slug, artifact.Name, artifactKindNoun(artifact.Kind))
+}
+
+// artifactKindNoun is an artifact kind as a refusal's sentence names it, with its article: a
+// document (doc), an image, or a file.
+func artifactKindNoun(kind string) string {
+	switch kind {
+	case "doc":
+		return "a document"
+	case "image":
+		return "an image"
+	}
+	return "a file"
 }
 
 // renameRoleNameRefusal is the 400 refusing a correction whose new name gives slug, the slug of

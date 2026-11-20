@@ -51,6 +51,11 @@ interface CreateArtifactOptions {
    *  no token. */
   readonly precondition?: UploadPrecondition;
   readonly actor?: Actor;
+  /** A create alone: Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN where the name is the
+   *  name or the slug of an artifact the owner holds, and writes no version. A create names no
+   *  version it replaces, so it names no `precondition`, and that 409 comes ahead of the token
+   *  rule: never the 400 PRECONDITION_REQUIRED of an upload without it that names no token. */
+  readonly create_only?: boolean;
 }
 
 /** What a create carries: a file, inline content, or neither. A create carrying a name alone

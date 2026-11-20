@@ -450,8 +450,9 @@ func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}
 }
 
-// A document upload sends the name, the markdown and the daemon's actor, and no other field,
-// since Dispatch's JSON upload decoder refuses an unknown one. The slug comes from the artifact
+// A document upload sends the name, the markdown, create_only and the daemon's actor, and no
+// other field. create_only is true, so Dispatch refuses the upload where the issue already holds
+// the name rather than write a version into that document. The slug comes from the artifact
 // Dispatch answers with. An answer that names no slug is an error, and so is Dispatch's refusal.
 func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *testing.T) {
 	const content = "# The full list\n\n```\nabc first commit\n```\n"
@@ -485,8 +486,12 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 			fields = append(fields, field)
 		}
 		slices.Sort(fields)
-		if want := []string{"actor", "content", "name"}; !slices.Equal(fields, want) {
-			t.Fatalf("upload fields = %v, want %v: Dispatch refuses any field it does not read", fields, want)
+		if want := []string{"actor", "content", "create_only", "name"}; !slices.Equal(fields, want) {
+			t.Fatalf("upload fields = %v, want %v", fields, want)
+		}
+		var createOnly bool
+		if err := json.Unmarshal(body["create_only"], &createOnly); err != nil || !createOnly {
+			t.Fatalf("upload create_only = %s (%v), want true: a create writes no version into a document the issue holds", body["create_only"], err)
 		}
 		var name, got string
 		if err := json.Unmarshal(body["name"], &name); err != nil || name != "rescue-pod-9d3f0c7a" {

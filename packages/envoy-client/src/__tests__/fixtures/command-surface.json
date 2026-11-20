@@ -95,6 +95,7 @@
               }
             },
             "content": "# Design\n",
+            "create_only": true,
             "name": "design.md"
           }
         }

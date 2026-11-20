@@ -7,7 +7,7 @@ import type {
   EditPrecondition,
   UploadPrecondition,
 } from "@legion/contracts";
-import { typedBlockIdAttribute } from "@legion/contracts";
+import { ARTIFACT_NAME_EXISTS_RULE, typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
@@ -41,6 +41,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { dispatchAnswered, refusalWithCode } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -53,6 +54,7 @@ import {
 import {
   artifactNameExistsProblem,
   artifactUnderName,
+  OLDER_DISPATCH_REFUSES_CREATE_ONLY,
   roundTripRouteAbsent,
   storedTextCheckFailed,
   storedTextProblem,
@@ -702,6 +704,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     actor,
   };
   const artifactOwner = documentOwner();
+  const ownerText =
+    artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`;
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
@@ -711,14 +715,25 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   const blank = content === undefined || goBlankPattern.test(content);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
-  // what asks for the version, and the API writes one for every other caller as before.
+  // what asks for the version. Over a document it also names the token of the version it
+  // replaces (--precondition-json), since Dispatch refuses a document's replacement that names
+  // none (400 PRECONDITION_REQUIRED); over a file or a picture it names none.
   // A create that stores nothing - no path, and content absent or blank - is held to none of
   // this: it has no version to write, so the server refuses it under a held name whatever
   // force says, and that refusal names the rule which applies to it. Refusing it here would
   // answer it with --force, which writes nothing for a create that stores nothing, so it goes
   // through and reads the server's own answer.
-  if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
-    const held = artifactUnderName(
+  // The read cannot see a document another writer makes between it and the upload, so the
+  // upload itself asks for a create alone (create_only): Dispatch refuses it under a name the
+  // owner holds by then and writes no version (a file whose name was taken while its bytes were
+  // stored leaves them in the file store, as Dispatch's route says), and the refusal below names
+  // that document as the read's own refusal does. A create names no version it replaces, so
+  // Dispatch reads create_only ahead of its token rule: the refusal is 409 ARTIFACT_NAME_TAKEN,
+  // never the 400 PRECONDITION_REQUIRED of a replacement that names no token. It is sent only
+  // with a file or non-blank text.
+  const createOnly = (path !== undefined || !blank) && optionalBoolean(args, "force") !== true;
+  const heldUnderName = async (): Promise<Artifact | undefined> =>
+    artifactUnderName(
       artifactOwner.kind === "project"
         ? // unlinked, as every other read of a project's own documents is: without it the
           // answer carries every issue-attached document of the project too, and an upload
@@ -727,13 +742,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
         : await client.listIssueArtifacts(issue()),
       name
     );
+  if (createOnly) {
+    const held = await heldUnderName();
     if (held !== undefined) {
-      throw new ToolInputError(input.tool, [
-        artifactNameExistsProblem(
-          held,
-          artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`
-        ),
-      ]);
+      throw new ToolInputError(input.tool, [artifactNameExistsProblem(held, ownerText)]);
     }
   }
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
@@ -766,10 +778,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   }
   // A call with a path uploads that file, one with content stores that text, and one with
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
+  const createOptions = createOnly ? { ...options, create_only: true } : options;
   const artifactInput =
     path !== undefined
       ? {
-          ...options,
+          ...createOptions,
           // The bytes AskGate's check read, when it read them, typed as Bun types the path.
           file:
             input.uploadBytes === undefined
@@ -780,12 +793,34 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
                 }),
         }
       : content !== undefined
-        ? { ...options, content }
-        : options;
-  const result =
+        ? { ...createOptions, content }
+        : createOptions;
+  const upload =
     artifactOwner.kind === "project"
-      ? await client.projectArtifact(artifactOwner.project, artifactInput)
-      : await client.artifact(issue(), artifactInput);
+      ? client.projectArtifact(artifactOwner.project, artifactInput)
+      : client.artifact(issue(), artifactInput);
+  let result: Awaited<typeof upload>;
+  try {
+    result = await upload;
+  } catch (error) {
+    // A document under the name landed after the read above: Dispatch refused the create and
+    // wrote nothing. The refusal is the read's own, naming the document that holds the name
+    // now, or Dispatch's words where no read finds it any more.
+    if (createOnly && dispatchAnswered(error, 409) && error.code === "ARTIFACT_NAME_TAKEN") {
+      const held = await heldUnderName();
+      throw new ToolInputError(input.tool, [
+        held === undefined
+          ? `${ownerText} already holds ${name}: Dispatch refused the upload with 409 ARTIFACT_NAME_TAKEN (${error.message}). ${ARTIFACT_NAME_EXISTS_RULE}`
+          : artifactNameExistsProblem(held, ownerText),
+      ]);
+    }
+    // The upload's JSON is the command's own, so Dispatch's 400 INVALID_JSON to a create alone
+    // is a release that refuses the member: the refusal names that likely cause.
+    if (createOnly && dispatchAnswered(error, 400) && error.code === "INVALID_JSON") {
+      throw refusalWithCode(error, OLDER_DISPATCH_REFUSES_CREATE_ONLY);
+    }
+    throw error;
+  }
   const artifactRef = dispatchDocumentRef(
     artifactOwner.kind === "project" ? artifactOwner.project : issue(),
     result.artifact.slug

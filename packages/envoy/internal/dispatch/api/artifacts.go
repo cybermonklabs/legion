@@ -90,6 +90,14 @@ type artifactUploadInput struct {
 	// check of the token against the document, so a blank write is never told to name a token
 	// for a write the server would refuse whatever token it named.
 	blank bool
+	// createOnly reports an upload that asks for a new artifact and nothing else
+	// (jsonArtifactUpload.CreateOnly, or the multipart field of that name): where the name
+	// already names an artifact of the owner, refuseUploadToAHeldArtifact refuses it, both in
+	// storeArtifact's transaction and, for a file, in refuseUploadBeforeItsObject before its
+	// object is stored; a name taken after that check leaves the object, as putUploadedFile says
+	// of every refusal there. A create names no version it replaces, so it needs no token, and
+	// that refusal comes ahead of the token rule a replacement meets (precondition above).
+	createOnly bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -133,6 +141,15 @@ type jsonArtifactUpload struct {
 	Summary      string                  `json:"summary"`
 	Actor        *model.Actor            `json:"actor"`
 	Precondition *model.EditPrecondition `json:"precondition"`
+	// CreateOnly makes the upload a create and nothing else: where the name is the name or the
+	// slug of an artifact the owner already holds, a renamed one's name included, the upload is
+	// refused with 409 ARTIFACT_NAME_TAKEN and writes no version. A create names no version it
+	// replaces, so it needs no token: that refusal comes ahead of every other one a held name
+	// earns, the 400 PRECONDITION_REQUIRED of a replacement naming no token among them
+	// (refuseUploadToAHeldArtifact). A multipart upload carries it as the field `create_only`,
+	// true or false. A caller that names its own new document sends it, since its own read of
+	// what the owner holds cannot see a write that lands between that read and this upload.
+	CreateOnly bool `json:"create_only"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +355,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		summary:      strings.TrimSpace(body.Summary),
 		supplied:     body.Actor,
 		blank:        blank,
+		createOnly:   body.CreateOnly,
 	}, true
 }
 
@@ -425,6 +443,17 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	if !read {
 		return artifactUploadInput{}, false
 	}
+	// create_only is the JSON member's field (jsonArtifactUpload.CreateOnly), spelled true or
+	// false; any other spelling is refused rather than read as either.
+	var createOnly bool
+	switch raw := r.FormValue("create_only"); raw {
+	case "", "false":
+	case "true":
+		createOnly = true
+	default:
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, fmt.Sprintf("create_only is %q; send true or false", raw))
+		return artifactUploadInput{}, false
+	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	file, header, err := r.FormFile("file")
 	if len(r.MultipartForm.Value["content"]) > 0 {
@@ -458,6 +487,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType:  contentType,
 		summary:      strings.TrimSpace(r.FormValue("summary")),
 		supplied:     supplied,
+		createOnly:   createOnly,
 	}, true
 }
 
@@ -720,11 +750,8 @@ func (s *server) storeArtifact(
 	} else if err != nil {
 		s.writeHandlerError(w, err)
 		return
-	} else if artifact.Kind != kind {
-		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
-		return
-	} else if input.blank {
-		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
+	} else if refusal := refuseUploadToAHeldArtifact(input, artifact, kind); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	// A document the release before this one created during the rolling deploy carries no role:
@@ -2308,6 +2335,28 @@ var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVeri
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// refuseUploadToAHeldArtifact is the rule for an upload of kind under input.name that finds
+// artifact, the owner's artifact of that name or slug: a create-only upload is refused
+// (artifactNameTakenRefusal), then one of another kind (artifactKindMismatch), then a write with
+// no content (blankWriteToADocumentThatExists); nil lets it write artifact's next version. For a
+// document the token rule decides that write after this one: Docs.ReplaceText refuses a
+// replacement that names no token, 400 PRECONDITION_REQUIRED (writeUploadDocumentError). A create
+// names no version it replaces, so a create-only upload is refused here and never meets that
+// rule. Both reads of that artifact decide by this rule, the one storeArtifact's transaction makes
+// under the owner's lock and the one refuseUploadBeforeItsObject makes before a file's object is
+// stored, so the two refuse alike.
+func refuseUploadToAHeldArtifact(input artifactUploadInput, artifact model.Artifact, kind string) error {
+	switch {
+	case input.createOnly:
+		return artifactNameTakenRefusal(input.name, artifact)
+	case artifact.Kind != kind:
+		return artifactKindMismatch(input.name, artifact, kind)
+	case input.blank:
+		return blankWriteToADocumentThatExists(input.name, artifact)
+	}
+	return nil
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.

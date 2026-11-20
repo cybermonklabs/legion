@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    An upload to an issue, a project or an agent's conversation takes `create_only`, as a JSON
+    member or as a multipart field spelled true or false. With it true the upload only creates:
+    where the name is the name or the slug of an artifact the owner already holds, a renamed
+    document's new name included, Dispatch answers 409 ARTIFACT_NAME_TAKEN, naming that artifact,
+    and writes no version. The check is made under the owner's lock, in the upload's own
+    transaction, so a document another writer makes just before the upload is refused too. A
+    create names no version it replaces, so it names no token: that 409 comes ahead of the 400
+    PRECONDITION_REQUIRED a replacement naming no token gets. A file under a name held when the
+    upload starts is refused before its bytes reach the file store. A file whose name another
+    upload takes while its bytes are being stored is refused by the transaction, as every refusal
+    made there is, and leaves those bytes in the store, named by no version; a later upload of the
+    same bytes reuses them. An upload without it is answered as before: a held file's next version
+    is written, and a held document's only with the token of the version it replaces.
+    ARTIFACT_NAME_TAKEN, from an upload or a rename, now names the held artifact's kind (a
+    document, an image or a file) where it said "a document" of every kind.
+time: 2026-11-19T13:19:57.312465536Z
+custom:
+    Issue: pr4507

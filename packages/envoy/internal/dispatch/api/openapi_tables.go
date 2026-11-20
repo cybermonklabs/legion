@@ -258,6 +258,11 @@ var openAPIMultipartSchema = map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
 		},
+		"create_only": map[string]any{
+			"type": "string", "enum": []any{"true", "false"},
+			"description": "the JSON body's `create_only`: true refuses the upload with 409 " +
+				"ARTIFACT_NAME_TAKEN where the name is the name or the slug of an artifact the owner holds",
+		},
 		"precondition": map[string]any{
 			"type": "string",
 			"description": "the base this upload replaces as one JSON object, as the JSON body's " +

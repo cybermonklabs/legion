@@ -836,33 +836,50 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 // posted with one more sentence, which says Dispatch refused the full list and gives its status
 // and code, and the refusal is logged. The message may be the issue's one word on what its
 // document lists, so it always posts (dispatch://INFRA-2704).
+// A Dispatch older than legion-envoy-v30.21.0 answers the upload 400 INVALID_JSON "invalid JSON
+// body", since its JSON upload refuses the create_only member, so that line names the likely
+// cause too, in words written out here rather than read from the constant the outbox logs: a
+// cause that names no older Dispatch, or no release to update to, fails. Any other refusal, a 400
+// for another reason among them, is logged with its own text alone.
 func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
 	row, _ := rescueListRow(t)
+	tooLarge := &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}
 	for _, tc := range []struct {
 		name     string
 		client   *artifactDispatch
 		uploaded int
+		refusal  *dispatch.Error
+		cause    string
 	}{
-		{name: "the upload refused", uploaded: 1, client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			uploadErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
-		{name: "the read of the issue's documents refused", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			slugsErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
+		{name: "the upload refused", uploaded: 1, refusal: tooLarge, client: &artifactDispatch{outboxDispatch: &outboxDispatch{}, uploadErr: tooLarge}},
+		{name: "the read of the issue's documents refused", refusal: tooLarge, client: &artifactDispatch{outboxDispatch: &outboxDispatch{}, slugsErr: tooLarge}},
+		{name: "the upload refused by a Dispatch that does not read create_only", uploaded: 1,
+			cause:   "a Dispatch older than legion-envoy-v30.21.0 refuses the create_only member of the daemon's document upload: the daemon needs Dispatch legion-envoy-v30.21.0 or later",
+			refusal: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body"}},
+		{name: "the upload refused 400 for another reason", uploaded: 1,
+			refusal: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ARTIFACT", Message: "artifact name is 2700 bytes, past the 2692 bytes a new artifact's name may hold; give it a shorter name"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.client == nil {
+				tc.client = &artifactDispatch{outboxDispatch: &outboxDispatch{}, uploadErr: tc.refusal}
+			}
 			var logs bytes.Buffer
 			runner := &outbox{dispatch: tc.client, log: slog.New(slog.NewJSONHandler(&logs, nil))}
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute: %v, want the message posted", err)
 			}
 			want := "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a\n\n" +
-				"Dispatch refused the full list that this message links, with status 413 and code CAP_EXCEEDED.\n\n<!-- legion-outbox:61 -->"
+				fmt.Sprintf("Dispatch refused the full list that this message links, with status %d and code %s.\n\n<!-- legion-outbox:61 -->", tc.refusal.Status, tc.refusal.Code)
 			if !slices.Equal(tc.client.messages, []string{want}) || len(tc.client.uploads) != tc.uploaded {
 				t.Fatalf("posts %q after %d uploads, want one post that says Dispatch refused the list, after %d", tc.client.messages, len(tc.client.uploads), tc.uploaded)
 			}
 			lines := loggedLines(t, logs.String(), line)
-			if len(lines) != 1 || lines[0]["artifact"] != "rescue-pod-9d3f0c7a" || lines[0]["code"] != "CAP_EXCEEDED" {
-				t.Fatalf("logged %v, want one line naming the document and Dispatch's code:\n%s", lines, logs.String())
+			if len(lines) != 1 || lines[0]["artifact"] != "rescue-pod-9d3f0c7a" || lines[0]["code"] != tc.refusal.Code || lines[0]["error"] != tc.refusal.Error() {
+				t.Fatalf("logged %v, want one line naming the document, Dispatch's code and its refusal's own text:\n%s", lines, logs.String())
+			}
+			if cause, named := lines[0]["likely_cause"]; tc.cause == "" && named || tc.cause != "" && cause != tc.cause {
+				t.Fatalf("the line's likely_cause = %v (named %t), want %q:\n%s", cause, named, tc.cause, logs.String())
 			}
 		})
 	}

@@ -1069,6 +1069,26 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+`dispatch artifact` without `--force`, for an upload that carries a file or non-blank text, reads
+what the owner holds and refuses a name it holds, naming the document, its newest version and who
+wrote it, and its upload asks Dispatch for a create alone (`create_only`, a JSON member or a
+multipart field), so a document another writer makes after that read is refused the same way,
+with `409 ARTIFACT_NAME_TAKEN`, and gets no version. A create names no version it replaces, so it
+names no token: Dispatch reads `create_only` ahead of its token rule, and the refusal is never the
+`400 PRECONDITION_REQUIRED` that a replacement naming no token gets. `--force` sends no
+`create_only`. It writes a held file's or picture's next version, and a held document's only with
+the token of the version it replaces (`--precondition-json '{"document":"sha256:…"}'`, the token
+`dispatch doc-read` prints); without that token Dispatch refuses it `400 PRECONDITION_REQUIRED`
+and writes nothing.
+The command needs Dispatch `legion-envoy-v30.21.0` or later. A release from that one on that
+predates `create_only` ignores it. One that predates the token rule too writes the held
+artifact's next version, as every upload did; one that holds the rule refuses a document's upload
+under a held name `400 PRECONDITION_REQUIRED` and writes nothing, and writes a file's or a
+picture's next version. A release before `legion-envoy-v30.21.0` ignores the multipart field too,
+but refuses the JSON member, as it refuses every member its JSON upload does not declare, with
+`400 INVALID_JSON` and writes nothing; the command's refusal then names that likely cause
+(`OLDER_DISPATCH_REFUSES_CREATE_ONLY`, `upload-checks.ts`), as the daemon's log line of the same
+refusal does.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

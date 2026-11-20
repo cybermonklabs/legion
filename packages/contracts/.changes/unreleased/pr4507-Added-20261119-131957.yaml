@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    `JsonArtifactUpload` and the multipart upload body carry `create_only`, and `CreateArtifactInput`
+    takes it: the upload that only creates, and answers 409 ARTIFACT_NAME_TAKEN under a name the
+    owner already holds.
+time: 2026-11-19T13:19:57.380638269Z
+custom:
+    Issue: pr4507

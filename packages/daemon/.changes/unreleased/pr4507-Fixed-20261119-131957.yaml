@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+    A retried Dispatch message no longer writes its linked document into a document of the issue
+    that it did not make. The daemon's upload of the document is now a create alone
+    (`create_only`): where a person renamed another document to the linked name, which keeps that
+    document's own slug, or another writer made a document of that name between the daemon's read
+    of the issue's documents and its upload, Dispatch refuses the create with 409
+    ARTIFACT_NAME_TAKEN, writes no version, and the message is posted once with the sentence that
+    names the refusal. A create names no token, so that refusal is never the 400
+    PRECONDITION_REQUIRED of a replacement that names none. Before, each run of the row wrote one
+    more version into that document. The daemon now needs Dispatch legion-envoy-v30.21.0 or later:
+    an older Dispatch refuses the member with 400 INVALID_JSON, so the message is posted saying
+    Dispatch refused its document, and the log line of that refusal names this likely cause. A
+    Dispatch from that release on that predates `create_only` ignores the member: one with the
+    upload token rule refuses the upload 400 PRECONDITION_REQUIRED and writes nothing, and an
+    older one writes that version.
+time: 2026-11-19T13:19:57.237974351Z
+custom:
+    Issue: pr4507

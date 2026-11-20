@@ -11756,6 +11756,201 @@ describe("executeDispatchTool", () => {
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
+  // A document another writer makes between the command's read of what the issue holds and its
+  // upload is one that read cannot see. The upload asks for a create alone (create_only), so
+  // Dispatch refuses it and writes nothing, and the command names that document as its own read
+  // does. A create names no version it replaces, so it names no token. With --force the upload
+  // asks for no create alone: it is refused 400 PRECONDITION_REQUIRED while it names no token, and
+  // writes the next version once it names the token of the version it replaces. The fake answers
+  // as Dispatch's upload does (storeArtifact): create_only under a held name is 409
+  // ARTIFACT_NAME_TAKEN, read ahead of the token rule, and any other upload of a document under
+  // that name writes the next version only with a token.
+  test.each([
+    ["inline content, sent as JSON", { content: "# Plan\n" }],
+    ["a file by its path, sent as multipart", { path: "plan.md" }],
+  ])("refuses an upload whose name another writer took after its read, with %s", async (_what, source) => {
+    const cwd = makeDirectory();
+    writeFileSync(path.join(cwd, "plan.md"), "# Plan\n");
+    const made = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-other" },
+      versions: [{ number: 1, authors: [{ kind: "session", id: "session-other" }] }],
+    };
+    let landed = false;
+    const uploads: Array<{
+      createOnly: string | undefined;
+      token: string | undefined;
+      wrote: number | undefined;
+    }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: JSON.parse(String(init?.body)).markdown });
+      }
+      if (pathname !== "/api/v1/issues/DSP-42/artifacts") {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      if ((init?.method ?? "GET") === "GET") {
+        // The first read finds nothing; the other writer's document lands right after it.
+        const held = landed ? [made] : [];
+        landed = true;
+        return response(held);
+      }
+      const sent = new Response(init?.body, { headers: init?.headers });
+      let createOnly: string | undefined;
+      let token: string | undefined;
+      if ((sent.headers.get("Content-Type") ?? "").startsWith("multipart/")) {
+        const form = await sent.formData();
+        createOnly = form.get("create_only")?.toString();
+        const base = form.get("precondition")?.toString();
+        token = base === undefined ? undefined : JSON.parse(base).document;
+      } else {
+        const body = JSON.parse(await sent.text());
+        createOnly = body.create_only?.toString();
+        token = body.precondition?.document;
+      }
+      if (landed && createOnly === "true") {
+        uploads.push({ createOnly, token, wrote: undefined });
+        return response(
+          {
+            code: "ARTIFACT_NAME_TAKEN",
+            error: `"plan.md" names artifact plan-md (plan.md) of this owner; a document's name is its own here: give it another name`,
+          },
+          409
+        );
+      }
+      if (landed && token === undefined) {
+        uploads.push({ createOnly, token, wrote: undefined });
+        return response(
+          {
+            code: "PRECONDITION_REQUIRED",
+            error: `an upload replacing document "plan.md" must name the token of the version it replaces`,
+          },
+          400
+        );
+      }
+      const number = made.versions.length + 1;
+      made.versions.push({ number, authors: [{ kind: "session", id: "session-42" }] });
+      uploads.push({ createOnly, token, wrote: number });
+      return response({ artifact: made, version: { number } });
+    };
+    const upload = (replace: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name: "plan.md", ...source, ...replace },
+        cwd,
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const failure = await upload({}).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    // The create alone names no token, and Dispatch's 409 is what the command reads.
+    expect(uploads).toEqual([{ createOnly: "true", token: undefined, wrote: undefined }]);
+    expect(made.versions).toHaveLength(1);
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toHaveLength(1);
+    expect(failure.problems[0]).toStartWith(
+      "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which "
+    );
+    expect(failure.problems[0]).toEndWith(ARTIFACT_NAME_EXISTS_RULE);
+
+    // --force alone asks for the version but names no token: the token rule refuses it.
+    const untokened = await upload({ force: true }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(untokened).toMatchObject({
+      name: "DispatchServiceError",
+      code: "PRECONDITION_REQUIRED",
+      status: 400,
+    });
+    expect(uploads[1]).toEqual({ createOnly: undefined, token: undefined, wrote: undefined });
+    expect(made.versions).toHaveLength(1);
+
+    // The control: --force with the token of the version it replaces writes it.
+    const forced = await upload({ force: true, precondition: { document: "sha256:plan-v1" } });
+    expect(forced.text).toContain("Uploaded plan.md as version 2");
+    expect(uploads[2]).toEqual({ createOnly: undefined, token: "sha256:plan-v1", wrote: 2 });
+  });
+
+  // A Dispatch before legion-envoy-v30.21.0 refuses every member its JSON upload does not declare,
+  // so it answers the create alone 400 INVALID_JSON "invalid JSON body", and writes nothing. The
+  // command's refusal names that likely cause, as the daemon's log line of the same refusal does.
+  // A 400 for another reason, and the same 400 to an upload that asked for no create alone
+  // (--force), keep their own text.
+  test.each([
+    ["a create alone answered 400 INVALID_JSON", false, "INVALID_JSON", "invalid JSON body", true],
+    [
+      "a create alone answered 400 for another reason",
+      false,
+      "ARTIFACT_INPUT",
+      "a reason of its own",
+      false,
+    ],
+    [
+      "an upload with --force answered 400 INVALID_JSON",
+      true,
+      "INVALID_JSON",
+      "invalid JSON body",
+      false,
+    ],
+  ])("names an older Dispatch as the likely cause only of %s", async (_what, force, code, reason, named) => {
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: JSON.parse(String(init?.body)).markdown });
+      }
+      if (pathname !== "/api/v1/issues/DSP-42/artifacts") {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      if ((init?.method ?? "GET") === "GET") return response([]);
+      return response({ code, error: reason }, 400);
+    };
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: {
+        issue: "DSP-42",
+        name: "plan.md",
+        content: "# Plan\n",
+        ...(force ? { force: true } : {}),
+      },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toMatchObject({ name: "DispatchServiceError", code, status: 400 });
+    if (!(failure instanceof Error)) throw new Error("expected the upload to be refused");
+    // The words a person reads, written out whole here rather than read from the constant the
+    // command uses: a cause that names no older Dispatch, no release to update to, or that says the
+    // upload may have written a version, fails.
+    expect(failure.message).toBe(
+      named
+        ? `${code}: ${reason}; likely cause: a Dispatch older than legion-envoy-v30.21.0 refuses the ` +
+            "create_only member that dispatch artifact sends without --force, so it wrote nothing: " +
+            "the command needs Dispatch legion-envoy-v30.21.0 or later"
+        : reason
+    );
+  });
+
   // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
   // document's next version, and a create whose content is blank writes none. The guard is the
   // server's own `blank` (the `blank :=` line of jsonArtifactUpload,

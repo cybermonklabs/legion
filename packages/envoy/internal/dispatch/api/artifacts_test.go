@@ -216,6 +216,393 @@ func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 	}
 }
 
+// An upload with create_only makes a new document and nothing else. Under a name the owner
+// already holds - the name a person renamed another document to, which keeps that document's own
+// slug, or that slug - it is refused with 409 ARTIFACT_NAME_TAKEN, naming the document, and the
+// document keeps its one version and its text. A create names no version it replaces, so it names
+// no token, and that refusal comes ahead of every other one a held name earns, which the same
+// upload without create_only reads: the 400 PRECONDITION_REQUIRED of a replacement naming no
+// token, the 400 ARTIFACT_INPUT of a write with no content, and the 400 ARTIFACT_KIND_MISMATCH of
+// a document under a held file's name, which only the upload's transaction reads for a JSON body.
+// One that names the live token is refused the same way. A create_only upload under a new name
+// makes the document with no token; the same create again is refused, and an upload without
+// create_only under that name is refused 400 PRECONDITION_REQUIRED until it names the token of the
+// version it replaces, which writes its version 2. A project's upload refuses a create_only
+// upload under a name the project holds as an issue's does.
+func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	path := "/api/v1/issues/" + issue.Key + "/artifacts"
+	upload := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPost, path, body, "alice")
+	}
+	type uploaded struct {
+		Artifact model.Artifact `json:"artifact"`
+		Version  model.Version  `json:"version"`
+	}
+	type refused struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	made := upload(map[string]any{"name": "notes.md", "content": "# Notes\n"})
+	if made.Code != http.StatusCreated {
+		t.Fatalf("create notes.md: status=%d body=%s", made.Code, made.Body.String())
+	}
+	notes := decodeBody[uploaded](t, made).Artifact
+	if renamed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/artifacts/"+notes.ID, map[string]string{"name": "rescue-list"}, "alice"); renamed.Code != http.StatusOK {
+		t.Fatalf("rename notes.md to rescue-list: status=%d body=%s", renamed.Code, renamed.Body.String())
+	}
+	for _, name := range []string{"rescue-list", "notes-md"} {
+		response := upload(map[string]any{"name": name, "content": "# The full list\n", "create_only": true})
+		want := fmt.Sprintf("%q names artifact notes-md (rescue-list) of this owner; a document's name is its own here: give it another name", name)
+		if body := decodeBody[refused](t, response); response.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
+			t.Fatalf("create_only upload under %q: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", name, response.Code, response.Body.String(), want)
+		}
+	}
+	live := readDocumentPrecondition(t, handler, notes.ID).Token
+	takenWant := `"rescue-list" names artifact notes-md (rescue-list) of this owner; a document's name is its own here: give it another name`
+	for _, tc := range []struct {
+		what string
+		body map[string]any
+		// without is the refusal the same upload without create_only reads; "" for one that
+		// would write a version, which the test does not send.
+		without string
+	}{
+		{"content naming no token", map[string]any{"name": "rescue-list", "content": "# The full list\n"}, "PRECONDITION_REQUIRED"},
+		{"no content", map[string]any{"name": "rescue-list", "content": ""}, "ARTIFACT_INPUT"},
+		{"content naming the live token", map[string]any{"name": "rescue-list", "content": "# The full list\n", "precondition": map[string]string{"document": live}}, ""},
+	} {
+		if tc.without != "" {
+			if body := decodeBody[refused](t, upload(tc.body)); body.Code != tc.without {
+				t.Fatalf("an upload of %s under rescue-list without create_only: %+v, want 400 %s", tc.what, body, tc.without)
+			}
+		}
+		only := map[string]any{"create_only": true}
+		for key, value := range tc.body {
+			only[key] = value
+		}
+		response := upload(only)
+		if body := decodeBody[refused](t, response); response.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != takenWant {
+			t.Fatalf("create_only upload of %s under rescue-list: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", tc.what, response.Code, response.Body.String(), takenWant)
+		}
+	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID, nil, "alice")
+	if held := decodeBody[model.Artifact](t, read); read.Code != http.StatusOK || len(held.Versions) != 1 {
+		t.Fatalf("the renamed document after five refused create_only uploads and two refused uploads without it: status=%d body=%s, want its one version", read.Code, read.Body.String())
+	}
+	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/text", nil, "alice")
+	if text.Code != http.StatusOK || !strings.Contains(text.Body.String(), `"markdown":"# Notes\n"`) {
+		t.Fatalf("the renamed document's text: status=%d body=%s, want its own", text.Code, text.Body.String())
+	}
+
+	rows := multipartRequest(t, handler, path, map[string]string{"name": "rows.csv"}, "rows.csv", "text/csv", []byte("a,b\n"), "alice")
+	if rows.Code != http.StatusCreated {
+		t.Fatalf("upload the issue's rows.csv: status=%d body=%s", rows.Code, rows.Body.String())
+	}
+	file := decodeBody[uploaded](t, rows).Artifact
+	document := map[string]any{"name": "rows.csv", "content": "# Rows\n"}
+	if body := decodeBody[refused](t, upload(document)); body.Code != "ARTIFACT_KIND_MISMATCH" {
+		t.Fatalf("a document under the file rows.csv without create_only: %+v, want 400 ARTIFACT_KIND_MISMATCH", body)
+	}
+	document["create_only"] = true
+	fileWant := fmt.Sprintf("\"rows.csv\" names artifact %s (rows.csv) of this owner; a file's name is its own here: give it another name", file.Slug)
+	if response := upload(document); response.Code != http.StatusConflict || decodeBody[refused](t, response).Error != fileWant {
+		t.Fatalf("a create_only document under the file rows.csv: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", response.Code, response.Body.String(), fileWant)
+	}
+	if after := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+file.ID, nil, "alice")); len(after.Versions) != 1 {
+		t.Fatalf("the file rows.csv after the refused uploads = %+v, want its one version", after)
+	}
+
+	created := upload(map[string]any{"name": "fresh-list", "content": "# The full list\n", "create_only": true})
+	if body := decodeBody[uploaded](t, created); created.Code != http.StatusCreated || body.Artifact.Slug != "fresh-list" || body.Version.Number != 1 {
+		t.Fatalf("create_only upload under a new name: status=%d body=%s, want fresh-list at version 1", created.Code, created.Body.String())
+	}
+	fresh := decodeBody[uploaded](t, created).Artifact
+	if again := upload(map[string]any{"name": "fresh-list", "content": "# The full list\n", "create_only": true}); again.Code != http.StatusConflict || decodeBody[refused](t, again).Code != "ARTIFACT_NAME_TAKEN" {
+		t.Fatalf("the same create_only upload again: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN", again.Code, again.Body.String())
+	}
+	if bare := upload(map[string]any{"name": "fresh-list", "content": "# Revised\n"}); bare.Code != http.StatusBadRequest || decodeBody[refused](t, bare).Code != "PRECONDITION_REQUIRED" {
+		t.Fatalf("an upload without create_only or a token under fresh-list: status=%d body=%s, want 400 PRECONDITION_REQUIRED", bare.Code, bare.Body.String())
+	}
+	token := readDocumentPrecondition(t, handler, fresh.ID).Token
+	if next := upload(map[string]any{"name": "fresh-list", "content": "# Revised\n", "precondition": map[string]string{"document": token}}); next.Code != http.StatusCreated || decodeBody[uploaded](t, next).Version.Number != 2 {
+		t.Fatalf("an upload without create_only naming fresh-list's token: status=%d body=%s, want its version 2", next.Code, next.Body.String())
+	}
+
+	project := "/api/v1/projects/TEST/artifacts"
+	plan := dispatchRequest(t, handler, http.MethodPost, project, map[string]any{"name": "plan.md", "content": "# Plan\n"}, "alice")
+	if plan.Code != http.StatusCreated {
+		t.Fatalf("create the project's plan.md: status=%d body=%s", plan.Code, plan.Body.String())
+	}
+	planned := decodeBody[uploaded](t, plan).Artifact
+	again := dispatchRequest(t, handler, http.MethodPost, project, map[string]any{"name": "plan.md", "content": "# Another plan\n", "create_only": true}, "alice")
+	if body := decodeBody[refused](t, again); again.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" {
+		t.Fatalf("create_only project upload under plan.md: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN", again.Code, again.Body.String())
+	}
+	held := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+planned.ID, nil, "alice")
+	if body := decodeBody[model.Artifact](t, held); held.Code != http.StatusOK || len(body.Versions) != 1 {
+		t.Fatalf("the project's plan.md after the refused create: status=%d body=%s, want its one version", held.Code, held.Body.String())
+	}
+}
+
+// A multipart upload carries create_only as a field, true or false. A file or an image under a
+// name the owner already holds - an issue, a project, or an agent's conversation - is refused with
+// 409 ARTIFACT_NAME_TAKEN, which names the held artifact as a file or as an image, before its bytes
+// reach the file store, so the refusal leaves no object behind and the held artifact keeps its one
+// version. create_only is read before the kind: an upload of the other kind under that name (a
+// picture under a held file's name, a file under a held picture's) gets the same 409, not 400
+// ARTIFACT_KIND_MISMATCH. A markdown file under a new name is made, and the same create again is
+// refused. Any other spelling of the field is 400 ARTIFACT_INPUT, and the upload without it still
+// writes the held file's next version.
+func TestUploadArtifactMultipartCreateOnlyStoresNothingUnderAHeldName(t *testing.T) {
+	memory := filestest.NewMemory()
+	handler, _, _ := newTestServer(t, testServerOptions{files: memory})
+	issue := fileIssue(t, handler)
+	path := "/api/v1/issues/" + issue + "/artifacts"
+	project := "/api/v1/projects/FILES/artifacts"
+	agent := "/api/v1/agents/" + agentSession + "/artifacts"
+	type uploaded struct {
+		Artifact model.Artifact `json:"artifact"`
+		Version  model.Version  `json:"version"`
+	}
+	type upload struct {
+		contentType string
+		content     []byte
+	}
+	for _, tc := range []struct {
+		owner, path, name, contentType, noun string
+		held                                 []byte
+		// refused are the create_only uploads under the held name: one of the held artifact's
+		// kind, then one of the other kind.
+		refused []upload
+	}{
+		{owner: "issue", path: path, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("a,b\n"),
+			refused: []upload{{"text/csv", []byte("c,d\n")}, {"image/png", pngBytes("issue picture under rows.csv")}}},
+		{owner: "issue", path: path, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("issue shot"),
+			refused: []upload{{"image/png", pngBytes("issue shot again")}, {"text/csv", []byte("issue rows under shot.png\n")}}},
+		{owner: "project", path: project, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("k,l\n"),
+			refused: []upload{{"text/csv", []byte("m,n\n")}, {"image/png", pngBytes("project picture under rows.csv")}}},
+		{owner: "project", path: project, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("project shot"),
+			refused: []upload{{"image/png", pngBytes("project shot again")}, {"text/csv", []byte("project rows under shot.png\n")}}},
+		{owner: "agent", path: agent, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("g,h\n"),
+			refused: []upload{{"text/csv", []byte("i,j\n")}, {"image/png", pngBytes("agent picture under rows.csv")}}},
+		{owner: "agent", path: agent, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("agent shot"),
+			refused: []upload{{"image/png", pngBytes("agent shot again")}, {"text/csv", []byte("agent rows under shot.png\n")}}},
+	} {
+		first := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name}, tc.name, tc.contentType, tc.held, "alice")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("upload the %s's %s: status=%d body=%s", tc.owner, tc.name, first.Code, first.Body.String())
+		}
+		held := decodeBody[uploaded](t, first).Artifact
+		want := fmt.Sprintf("%q names artifact %s (%s) of this owner; %s's name is its own here: give it another name", tc.name, held.Slug, held.Name, tc.noun)
+		for _, attempt := range tc.refused {
+			refused := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name, "create_only": "true"}, tc.name, attempt.contentType, attempt.content, "alice")
+			if body := decodeBody[struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}](t, refused); refused.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
+				t.Fatalf("create_only upload of %s under the %s's %s: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", attempt.contentType, tc.owner, tc.name, refused.Code, refused.Body.String(), want)
+			}
+			if stored := memory.MIME(files.SHA256(attempt.content)); stored != "" {
+				t.Fatalf("the refused upload of %s under the %s's %s left its bytes in the file store as %q, want no object", attempt.contentType, tc.owner, tc.name, stored)
+			}
+		}
+		read := "/api/v1/artifacts/" + held.ID
+		if tc.owner == "agent" {
+			read = tc.path + "/" + held.Slug
+		}
+		if after := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, read, nil, "alice")); after.ID != held.ID || len(after.Versions) != 1 {
+			t.Fatalf("the %s's %s after the refused creates = %+v, want %s with its one version", tc.owner, tc.name, after, held.ID)
+		}
+	}
+	if odd := multipartRequest(t, handler, path, map[string]string{"name": "other.csv", "create_only": "yes"}, "other.csv", "text/csv", []byte("e,f\n"), "alice"); odd.Code != http.StatusBadRequest || !strings.Contains(odd.Body.String(), `"code":"ARTIFACT_INPUT"`) {
+		t.Fatalf("create_only spelled yes: status=%d body=%s, want 400 ARTIFACT_INPUT", odd.Code, odd.Body.String())
+	}
+	fresh := multipartRequest(t, handler, path, map[string]string{"name": "fresh.md", "create_only": "true"}, "fresh.md", "text/markdown", []byte("# Fresh\n"), "alice")
+	if body := decodeBody[uploaded](t, fresh); fresh.Code != http.StatusCreated || body.Artifact.Kind != "doc" || body.Version.Number != 1 {
+		t.Fatalf("create_only markdown file under a new name: status=%d body=%s, want a document at version 1", fresh.Code, fresh.Body.String())
+	}
+	if again := multipartRequest(t, handler, path, map[string]string{"name": "fresh.md", "create_only": "true"}, "fresh.md", "text/markdown", []byte("# Fresh again\n"), "alice"); again.Code != http.StatusConflict {
+		t.Fatalf("the same create_only markdown file again: status=%d body=%s, want 409", again.Code, again.Body.String())
+	}
+	if next := multipartRequest(t, handler, path, map[string]string{"name": "rows.csv"}, "rows.csv", "text/csv", []byte("c,d\n"), "alice"); next.Code != http.StatusCreated || decodeBody[uploaded](t, next).Version.Number != 2 {
+		t.Fatalf("an upload without create_only under rows.csv: status=%d body=%s, want its version 2", next.Code, next.Body.String())
+	}
+}
+
+// landingFiles is a file store whose next Put first runs land: another upload, landing while this
+// one's bytes cross to the store, after the check putUploadedFile makes before it stores them and
+// before storeArtifact's transaction opens.
+type landingFiles struct {
+	*filestest.Memory
+	land func()
+}
+
+func (l *landingFiles) Put(ctx context.Context, sha, mime string, body []byte) error {
+	if land := l.land; land != nil {
+		l.land = nil
+		land()
+	}
+	return l.Memory.Put(ctx, sha, mime, body)
+}
+
+// Another upload can take a file's name after the check made before the file's bytes are stored
+// and before the upload's transaction opens. The transaction then refuses a create_only upload, as
+// it makes every refusal in that window (putUploadedFile): 409 ARTIFACT_NAME_TAKEN, no version
+// written, the other upload's file the one artifact of the name, and the refused upload's bytes
+// left in the file store, named by no version. Nothing deletes them, since the store is keyed by
+// the bytes' hash and another version can name the same object; a later upload of the same bytes
+// names that object and stores no other. The same race without create_only writes the other
+// upload's file its next version, which names the object.
+func TestUploadArtifactCreateOnlyFileWhoseNameIsTakenWhileItsBytesAreStoredLeavesAnObjectALaterUploadReuses(t *testing.T) {
+	type uploaded struct {
+		Artifact model.Artifact `json:"artifact"`
+		Version  model.Version  `json:"version"`
+	}
+	refusedSHA := files.SHA256([]byte("c,d\n"))
+	for _, tc := range []struct {
+		name       string
+		createOnly bool
+	}{
+		{name: "create_only", createOnly: true},
+		{name: "without create_only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memory := filestest.NewMemory()
+			landing := &landingFiles{Memory: memory}
+			handler, _, _ := newTestServer(t, testServerOptions{files: landing})
+			issue := fileIssue(t, handler)
+			path := "/api/v1/issues/" + issue + "/artifacts"
+			var other model.Artifact
+			landing.land = func() {
+				landed := multipartRequest(t, handler, path, map[string]string{"name": "rows.csv"}, "rows.csv", "text/csv", []byte("a,b\n"), "alice")
+				if landed.Code != http.StatusCreated {
+					t.Fatalf("the other upload of rows.csv: status=%d body=%s", landed.Code, landed.Body.String())
+				}
+				other = decodeBody[uploaded](t, landed).Artifact
+			}
+			fields := map[string]string{"name": "rows.csv"}
+			if tc.createOnly {
+				fields["create_only"] = "true"
+			}
+			answer := multipartRequest(t, handler, path, fields, "rows.csv", "text/csv", []byte("c,d\n"), "alice")
+			if other.ID == "" {
+				t.Fatal("the other upload never landed, so nothing took the name while the bytes were stored")
+			}
+			if mime := memory.MIME(refusedSHA); mime != "text/csv" {
+				t.Fatalf("the file store holds the upload's bytes as %q, want them stored as text/csv", mime)
+			}
+			if !tc.createOnly {
+				if body := decodeBody[uploaded](t, answer); answer.Code != http.StatusCreated || body.Artifact.ID != other.ID || body.Version.Number != 2 || body.Version.SHA256 == nil || *body.Version.SHA256 != refusedSHA {
+					t.Fatalf("the upload without create_only: status=%d body=%s, want version 2 of the other upload's file, naming the stored object", answer.Code, answer.Body.String())
+				}
+				return
+			}
+			if body := decodeBody[struct {
+				Code string `json:"code"`
+			}](t, answer); answer.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" {
+				t.Fatalf("the create_only upload: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN", answer.Code, answer.Body.String())
+			}
+			listed := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
+			named := 0
+			for _, artifact := range decodeBody[[]model.Artifact](t, listed) {
+				if artifact.Name == "rows.csv" {
+					named++
+				}
+			}
+			read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+other.ID, nil, "alice")
+			if held := decodeBody[model.Artifact](t, read); named != 1 || read.Code != http.StatusOK || len(held.Versions) != 1 {
+				t.Fatalf("after the refused create the issue holds %d artifacts named rows.csv, and the other upload's reads status=%d body=%s; want that one file with its one version", named, read.Code, read.Body.String())
+			}
+			objects := memory.Len()
+			later := multipartRequest(t, handler, path, map[string]string{"name": "later.csv"}, "later.csv", "text/csv", []byte("c,d\n"), "alice")
+			if body := decodeBody[uploaded](t, later); later.Code != http.StatusCreated || body.Version.SHA256 == nil || *body.Version.SHA256 != refusedSHA || memory.Len() != objects {
+				t.Fatalf("a later upload of the same bytes: status=%d body=%s, objects %d then %d; want a version naming the stored object and no other object", later.Code, later.Body.String(), objects, memory.Len())
+			}
+		})
+	}
+}
+
+// Two create_only uploads of one new name, started together, both find the name free before either
+// writes, so only the check storeArtifact makes under the owner's lock, in the upload's own
+// transaction, keeps the second from writing a version into the first one's artifact. The test
+// holds that lock until both uploads wait on it, then lets them through: one makes the artifact,
+// the other is 409 ARTIFACT_NAME_TAKEN, and the artifact holds one version, for an issue's upload,
+// for a project's and for an agent's conversation's, whose artifacts are files and pictures, so
+// its two uploads are pictures. The server's document settling waits an hour, so no settling of
+// the issue's spec waits on the held lock beside the two uploads.
+func TestUploadArtifactCreateOnlyUploadsStartedTogetherMakeOneVersion(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createArtifactIssue(t, handler)
+	for _, owner := range []struct {
+		name, path, document string
+		picture              bool
+		hold                 func(t *testing.T) (release func())
+	}{
+		{name: "issue", path: "/api/v1/issues/" + issue.Key + "/artifacts", document: "race-list", hold: func(t *testing.T) func() {
+			return holdOwner(t, database, store.IssueOwner(issue.Key))
+		}},
+		{name: "project", path: "/api/v1/projects/TEST/artifacts", document: "race-project-list", hold: func(t *testing.T) func() {
+			return holdWith(t, database, "project TEST's artifacts lock", func(tx pgx.Tx) error {
+				return lockProjectArtifacts(context.Background(), tx, "TEST")
+			})
+		}},
+		{name: "agent", path: "/api/v1/agents/" + agentSession + "/artifacts", document: "race-shot.png", picture: true, hold: func(t *testing.T) func() {
+			return holdWith(t, database, "agent "+agentSession+"'s artifacts lock", func(tx pgx.Tx) error {
+				return lockAgentArtifacts(context.Background(), tx, agentSession)
+			})
+		}},
+	} {
+		t.Run(owner.name, func(t *testing.T) {
+			release := owner.hold(t)
+			answered := make(chan *httptest.ResponseRecorder, 2)
+			for _, content := range []string{"# First\n", "# Second\n"} {
+				go func() {
+					if owner.picture {
+						answered <- multipartRequest(t, handler, owner.path, map[string]string{"name": owner.document, "create_only": "true"}, owner.document, "image/png", pngBytes(content), "alice")
+						return
+					}
+					answered <- dispatchRequest(t, handler, http.MethodPost, owner.path, map[string]any{"name": owner.document, "content": content, "create_only": true}, "alice")
+				}()
+			}
+			awaitLockWaiters(t, database, 2)
+			release()
+			created, refused := 0, 0
+			var made model.Artifact
+			for range 2 {
+				answer := awaitAnswer(t, answered, "a create_only upload of "+owner.document)
+				switch answer.Code {
+				case http.StatusCreated:
+					created++
+					made = decodeBody[struct {
+						Artifact model.Artifact `json:"artifact"`
+					}](t, answer).Artifact
+				case http.StatusConflict:
+					if decodeBody[struct {
+						Code string `json:"code"`
+					}](t, answer).Code == "ARTIFACT_NAME_TAKEN" {
+						refused++
+					}
+				default:
+					t.Errorf("a create_only upload of %s answered %d %s", owner.document, answer.Code, answer.Body.String())
+				}
+			}
+			if created != 1 || refused != 1 {
+				t.Fatalf("two create_only uploads of %s started together: %d created and %d refused ARTIFACT_NAME_TAKEN, want 1 and 1", owner.document, created, refused)
+			}
+			address := "/api/v1/artifacts/" + made.ID
+			if owner.picture {
+				address = owner.path + "/" + made.Slug
+			}
+			read := dispatchRequest(t, handler, http.MethodGet, address, nil, "alice")
+			if held := decodeBody[model.Artifact](t, read); read.Code != http.StatusOK || len(held.Versions) != 1 {
+				t.Fatalf("%s after the two uploads: status=%d body=%s, want one version", owner.document, read.Code, read.Body.String())
+			}
+		})
+	}
+}
+
 func TestUploadArtifactJSONReturnsCanonicalMarkdown(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)

@@ -19,7 +19,9 @@ export function artifactUnderName(
 }
 
 /** The refusal of an upload under a name its owner already holds: the document found, its kind,
- *  its newest version and who wrote that version, then the rule that names --force. */
+ *  its newest version and who wrote that version, then the rule that names --force. The command
+ *  reads it before its upload, and again when Dispatch refuses the upload's create alone
+ *  (create_only) because a document took the name after that read. */
 export function artifactNameExistsProblem(held: Artifact, owner: string): string {
   const versions = held.versions ?? [];
   const newest = versions[versions.length - 1];
@@ -30,6 +32,17 @@ export function artifactNameExistsProblem(held: Artifact, owner: string): string
   const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
   return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
 }
+
+/** The likely cause of Dispatch's 400 INVALID_JSON answer to an upload that asks for a create
+ *  alone (create_only), whose JSON body the command builds itself: a Dispatch older than
+ *  legion-envoy-v30.21.0, whose JSON upload refuses each member it does not declare, create_only
+ *  among them. The upload wrote nothing. A Dispatch that reads the member refuses a create alone
+ *  under a held name 409 ARTIFACT_NAME_TAKEN, ahead of the 400 PRECONDITION_REQUIRED its token
+ *  rule gives a replacement that names no token, since a create names no version it replaces.
+ *  The daemon's log line of the same refusal names the same cause (OlderDispatchRefusesCreateOnly,
+ *  packages/daemon/internal/dispatch/client.go). */
+export const OLDER_DISPATCH_REFUSES_CREATE_ONLY =
+  "likely cause: a Dispatch older than legion-envoy-v30.21.0 refuses the create_only member that dispatch artifact sends without --force, so it wrote nothing: the command needs Dispatch legion-envoy-v30.21.0 or later";
 
 /**
  * How much of one line a refusal quotes whole. A line of a document is bounded by the document

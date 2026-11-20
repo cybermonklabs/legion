@@ -302,13 +302,22 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 	return slugs, nil
 }
 
-// UploadArtifact writes a markdown document on the issue through POST
+// UploadArtifact makes a markdown document on the issue through POST
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
-// fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
-// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
-// document under (messageArtifact).
+// fields Dispatch's JSON upload reads (its jsonArtifactUpload), and asks for a create alone
+// (create_only): where the issue already holds an artifact of that name or slug, whoever made it
+// or renamed another to it, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN and writes no
+// version. A create names no version it replaces, so the body names no token, and Dispatch reads
+// create_only ahead of its token rule, which refuses a replacement naming no token 400
+// PRECONDITION_REQUIRED. The outbox uploads only a name the issue lists no document under
+// (messageArtifact); create_only refuses a document made or renamed to that name after that read.
+// The daemon needs Dispatch legion-envoy-v30.21.0 or later. A release from that one on that
+// predates create_only ignores the member: one that predates the token rule too writes that
+// document's next version, as every upload did, and one that holds the rule refuses the upload
+// 400 PRECONDITION_REQUIRED and writes nothing. A release before legion-envoy-v30.21.0 refuses
+// every member its JSON upload does not declare, so it answers 400 INVALID_JSON
+// (OlderDispatchRefusesCreateOnly).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -316,9 +325,10 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 		} `json:"artifact"`
 	}
 	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
-		Name:    name,
-		Content: content,
-		Actor:   daemonActor(key),
+		Name:       name,
+		Content:    content,
+		CreateOnly: true,
+		Actor:      daemonActor(key),
 	}, &response); err != nil {
 		return "", err
 	}
@@ -327,6 +337,13 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 	}
 	return response.Artifact.Slug, nil
 }
+
+// OlderDispatchRefusesCreateOnly is the likely cause of a 400 INVALID_JSON answer to
+// UploadArtifact, whose body is JSON the daemon builds itself: a Dispatch before
+// legion-envoy-v30.21.0, whose JSON upload refuses each member it does not declare, create_only
+// among them. The outbox logs it beside that refusal. No upload without create_only stands in for
+// it, since that upload would write a version into a document of that name the issue holds.
+const OlderDispatchRefusesCreateOnly = "a Dispatch older than legion-envoy-v30.21.0 refuses the create_only member of the daemon's document upload: the daemon needs Dispatch legion-envoy-v30.21.0 or later"
 
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
@@ -735,12 +752,13 @@ type daemonWrite struct {
 	Actor            actor    `json:"actor"`
 }
 
-// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
-// all fields Dispatch's JSON upload reads.
+// artifactUpload is the body of a document create: its name, its markdown, the create-only ask
+// and the daemon's actor, all fields Dispatch's JSON upload reads.
 type artifactUpload struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Actor   actor  `json:"actor"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
+	CreateOnly bool   `json:"create_only"`
+	Actor      actor  `json:"actor"`
 }
 
 // gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the

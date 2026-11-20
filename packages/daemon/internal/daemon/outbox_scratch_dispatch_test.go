@@ -240,6 +240,138 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	}
 }
 
+// rescueListDocument is the document a message row of an older daemon's rescue links, the one
+// producer of MessagePost.Artifact a database can still hold (rescueListRow).
+var rescueListDocument = record.MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch: legion/rescue\n```\n"}
+
+// A person can rename another document of the issue to the name a message's document carries,
+// and the rename keeps that document's own slug, notes-md. The daemon reads the issue's slugs,
+// finds no rescue-pod-9d3f0c7a among them, and uploads; an upload that wrote the next version of a
+// document holding the name would write the list over the person's text, and again on each run of
+// the row, since Dispatch answers the old slug and the row fails each time. The row runs twice
+// here. The person's document keeps its one version, and the message is posted once and says
+// Dispatch refused its document.
+func TestAMessageWritesNoVersionIntoADocumentAPersonRenamedToItsNameAgainstScratchDispatch(t *testing.T) {
+	baseURL, token := startScratchDispatch(t)
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := createScratchDispatchIssue(t, baseURL)
+	notes := uploadScratchDocument(t, baseURL, issue, "notes.md", "# Notes\n\nThe person's own words.\n", asPerson)
+	dispatchCallAs(t, baseURL, http.MethodPatch, "/api/v1/artifacts/"+notes, map[string]string{"name": rescueListDocument.Name}, nil, asPerson)
+	now := time.Now().UTC()
+	document := rescueListDocument
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, record.MessagePost{Body: "The full list is in its own document on this issue.", Artifact: &document}, now))
+
+	for run, at := range []time.Time{now, now.Add(10 * time.Minute)} {
+		runner := &outbox{
+			dispatchProject: "LEGION", log: quietLogger(),
+			pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+			now: func() time.Time { return at },
+		}
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("run %d of the outbox: %v", run+1, err)
+		}
+	}
+
+	if versions := scratchDocumentVersions(t, baseURL, issue, notes); len(versions) != 1 {
+		t.Fatalf("the renamed document holds %d versions written by %v after the row ran twice, want its person's one: the daemon wrote its list into a document it did not make", len(versions), versions)
+	}
+	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("read real Dispatch messages: %v", err)
+	}
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "Dispatch refused the full list that this message links, with status 409 and code ARTIFACT_NAME_TAKEN.") {
+		t.Fatalf("Dispatch messages = %q, want the one message, saying Dispatch refused its document", bodies)
+	}
+}
+
+// Another session can make the document a message links between the daemon's read of the
+// issue's slugs and its upload. The daemon's read found nothing, so it uploads; an upload that
+// wrote the next version of a document holding the name would write the list over that session's
+// text. That session's document keeps its one version, and the message is posted once and says
+// Dispatch refused its document.
+func TestAMessageWritesNoVersionIntoADocumentMadeBetweenItsReadAndItsUploadAgainstScratchDispatch(t *testing.T) {
+	baseURL, token := startScratchDispatch(t)
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := createScratchDispatchIssue(t, baseURL)
+	now := time.Now().UTC()
+	document := rescueListDocument
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, record.MessagePost{Body: "The full list is in its own document on this issue.", Artifact: &document}, now))
+	var made string
+	client := &documentMadeAfterRead{Client: dispatch.New(baseURL, token), land: func() {
+		made = uploadScratchDocument(t, baseURL, issue, rescueListDocument.Name, "Another session's own words.\n", asSession)
+	}}
+	runner := &outbox{
+		dispatchProject: "LEGION", log: quietLogger(),
+		pool: pool, records: records, dispatch: client,
+		now: func() time.Time { return now },
+	}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+
+	if made == "" {
+		t.Fatal("the daemon never read the issue's documents, so nothing was made between its read and its upload")
+	}
+	if versions := scratchDocumentVersions(t, baseURL, issue, made); len(versions) != 1 {
+		t.Fatalf("the other session's document holds %d versions written by %v, want its one: the daemon wrote its list into a document it did not make", len(versions), versions)
+	}
+	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("read real Dispatch messages: %v", err)
+	}
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "Dispatch refused the full list that this message links, with status 409 and code ARTIFACT_NAME_TAKEN.") {
+		t.Fatalf("Dispatch messages = %q, want the one message, saying Dispatch refused its document", bodies)
+	}
+}
+
+// documentMadeAfterRead is a Dispatch client whose first read of an issue's slugs is followed,
+// before the caller can act on it, by land: another writer's document landing between the
+// daemon's read and its upload.
+type documentMadeAfterRead struct {
+	dispatch.Client
+	land func()
+}
+
+func (d *documentMadeAfterRead) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
+	slugs, err := d.Client.ArtifactSlugs(ctx, key)
+	if d.land != nil {
+		d.land()
+		d.land = nil
+	}
+	return slugs, err
+}
+
+// scratchDocumentVersions is who wrote each version Dispatch holds of the issue's document id,
+// oldest first, read from the issue's artifact list.
+func scratchDocumentVersions(t *testing.T, baseURL, issue, id string) []string {
+	t.Helper()
+	var artifacts []struct {
+		ID       string `json:"id"`
+		Versions []struct {
+			Authors []scratchActor `json:"authors"`
+		} `json:"versions"`
+	}
+	dispatchCallAs(t, baseURL, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts", nil, &artifacts, asPerson)
+	for _, artifact := range artifacts {
+		if artifact.ID != id {
+			continue
+		}
+		authors := make([]string, len(artifact.Versions))
+		for i, version := range artifact.Versions {
+			names := make([]string, len(version.Authors))
+			for j, author := range version.Authors {
+				names[j] = author.Kind + " " + author.ID
+			}
+			authors[i] = strings.Join(names, " and ")
+		}
+		return authors
+	}
+	t.Fatalf("issue %s holds no document %s", issue, id)
+	return nil
+}
+
 // The daemon's board lane publishes an issue's role sessions to a real Dispatch built from this
 // tree, and the route stores them: the tester's ready claim is the one holder Dispatch lists. Once
 // the claim retires, the next publication sends the empty set and the tester's session leaves the

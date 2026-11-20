@@ -1386,7 +1386,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. An upload under the name or the slug of an artifact the issue holds writes that artifact's next version, a document's only when it names the token of the version it replaces (precondition; 400 PRECONDITION_REQUIRED when it names none), except one with create_only true (the JSON member, or the multipart field spelled true or false), which only creates and so names no token: that upload is 409 ARTIFACT_NAME_TAKEN, naming the artifact, ahead of the token rule, and writes no version. A file or image refused so leaves nothing in the file store when the name was held before its bytes were stored; when another upload took the name while they were being stored, they stay in the store, named by no version, and a later upload of the same bytes reuses them. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2574,7 +2574,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, a new artifact's name held to its bound, and an upload with create_only refused under a name the project holds, as an issue upload's are. */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -5552,6 +5552,7 @@ export interface components {
     JsonArtifactUpload: {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
+      create_only?: boolean;
       name: string;
       precondition?: components["schemas"]["EditPrecondition"] | null;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
@@ -6901,6 +6902,11 @@ export interface operations {
         "multipart/form-data": {
           /** @description the acting session as one JSON object, as the JSON body's `actor` field */
           actor?: string;
+          /**
+           * @description the JSON body's `create_only`: true refuses the upload with 409 ARTIFACT_NAME_TAKEN where the name is the name or the slug of an artifact the owner holds
+           * @enum {string}
+           */
+          create_only?: "true" | "false";
           /**
            * Format: binary
            * @description the uploaded bytes; its kind is read from them, whatever the part declares
@@ -10307,6 +10313,11 @@ export interface operations {
           /** @description the acting session as one JSON object, as the JSON body's `actor` field */
           actor?: string;
           /**
+           * @description the JSON body's `create_only`: true refuses the upload with 409 ARTIFACT_NAME_TAKEN where the name is the name or the slug of an artifact the owner holds
+           * @enum {string}
+           */
+          create_only?: "true" | "false";
+          /**
            * Format: binary
            * @description the uploaded bytes; its kind is read from them, whatever the part declares
            */
@@ -13387,6 +13398,11 @@ export interface operations {
         "multipart/form-data": {
           /** @description the acting session as one JSON object, as the JSON body's `actor` field */
           actor?: string;
+          /**
+           * @description the JSON body's `create_only`: true refuses the upload with 409 ARTIFACT_NAME_TAKEN where the name is the name or the slug of an artifact the owner holds
+           * @enum {string}
+           */
+          create_only?: "true" | "false";
           /**
            * Format: binary
            * @description the uploaded bytes; its kind is read from them, whatever the part declares

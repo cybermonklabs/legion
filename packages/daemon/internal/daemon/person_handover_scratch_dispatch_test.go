@@ -438,19 +438,19 @@ func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
 }
 
-// uploadDocument uploads a second document to key as a session and answers its id: a document of
-// the issue that is not its primary one.
-func (r *personHandoverRig) uploadDocument(key, name, content string) string {
-	r.t.Helper()
+// uploadScratchDocument uploads a second document named name to issue as identity and answers its
+// id: a document of the issue that is not its primary one.
+func uploadScratchDocument(t *testing.T, baseURL, issue, name, content string, identity scratchIdentity) string {
+	t.Helper()
 	var uploaded struct {
 		Artifact struct {
 			ID      string `json:"id"`
 			Primary bool   `json:"primary"`
 		} `json:"artifact"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]any{"name": name, "content": content}, &uploaded, asSession)
+	dispatchCallAs(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": name, "content": content}, &uploaded, identity)
 	if uploaded.Artifact.ID == "" || uploaded.Artifact.Primary {
-		r.t.Fatalf("Dispatch uploaded %s to %s as %+v; want a second document with an id, not the primary one", name, key, uploaded.Artifact)
+		t.Fatalf("Dispatch uploaded %s to %s as %+v; want a second document with an id, not the primary one", name, issue, uploaded.Artifact)
 	}
 	return uploaded.Artifact.ID
 }
@@ -905,7 +905,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 		!strings.Contains(string(answer), `"code":"OAUTH_SCOPE_REQUIRED"`) {
 		t.Fatalf("the shared token's approval of %s's spec = %d %s; want 403 OAUTH_SCOPE_REQUIRED: it holds no scope and so acts as no person", parked.Key, status, answer)
 	}
-	notes := r.uploadDocument(parked.Key, "notes.md", "# Notes\n\nSide notes, not the spec.\n")
+	notes := uploadScratchDocument(r.t, r.baseURL, parked.Key, "notes.md", "# Notes\n\nSide notes, not the spec.\n", asSession)
 	notesReview := r.approve(notes)
 	r.applied(r.newestEvent(parked.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == notesReview.Version }))
 	r.notQueued(parked.Key, "backlog", 0)

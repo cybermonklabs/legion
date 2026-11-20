@@ -1685,12 +1685,19 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 
 // messageArtifact puts on the issue the document a message links. It reads the issue's artifacts
 // and uploads only when none has the document's name, so a row that runs again after its upload
-// writes no second version. A read or an upload Dispatch refuses the same way on every run
+// writes no second version. The upload is a create alone (dispatch.Client.UploadArtifact), which
+// never writes a version into a document the issue holds: where a person renamed another document
+// to the name, which keeps that document's own slug, or another writer's document landed between
+// the read and the upload, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN, which the message
+// names as it names any refusal below. A read or an upload Dispatch refuses alike on every run
 // (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
 // a sentence that says so: the message is the issue's one word on what it carries, and a document
 // it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the
 // run, and the row runs again. So does an upload Dispatch filed under a slug other than the
-// name, since the link names the document by that name.
+// name, since the link names the document by that name. The log line of a refusal 400
+// INVALID_JSON names its likely cause too (dispatch.OlderDispatchRefusesCreateOnly): the read of
+// the issue's artifacts sends no body, and the upload's is JSON the daemon builds, so the refusal
+// is of a member Dispatch does not read.
 func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
 	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
 	if err == nil && slices.Contains(slugs, artifact.Name) {
@@ -1701,8 +1708,11 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 		slug, err = r.dispatch.UploadArtifact(ctx, row.Issue, artifact.Name, artifact.Content)
 	}
 	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
-		r.log.Error("outbox Dispatch message's document refused by Dispatch; the message is posted and says so",
-			"row", row.ID, "issue", row.Issue, "artifact", artifact.Name, "status", refusal.Status, "code", refusal.Code, "error", err)
+		line := []any{"row", row.ID, "issue", row.Issue, "artifact", artifact.Name, "status", refusal.Status, "code", refusal.Code, "error", err}
+		if refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" {
+			line = append(line, "likely_cause", dispatch.OlderDispatchRefusesCreateOnly)
+		}
+		r.log.Error("outbox Dispatch message's document refused by Dispatch; the message is posted and says so", line...)
 		return refusal, nil
 	}
 	if err != nil {
