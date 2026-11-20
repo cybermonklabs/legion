@@ -54,7 +54,10 @@ const (
 // where the row names one, so a document hidden from them is neither listed nor walked on from.
 // The issue itself is held to the acting person in the statement too (the registry's issue
 // predicate over $1, which names only parameters, so Postgres tests it once, before it walks):
-// an issue they may not see has no closure, whatever the caller read of it before.
+// an issue they may not see has no closure, whatever the caller read of it before. Each step of
+// the walk holds the document it walks on from to them by its own row (the registry's artifact
+// predicate over a.ref_key), as the step before held it as its target, so the statement binds
+// every document it reads on that document's own columns.
 var closureQuery = sync.OnceValue(func() string {
 	visibleSource := VisibleEnd(`r.from_kind`,
 		`case when r.from_kind = 'artifact' then (select s.ref_key from artifacts s where s.id = r.from_id::uuid) else r.from_id end`,
@@ -88,12 +91,14 @@ var closureQuery = sync.OnceValue(func() string {
 			join refs r on r.from_kind = 'artifact' and r.from_id = a.id::text
 			` + documentBlockHeld + `
 			where c.depth < 9 and ` + documentTarget + `
+			  and ` + VisibleKind("artifact", `a.ref_key`, `$2`) + `
 			  and ` + visibleTarget + `
 		)
 		select distinct on (c.ref_key) c.ref_key, c.depth, c.via_kind, c.via_id
 		from closure c
 		join artifacts a on a.ref_key = c.ref_key
 		where a.issue_key is distinct from $1 and ` + VisibleKind("issue", `$1`, `$2`) + `
+		  and ` + VisibleKind("artifact", `a.ref_key`, `$2`) + `
 		order by c.ref_key, c.depth, c.via_kind, c.via_id
 	`
 })

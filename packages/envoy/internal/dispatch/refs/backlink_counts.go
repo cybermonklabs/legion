@@ -211,12 +211,14 @@ type backlinkTarget struct {
 
 // read is how an arm whose rows point at the address toID is written for the target: the address
 // the arm counts, the join that reaches it, the predicate that keys the arm on the addresses
-// bound as $1 and holds the node counted to the reader (seen), and the expression the arm's own
-// test of the address is written over. An arm over an item's blocks is keyed on the item's id as
-// text and reaches the block by its node id, the two columns the blocks table is indexed on, so
-// the pair is one lookup each way whichever end the planner starts from; its test of the address
-// is written over the blocks table's own node id, the same value, which leaves the arm's other
-// relation keyed on the join alone.
+// bound as $1 and holds the node it points at to the reader (seen), and the expression the arm's
+// own test of the address is written over. An arm over an item's blocks is keyed on the item's id
+// as text and reaches the block by its node id, the two columns the blocks table is indexed on,
+// so the pair is one lookup each way whichever end the planner starts from; its test of the
+// address is written over the blocks table's own node id, the same value, which leaves the arm's
+// other relation keyed on the join alone. The block an edge of such an arm points at is held to
+// the reader over the edge's own address (the registry's block predicate, its item's project
+// rule), so the edge's row is bound by its own column and not only through the block's row.
 func (t backlinkTarget) read(toID string) (counted, join, keyed, address string) {
 	if t.blocks == "" {
 		return toID, "", toID + t.addressed() + ` and ` + t.seen(toID), toID
@@ -224,7 +226,7 @@ func (t backlinkTarget) read(toID string) (counted, join, keyed, address string)
 	counted = `part.` + t.item + `::text`
 	return counted,
 		` join ` + t.blocks + ` part on part.node_id = ` + toID,
-		counted + t.addressed() + ` and part.position is not null and ` + t.seen(counted),
+		counted + t.addressed() + ` and part.position is not null and ` + t.seen(counted) + ` and ` + VisibleKind(t.kind, toID, backlinkSeen),
 		`part.node_id`
 }
 
