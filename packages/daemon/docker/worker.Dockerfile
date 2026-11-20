@@ -98,8 +98,12 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
-ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
+# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
+# each pack, index and multi-pack-index in 8 MiB chunks and keeps at most 512 MiB of them resident
+# (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the pod's
+# memory once one page of it is read, so a later pin must carry that patch, or one jj command on a
+# large pack fills an issue pod again.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
 ARG GH_TOOL=gh@2.98.0
 # The pin of the shared public leak check: the tag of the private repository whose leak-check
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
