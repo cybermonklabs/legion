@@ -6,8 +6,10 @@
 # a scratch agent-secrets-helper whose machine login the test person approves from the public
 # leg's browser; starts our peer session; starts the public leg (outside-agent-public.sh, rows
 # P1-P9) on a runner on the public internet; runs rows T1-T4 against the broker's private origin,
-# the one place its enrollment route is served; reads the public leg's TSV; and prints the gate.
-# outside-agent-acceptance.md, beside this file, says what each row reads and what the gate holds.
+# the one place its enrollment route is served; reads the public leg's TSV; asks the operator, on
+# this terminal, to remove the test person from the project's access list and reads that the test
+# person's live device login stops (P10); and prints the gate. outside-agent-acceptance.md, beside
+# this file, says what each row reads and what the gate holds.
 #
 # Inputs (environment), each named by the row that cannot run without it:
 #   $1                           the scratch project's key.
@@ -19,6 +21,8 @@
 #                                member's machine login enrolls nothing), which the broker's
 #                                build must hold.
 #   OUTSIDE_TAILNET_BROKER_URL   the broker's origin on the private network.
+#   OUTSIDE_TAILNET_DISPATCH_URL  Dispatch's origin on the private network, where P10 reads the
+#                                project's access list with this box's own credential.
 #   OUTSIDE_LISTENER_URL         the edge listener, where the peer session registers.
 #   OUTSIDE_INTERNAL_LISTENER_URL  a listener on the private network, where a session outside the
 #                                project (<peer>-foreign) registers for P6's control.
@@ -30,9 +34,11 @@
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
 #                                line. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on blanks,
 #                                that runs the public leg here instead, for a local stack; it gets
-#                                OUTSIDE_TAILNET_USER_CODE, OUTSIDE_PEER_SESSION and
-#                                OUTSIDE_PUBLIC_RESULTS in its environment and writes
-#                                outside-agent-public.tsv and outside-edge-revocations.tsv there.
+#                                OUTSIDE_TAILNET_USER_CODE, OUTSIDE_TAILNET_HOLD_CODE (the code of
+#                                P10's hold login, which it approves and does not revoke),
+#                                OUTSIDE_PEER_SESSION and OUTSIDE_PUBLIC_RESULTS in its environment
+#                                and writes outside-agent-public.tsv and
+#                                outside-edge-revocations.tsv there.
 # Optional: OUTSIDE_PEER_SESSION (default outside-e2e-peer-<random>); OUTSIDE_IMAGE_REVISION_COMMAND,
 # a command line that prints the commit an image was built from, run with the image as its last
 # word (default: `crane config`, read for org.opencontainers.image.revision); OUTSIDE_TAILNET_TSV,
@@ -180,7 +186,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
 emit "row${tab}want${tab}got${tab}verdict"
 
 # skip_rest REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
-rest_rows="pins issue T1 T2 T3 T4 $public_rows"
+rest_rows="pins issue T1 T2 T3 T4 P10 $public_rows"
 skip_from() {
   local reason=$1 from=$2 name on=''
   for name in $rest_rows; do
@@ -270,14 +276,14 @@ if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
 fi
 if [ -n "$problem" ]; then
   row pins "$want_pins" "$problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 $public_rows"
+  rest_rows="issue T1 T2 T3 T4 P10 $public_rows"
   skip_from "the pins were not read: $problem" issue
   gate
 fi
 read_pins
 if [ -n "$pins_problem" ]; then
   row pins "$want_pins" "$pins_problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 $public_rows"
+  rest_rows="issue T1 T2 T3 T4 P10 $public_rows"
   skip_from "the pins were not read" issue
   gate
 fi
@@ -313,13 +319,13 @@ case $held in
   yes) row pins "$want_pins" "$pins_line" PASS ;;
   no)
     row pins "$want_pins" "the broker's build $broker_revision does not hold $commit; $pins_line" FAIL
-    rest_rows="issue T1 T2 T3 T4 $public_rows"
+    rest_rows="issue T1 T2 T3 T4 P10 $public_rows"
     skip_from "the broker's pin lacks the enrollment refusal, so the legs do not start" issue
     gate
     ;;
   *)
     row pins "$want_pins" "$problem; $pins_line" UNKNOWN
-    rest_rows="issue T1 T2 T3 T4 $public_rows"
+    rest_rows="issue T1 T2 T3 T4 P10 $public_rows"
     skip_from "whether the broker's pin holds the enrollment refusal is unread" issue
     gate
     ;;
@@ -448,6 +454,45 @@ if [ -z "$peer_problem" ]; then
   fi
 fi
 
+# --- P10's hold login: a device login of the test person, the one the outside agent runs, whose
+# code the public leg's browser approves and its last step leaves live (`tailnet_hold_code`). Its
+# key and refresh token live only in the scratch directory, which the cleanup removes, so no one
+# can trade it after this run. ---
+hold_dir="$work/hold"
+mkdir -p "$hold_dir/home"
+chmod 700 "$hold_dir" "$hold_dir/home"
+hold_file="$hold_dir/device-login.json"
+hold_env=(
+  "PATH=$PATH"
+  "HOME=$hold_dir/home"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "AGENT_SECRETS_URL=${OUTSIDE_TAILNET_BROKER_URL:-}"
+  "AGENT_SECRETS_MACHINE_IDENTITY=device-login"
+  "AGENT_SECRETS_DEVICE_LOGIN_FILE=$hold_file"
+  "AGENT_SECRETS_PROJECTS=$project"
+)
+hold_code=''
+hold_problem=$helper_problem
+dispatch_cli="$here/../../../envoy-client/bin/dispatch.ts"
+[ -n "$hold_problem" ] || hold_problem=$(tool_problem bun)
+[ -n "$hold_problem" ] || [ -f "$dispatch_cli" ] || hold_problem="no dispatch CLI at $dispatch_cli"
+if [ -z "$hold_problem" ]; then
+  (
+    env -i "${hold_env[@]}" bun "$dispatch_cli" login --device --person "$person" \
+      >"$work/hold.log" 2>&1 </dev/null
+    echo "$?" >"$work/hold.exit"
+  ) &
+  background="$background $!"
+  deadline=$(($(now) + 60))
+  while [ -z "$hold_code" ] && [ "$(now)" -lt "$deadline" ] && [ ! -f "$work/hold.exit" ]; do
+    while IFS= read -r line; do
+      case $line in *'and enter the code '*) hold_code=${line##*and enter the code } ;; esac
+    done <"$work/hold.log"
+    [ -n "$hold_code" ] || sleep 1
+  done
+  [ -n "$hold_code" ] || hold_problem="dispatch login --device printed no code within 60 s: $(text_of "$work/hold.log")"
+fi
+
 # --- The public leg: the workflow on a runner on the public internet, or a local command. ---
 results="$work/public"
 mkdir -p "$results"
@@ -462,7 +507,8 @@ elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
   set -- $OUTSIDE_PUBLIC_COMMAND
   set +f
   (
-    OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PEER_SESSION=$peer OUTSIDE_PUBLIC_RESULTS=$results \
+    OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_TAILNET_HOLD_CODE=$hold_code OUTSIDE_PEER_SESSION=$peer \
+      OUTSIDE_PUBLIC_RESULTS=$results \
       "$@" >"$work/public.log" 2>&1 </dev/null
     echo "$?" >"$work/public.exit"
   ) &
@@ -474,6 +520,7 @@ else
     public_problem="not started: $problem"
   else
     fields=(-f checks=all -f "project=$project" -f "peer_session=$peer" -f "tailnet_user_code=$code")
+    [ -z "$hold_code" ] || fields+=(-f "tailnet_hold_code=$hold_code")
     while IFS= read -r pair; do
       [ -z "$pair" ] || fields+=(-f "$pair")
     done <<EOF
@@ -631,6 +678,95 @@ else
       *LAUNCHER_INVALID*) row T4 "$want_t4" "revoked; machine list refused LAUNCHER_INVALID" PASS ;;
       *) row T4 "$want_t4" "revoked; machine list exited $ended_exit: ${ended:0:300}" UNKNOWN ;;
     esac
+  fi
+fi
+
+# --- P10: the operator removes the test person from the access list; the outside agent stops. ---
+want_p10="once the operator removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list, a fresh trade of the test person's live device login is refused, and a relay socket opened with the token traded at the removal is closed, each within 325 s"
+# hold_probe COMMAND...: the probe as the hold login's own session, at the edge listener.
+hold_probe() {
+  env -i "${hold_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-p10-$nonce" \
+    OUTSIDE_LISTENER_URL="${OUTSIDE_LISTENER_URL:-}" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
+    bun "$here/outside-agent-probe.ts" "$@" 2>>"$work/probe.log" </dev/null
+}
+# listed_now: whether the person is on the project's access list, read with this box's own
+# credential at Dispatch's private origin: true, false, or what the read printed.
+listed_now() {
+  local answer
+  answer=$(env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-access-$nonce" \
+    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="${OUTSIDE_TAILNET_DISPATCH_URL:-}" \
+    bun "$here/outside-agent-probe.ts" access "$project" "$person" 2>>"$work/probe.log" </dev/null)
+  case $(json_field listed "$answer") in
+    true | false) json_field listed "$answer" ;;
+    *) printf '%s' "${answer:0:200}" ;;
+  esac
+}
+problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_LISTENER_URL)
+if [ -n "$problem" ]; then
+  row P10 "$want_p10" "$problem" UNKNOWN
+elif [ -n "$hold_problem" ]; then
+  row P10 "$want_p10" "not run: there is no hold login: $hold_problem" UNKNOWN
+elif [ "$(cat "$work/hold.exit" 2>/dev/null)" != 0 ] || [ ! -f "$hold_file" ]; then
+  row P10 "$want_p10" "not run: the hold login (code $hold_code) was not approved: $(text_of "$work/hold.log")" UNKNOWN
+elif ! { : </dev/tty; } 2>/dev/null; then
+  row P10 "$want_p10" "not run: there is no terminal to ask the operator for the removal on" UNKNOWN
+else
+  before=$(listed_now)
+  control=$(hold_probe trade)
+  if [ "$before" != true ]; then
+    row P10 "$want_p10" "not run: before the removal $person is not read on the access list ($before), so a refusal would prove nothing" UNKNOWN
+  elif [ "$(json_field traded "$control")" != true ]; then
+    row P10 "$want_p10" "not run: before the removal the hold login's trade was not answered: ${control:0:200}" UNKNOWN
+  else
+    printf 'outside-agent-tailnet: P10: remove %s from %s'"'"'s access list now, then press Enter here.\n' \
+      "$person" "$project" >/dev/tty
+    read -r _ </dev/tty
+    removed_at=$(now)
+    say "P10: removal read at $(date -u '+%H:%M:%SZ'); watching for 325 s"
+    hold_probe hold 340 >"$work/p10.hold" &
+    hold_pid=$!
+    background="$background $hold_pid"
+    refused_at=''
+    refusal=''
+    while [ -z "$refused_at" ] && [ "$(now)" -le $((removed_at + 325)) ]; do
+      answer=$(hold_probe trade)
+      if [ "$(json_field traded "$answer")" = false ]; then
+        refused_at=$(now)
+        refusal=$answer
+      else
+        sleep 10
+      fi
+    done
+    wait "$hold_pid" 2>/dev/null
+    after=$(listed_now)
+    held=$(cat "$work/p10.hold" 2>/dev/null)
+    closed_at=$(json_field closed_at "$held")
+    close_code=$(json_field code "$held")
+    wrong=''
+    socket=''
+    case $held in
+      *'"opened_at"'*)
+        if [ "$close_code" = null ] || [ -z "$closed_at" ] || [ "$closed_at" = null ]; then
+          wrong="the socket opened at the removal was still open 340 s later"
+        elif [ $((closed_at / 1000 - removed_at)) -gt 325 ]; then
+          wrong="the socket opened at the removal closed $close_code $((closed_at / 1000 - removed_at)) s after it"
+        else
+          socket="the socket opened at the removal closed $close_code $((closed_at / 1000 - removed_at)) s after it"
+        fi
+        ;;
+      *) socket="no socket opened after the removal: ${held:0:150}" ;;
+    esac
+    if [ "$after" = true ]; then
+      row P10 "$want_p10" "$person is still on $project's access list, so the removal was not made" UNKNOWN
+    elif [ "$after" != false ]; then
+      row P10 "$want_p10" "the access list could not be read after the removal: $after" UNKNOWN
+    elif [ -z "$refused_at" ]; then
+      row P10 "$want_p10" "a trade was still answered 325 s after the removal${wrong:+; $wrong}" FAIL
+    elif [ -n "$wrong" ]; then
+      row P10 "$want_p10" "$wrong; the trade was refused $((refused_at - removed_at)) s after the removal" FAIL
+    else
+      row P10 "$want_p10" "the trade refused $((refused_at - removed_at)) s after the removal (status $(json_field status "$refusal")); $socket. Re-adding $person is the operator's own act" PASS
+    fi
   fi
 fi
 

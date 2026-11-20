@@ -40,8 +40,11 @@
 #   OUTSIDE_PATH_TARGETS      the target list outside-path-reach.sh reads (P9).
 # Optional: OUTSIDE_OTHER_PROJECT (default EXAMPLE) and OUTSIDE_OTHER_REPOSITORY (default
 # example-owner/example-repo), the project and repository P5 must be refused; OUTSIDE_OMP_MODEL,
-# the model Oh My Pi is started with; OUTSIDE_AGENT_PUBLIC_TSV, a file that gets a copy of the
-# TSV; OUTSIDE_GITHUB_EVENT_SECONDS (default 900), how long P5 waits for an event.
+# the model Oh My Pi is started with; OUTSIDE_P4_REPLY (default model), how P4's two sends are
+# made: `model`, by the session's model, which needs ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN
+# (without one P4 reads UNKNOWN), or `scripted`, by the probe as the session's own session id;
+# OUTSIDE_AGENT_PUBLIC_TSV, a file that gets a copy of the TSV; OUTSIDE_GITHUB_EVENT_SECONDS
+# (default 900), how long P5 waits for an event.
 #
 # Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P9, and a
 # last `verdict` line. Progress goes to stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it
@@ -383,9 +386,24 @@ if [ -z "$problem5" ]; then
 fi
 
 # --- P4: an Oh My Pi session at the edge, its relay socket, and a message each way. ---
-want4="the session exchanges a message and a reply with ${peer:-<OUTSIDE_PEER_SESSION>} each way through ${listener:-<OUTSIDE_LISTENER_URL>}, each shown within 10 s"
+# How the session's two sends are made, OUTSIDE_P4_REPLY: `model` (the default) prompts its model
+# to call envoy_send, which needs a model credential (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN);
+# `scripted` sends them with outside-agent-probe.ts as the session's own session id, through the
+# same device login and the same edge, with no model. Either way the session itself receives
+# through its relay socket, and the pane shows what the peer sends it. p4_send is the one place
+# the two differ.
+reply=${OUTSIDE_P4_REPLY:-model}
+want4="the session exchanges a message and a reply with ${peer:-<OUTSIDE_PEER_SESSION>} each way through ${listener:-<OUTSIDE_LISTENER_URL>}, each shown within 10 s ($reply sends)"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION OUTSIDE_PROJECT)
 [ -n "$problem" ] || problem=$(tool_problem tmux omp)
+case $reply in
+  model)
+    [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_OAUTH_TOKEN:-}" ] ||
+      problem="${problem:+$problem; }OUTSIDE_P4_REPLY is model and neither ANTHROPIC_API_KEY nor ANTHROPIC_OAUTH_TOKEN is set, so Oh My Pi has no model to send with"
+    ;;
+  scripted) [ -n "$problem" ] || problem=$(tool_problem bun) ;;
+  *) problem="OUTSIDE_P4_REPLY must be model or scripted, not $reply" ;;
+esac
 session_id=''
 p4_started=''
 if [ -n "$problem" ]; then
@@ -400,13 +418,41 @@ else
   env -i "${session_env[@]}" tmux -S "$tmux_socket" new-session -d -s outside-e2e -x 220 -y 50 \
     -c "$session_dir" omp "${model[@]}" </dev/null
   p4_started=$(now)
-  # model_turned: the session's own log holds a turn of its model.
-  model_turned() {
-    local log
-    for log in "$home"/.omp/agent/sessions/*.jsonl "$home"/.omp/agent/sessions/*/*.jsonl; do
-      [ -f "$log" ] || continue
-      case $(cat "$log") in *'"role":"assistant"'*) return 0 ;; esac
+  # turns: how many turns of its model the session's own log holds.
+  turns() {
+    cat "$home"/.omp/agent/sessions/*.jsonl "$home"/.omp/agent/sessions/*/*.jsonl 2>/dev/null |
+      grep -c '"role":"assistant"'
+  }
+  # p4_send TEXT: the session sends TEXT to the peer. False when it was not sent, with
+  # `send_problem` saying why and `send_verdict` FAIL for an edge that refused the send, UNKNOWN
+  # for a send that was not made.
+  p4_send() {
+    local answer status before
+    send_problem=''
+    send_verdict=UNKNOWN
+    if [ "$reply" = scripted ]; then
+      answer=$(probe_as=$session_id probe send "$peer" "$1")
+      status=$(json_field status "$answer")
+      case $status in
+        2??) return 0 ;;
+        4??) send_verdict=FAIL ;;
+      esac
+      send_problem="the send of '$1' as $session_id: ${answer:0:200}"
+      return 1
+    fi
+    before=$(turns)
+    tmux -S "$tmux_socket" send-keys -t outside-e2e -l \
+      "This is an automated check. Call the envoy_send tool once, to send session $peer exactly this message: $1. Then end your turn."
+    sleep 1
+    tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
+    # An Enter can race the compose box's render and be swallowed, as smoke-delivery.sh says; it
+    # is sent again until the model takes a turn.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ "$(turns)" -le "$before" ] || return 0
+      sleep 3
+      tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
     done
+    send_problem="the Oh My Pi session made no model turn for '$1' within 30 s"
     return 1
   }
   # The TUI names its directory once it takes input; keys sent before that are dropped.
@@ -421,19 +467,6 @@ else
     session_id=''
     sleep 3
   done
-  prompt="This is an automated check; follow it exactly. Call the envoy_send tool to send session $peer the message: outside-e2e ping $nonce. Then wait for messages. When a message that begins outside-e2e pong $nonce arrives, call envoy_send to send session $peer the message: outside-e2e ack $nonce. When a message that begins outside-e2e done $nonce arrives, reply with the one word FINISHED."
-  if [ -n "$ready" ]; then
-    tmux -S "$tmux_socket" send-keys -t outside-e2e -l "$prompt"
-    sleep 1
-    tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
-    # An Enter can race the compose box's render and be swallowed, as smoke-delivery.sh says; it
-    # is sent again until the model takes a turn.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      model_turned && break
-      sleep 3
-      tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
-    done
-  fi
   # seen WORD: the peer's time stamp on `outside-e2e WORD <nonce> at <ms>` once the pane shows it.
   seen() {
     local text stamp
@@ -458,24 +491,34 @@ else
   }
   pong_lag=''
   done_lag=''
-  if [ -n "$ready" ] && [ -n "$session_id" ]; then
+  ping_sent=''
+  ack_sent=''
+  send_problem=''
+  send_verdict=UNKNOWN
+  if [ -n "$ready" ] && [ -n "$session_id" ] && p4_send "outside-e2e ping $nonce"; then
+    ping_sent=yes
     pong_lag=$(wait_seen pong 240) || pong_lag=''
-    [ -z "$pong_lag" ] || { done_lag=$(wait_seen 'done' 240) || done_lag=''; }
+    if [ -n "$pong_lag" ] && p4_send "outside-e2e ack $nonce"; then
+      ack_sent=yes
+      done_lag=$(wait_seen 'done' 240) || done_lag=''
+    fi
   fi
   if [ -z "$ready" ]; then
-    row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s, so no prompt was typed" UNKNOWN
+    row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s, so nothing was sent" UNKNOWN
   elif [ -z "$session_id" ]; then
     row P4 "$want4" "the Oh My Pi session is not on $listener's session list (GET /v1/sessions by its directory)" UNKNOWN
-  elif [ -z "$pong_lag" ] && ! model_turned; then
-    row P4 "$want4" "session $session_id registered; the Oh My Pi session made no model turn, so no ping was sent" UNKNOWN
+  elif [ -z "$ping_sent" ]; then
+    row P4 "$want4" "session $session_id registered; $send_problem" "$send_verdict"
   elif [ -z "$pong_lag" ]; then
-    row P4 "$want4" "session $session_id: no pong from $peer shown within 240 s of the prompt" FAIL
+    row P4 "$want4" "session $session_id: no pong from $peer shown within 240 s of the ping" FAIL
+  elif [ -z "$ack_sent" ]; then
+    row P4 "$want4" "session $session_id: pong shown after ${pong_lag} s; $send_problem" "$send_verdict"
   elif [ -z "$done_lag" ]; then
     row P4 "$want4" "session $session_id: pong shown after ${pong_lag} s; no done from $peer within 240 s, so the ack did not reach it" FAIL
   elif [ "$pong_lag" -gt 10 ] || [ "$done_lag" -gt 10 ]; then
     row P4 "$want4" "session $session_id: pong shown ${pong_lag} s and done ${done_lag} s after the peer sent them" FAIL
   else
-    row P4 "$want4" "session $session_id: ping and ack reached $peer; pong shown ${pong_lag} s and done ${done_lag} s after it sent them" PASS
+    row P4 "$want4" "session $session_id ($reply sends): ping and ack reached $peer; pong shown ${pong_lag} s and done ${done_lag} s after it sent them" PASS
   fi
 fi
 

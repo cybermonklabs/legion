@@ -40,6 +40,13 @@
  *    agent-token             POST /api/v1/me/agent-tokens; a token it was given is revoked again
  *                            at once, and its plaintext is never printed.
  *    approve                 POST /api/v1/credential-requests/<a fresh id>/approve.
+ *    trade                   one fresh trade: {traded: true, expires_at}, or {traded: false,
+ *                            status, detail} when the broker refused it (row P10).
+ *    hold <seconds>          opens the session's relay socket and prints {opened_at}, then
+ *                            {closed_at, code} when it closes, or code null after <seconds>.
+ *    access <project> <person>
+ *                            GET /api/v1/projects/<project>/access at Dispatch: `listed`, whether
+ *                            <person> is on its access list, or null when no list was read.
  *    peer                    the peer of row P4: registers the session, opens its relay socket and
  *                            answers each message from then on, until it is stopped. To
  *                            `outside-e2e ping <nonce>` it answers the sender
@@ -605,6 +612,63 @@ async function main(): Promise<void> {
         return;
       }
       print(flat(answer));
+      return;
+    }
+    case "trade": {
+      // A fresh trade, told apart from no answer: a refusal carries the broker's numeric
+      // status somewhere on the error or its causes; a failure with none never reached it.
+      try {
+        const traded = await brokerTokenFor(env, session())(AbortSignal.timeout(callMs));
+        print({ traded: true, expires_at: traded.token.expiresAt.getTime() });
+      } catch (error) {
+        let status: unknown;
+        for (let at: unknown = error; at instanceof Error && status === undefined; ) {
+          const read: unknown = Reflect.get(at, "status");
+          if (typeof read === "number") status = read;
+          at = at.cause;
+        }
+        const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+        if (typeof status !== "number") throw new Unreadable(`the trade got no answer: ${detail}`);
+        print({ traded: false, status, detail });
+      }
+      return;
+    }
+    case "hold": {
+      // Opens a relay socket and holds it: one line once it is open, one when it closes or
+      // when <seconds> have passed with it open (code null).
+      const holdMs = Number(args[0] ?? "") * 1000;
+      if (!(holdMs > 0)) throw new Unreadable("hold needs the seconds to hold the socket");
+      await subscribe([]);
+      const relay = await openRelay();
+      if (!("socket" in relay)) {
+        throw new Unreadable(`the listener serves no relay socket (${relay.status})`);
+      }
+      print({ opened_at: Date.now() });
+      const timer = Promise.withResolvers<undefined>();
+      const handle = setTimeout(() => timer.resolve(undefined), holdMs);
+      const closed = await Promise.race([relay.closed, timer.promise]);
+      clearTimeout(handle);
+      print({ closed_at: closed?.at ?? null, code: closed?.code ?? null });
+      relay.socket.close(1000, "the probe is done");
+      return;
+    }
+    case "access": {
+      // Whether <person> is on <project>'s access list, read at Dispatch with this machine's
+      // own credential: `listed` true or false, null when the answer names no list.
+      const [key = "", person = ""] = args;
+      if (key === "" || person === "") throw new Unreadable("access needs a project and a person");
+      const answer = await call(
+        "GET",
+        dispatch(`/api/v1/projects/${encodeURIComponent(key)}/access`)
+      );
+      const people: unknown =
+        typeof answer.body === "object" && answer.body !== null
+          ? Reflect.get(answer.body, "people")
+          : undefined;
+      const listed = Array.isArray(people)
+        ? people.some((each: unknown) => String(each).toLowerCase() === person.toLowerCase())
+        : null;
+      print({ ...flat(answer), listed });
       return;
     }
     case "approve":
