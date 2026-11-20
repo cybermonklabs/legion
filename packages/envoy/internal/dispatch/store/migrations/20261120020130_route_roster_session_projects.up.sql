@@ -51,6 +51,27 @@ create trigger route_roster_session_projects_sync
     after insert or update of sessions on route_roster
     for each row execute function sync_route_roster_session_projects();
 
+-- A delete of the stored roster's row, and a truncate of the table, take the projection with them,
+-- so no session keeps a listener record the roster no longer holds.
+create function clear_route_roster_session_projects() returns trigger language plpgsql as $$
+begin
+    if tg_op = 'TRUNCATE' then
+        delete from route_roster_session_projects;
+    else
+        delete from route_roster_session_projects where id = old.id;
+    end if;
+    return null;
+end
+$$;
+
+create trigger route_roster_session_projects_delete
+    after delete on route_roster
+    for each row execute function clear_route_roster_session_projects();
+
+create trigger route_roster_session_projects_truncate
+    after truncate on route_roster
+    for each statement execute function clear_route_roster_session_projects();
+
 -- session_clause_visible is access.SessionClause's decision for a session, by id ($1), a viewer
 -- in the shape of the visibility argument ($2) and whether session_projects_filled holds its row
 -- ($3), for every viewer the clause's own SQL does not answer first: the clause passes the
