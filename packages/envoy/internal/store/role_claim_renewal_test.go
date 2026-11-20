@@ -116,7 +116,7 @@ func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t
 		}
 	}
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -283,7 +283,7 @@ func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry,
 	t.Cleanup(cleanup)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -377,10 +377,11 @@ func TestARenewalFromTheProcessTheClaimNamesMovesTheRenewalAndNothingElse(t *tes
 	}
 }
 
-// A claim written before claims named a process names none, and the first registration of the
-// session holding it writes the registering process in: the adoption the live window bounds at
-// one heartbeat. It is still the same claim, taken at the same moment from the same predecessor,
-// so nothing but the process and the renewal is written.
+// A claim whose claimant stated no process names none, and the first registration of the
+// session holding it that states a process writes that process in, since no registration has
+// renewed the claim stating none: the one heartbeat in which such a claim is open to any process
+// of its session. It is still the same claim, taken at the same moment from the same
+// predecessor, so nothing but the process and the renewal is written.
 func TestTheFirstRenewalOfAClaimThatNamesNoProcessAdoptsItForThatProcess(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -469,8 +470,8 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 	advance(beat)
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
 	racing.beforeFirstUpdate = func() {
-		// A hard claim writes unconditionally, so it lands under the renewal's read and
-		// the renewal's own update meets the bucket's refusal, not one this hook invented.
+		// A hard claim retries a conflict until it lands, so it lands under the renewal's read
+		// and the renewal's own update meets the bucket's refusal, not one this hook invented.
 		winning := RoleClaimRequest{SessionID: winner, MachineID: "example-host", ClientInstanceID: roleClaimSecondInstance, Role: role}
 		if _, err := reg.SetRoleWithPrevious(context.Background(), winning); err != nil {
 			t.Errorf("the claim that wins the race: %v", err)
@@ -570,9 +571,12 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 }
 
 // A registration that states no process renews the claims of its own session that name none, and
-// leaves them naming none: a claim standing at a deploy is kept by the holder that took it, and
-// no claim ages out for want of a registration able to say which process it comes from. It adopts
-// nothing, which is the other half of the rule the rows above hold.
+// leaves them naming none: the claim of a client that cannot say which process it is stays
+// renewed while that client registers. It adopts nothing, which is the other half of the rule the
+// rows above hold, and it notes the renewal (RoleClaim.RenewedWithoutProcess): the claim's holder
+// answers for it, so from then on a registration that states a process - which may be a second
+// process that resumed the session's id - adopts it no more than it renews a claim naming another
+// process.
 func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -595,10 +599,31 @@ func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.
 	if renewed.ClientInstanceID != "" {
 		t.Fatalf("the renewed claim names the process %q, want none: a registration that cannot say which process it is adopts no claim", renewed.ClientInstanceID)
 	}
-	if renewed.HolderSessionID != holder || renewed.ClaimedAt != claimed.ClaimedAt || renewed.PreviousSessionID != roleClaimPredecessor {
-		t.Fatalf("the renewed claim is %+v, want %s's claim of %d continuing %s: a renewal writes the renewal alone",
+	if renewed.HolderSessionID != holder || renewed.ClaimedAt != claimed.ClaimedAt || renewed.PreviousSessionID != roleClaimPredecessor || !renewed.RenewedWithoutProcess {
+		t.Fatalf("the renewed claim is %+v, want %s's claim of %d continuing %s, noting a renewal that stated no process: a renewal writes the renewal alone",
 			renewed, holder, claimed.ClaimedAt, roleClaimPredecessor)
 	}
+
+	advance(2 * beat)
+	if _, err := renewRoleClaims(t, reg, holder, roleClaimSecondInstance); err != nil {
+		t.Fatalf("a registration stating a process after that renewal: %v", err)
+	}
+	if stood := storedRoleClaim(t, reg, role); stood != renewed {
+		t.Fatalf("the claim after a registration stating a process is %+v, want it exactly as the renewal that stated none left it, %+v: a claim its holder renews stating no process is adopted by no registration", stood, renewed)
+	}
+
+	// The holder's next registration, stating no process again, renews the claim that already
+	// carries the note: a client that cannot say which process it is keeps its claim renewed for
+	// as long as it runs, not only at its first heartbeat.
+	advance(3 * beat)
+	if _, err := renewRoleClaims(t, reg, holder, ""); err != nil {
+		t.Fatalf("the holder's second registration stating no process: %v", err)
+	}
+	again := storedRoleClaim(t, reg, role)
+	if want := claimed.ClaimedAt + (3 * beat).Milliseconds(); again.RenewedAt != want || again.ClientInstanceID != "" || !again.RenewedWithoutProcess || again.Revision == renewed.Revision {
+		t.Fatalf("the claim after the holder's second registration is %+v (revision %d), want it renewed at %d past revision %d, still naming no process and noting the renewal", again, again.Revision, want, renewed.Revision)
+	}
+	assertNoRenewalFailure(t, reg, role, holder)
 }
 
 // The holder that did not hand its role back keeps it however long it runs: every registration of

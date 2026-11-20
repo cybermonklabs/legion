@@ -15,7 +15,7 @@ import (
 
 // A kvwatch subscription can end in ways kvwatch does not choose: the connection closes or drains
 // under it, or the listener shuts down mid-scan. None of them may panic the process. nats.go's
-// legacy KV watcher (v1.50.0 kv.go) arms an init timer while a scan is pending, and its callback
+// legacy KV watcher (v1.55.0 kv.go) arms an init timer while a scan is pending, and its callback
 // sends on the watcher's errCh under the watcher's mutex; the subscription's end (pDone) closes that
 // channel under the same mutex and only Stops the timer, which does not wait for a callback already
 // running. A callback that fires while the message handler holds the mutex - the handler blocks

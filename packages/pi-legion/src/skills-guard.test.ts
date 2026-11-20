@@ -3,6 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "@legion/contracts/legion-api";
+import {
   brokenRelativeLinks,
   brokenSkillLinks,
   files,
@@ -278,9 +283,9 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
-// task agent declares `blocking`, and nothing interrupts a turn: a CI red that ends a
-// phase starts the implementer at once and tells the role whose phase ended by one message, which
-// stops nothing of its. So no skill, no shipped agent and no file of the plugin a Claude Code role
+// task agent declares `blocking`, and nothing interrupts a turn: a message the daemon sends a role,
+// a merge-forward message among them, stops nothing of its. So no skill, no shipped agent and no
+// file of the plugin a Claude Code role
 // loads may say that a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and each that dispatches a task subagent names the tool that reads its result.
 //
@@ -385,62 +390,15 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
-// R1: the simplify pass covers every file of the diff, docs-only diffs included, and a defect it
-// sees is reported rather than dropped as out of scope (dispatch://INFRA-198).
-test("the simplify pass reads every file of its scope and reports the defects it sees", () => {
-  const simplify = collapsed(path.join(staged, "simplify-settled-diff", "SKILL.md"));
-  expect(simplify).toContain(
-    "Every file of the scope is in the pass: documentation, workflow and configuration files as much as code, and a scope that holds no code at all still runs."
-  );
-  expect(simplify).toContain("A defect you see is reported, never dropped.");
-  expect(simplify).not.toContain("For mixed scopes, retain only the code.");
-  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain("whatever the diff touches, a docs-only diff included.");
-  expect(prBody).toContain(
-    "The pass covers every file of the diff, workflow YAML and documentation with the code, and a defect it reports is fixed outside the pass with the results recorded again, never dropped as out of scope; the `Thermo` line's `defects reported` half names how many and the commit that fixed them"
-  );
-  // The Thermo line is written on every diff now, and carries what the pass reported; only its
-  // pair half is omitted on a docs-only one, which leaves the reviewer's pair where it was.
-  expect(prBody).toContain("defects reported: <none | <n>, fixed in <sha>>");
-  expect(prBody).toContain(
-    "(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)"
-  );
-  expect(prBody).not.toContain("a docs-only diff gets none");
-  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
-  expect(mergeGate).toContain(
-    "On a docs-only PR the `Thermo` line still records the simplify pass and the defects it reported, and its pair half reads `thermonuclear pair: not run (docs-only)`."
-  );
-  expect(mergeGate).not.toContain("Skip the `Thermo` line entirely on a docs-only PR.");
-});
-
-// R2: a check that cannot fail is not a result, and a documented procedure counts only when it
-// ran (dispatch://INFRA-142, dispatch://INFRA-198).
-test("a check that cannot fail is not a result, and a documented procedure counts only when it ran", () => {
-  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain("**A check that cannot fail is not a result.**");
-  expect(prBody).toContain(
-    "A documented procedure counts only when it ran: reading it, or reading the document that describes it, is not a run"
-  );
-});
-
-// R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered (dispatch://INFRA-83). The `E2E`
-// re-check wording carries the class search in both files that hold it.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
+// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
+// merge can bring a new instance of a class the branch already answered. The implementer's merge
+// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
+// pins.
+test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
   ).toContain(
-    "The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base"
-  );
-  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "the tester re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
-  );
-  countedOncePerFile(
-    "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/roles/tester.md",
-    ]
+    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
   );
 });
 
@@ -467,13 +425,95 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// A review round's pair is recorded as one row per half rather than prose, so a half that did not
+// run, or whose findings the reviewer set aside, shows in the body. The reviewer answers a
+// `CHANGES` from either half in its review, and approves only when both halves ran at the reviewed
+// head or both rows read `not run` for a diff that touches no runtime code.
+test("the pair is recorded as a row per half, and the reviewer approves only past both", () => {
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).toContain(
+    "over <the whole change | <last-reviewed-sha>..<sha>>, one row per half: - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them"
+  );
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain(
+    "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand"
+  );
+  expect(mergeGate).toContain("Your `APPROVE` needs both halves run at the reviewed head");
+  expect(mergeGate).toContain(
+    "or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code"
+  );
+});
+
+// The pair's own text bounds what it reads and what it reports: a range its task names limits
+// what it must read, and a defect it sees in code the pull request changed before that range is
+// still a finding, while code the pull request leaves unchanged stays out of its findings, because
+// the author fixes only the pull request's diff. Each agent definition is pinned for both halves,
+// and each sentence that bounded the findings by the diff the pair was given is pinned absent.
+// The daemon's prompts carry the later-round rule; prompts_test.go pins the composed reviewer
+// prompt. Every file's gaps are listed together, so a file that lost its sentence fails as loudly
+// as the first one checked.
+test("the review pair reads the range its task names and reports what the pull request changed", () => {
+  const pair = [
+    {
+      file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
+      says: [
+        "Do not report issues in code the pull request leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
+        "A range your task names limits what you must read, not what you report: a defect you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not report unchanged-code issues."],
+    },
+    {
+      file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      says: [
+        "Do not flag code the pull request leaves unchanged.",
+        "A range your task names limits what you must read, not what you flag: a smell you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not flag unchanged code."],
+    },
+  ];
+  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+    const text = collapsed(path.join(REPO_ROOT, file));
+    return [
+      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
+      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
+    ];
+  });
+  expect(scopedToTheRange).toEqual([]);
+});
+
+// The last two sentences of each task a reviewer is sent are always the daemon's: the commit's and
+// then the entry's, each naming `none` where there is no value for it. The workflow writes them
+// on each task of the reviewer it queues (the daemon's namingTheReviewRound), and the claim's send
+// writes them, naming `none` for both, on a task no such queue named, a task the release before
+// queued or an operator wrote (the daemon's supervise Delivery.message). The task's own text, a
+// retry's reason or a title, can hold the same words earlier. So each text that tells the reviewer
+// which commit its task names says that the last two are the daemon's and what each `none` means,
+// once: the daemon part, the role part and the core part of the reviewer's prompt.
+const reviewerTexts = [
+  "packages/daemon/internal/prompts/go/reviewer.md",
+  "packages/daemon/internal/prompts/roles/reviewer.md",
+  "packages/daemon/internal/prompts/roles/core/reviewer.md",
+];
+test("each reviewer text says the last two sentences of each task are always the daemon's", () => {
+  countedOncePerFile(
+    "The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.",
+    reviewerTexts
+  );
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
 test("every shipped prompt and bash-running agent says how to read a piped command's status", () => {
   countedOncePerFile(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: `${PIPESTATUS[0]}` is the shell expansion the rule teaches, quoted verbatim.
-    "Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail` inside a subshell of that one line; never set `pipefail` at the top level of your shell, where a later `cmd | head` exits 141 and reads as a failure although it did its job. Never pipe a write — a `dispatch` command that records something, or any command whose own output tells you what it did — into `head`, `tail` or `grep`: the status you read would be the pager's, and the line that says what happened is the line you cut.",
+    "Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail` inside a subshell of that one line; never set `-e`, `-u` or `pipefail` at the top level of your shell, where under `pipefail` a later `cmd | head` exits 141 and reads as a failure although it did its job, and under `-e` or `-u` a later command that fails or reads an unset variable ends the call there. Never pipe a write — a `dispatch` command that records something, or any command whose own output tells you what it did — into `head`, `tail` or `grep`: the status you read would be the pager's, and the line that says what happened is the line you cut.",
     [
       "packages/daemon/internal/prompts/go/worker-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
@@ -505,20 +545,13 @@ test("every prompt and agent that may write says to make its own scratch and del
 });
 
 // R9: a push moves the branch while the pull request can keep naming the old commit, so the new
-// commit gets no checks (dispatch://INFRA-1318). The step is one wording held across
-// `skill://legion-worker` and the daemon's worker prompt, counted once in each file, so the
-// pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
-// and the pins below hold what only the prompt carries and the skill points at. The carve-out
-// that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The
-// members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently, and so is the reviewer's rule that it pushes nothing, which
-// keeps the step from falling to it. This shows the text ships, never that a role follows it.
-test("the worker skill tells a role to read the pull request's head after its own push", () => {
-  const sharedWithTheWorkerPrompt = [
-    "skills/legion-worker/SKILL.md",
-    "packages/daemon/internal/prompts/go/worker-common.md",
-  ];
+// commit gets no checks. The daemon's worker prompt holds the step, each sentence counted once, so
+// the pinned sentences cannot drift. The carve-out that names the step's reads as the one sleep
+// the "never sleep in a loop" rule allows is held in the implementer's prompt part, and the
+// reviewer's rule that it pushes nothing keeps the step from falling to it. This shows the text
+// ships, never that a role follows it.
+test("the worker prompt tells a role to read the pull request's head after its own push", () => {
+  const workerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   const step = [
     "gh pr view <n> --repo <the issue's repository> --json headRefOid --jq .headRefOid",
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
@@ -526,100 +559,38 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "an empty one when your work is complete",
     "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-    "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
+    "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];
   for (const rule of step) {
-    countedOncePerFile(rule, sharedWithTheWorkerPrompt);
+    countedOncePerFile(rule, workerPrompt);
   }
   countedOncePerFile(
     "the step's spaced reads of the pull request's head after a push are the one sleep this rule allows, and they read no check",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/go/implementer.md",
-    ]
+    ["packages/daemon/internal/prompts/go/implementer.md"]
   );
-  const onlyInTheWorkerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   countedOncePerFile(
     "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m '<issue>: carry the pull request to the pushed commit'`",
-    onlyInTheWorkerPrompt
+    workerPrompt
   );
   countedOncePerFile(
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
-    onlyInTheWorkerPrompt
+    workerPrompt
   );
-  countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
   countedOncePerFile("Create no commit and push nothing, a prose fix included", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
-  expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
-    "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
-  );
 });
 
-// dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
-// runs it or records its result, and `dispatch results` derives that result. The worker skill's
-// page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
-// lists a check's attributes, carries the exception in one phrase, counted once per file, as does
-// the worker prompt's copy of the push step above. The role prompt parts are pinned in
-// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
-// Envoy plugin's guard.
-test("each text that orders a check run or recorded leaves out a check CI proves", () => {
+// A check carrying `ci_check` is proved by the CI run it names, so no role runs it or records its
+// result, and `dispatch results` derives that result. The worker prompt's copy of the push step
+// carries the exception in one phrase, counted once. The role prompt parts are pinned in
+// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`.
+test("the worker prompt's push step leaves out a check CI proves", () => {
   countedOncePerFile("check carrying `ci_check` is CI's", [
-    "skills/legion-worker/references/ci-checks.md",
-    "skills/legion-worker/SKILL.md",
-    "skills/legion-worker/references/pr-body.md",
-    "skills/legion-worker/references/merge-gate.md",
-    "skills/legion-retro/SKILL.md",
-    "skills/legion-architect/SKILL.md",
-    "skills/legion-architect/references/design-gate.md",
     "packages/daemon/internal/prompts/go/worker-common.md",
   ]);
-});
-
-// The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
-// by a derived result and names R5's three cases: a derived fail, or a run that concluded and
-// proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
-// answers is the architect's finding. The architect's last round records only the checks with no
-// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
-// core part says too.
-test("a derived result satisfies the passages that judge or record a check's evidence", () => {
-  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
-  expect(retro).toContain(
-    "A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
-  );
-  expect(retro).toContain(
-    "Wait for a run that has not concluded, and read again where GitHub could not be read."
-  );
-  expect(retro).toContain("Neither wait nor that finding moves the issue back.");
-  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "run each check with no `ci_check` on the default branch and record each result"
-  );
-  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
-    "recorded for no later step, except a `ci_check` job"
-  );
-  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
-    "A name no run answers once the head's checks have settled goes to the architect as a finding."
-  );
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run)"
-  );
-});
-
-// The architect writes a check as `ci_check` where a CI job on an ordinary pull request already
-// makes its proof, so the mechanism is used rather than only available (R5).
-test("the architect writes a check CI already proves as ci_check", () => {
-  expect(
-    collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))
-  ).toContain(
-    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write that check as `ci_check` rather than as a command."
-  );
-  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
-    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write `ci_check` rather than a command."
-  );
 });
 
 // A `ci_check` that no run of its name answers is a defect of the check's words, which the
@@ -668,93 +639,26 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(carried).toEqual([]);
 });
 
-// dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a
-// person opens, the architect shows that person the surface and gets their answer before it asks
-// them to approve the root spec. The rule is one bullet of section 1 and the section of the
-// design-gate reference that bullet sends the architect to, and each pin here is one of its
-// sentences, read from the staged partition. A pin fails when a later edit drops or rewords the
-// sentence, so the rule cannot leave the text a Legion pane loads in silence; none of them shows
-// that an architect in a live tree runs the round, which only that tree's own spec, its pictures
-// and the person's answer show.
-test("the architect shows a person the surface before it asks them to approve the spec", () => {
-  const skill = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
-  const gate = collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"));
-  expect(skill).toContain(
-    '**Show the surface before you ask.** Where this tree builds or changes a surface a person opens — a page, a screen, a dashboard — that person sees it and answers before you ask them to approve the spec, because they refuse a spec for a surface they have not seen. Whether a change needs that is your judgement, and a large visual change wants a page they can click rather than a picture. The readings, the round and where the pictures end up: `skill://legion-architect/references/design-gate.md`, "Show the surface before you ask". A change whose only reader surface is text carries that literal text in the spec instead; a change with no reader surface carries neither.'
-  );
-  expect(gate).toContain("## Show the surface before you ask");
-  expect(gate).toContain(
-    "Where this tree builds or changes a surface a person opens — a page, a screen, a dashboard — that person sees it and answers before you ask them to approve the spec. A spec for a surface they have not seen is refused, and the refusal costs a spec version, a closed gate, a second request and their time twice."
-  );
-  // The four readings that inform the judgement, each whole: a reading that lost its carve-out
-  // would send a round for every label change, or none for a new page.
-  expect(gate).toContain(
-    "Whether a change needs the round is your judgement. These readings inform it:"
-  );
-  expect(gate).toContain(
-    "A new surface a person opens, and a large visual change to one, need it. The larger the visual change, the more a page the person can click is worth over a picture: a person judges a layout from a picture, and judges a flow only by acting on it."
-  );
-  expect(gate).toContain(
-    "A small change inside a shape that stands — a label, a copy change, a style fix, a bug fix — does not, unless you are unsure what the person wants, which is itself a reason to show them."
-  );
-  expect(gate).toContain(
-    "A change whose only reader surface is text — an alert message, a report, a command's printed output — carries that literal text in the spec, at the values it will carry, and needs no round. The person reads the spec before the build; a pull request body reaches a reviewer after it."
-  );
-  expect(gate).toContain(
-    "A change with no surface a person reads needs nothing, and nothing in this section applies to it."
-  );
-  // The round and its five steps. A step's collapsed string carries the fenced block inside it,
-  // so the `chromium` recipe, the `dispatch artifact` upload and the picture-link form of a
-  // caption are pinned with the prose that introduces them.
-  expect(gate).toContain(
-    "The round is standard user research run on one reader: show the surface rather than describe it, let them act on it where the flow is the question, ask what they expected rather than whether they approve, and show another round on an answer that asks for changes (https://www.nngroup.com/articles/ux-prototype-hi-lo-fidelity)."
-  );
-  expect(gate).toContain("Before you first ask the person to approve the spec:");
-  expect(gate).toContain(
-    "Build the surface as a page, from real readings of the real system. Draw the empty state and the worst realistic data, or say which states you did not draw. Mark every invented figure in the picture itself, the way a check names its negative control: a picture whose figures are all plausible is the hardest one to judge. Where the surface exists already, draw it as it is now beside the new one: a picture a person cannot place is a round spent for nothing."
-  );
-  expect(gate).toContain(
-    "Take the picture with the pod's own Chromium, then put each one on the issue: ```bash chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \\ --screenshot=<file.png> file://<page.html> dispatch artifact --issue <KEY> --name <name>.png --path <file.png> ``` The upload stores it as an `image` artifact and prints its slug."
-  );
-  expect(gate).toContain(
-    "For a large visual change, or where the question is about a flow rather than a layout, build the page so the person can click it, put that one file up beside the pictures as a `file` artifact, and say in your question what works in it and what does not."
-  );
-  expect(gate).toContain(
-    "Ask one question with two to four answers, one of which says this is the wrong surface. Write no code on the branch for the round, and end your turn as for any question to a person."
-  );
-  expect(gate).toContain(
-    "The agreed pictures go in the spec, in line, each with a line of prose under it saying what it shows and which of its readings are real: ```md ![the priorities page with no priority set](dispatch://<KEY>/artifact/<slug>) The page as a reader opens it. The 529 issues and their ages are read from this deployment; the two ranks on the right are invented. ```"
-  );
-  expect(gate).toContain(
-    "One further line says what the pictures do not show: the states you did not draw."
-  );
-  expect(gate).toContain(
-    "The words of the spec still govern the build, because a reader on the command line gets the link text and not the picture."
-  );
-  expect(gate).toContain(
-    "You end the round, not the person: when their answer is carried into the pictures or into the spec, go on to the approval request with the pictures as they then stand. A person who stops answering holds nothing up."
-  );
-  expect(gate).toContain(
-    "The picture is the cheapest thing that answers the question. A labelled sketch is enough where it answers it. Where the real surface, built read-only, costs no more than the mock-up, build that and show that."
-  );
-  // The six ordering lines, each whole: they are what keeps the rule from closing an open gate or
-  // writing a spec version of its own, so a dropped one costs a tree its phase in flight.
-  expect(gate).toContain(
-    "A spec written before the picture is fine. What may not happen is reaching the gate with no picture."
-  );
-  expect(gate).toContain(
-    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and stops the phase under it ("After approval").'
-  );
-  expect(gate).toContain(
-    "The round writes no spec version of its own. The agreed pictures go into the version you first submit for approval."
-  );
-  expect(gate).toContain(
-    'A picture that must change after approval follows "After approval": it is a new version only when what is built changes, and then you request approval again.'
-  );
-  expect(gate).toContain(
-    "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
-  );
-  expect(gate).toContain(
-    "The surfaces this tree's children build are the root architect's. Their pictures go in the root spec. A sub-architect that finds a surface the root spec never drew tells the architect above it, and each architect above sends it up the tree to the root architect."
-  );
+// The completion that ends the retro rates the plan, and this skill's step that gives the two
+// fields is the one place the rule of the rating is stated in prose: the implementer prompt sends
+// the agent here (prompts_test.go), and the daemon refuses a completion that breaks the rule
+// (the daemon's planRatingOf and planRatingRefusal). So the step names the two
+// fields, the three codes the daemon refuses with, and the scale and the bound of the reason as the
+// contract holds them: a new scale or bound fails here until the skill states it. The bound is
+// pinned with the space before it, since step 5's "32,000 characters" holds "2,000 characters"
+// without it. This shows the text ships, never that a role follows it.
+test("the retro skill names the rating's fields, its refusals, its scale and its bound", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  for (const token of [
+    "`plan_rating`",
+    "`plan_reason`",
+    "`PLAN_RATING_REQUIRED`",
+    "`PLAN_RATING_UNEXPECTED`",
+    "`PLAN_RATING_INPUT`",
+    `${LEGION_PLAN_RATING_LEAST} (the plan cost the work)`,
+    `${LEGION_PLAN_RATING_MOST} (the plan fit the work)`,
+    ` ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
+  ]) {
+    expect(retro).toContain(token);
+  }
 });

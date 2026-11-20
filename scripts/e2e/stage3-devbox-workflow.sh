@@ -91,6 +91,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweeps end what carries it and
+# nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that execs nothing,
+# such as the pane_watcher, carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's last
+# line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -204,12 +210,11 @@ cleanup() {
   # stay up through the production audit above, which reads their sessions on production Envoy.
   # The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    # shellcheck disable=SC2046 # one pid per word
-    stop_box_login_processes $(run_processes)
+    stop_marked_processes "$work" "$box_login_stop_grace"
     unlink_box_login_db "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work"
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   close_unpassed_run_pull_requests
@@ -412,6 +417,21 @@ claim_session_text() {
   f=$(claim_session_file "$1" "$2") || return 1
   cat -- "$f"
 }
+# pane_bundle_listing ISSUE prints, one a line, what the implementer's own `ls` of its gh bundle's
+# root listed: the words after CRED-OWNERS= in the newest result of its bash tool that holds that
+# line. Only a tool result is read: the instruction holds the command unexpanded, so its own text
+# never starts a line with the marker, and the model's reply could say anything. It fails while
+# the session holds no such result.
+pane_bundle_listing() {
+  local text listed
+  text=$(claim_session_text "$1" implementer) || return 1
+  listed=$(jq -R -r 'fromjson? | objects
+    | select(.type == "message" and .message.role == "toolResult" and .message.toolName == "bash")
+    | .message.content[]? | select(.type == "text") | (.text // "") | split("\n")[]
+    | select(startswith("CRED-OWNERS="))' <<<"$text" | tail -n 1) || return 1
+  [ -n "$listed" ] || return 1
+  tr -s ' ' '\n' <<<"${listed#CRED-OWNERS=}" | sed '/^$/d'
+}
 workspace_jj() {
   local issue=$1
   shift
@@ -421,30 +441,29 @@ workspace_jj() {
 # ---- the production guards -------------------------------------------------------------------
 # A pane that can reach the operator's Dispatch or Envoy is not a scratch pane. Every registered
 # pane's OMP environment must name this rig's servers before the proof sends it an instruction.
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs $pin's own bin/omp ($omp_exe) by the kernel's
+# record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a
+# wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
-pane_value() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
-# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, or the
-# ANTHROPIC_API_KEY it must not carry: the agents' model is the configured route's, and a key in
-# OMP's environment would take the turn off that route.
+# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, the
+# ANTHROPIC_API_KEY it must not carry, or that its environment could not be read, and succeeds: the
+# agents' model is the configured route's, and a key in OMP's environment would take the turn off
+# that route. It fails, printing nothing, only when every endpoint is the rig's and the key's
+# absence holds on env_has's status 1 (lib/process-tree.sh). An environment that could not be read,
+# at either read, is a mismatch and never a clean one.
 endpoint_mismatch() {
-  local omp=$1 name want got
+  local omp=$1 name want got status
   for name in DISPATCH_URL DISPATCH_TOKEN_FILE ENVOY_URL ENVOY_NATS_URL; do
     case "$name" in
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
@@ -452,17 +471,25 @@ endpoint_mismatch() {
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
       ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
     esac
-    got=$(pane_value "$omp" "$name")
+    status=0
+    got=$(env_of "$omp" "$name") || status=$?
+    if [ "$status" != 0 ]; then
+      printf 'an environment that could not be read (env_of status %s)\n' "$status"
+      return 0
+    fi
     if [ "$got" != "$want" ]; then
       printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"
       return 0
     fi
   done
-  if grep -qz '^ANTHROPIC_API_KEY=' "/proc/$omp/environ" 2>/dev/null; then
-    printf 'ANTHROPIC_API_KEY set, want unset\n'
-    return 0
-  fi
-  return 1
+  status=0
+  env_has "$omp" ANTHROPIC_API_KEY || status=$?
+  case $status in
+    0) printf 'ANTHROPIC_API_KEY set, want unset\n' ;;
+    1) return 1 ;;
+    *) printf 'an environment that could not be read (env_has status %s)\n' "$status" ;;
+  esac
+  return 0
 }
 assert_claim_endpoints() {
   local issue=$1 role=$2 pane_pid omp mismatch
@@ -477,14 +504,15 @@ assert_claim_endpoints() {
 # A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
 # bounded wait aborts naming the pane.
 pane_watcher() {
-  local claims inc issue role omp mismatch
+  local claims inc issue role pane omp mismatch
   trap - EXIT ERR
   set +e
   while kill -0 "$$" 2>/dev/null; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        omp=$(omp_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        omp=$(omp_descendant "$pane") || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"
@@ -588,7 +616,7 @@ report_architect_suspension() {
 
 begin prerequisites
 refuse_leftovers legion-e2e3
-for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
@@ -737,6 +765,9 @@ until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY'
 # back: under box-login the profile's agent.db is the operator's login database.
 pin=${box_pin:-$(<"$root/.omp-pin")}
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs (daemon_runs_the_pinned_omp holds the daemon to it), by
+# which omp_descendant knows a pane's agent.
+omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the Oh My Pi $pin has no bin/omp"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'
@@ -818,7 +849,7 @@ primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
   # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
-  # its slot (root AGENTS.md, "Admission").
+  # its slot (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label").
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
@@ -1237,7 +1268,6 @@ restart_scenarios() {
   # The same session in the same process incarnation is what "no phase restarted" means; the claim's
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
-  kill -TERM "$daemon_pid"
   stop_pid "$daemon_pid"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored
@@ -1271,41 +1301,59 @@ restart_scenarios() {
   until_true 240 "the real Go pane bash tool to resolve the launcher directory's gh wrapper" session_contains "$restart_issue" implementer "CRED-GH=$state/bin/gh"
   until_true 240 "the implementer pane to name the real gh its wrapper runs" session_contains "$restart_issue" implementer "CRED-REAL=$realbin/gh"
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
-  until_true 240 "the implementer pane to list the bundle's one owner" session_contains "$restart_issue" implementer "CRED-OWNERS=$owner "
+  until_true 240 "the implementer pane to list its gh bundle's root" pane_bundle_listing "$restart_issue"
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
   implement_app=$(role_app implementer)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
-  # the project serves under that owner, each holding those two files alone; nothing else is in
-  # either.
+  # writes for the pane and nothing else, since a bundle holds one directory per owner account the
+  # App is installed on and no directory for a repository (INFRA-2543 R2). The root holds that
+  # directory, one more for each other account the App is installed on, and the bundle's one file,
+  # `renames.txt`, the configured renames both wrappers route a moved repository by, which every
+  # bundle this daemon writes carries, empty where the project has no rename that resolves.
+  # GitHub decides which accounts those are and this run does not: stage 3 defaults to this
+  # deployment's Apps, which are installed on several, so another owner's directory is no failure.
+  # The root is read twice, as the pane's own `ls` listed it and as this host holds it, and each
+  # reading must hold $owner and nothing that is neither a lowercased GitHub login, which is what
+  # a bundle's directory is named (ghconfig.IsOwner), nor that one file. A login is ghconfig's
+  # rule: a letter or digit, then up to 38 letters, digits, hyphens and underscores, since a
+  # managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its directory is a bundle's
+  # like any other; a name with a dot or a slash, one opening with a hyphen or an underscore, or
+  # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
-  cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
-  cred_dir=$(pane_value "$cred_omp" GH_CONFIG_DIR)
+  cred_root=$(env_of "$cred_omp" LEGION_GH_OWNERS_DIR)
+  cred_dir=$(env_of "$cred_omp" GH_CONFIG_DIR)
   [[ $cred_root == "$state/secrets/"*-implementer-gh ]] || fail "the implementer's OMP carries LEGION_GH_OWNERS_DIR=$cred_root, want the claim's bundle under $state/secrets"
   [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
-  [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $realbin/gh"
+  [ "$(env_of "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(env_of "$cred_omp" LEGION_GH_PATH || true), want $realbin/gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
+  cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
+  grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
+  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9_-]{0,38}' || true)
+  [ -z "$cred_strangers" ] ||
+    fail "the implementer pane's ls of its gh bundle's root lists an entry that is neither an owner's directory nor the bundle's renames.txt: $(tr '\n' ' ' <<<"$cred_strangers")"
   for dir in "$cred_root" "$cred_dir"; do
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
-  [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
+  cred_root_entries=$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  [ -d "$cred_root/$owner" ] || fail "$cred_root holds no directory for $owner; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  [ -f "$cred_root/renames.txt" ] || fail "$cred_root holds no renames.txt, which every bundle this daemon writes carries; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  while IFS= read -r entry; do
+    case $entry in
+      "" | renames.txt) continue ;;
+    esac
+    [[ $entry =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] && [ -d "$cred_root/$entry" ] ||
+      fail "$cred_root holds $entry, which is neither an owner's directory nor the bundle's renames.txt; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  done <<<"$cred_root_entries"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   done
-  while read -r cred_entry; do
-    case $cred_entry in
-      "" | config.yml | hosts.yml) continue ;;
-      . | .. | *[!a-z0-9._-]*) fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone" ;;
-    esac
-    [ -d "$cred_dir/$cred_entry" ] || fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone"
-    cred_held=$(find "$cred_dir/$cred_entry" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
-    [ "$cred_held" = "config.yml hosts.yml " ] || fail "$cred_dir/$cred_entry holds $cred_held, want config.yml and hosts.yml alone"
-  done <<<"$cred_owned"
+  [ "$(tr '\n' ' ' <<<"$cred_owned")" = "config.yml hosts.yml " ] ||
+    fail "$cred_dir holds an entry beside its two gh files, and a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"
@@ -1412,16 +1460,17 @@ stop_pid "$bridge_pid"; bridge_pid=
 # Under box-login the panes get SIGTERM and a bounded grace before the kills below, as cleanup
 # gives them (lib/box-login.sh); the profile's link to the operator's database goes with them.
 if [ "$model_route" = box-login ]; then
-  # shellcheck disable=SC2046 # one pid per word
-  stop_box_login_processes $(run_processes)
+  stop_marked_processes "$work" "$box_login_stop_grace" || fail "the run's processes could not be read for their SIGTERM"
   unlink_box_login_db "$profile_agent"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 note "the watcher, the daemon and Dispatch with their port keepers, the listener, bridge, private tmux server and every proof process stopped; both containers removed"
 pass
 

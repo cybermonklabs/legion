@@ -14,33 +14,42 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// claimsCommands is the operator's hand on the daemon's claims, one subcommand per operator route
-// and the one list of them `legion claims --help` names (internal/api/operator.go). retry relaunches
-// a failed claim: an architect on its session with fresh budgets, a phase worker through its issue's
-// held phase; with --failed, every failed claim. compact shortens a running claim's session and
-// sends it whatever task it owes again, which is what a claim whose provider keeps refusing its
-// session reaches for before a fresh one. close is the tree's close, through its root claim,
-// for a tree no workflow issue backs: the root, then every other claim of the tree.
-var claimsCommands = map[string]command{
-	"spawn":          runClaimsSpawn,
-	"deliver":        runClaimsDeliver,
-	"suspend":        runClaimsSuspend,
-	"resume":         claimRequest("resume"),
-	"stop":           claimRequest("stop"),
-	"retry":          runClaimsRetry,
-	"compact":        runClaimsCompact,
-	"forget-session": runClaimsForgetSession,
-	"close":          claimRequest("close"),
-	"list":           runClaimsList,
+// newClaimsCommand is the operator's hand on the daemon's claims, one command per operator route
+// (internal/api/operator.go). retry relaunches a failed claim: an architect on its session with
+// fresh budgets, a phase worker through its issue's held phase; with --failed, every failed claim.
+// compact shortens a running claim's session and sends it whatever task it owes again, which is
+// what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
+// the tree's close, through its root claim, for a tree no workflow issue backs: the root, then
+// every other claim of the tree.
+func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
+	return group(&cobra.Command{Use: "claims", Short: "the operator's hand on the daemon's claims"},
+		claimsCommand("spawn", "create a claim on a role of an issue and launch it", claimsSpawn, stdout, stderr),
+		claimsCommand("deliver", "give a claim a task", claimsDeliver, stdout, stderr),
+		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
+		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
+		claimsCommand("stop", "stop a claim's agent", claimRequest("stop"), stdout, stderr),
+		claimsCommand("retry", "retry a failed claim, or every failed claim", claimsRetry, stdout, stderr),
+		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
+		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
+		claimsCommand("release-names", "free the names of a claim's other sessions once the secrets broker carries nothing of them", claimsReleaseNames, stdout, stderr),
+		claimsCommand("close", "close a tree no workflow issue backs, through its root claim", claimRequest("close"), stdout, stderr),
+		claimsCommand("list", "print every claim the daemon supervises, one line each", claimsList, stdout, stderr),
+	)
 }
 
-func runClaims(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "claims", claimsCommands, args, stdout, stderr)
+// claimsCommand is `legion claims <sub>`: declare gives it the flags of its own beside the ones
+// every claims command takes (newClaimsCall), and answers its body.
+func claimsCommand(sub, short string, declare func(c *claimsCall) action, stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: sub, Short: short, Args: noArguments}
+	cmd.RunE = runs(declare(newClaimsCall(cmd, stdout, stderr)))
+	return cmd
 }
 
 // claimsRoute is the root of the daemon's operator claim routes.
@@ -53,19 +62,19 @@ type claimsCall struct {
 	asJSON *bool
 }
 
-// newClaimsCall is one `legion claims` subcommand's flags: the operator's three, --json, and the
-// --wait that bounds the whole call. Every subcommand takes it, so every one of them answers —
-// done, held until when, or refused with a reason — inside a bound the operator set
+// newClaimsCall gives cmd, one `legion claims` subcommand, its flags: the operator's three,
+// --json, and the --wait that bounds the whole call. Every subcommand takes it, so every one of
+// them answers — done, held until when, or refused with a reason — inside a bound the operator set
 // (dispatch://INFRA-714 R10).
-func newClaimsCall(sub string, stdout, stderr io.Writer) *claimsCall {
-	c := newOperatorCall("claims "+sub, "usage: legion claims "+sub+" [flags]", "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+func newClaimsCall(cmd *cobra.Command, stdout, stderr io.Writer) *claimsCall {
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
 	c.withWait("how long the whole command may take before it refuses with what it was waiting for")
 	return &claimsCall{operatorCall: c, asJSON: c.flags.Bool("json", false, "print the daemon's answer as it served it")}
 }
 
-// parse is operatorCall.parse with --operator-token-file among the required flags.
-func (c *claimsCall) parse(args []string, required ...string) (code int, ok bool) {
-	return c.operatorCall.parse(args, append([]string{"operator-token-file"}, required...)...)
+// check is operatorCall.check with --operator-token-file among the required flags.
+func (c *claimsCall) check(required ...string) (code int, ok bool) {
+	return c.operatorCall.check(append([]string{"operator-token-file"}, required...)...)
 }
 
 // send is operatorCall.send on an operator claim route, printing through printer.
@@ -135,8 +144,9 @@ func printClaims(w io.Writer, answer []byte) error {
 // podUpdateRoundsLine is the one line an operator reads for the pod rounds the daemon's last
 // sweep decided (api.PodUpdateRounds): the project's two limits, the issues holding a round under
 // them, and the issues each limit held back. No claim's own line says either half — an issue in a
-// round has every worker of it told to push and start nothing new, and an issue a limit held back
-// is drifted and was posted nothing at all — so a roll an operator thinks is stuck is read here.
+// round has every worker of it told to do the steps of its update message (supervise.UpdateTask)
+// and start nothing new, and an issue a limit held back is drifted and was posted nothing at
+// all — so a roll an operator thinks is stuck is read here.
 //
 // A daemon that has not swept says so rather than print each list empty, which would read as a
 // sweep that found nothing to do.
@@ -275,106 +285,144 @@ func quotedOrNone(value string) string {
 	return strconv.Quote(value)
 }
 
-// runClaimsSpawn creates the claim on --role of --issue, in the tree --tree roots, and launches
-// it. --prompt-file is an optional operator override; omitted, the daemon composes the role's
-// shared and Go-specific parts. --task is its first delivery, sent once the agent is ready.
-func runClaimsSpawn(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("spawn", stdout, stderr)
+// claimsSpawn creates the claim on --role of --issue, in the tree --tree roots, and launches it.
+// --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
+// and Go-specific parts. --task is its first delivery, sent once the agent is ready.
+func claimsSpawn(c *claimsCall) action {
 	tree := c.flags.String("tree", "", "issue key of the tree's root (required)")
 	issue := c.flags.String("issue", "", "issue key the claim is on (required)")
 	role := c.flags.String("role", "", "role the claim holds on the issue (required)")
 	promptFile := c.flags.String("prompt-file", "", "file holding an operator role-prompt override")
 	task := c.flags.String("task", "", "the claim's first task, sent once its agent is ready")
-	if code, ok := c.parse(args, "tree", "issue", "role"); !ok {
-		return code
-	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	prompt := ""
-	if *promptFile != "" {
-		body, err := os.ReadFile(*promptFile)
-		if err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the role prompt: %v\n", c.name, err)
-			return 1
-		}
-		prompt = string(body)
-	}
-	return c.send(ctx, op, http.MethodPost, "", api.SpawnRequest{
-		Tree: *tree, Issue: *issue, Role: legionclaim.Role(*role), Prompt: prompt, Task: *task,
-	}, printClaim)
-}
-
-// runClaimsDeliver gives --claim the task --task.
-func runClaimsDeliver(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("deliver", stdout, stderr)
-	token := c.flags.String("claim", "", "the claim's token (required)")
-	task := c.flags.String("task", "", "the task (required)")
-	if code, ok := c.parse(args, "claim", "task"); !ok {
-		return code
-	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/deliver", api.DeliverRequest{Task: *task}, printClaim)
-}
-
-// claimRequest is a subcommand that posts request, with no body, to --claim's route.
-func claimRequest(request string) command {
-	return func(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-		c := newClaimsCall(request, stdout, stderr)
-		token := c.flags.String("claim", "", "the claim's token (required)")
-		if code, ok := c.parse(args, "claim"); !ok {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("tree", "issue", "role"); !ok {
 			return code
 		}
 		op, ok := c.connect()
 		if !ok {
 			return 1
 		}
-		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/"+request, nil, printClaim)
+		prompt := ""
+		if *promptFile != "" {
+			body, err := os.ReadFile(*promptFile)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "%s: read the role prompt: %v\n", c.name(), err)
+				return 1
+			}
+			prompt = string(body)
+		}
+		return c.send(ctx, op, http.MethodPost, "", api.SpawnRequest{
+			Tree: *tree, Issue: *issue, Role: legionclaim.Role(*role), Prompt: prompt, Task: *task,
+		}, printClaim)
 	}
 }
 
-// runClaimsForgetSession clears the recorded session of a stopped claim. The operator must name
-// the session being abandoned, so it cannot clear a newly registered session by mistake.
-func runClaimsForgetSession(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("forget-session", stdout, stderr)
+// claimsDeliver gives --claim the task --task.
+func claimsDeliver(c *claimsCall) action {
+	token := c.flags.String("claim", "", "the claim's token (required)")
+	task := c.flags.String("task", "", "the task (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim", "task"); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/deliver", api.DeliverRequest{Task: *task}, printClaim)
+	}
+}
+
+// claimRequest is a subcommand that posts request, with no body, to --claim's route.
+func claimRequest(request string) func(c *claimsCall) action {
+	return func(c *claimsCall) action {
+		token := c.flags.String("claim", "", "the claim's token (required)")
+		return func(ctx context.Context, _ []string) int {
+			if code, ok := c.check("claim"); !ok {
+				return code
+			}
+			op, ok := c.connect()
+			if !ok {
+				return 1
+			}
+			return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/"+request, nil, printClaim)
+		}
+	}
+}
+
+// claimsForgetSession clears the recorded session of a stopped claim. The operator must name the
+// session being abandoned, so it cannot clear a newly registered session by mistake.
+func claimsForgetSession(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	session := c.flags.String("session", "", "the claim's recorded session to abandon (required)")
-	if code, ok := c.parse(args, "claim", "session"); !ok {
-		return code
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim", "session"); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/forget-session",
+			api.ForgetSessionRequest{Session: *session}, printClaim)
 	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/forget-session",
-		api.ForgetSessionRequest{Session: *session}, printClaim)
 }
 
-// runClaimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim
-// whatever task it owes again: what a claim whose provider keeps refusing its session reaches
-// for before a fresh session, since the session, its workspace and everything the worker knows
-// of its issue stay where they are (api's compact).
+// claimsReleaseNames frees the names of --claim's other sessions once the secrets broker carries
+// nothing of them (api's releaseNames): what a claim refused a new session at the most names one
+// claim may hold needs, often right after a forget-session. A refusal names each enrollment the
+// broker still carries and when it ends; nothing is freed then, and the operator runs it again.
+func claimsReleaseNames(c *claimsCall) action {
+	token := c.flags.String("claim", "", "the claim's token (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim"); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/release-names", nil, printReleasedNames)
+	}
+}
+
+// printReleasedNames is a release's answer as one line: how many names it freed, how it knew no
+// grant follows one, and the abandoned session it freed, if any.
+func printReleasedNames(w io.Writer, answer []byte) error {
+	var released api.ReleasedNames
+	if err := decodeAnswer(answer, &released); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%s: freed %d names of its other sessions; %s", released.Claim, len(released.Freed), released.Checked)
+	if released.Abandoned != "" {
+		line += "; the abandoned session " + released.Abandoned + " is marked released"
+	}
+	_, err := fmt.Fprintln(w, line)
+	return err
+}
+
+// claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
+// task it owes again: what a claim whose provider keeps refusing its session reaches for before a
+// fresh session, since the session, its workspace and everything the worker knows of its issue
+// stay where they are (api's compact).
 //
 // The request carries no deadline of its own, as no `legion claims` request does: a compaction
 // is a model call over the whole transcript, and the daemon bounds it at ten minutes
 // (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
 // compacted — a session too small to compact, or one already compacted, is reported with Oh My
 // Pi's own words for it, and whatever task the claim owed has gone again in either case.
-func runClaimsCompact(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("compact", stdout, stderr)
+func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
-	if code, ok := c.parse(args, "claim"); !ok {
-		return code
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim"); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/compact", nil, printCompaction)
 	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/compact", nil, printCompaction)
 }
 
 // printCompaction is the one line a compaction prints: whether the session was compacted, and
@@ -392,7 +440,7 @@ func printCompaction(w io.Writer, answer []byte) error {
 	return err
 }
 
-// runClaimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
+// claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
 // order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
 // phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
 // one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
@@ -406,22 +454,22 @@ func printCompaction(w io.Writer, answer []byte) error {
 // The daemon starts one of its own accord for a claim the provider refused out of its budget,
 // whoever retried it, so the flag is for every other reason an operator has to leave a session
 // behind — an agent wedged in a way no budget counts among them.
-func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("retry", stdout, stderr)
+func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
 	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
-	if code, ok := c.parse(args); !ok {
+	return func(ctx context.Context, _ []string) int { return c.retry(ctx, *token, *failed, *fresh) }
+}
+
+func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool) int {
+	if code, ok := c.check(); !ok {
 		return code
 	}
-	if (*token == "") != *failed {
-		if *failed {
-			fmt.Fprintf(c.stderr, "%s: --claim and --failed each name what to retry; give one\n", c.name)
-		} else {
-			fmt.Fprintf(c.stderr, "%s: --claim is required, or --failed\n", c.name)
+	if (token == "") != failed {
+		if failed {
+			return refuse(c.cmd, "--claim and --failed each name what to retry; give one")
 		}
-		c.flags.Usage()
-		return 2
+		return refuse(c.cmd, "--claim is required, or --failed")
 	}
 	op, ok := c.connect()
 	if !ok {
@@ -430,11 +478,11 @@ func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer
 	// A retry that asks for nothing sends no body at all, as every retry before the flag did: the
 	// daemon reads the body only when one is there.
 	var retry any
-	if *fresh {
+	if fresh {
 		retry = api.RetryRequest{FreshSession: true}
 	}
-	if !*failed {
-		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/retry", retry, printClaim)
+	if !failed {
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(token)+"/retry", retry, printClaim)
 	}
 	_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
 	if !ok {
@@ -442,7 +490,7 @@ func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	var list api.OperatorClaims
 	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, claimsRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
 		return 1
 	}
 	code := 0
@@ -451,39 +499,42 @@ func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer
 			continue
 		}
 		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
-			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name, held.Token)
+			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), held.Token)
 			code = 1
 		}
 	}
 	return code
 }
 
-// suspendPoll is how often runClaimsSuspend reads the claims while a suspension is held.
+// suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
 const suspendPoll = 250 * time.Millisecond
 
-// runClaimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
+// claimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
 // (200), and holds the suspension of one in a turn (202; supervise's holdSuspension), which the
 // command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,
 // suspended. A suspend of a worker whose start is still running is answered 200: the request
 // stops that start before it waits for the claim's decision (supervise's Handle), and the start
 // is charged nothing.
-func runClaimsSuspend(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("suspend", stdout, stderr)
+func claimsSuspend(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
-	if code, ok := c.parse(args, "claim"); !ok {
+	return func(ctx context.Context, _ []string) int { return c.suspend(ctx, *token) }
+}
+
+func (c *claimsCall) suspend(ctx context.Context, token string) int {
+	if code, ok := c.check("claim"); !ok {
 		return code
 	}
 	op, ok := c.connect()
 	if !ok {
 		return 1
 	}
-	path := claimsRoute + "/" + url.PathEscape(*token) + "/suspend"
+	path := claimsRoute + "/" + url.PathEscape(token) + "/suspend"
 	status, answer, ok := c.request(ctx, op, http.MethodPost, path, nil)
 	if !ok {
 		return 1
 	}
 	if status == http.StatusAccepted {
-		if answer, ok = c.awaitSuspended(ctx, op, legionclaim.Token(*token)); !ok {
+		if answer, ok = c.awaitSuspended(ctx, op, legionclaim.Token(token)); !ok {
 			return 1
 		}
 		path = claimsRoute
@@ -495,7 +546,7 @@ func runClaimsSuspend(ctx context.Context, args []string, stdout, stderr io.Writ
 // served it. Every other end stops the wait, reported as what it is and answering false: the claim
 // failed, retired, or left the daemon; the daemon holds its suspension no longer (a start run
 // against the claim dropped it, or the daemon restarted); or the command's --wait ran out while it
-// is still held. That bound is the call's own, fixed when the flags were parsed and shared with
+// is still held. That bound is the call's own, fixed when check read the call and shared with
 // every request it makes (operatorCall.bound), so the suspend request and this wait together take
 // no longer than the operator asked for.
 func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token) ([]byte, bool) {
@@ -506,12 +557,12 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		var list api.OperatorClaims
 		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, claimsRoute, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })
 		if i < 0 {
-			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not suspended\n", c.name, token)
+			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not suspended\n", c.name(), token)
 			return nil, false
 		}
 		seen := list.Claims[i]
@@ -519,43 +570,44 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		case supervise.StateSuspended:
 			suspended, err := json.Marshal(seen)
 			if err != nil {
-				fmt.Fprintf(c.stderr, "%s: %v\n", c.name, err)
+				fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 				return nil, false
 			}
 			// One line, as the daemon's own answers are.
 			return append(suspended, '\n'), true
 		case supervise.StateFailed, supervise.StateRetired:
-			fmt.Fprintf(c.stderr, "%s: %s is %s, so it will not be suspended\n", c.name, token, seen.State)
+			fmt.Fprintf(c.stderr, "%s: %s is %s, so it will not be suspended\n", c.name(), token, seen.State)
 			return nil, false
 		}
 		if !seen.SuspensionHeld {
 			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the suspension of %s, which is %s: a start run against "+
-				"the claim dropped it, or the daemon restarted\n", c.name, token, seen.State)
+				"the claim dropped it, or the daemon restarted\n", c.name(), token, seen.State)
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name, token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
 			return nil, false
 		}
 		select {
 		case <-ctx.Done():
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name, ctx.Err())
+			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), ctx.Err())
 			return nil, false
 		case <-time.After(suspendPoll):
 		}
 	}
 }
 
-// runClaimsList prints every claim the daemon supervises, one line each, in token order.
-func runClaimsList(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newClaimsCall("list", stdout, stderr)
-	if code, ok := c.parse(args); !ok {
-		return code
+// claimsList prints every claim the daemon supervises, one line each, in token order.
+func claimsList(c *claimsCall) action {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check(); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodGet, "", nil, printClaims)
 	}
-	op, ok := c.connect()
-	if !ok {
-		return 1
-	}
-	return c.send(ctx, op, http.MethodGet, "", nil, printClaims)
 }

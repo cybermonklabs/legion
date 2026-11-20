@@ -2,10 +2,11 @@
 
 // Two builds of Dispatch serving one Postgres and one NATS at once, which is what a rolling release
 // runs: the build that serves now (the previous build) and the build that rolls in beside it (this
-// tree). Each row starts one envoy-dispatch of each build, on one database storetest cloned at this
-// tree's schema (the previous build boots on it, which is the SQL half of the rule in
-// cmd/dispatch/README.md) and one NATS server, with one signing key, and drives the surface the
-// other build's clients use: the CLI (twobuild_cli_test.go), the stored documents and the document
+// tree). Each row starts one envoy-dispatch of each build, on one database at this tree's schema
+// that the builds migrated in production's order (laneDatabase: the previous build boots on it,
+// which is the SQL half of the rule in cmd/dispatch/README.md) and one NATS server, with one
+// signing key, and drives the surface the other build's clients use: the CLI
+// (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
 // (twobuild_messages_test.go), and what the page admission does while the previous build's process
 // is live and once it has left the registry (twobuild_transition_test.go). This file is the
@@ -27,14 +28,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -164,9 +172,109 @@ func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
 	return newTwoBuildsOf(t, openFirstRolloutBuild(t))
 }
 
+// newTwoBuildsOf's pair runs on the lane's database for build (laneDatabaseAfter), and fails the
+// test unless build booted on it first (requireEarlierBuildFirst).
 func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
 	t.Helper()
-	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+	binary := cmdtest.Build(t, "envoy-dispatch")
+	b := &twoBuilds{dispatchPair: newPairOn(t, laneDatabaseAfter(t, build, binary)), build: build, binary: binary}
+	requireEarlierBuildFirst(t, b)
+	return b
+}
+
+// laneDatabaseAfter is the lane's database for build, the earlier side, and current, this tree's
+// envoy-dispatch: what each row of build and its owner lock probe run on.
+func laneDatabaseAfter(t *testing.T, build previousBuild, current string) *store.Store {
+	t.Helper()
+	return laneDatabase(t, "two builds after "+build.dir, build.path("envoy-dispatch"), current)
+}
+
+// laneDatabase is the database a row's two builds share: a clone of a template made once per key
+// in the test binary, in production's order. The earlier build migrates the empty database, as the
+// release before this tree migrated production's, and the later one then migrates it forward, as a
+// rollout does (migrateInOrder), so the earlier build boots on what production would hold. A
+// database the later build migrated from empty, as storetest.Open's is for this tree, records the
+// later build's text of every migration as applied, which an earlier build that judges the applied
+// text refuses wherever the later one edits a migration it holds: the lane would be red for every
+// pull request that edits a shipped migration, its replaces line in place
+// (TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration, which runs
+// this function with such a pair). The arrival mark a boot of a build before the owner lock stamps
+// (owner_lock_legacy_mark) is cleared after the boots, as every test database starts without one.
+func laneDatabase(t *testing.T, key, earlier, later string) *store.Store {
+	t.Helper()
+	return storetest.OpenFrom(t, key, func(url string) error {
+		migrateInOrder(t, url, earlier, later)
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, url)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark")
+		return err
+	})
+}
+
+// lanePageEntry is the entry chunk of lanePage, the dashboard every process migrateInOrder boots
+// serves.
+const lanePageEntry = "/assets/index-twobuild-lane.js"
+
+// migrateInOrder boots each of binaries in turn alone on the database url names, with a NATS
+// server of its own, and stops it as a deploy does once it serves: the first migrates the empty
+// database, as a release before this one migrated production's, and each after it migrates the
+// database forward, as each rollout does. Each process deregisters as it stops, so none counts in
+// a later process's fleet. Each serves one dashboard, lanePage, and publishes it at boot, as every
+// release's process does: the database's row of that page (dashboard_builds) keeps the commit of
+// the process that published it first, since a later publish of the same page renews only its last
+// start (requireEarlierBuildFirst reads it). The page is no build a row starts, so no row's process
+// serves it and no row reads it.
+func migrateInOrder(t *testing.T, url string, binaries ...string) {
+	t.Helper()
+	_, nats := multiprocessNATS(t)
+	page := lanePage(t)
+	for _, binary := range binaries {
+		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary, WebDist: page})
+		p.waitHealthy(t)
+		stop(t, p)
+	}
+}
+
+// lanePage writes the web dist migrateInOrder's processes serve: an index.html that names
+// lanePageEntry, and that file.
+func lanePage(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	entry := filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(lanePageEntry, "/")))
+	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("// the two-build lane's page\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	page := `<!doctype html><script type="module" src="` + lanePageEntry + `"></script>` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// requireEarlierBuildFirst fails the test unless b's earlier build booted first on b's database,
+// before this tree did, which is production's order. The database's row of lanePage keeps the
+// commit of the first process that published it (migrateInOrder), and of the two only the earlier
+// build's binary carries a commit (build-dispatch-build.sh stamps it; cmdtest.Build stamps none).
+// A database the earlier build never booted on, as storetest.Open's, holds no such row, and one
+// this tree booted first names the empty commit.
+func requireEarlierBuildFirst(t *testing.T, b *twoBuilds) {
+	t.Helper()
+	var commits []string
+	if err := b.database.Pool.QueryRow(context.Background(),
+		"select coalesce(array_agg(commit order by commit), '{}') from dashboard_builds where entry = $1", lanePageEntry).Scan(&commits); err != nil {
+		t.Fatalf("read which build published the lane's page first: %v", err)
+	}
+	if len(commits) != 1 || commits[0] != b.build.commit {
+		t.Fatalf("the database the rows run on was not migrated first by the %s: its rows of the lane's page (%s in dashboard_builds) name the commits %q; want exactly %s, the build that boots first in production's order (laneDatabase)",
+			b.previousName(), lanePageEntry, commits, b.build.commit)
+	}
 }
 
 // options is what both builds' processes start with: the pair's NATS, the one signing key, and env.
@@ -250,4 +358,87 @@ func jsonBody(t *testing.T, value any) string {
 		t.Fatalf("encode a request body: %v", err)
 	}
 	return string(body)
+}
+
+// ───── the previous build's owner lock protocol ─────────────────────────────
+
+// registeredOwnerLockProtocol waits up to within for the one server process database's registry
+// holds (server_processes) and answers the owner lock protocol it registered with
+// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
+// before the owner lock, which writes no such column). process is that process, and name what a
+// failure calls it. The read polls, since a build may serve a moment before its registration
+// commits. It fails the test when the registry holds more than one process, when process exits
+// before its row reads, or when within passes first.
+func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		protocols, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		switch {
+		case len(protocols) == 1:
+			return protocols[0]
+		case len(protocols) > 1:
+			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
+				len(protocols), protocols, name)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
+		}
+		select {
+		case <-process.Exited:
+			t.Fatalf("the %s exited before it registered:\n%s", name, process.Output.String())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// probedOwnerLockProtocols is the owner lock protocol each previous build registered when
+// previousBuildOwnerLockProtocol booted it, by the build's directory. It lasts as long as the test
+// binary, so the rows that ask boot one probe between them.
+var probedOwnerLockProtocols = struct {
+	sync.Mutex
+	byDir map[string]int
+}{byDir: map[string]int{}}
+
+// previousBuildOwnerLockProtocol answers the owner lock protocol build registers, for a row that
+// must know it before build boots on the row's own database. A probe there would be the very thing
+// such a row tests: a build before the owner lock that boots on a database is an arrival there,
+// which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
+// (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
+// earlier build. So the probe boots build once alone, on a database of its own (laneDatabaseAfter, a
+// clone the row's database is not, at this tree's schema in production's order, which build boots
+// on) and a NATS server of its own, reads the protocol its process registers
+// (registeredOwnerLockProtocol), and kills the process. The answer is kept by the build's directory
+// for the rest of the test binary, and a later row reads it without a boot.
+func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
+	t.Helper()
+	probed := &probedOwnerLockProtocols
+	probed.Lock()
+	defer probed.Unlock()
+	if protocol, known := probed.byDir[build.dir]; known {
+		return protocol
+	}
+	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
+	database := laneDatabaseAfter(t, build, cmdtest.Build(t, "envoy-dispatch"))
+	_, nats := multiprocessNATS(t)
+	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
+		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
+	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	if err := probe.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill the %s: %v", name, err)
+	}
+	select {
+	case <-probe.Exited:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the %s was still running 30s after it was killed:\n%s", name, probe.Output.String())
+	}
+	probed.byDir[build.dir] = protocol
+	return protocol
 }

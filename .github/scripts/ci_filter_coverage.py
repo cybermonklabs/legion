@@ -8,11 +8,26 @@ of this repository running on a merge group - and main() runs them.
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
 import ...` gets these very classes.
+
+A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
+what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
+that differs (pin_difference, name_list_difference) or by both directories, or something around
+it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
+can change what it compiles or which tests it runs. The pin is also the table's word for which
+tests the step runs, and reading everything says nothing where a filter selects every Go file
+already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
+the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
+and a script's go command each job's steps up to the last one whose run: starts the script
+(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
+ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
+the recipe that runs it as CI does, GOROOT unset.
 """
 
 from __future__ import annotations
 
 import atexit
+import itertools
 import json
 import os
 import re
@@ -27,7 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
+from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
+from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -75,6 +91,11 @@ class RepositoryInputError(Exception):
         self.path = path
         self.cause = cause
 
+    def annotation(self) -> Annotation:
+        """The refusal this error is reported as, by this check and by the checks that borrow its
+        readers: the file, and why it could not be read."""
+        return error(self.path, f"cannot read repository input: {self.cause}")
+
 
 def repository_path(path: Path) -> str:
     """The file property for a repository path, relative where that is possible."""
@@ -99,9 +120,11 @@ def read_repository_text(path: Path) -> str:
 
 
 def load_repository_yaml(path: Path):
-    """Parse a repository YAML file, retaining its path if the parser refuses it."""
+    """Parse a repository YAML file, retaining its path if the parser refuses it. A mapping that
+    holds one key twice is refused (UniqueKeyLoader), as js-yaml and GitHub's workflow parser
+    refuse it, rather than read as its last copy."""
     try:
-        return yaml.safe_load(read_repository_text(path))
+        return yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
     except RepositoryInputError:
         raise
     except yaml.YAMLError as exc:
@@ -109,9 +132,10 @@ def load_repository_yaml(path: Path):
 
 
 def load_repository_yaml_text(path: str, text: str):
-    """Parse YAML obtained from a repository file field, retaining that file's path."""
+    """Parse YAML obtained from a repository file field, retaining that file's path. A repeated
+    key is refused, as load_repository_yaml refuses it."""
     try:
-        return yaml.safe_load(text)
+        return yaml.load(text, Loader=UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise RepositoryInputError(path, exc) from exc
 
@@ -176,8 +200,11 @@ class Exact:
     """A run: step of the gate's job whose go commands are not in the simple form, pinned to its
     whole script (compared as text, after trailing whitespace, and never parsed) and to the
     directory it runs in. Its `runs`, unpinned, stand for what the script compiles: while the
-    step holds exactly that script, every go line of it is claimed and the runs' closures are
-    what the job reads; once it differs, every run counts as reading everything a go command can."""
+    step holds exactly that script there, every go line of it is claimed and the runs' closures
+    are what the job reads. Since the pin is also the table's word for which tests the step runs,
+    a step whose script or directory differs is refused, naming the first line that differs or
+    both directories, and so is one whose env, shell, container or job could move what it compiles
+    or which tests it runs, naming what does (refuse_off_pin)."""
 
     step: str
     workdir: str
@@ -384,17 +411,6 @@ class Session:
         return self.cache[key]
 
 
-def decode_stream(text: str) -> list:
-    decoder, index, out = json.JSONDecoder(), 0, []
-    while True:
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            return out
-        obj, index = decoder.raw_decode(text, index)
-        out.append(obj)
-
-
 def rel(path: str) -> str | None:
     try:
         return Path(path).resolve().relative_to(REPO).as_posix()
@@ -531,14 +547,6 @@ def embedded_tree(top: Path, everything: bool) -> list:
         files += [here / n for n in sorted(names)
                   if embeddable(n) and (here / n).is_file() and not (here / n).is_symlink()]
     return files
-
-
-def go_skips_dir(parent: Path, name: str) -> bool:
-    """Whether the go command passes over a directory of a `<root>/...` pattern: testdata, a name
-    starting with `.` or `_`, node_modules, and a nested module. ci_job_reads.py walks the race
-    lane's `/...` packages by this rule too, so the two walks cannot drift."""
-    return (name == "testdata" or name.startswith((".", "_")) or name == "node_modules"
-            or (parent / name / "go.mod").is_file())
 
 
 def test_build_files(listing: list) -> dict:
@@ -698,6 +706,7 @@ def repo_files() -> list:
     return sorted({f for f in out if f and (REPO / f).is_file()})
 
 
+
 class Expander:
     """The files each glob of a filter or a declared read names. A glob's answer is kept: the
     repository's files do not change during a run, and the three rules that expand patterns -
@@ -759,103 +768,140 @@ def flatten(value) -> list:
     return []
 
 
-# Rule 18's numbers. Linux caps one environment variable's whole `NAME=value` string at
-# MAX_ARG_STRLEN, 131,072 bytes, and Actions hands a step's `filters` input to the action as
-# INPUT_FILTERS, so a filters string near that is a `changes` job that cannot start at all.
-# The margin is a quarter of the cap. No step's size is kept here, since every filter edit
-# would move it, and the check prints a size only in the refusal of a step that reaches the
-# margin; the 14 bytes of the `INPUT_FILTERS=` the kernel counts beside the value are inside
-# that margin many times over.
-ARG_STRLEN = 131072
-FILTERS_MARGIN = 32768
-FILTERS_LIMIT = ARG_STRLEN - FILTERS_MARGIN
+# Where every filter of the changes job is. ci.yaml's one dorny/paths-filter step hands the action
+# this path rather than a filters string of its own (rule 21 refuses any other input), and the
+# action reads the file off the runner's disk, so every rule here reads that file too.
+FILTERS_FILE = ".github/ci-filters.yaml"
+
+
+def read_filters_file() -> str:
+    """The text of .github/ci-filters.yaml. Three answers and no fourth: the text; a refusal
+    naming the file as absent; and a refusal naming it as a path that is there and refuses the
+    open - a directory, a file this process may not read, bytes that are not UTF-8. Each refusal
+    is a RepositoryInputError, which ends the run with that one annotation: never an empty
+    mapping, a default or a warning, since every job of ci.yaml is selected by a filter of this
+    file and a run that read none would hold every filter to nothing."""
+    path = REPO / FILTERS_FILE
+    try:
+        return path.read_text()
+    except FileNotFoundError as exc:
+        raise RepositoryInputError(FILTERS_FILE, RuntimeError(
+            f"{FILTERS_FILE} is absent, and it is the file every filter of ci.yaml's changes job is read "
+            f"from, so no job could be selected by one")) from exc
+    except (OSError, UnicodeError) as exc:
+        why = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        raise RepositoryInputError(FILTERS_FILE, RuntimeError(
+            f"{FILTERS_FILE} is there and refuses the open ({type(exc).__name__}: {why}), so no filter of "
+            f"ci.yaml's changes job can be read from it")) from exc
+
+
+def filter_input_steps(job: dict) -> list:
+    """The dorny/paths-filter steps of one job."""
+    return [step for step in (job.get("steps") or [])
+            if isinstance(step, dict) and str(step.get("uses", "")).startswith("dorny/paths-filter")]
+
+
+def reads_filters_file(step: dict) -> bool:
+    """Whether a paths-filter step hands the action exactly FILTERS_FILE, as a plain scalar.
+    dorny/paths-filter v4.0.3 takes its `filters` input as the path of a file when the text holds
+    no newline and no colon, and as inline YAML otherwise (src/main.ts, isPathInput); the path
+    written alone is the one form that is a path to every reader, so it is the one admitted."""
+    return (step.get("with") or {}).get("filters") == FILTERS_FILE
 
 
 def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
-    """The filters the changes job declares, with the quantifier each was declared under and the
-    steps that declare it. It reads ci.yaml alone, and no workflow ci.yaml calls: the changes job
-    and its paths-filter steps are ci.yaml's, and a called file is reached only through a caller
-    job the changes job already gates.
+    """The filters of .github/ci-filters.yaml, with the quantifier the changes job reads them
+    under, and the file's lines, which the rule 17 writer and the listed blocks are read from: the
+    file is read once, and both come from that one read. The steps are read from ci.yaml alone,
+    and no workflow ci.yaml calls: the changes job and its paths-filter step are ci.yaml's, and a
+    called file is reached only through a caller job the changes job already gates.
 
-    Every paths-filter step of the job is read, since the filters are declared in more than one
-    (rule 18, and ci.yaml's `changes` job says why). A group more than one step writes out is one
-    filter here, as it is to dorny/paths-filter: each copy must be the same patterns under the same
-    quantifier, and a name an output of the job reads may be in one step only (rule 19,
-    check_output_steps)."""
-    filters, quantifiers, holders = {}, {}, defaultdict(list)
-    steps = ((document.get("jobs") or {}).get("changes") or {}).get("steps") or []
+    A paths-filter step that does not hand the action exactly that file is rule 21's refusal
+    (check_filter_inputs), and no filter is read from it here: every rule of this check reads the
+    file, so a filter declared anywhere else is one none of them has seen. With no step reading
+    the file, the job has no filter this check knows of. Two steps that both read it under
+    different quantifiers would make one filter mean two things, which is refused."""
+    text = read_filters_file()
+    lines = text.splitlines()
+    steps = filter_input_steps((document.get("jobs") or {}).get("changes") or {})
+    if not steps:
+        problems.append(error(WORKFLOW, "no changes job with a dorny/paths-filter step"))
+        return {}, {}, lines
+    declared = set()
     for step in steps:
-        if not str(step.get("uses", "")).startswith("dorny/paths-filter"):
+        if not reads_filters_file(step):
             continue
-        options = step.get("with") or {}
-        declared = str(options.get("filters", ""))
-        size = len(declared.encode())
-        if size >= FILTERS_LIMIT:
-            problems.append(error(WORKFLOW, f"the changes job's paths-filter step {step.get('id')} passes "
-                                            f"a filters string of {size} bytes, within {FILTERS_MARGIN} bytes of the "
-                                            f"{ARG_STRLEN}-byte cap Linux puts on the INPUT_FILTERS environment variable "
-                                            f"Actions hands the action; move filters of it into another paths-filter "
-                                            f"step of the job"))
-        quantifier = str(options.get("predicate-quantifier", "some"))
+        quantifier = str((step.get("with") or {}).get("predicate-quantifier", "some"))
         if quantifier not in PathsFilter.QUANTIFIERS:
             problems.append(error(WORKFLOW, f"the changes job's paths-filter step {step.get('id')} has "
                                              f"predicate-quantifier {quantifier}, which this check does not model"))
             continue
-        for name, value in (load_repository_yaml_text(WORKFLOW, declared) or {}).items():
-            patterns = flatten(value)
-            if name in filters:
-                if patterns != filters[name] or quantifier != quantifiers[name]:
-                    problems.append(error(WORKFLOW, f"filter {name} is declared in paths-filter steps "
-                                                    f"{holders[name][0]} and {step.get('id')} of the changes job, and "
-                                                    f"the two do not say the same thing; a group written out in more "
-                                                    f"than one step must be the same patterns under the same "
-                                                    f"quantifier in each"))
-            else:
-                filters[name], quantifiers[name] = patterns, quantifier
-            holders[name].append(str(step.get("id", "")))
-    if not filters:
-        problems.append(error(WORKFLOW, "no changes job with a dorny/paths-filter step"))
-    return filters, quantifiers, dict(holders)
+        declared.add(quantifier)
+    if len(declared) != 1:
+        if declared:
+            problems.append(error(WORKFLOW, f"the changes job's paths-filter steps read {FILTERS_FILE} under "
+                                            f"predicate-quantifier {' and '.join(sorted(declared))}, so one filter of "
+                                            f"it means two things; give every such step the same quantifier"))
+        return {}, {}, lines
+    quantifier = declared.pop()
+    loaded = load_repository_yaml_text(FILTERS_FILE, text)
+    if not isinstance(loaded, dict) or not loaded:
+        problems.append(error(FILTERS_FILE, "this file holds no filter: dorny/paths-filter reads it as a mapping of "
+                                            "filter name to patterns, and the changes job selects every job by it"))
+        return {}, {}, lines
+    filters = {str(name): flatten(value) for name, value in loaded.items()}
+    return filters, {name: quantifier for name in filters}, lines
+
+
+def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
+    """Rule 21: every dorny/paths-filter step of every workflow of .github/workflows hands the
+    action exactly .github/ci-filters.yaml. Every rule of this check reads that file, so a filter
+    written into a workflow's own text instead would be read by none of them: it would gate its
+    job on patterns no coverage rule here has seen, and nothing would say so."""
+    for path, document in workflows.items():
+        jobs = document.get("jobs") if isinstance(document, dict) else None
+        for job_id, job in (jobs if isinstance(jobs, dict) else {}).items():
+            for step in filter_input_steps(job if isinstance(job, dict) else {}):
+                if reads_filters_file(step):
+                    continue
+                problems.append(error(path, f"the paths-filter step {step_label(step)} of job {job_id} passes a "
+                                            f"`filters` input that is not exactly {FILTERS_FILE}; every filter is read "
+                                            f"from that file, so one declared anywhere else is covered by no rule of "
+                                            f"this check and gates its job on whatever it says, unread"))
 
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
 STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
 
 
-def check_output_steps(document: dict, holders: dict, problems: list[Annotation]) -> None:
+def check_output_steps(document: dict, filters: dict, problems: list[Annotation]) -> None:
     """Rule 19: every `steps.<id>.outputs.<name>` an output of the changes job hands on must name
-    the paths-filter step that declares filter <name>, and a filter an output reads must be
-    declared in one step alone. A reference to a step that is no paths-filter step carries no
-    filter (the step that merges the paths-filter steps' verdicts) and is held only to being a step of the
-    job."""
+    the job's dorny/paths-filter step and a filter .github/ci-filters.yaml holds. Which step
+    declares a name was the other half of this rule, and the filters being one file has left it
+    no subject: the step hands that file over whole, so a name is a filter of the job exactly when
+    the file holds it. A reference to a paths-filter step that reads no such file is passed over
+    here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
+    every name while no filter was read at all, since each way that happens is refused on its own
+    (changes_filters, rule 21) and holding the names to nothing would refuse every output again."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
-    filter_ids = {str(s.get("id", "")) for s in steps
-                  if str(s.get("uses", "")).startswith("dorny/paths-filter")}
+    filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
     for output, expression in (job.get("outputs") or {}).items():
         for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
                                                 f"so the output is empty on every run"))
-            elif step_id not in filter_ids:
-                continue
-            elif name not in holders:
+            elif step_id not in filter_steps:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
-                                                f"steps.{step_id}.outputs.{name}, and no paths-filter step of the "
-                                                f"job declares a filter {name}, so the output is empty on every run"))
-            elif step_id not in holders[name]:
+                                                f"steps.{step_id}.outputs.{name}, and step {step_id} is no "
+                                                f"dorny/paths-filter step of the job, so it writes no filter's verdict "
+                                                f"and the output is empty on every run"))
+            elif filters and reads_filters_file(filter_steps[step_id]) and name not in filters:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
-                                                f"steps.{step_id}.outputs.{name}, and filter {name} is declared in "
-                                                f"step {holders[name][0]}, not in {step_id}, so the output is empty "
-                                                f"on every run"))
-            elif len(holders[name]) > 1:
-                problems.append(error(WORKFLOW, f"the changes job's output {output} reads filter {name}, "
-                                                f"which paths-filter steps {' and '.join(holders[name])} both "
-                                                f"declare, so the output hands on one step's verdict and the "
-                                                f"other's is written for nothing; declare a filter an output reads "
-                                                f"in one step"))
+                                                f"steps.{step_id}.outputs.{name}, and {FILTERS_FILE} holds no filter "
+                                                f"{name}, so the output is empty on every run"))
 
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
@@ -975,11 +1021,124 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
+def odd_character(text: str) -> str | None:
+    """The first character of text outside printable ASCII, tabs and newlines, which Python and
+    bash may split, strip or read differently (a \\r, a NBSP); None when it holds none."""
+    return next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+
+
 def script_reason(text: str) -> str:
     """'' when a run: script holds only printable ASCII, tabs and newlines; else the first other
-    character, which Python and bash may split, strip or read differently (a \\r, a NBSP)."""
-    odd = next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+    character (odd_character)."""
+    odd = odd_character(text)
     return f"its step's script holds the character U+{ord(odd):04X}" if odd else ""
+
+
+# The anchored alternation of whole test names ci_job_reads.py writes into the -run or -skip of a
+# pinned script, `-run '^(Name|Name)$'`, each name a Go identifier. Where those lists are all a
+# step's line and its pin differ in, the refusal names the tests either side lacks rather than
+# quoting the line, which can run past a thousand characters: the text-check step's -run holds
+# fifteen names. A list holding any other pattern (`TestA.*`) is quoted like any other line,
+# since which tests a pattern selects is go's to say, not a set difference of its text.
+NAME_LIST = re.compile(r"(-run|-skip) '\^\(([A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*)\)\$'")
+# A run of what bash splits words at, which the "spaces or tabs alone" reading compares lines by:
+# not Python's str.split(), which also splits at a no-break space bash reads as part of a word.
+BASH_BLANKS = re.compile(r"[ \t]+")
+# How much of a differing line a refusal quotes on each side of the difference.
+DIFFERENCE_CONTEXT = 40
+
+
+def excerpt(line: str, start: int, end: int) -> str:
+    """line[start:end], the part of a line that differs, with DIFFERENCE_CONTEXT characters on each
+    side and `...` where that cuts the line."""
+    low, high = max(0, start - DIFFERENCE_CONTEXT), min(len(line), end + DIFFERENCE_CONTEXT)
+    return f"{'...' if low else ''}{line[low:high]}{'...' if high < len(line) else ''}"
+
+
+def quoted(line: str) -> str:
+    """A line of a script as a refusal quotes it whole: in backticks, or `a blank line` for one
+    that holds nothing but spaces and tabs, which backticks would show as nothing."""
+    return f"`{line}`" if line.strip(" \t") else "a blank line"
+
+
+def held_character(part: str) -> str:
+    """What a refusal adds after quoting `part` of a step's line: the first character of it
+    outside printable ASCII and tab (odd_character), or ''."""
+    odd = odd_character(part)
+    return f", and holds the character U+{ord(odd):04X} there" if odd else ""
+
+
+def name_list_difference(line: str, pin: str) -> str:
+    """What the anchored name lists (NAME_LIST) of a step's line do that its pin's do not, where
+    those lists, the same flags in the same order, are all the two lines differ in: per list, each
+    test a -run leaves out or names besides the pinned -run, each test a -skip no longer skips or
+    skips besides the pinned -skip, or that a list names the pinned one's tests in another order or
+    more than once. '' where anything else differs, and where the lists are the pin's but stand
+    elsewhere in a line that reads the same without them."""
+    lists, pins = NAME_LIST.findall(line), NAME_LIST.findall(pin)
+    if (not lists or [flag for flag, _ in lists] != [flag for flag, _ in pins]
+            or NAME_LIST.sub("", line) != NAME_LIST.sub("", pin)):
+        return ""
+    parts = []
+    for (flag, got), (_, wanted) in zip(lists, pins):
+        got_names, wanted_names = set(got.split("|")), set(wanted.split("|"))
+        gone = ", ".join(sorted(wanted_names - got_names))
+        extra = ", ".join(sorted(got_names - wanted_names))
+        if gone:
+            parts.append(f"its -run leaves out {gone}, which the pinned -run names" if flag == "-run"
+                         else f"its -skip no longer skips {gone}, which the pinned -skip skips")
+        if extra:
+            parts.append(f"its -run names {extra}, which the pinned -run does not" if flag == "-run"
+                         else f"its -skip also skips {extra}, which the pinned -skip does not")
+        if got != wanted and not gone and not extra:
+            parts.append(f"its {flag} names the pinned {flag}'s tests in another order or more than once")
+    return "; ".join(parts)
+
+
+def pin_difference(script: str, pinned: str) -> str:
+    """'' when a step's run: script is the text its Exact entry pins, compared as the entry
+    compares them (after trailing whitespace, nothing parsed). Else the first line that differs, by
+    its number in the script, in one of seven forms:
+      * `its line N, <the line>, is past the pinned text's last line`: the step's script goes on
+        where the pin has ended;
+      * `it ends before the pinned text's line N, <that line>`: the pin goes on where the script
+        has ended;
+      * `on its line N, <what its name lists do>` (name_list_difference), where all that differs
+        on the line is its anchored -run or -skip lists of test names;
+      * `its line N differs from the pinned text's in spaces or tabs alone`, quoting neither;
+      * `its line N is a blank line where the pinned text's reads <its start>`, and
+      * `its line N reads <its start> where the pinned text's line is a blank line`, a blank line
+        being one of spaces and tabs alone, which backticks would show as nothing, and its start
+        the line's first 2 * DIFFERENCE_CONTEXT characters;
+      * else `its line N reads <part> where the pinned text's reads <part>`: both lines from the
+        first character that differs to the last, DIFFERENCE_CONTEXT characters either side.
+    The last two forms go on to name the first character of the step's part they quote outside
+    printable ASCII and tab, when it holds one (held_character). A line quoted whole is quoted as
+    quoted() quotes it."""
+    have, want = script.rstrip().split("\n"), pinned.rstrip().split("\n")
+    if have == want:
+        return ""
+    i = next((i for i, (a, b) in enumerate(zip(have, want)) if a != b), min(len(have), len(want)))
+    if i == len(want):
+        return f"its line {i + 1}, {quoted(have[i])}, is past the pinned text's last line"
+    if i == len(have):
+        return f"it ends before the pinned text's line {i + 1}, {quoted(want[i])}"
+    line, pin = have[i], want[i]
+    lists = name_list_difference(line, pin)
+    if lists:
+        return f"on its line {i + 1}, {lists}"
+    if BASH_BLANKS.split(line.strip(" \t")) == BASH_BLANKS.split(pin.strip(" \t")):
+        return f"its line {i + 1} differs from the pinned text's in spaces or tabs alone"
+    if not line.strip(" \t"):
+        return (f"its line {i + 1} is a blank line where the pinned text's reads "
+                f"`{excerpt(pin, 0, DIFFERENCE_CONTEXT)}`")
+    if not pin.strip(" \t"):
+        return (f"its line {i + 1} reads `{excerpt(line, 0, DIFFERENCE_CONTEXT)}` where the pinned text's line "
+                f"is a blank line" + held_character(line[:2 * DIFFERENCE_CONTEXT]))
+    start = len(os.path.commonprefix([line, pin]))
+    same_end = len(os.path.commonprefix([line[start:][::-1], pin[start:][::-1]]))
+    return (f"its line {i + 1} reads `{excerpt(line, start, len(line) - same_end)}` where the pinned text's reads "
+            f"`{excerpt(pin, start, len(pin) - same_end)}`" + held_character(line[start:len(line) - same_end]))
 
 
 def go_lines(text: str) -> list:
@@ -1053,11 +1212,12 @@ def reduce_line(line: str) -> tuple:
 
 
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
-# reduced: names that cannot change what the command compiles. Any other name falls to everything,
+# reduced, or a step an exact entry pins stays unrefused: names that cannot change what the command
+# compiles or which tests it runs. Any other name falls to everything, or refuses the pinned step,
 # among them GO* and CGO_*, BASH_ENV and ENV (which bash sources before the script), HOME and
 # XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from $XDG_CONFIG_HOME/go/env or else
 # $HOME/.config/go/env) and PATH (which chooses the go binary). Add a name here only when go
-# compiles the same files with it set as without.
+# compiles the same files with it set as without, and runs the same tests.
 #
 # GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
 # never which version: the module files this check already reads decide that, and go.sum holds
@@ -1076,14 +1236,25 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # env_reason reads every step's block whatever its order, so without this name here every go
-    # command of that job would count as unreduced and go_notices would have to match every Go
-    # file of the repository again. go reads it nowhere.
+    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
+    # step among them, so without this name here every go command of that script would count as
+    # unreduced and go_notices would have to match every Go file of the repository again. go reads
+    # it nowhere.
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PREVIOUS_COMMIT",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
+    # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
+    # it picks to the command as an argument, and go reads it nowhere.
+    "MIGRATION_BASE",
+    "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
+    # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
+    # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this
+    # check reads every step of a called file beside the go commands its other job runs. go reads
+    # it nowhere.
+    "PRIVATE_NAME_TERMS",
 })
 
 
@@ -1129,14 +1300,49 @@ def job_reason(job: dict) -> str:
     """The first step of the job whose run: writes $GITHUB_ENV or $GITHUB_PATH or runs `go env -w`,
     which reach every later go command of the job without showing on its line, or ''. Read line by
     line through script_lines, as a step's go commands are: a `#` line is not a command, so a step
-    whose comment names $GITHUB_ENV to say it writes none (dispatch-browser.yaml's install steps)
-    writes none here either."""
+    whose comment names $GITHUB_ENV to say it writes none writes none here either."""
     for step in job.get("steps") or []:
         for line in script_lines(str(step.get("run", ""))):
             written = ENV_WRITE.search(line)
             if written:
                 return f'step "{step_label(step)}" runs `{written.group(0)}`, which every later step inherits'
     return ""
+
+
+def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
+    """The job as `step` sees it: its steps before that one, and with `including` that one too. A
+    step's write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after it, so a step later in
+    the job moves nothing `step` runs: reading the whole job would refuse a pinned step, or widen a
+    claimed command, for a write that comes after it. `step`'s own script is read with it where
+    that script is no pin: its `go env -w` reaches its later go commands. A pinned step's own
+    script is what its entry pins, so refuse_off_pin reads only the steps before it. The whole job
+    where `step` is none of its steps."""
+    steps = job.get("steps") or []
+    at = next((i for i, s in enumerate(steps) if s is step), None)
+    return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
+
+
+# What may come before a script's path where a step starts it: the start of a line, a space, a
+# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
+# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
+# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
+# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
+SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
+
+
+def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
+    """Whether a run: step names the repository script `source`: by its path from the repository
+    root, or from the directory the step runs in, as a whole word of its run: text after one of
+    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
+    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
+    `./<script>` among them. The script's own parent directories before its path from the step's
+    directory make its path from the root, which is read as that; any other directory before it
+    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
+    counts."""
+    run = str(step.get("run", ""))
+    workdir = step_workdir(holder, job, step)
+    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
+    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
 
 
 def around_reason(document: dict, job: dict, steps: list) -> str:
@@ -1195,15 +1401,74 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command it starts compiles,
-    over its own steps and those of a workflow it calls, each read under the env:, defaults and
-    container of the file that holds it; or ''."""
+def around_job(units: list, owner: str, source: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command its script `source`
+    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
+    defaults and container of the file that holds it; or ''. A job some step of which names the
+    script (names_script) is read up to and including the last such step, since a step after it
+    runs after the script. A job that names it nowhere is read whole, since it may start the
+    script some way this check does not see - in a form names_script does not read, by another
+    script, or by a test it compiles."""
     for own, _, _, holder, job in units:
-        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
+        if own != owner:
+            continue
+        steps = job.get("steps") or []
+        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
+        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
+        reason = around_reason(holder, read, read.get("steps") or [])
         if reason:
             return reason
     return ""
+
+
+def exact_entries(names) -> str:
+    """How a refusal names the gates whose Exact entries pin one step."""
+    names = sorted(set(names))
+    return f"gate {names[0]}'s exact entry" if len(names) == 1 else f"the exact entries of gates {', '.join(names)}"
+
+
+def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, workdir: str, entries: list,
+                   problems: list[Annotation]) -> None:
+    """Refuse a run: step its Exact entries pin (`entries`, each (the gate's filter, Exact)) where
+    the step is not what they pin: a script or a directory other than an entry's, named by the
+    first line that differs (pin_difference) or by both directories, and an env, shell, container
+    or step of the job before this one (around_reason over job_up_to) that can change what its go
+    commands compile or which tests they run. Its own script's writes are the pin's to hold.
+
+    Refused rather than read as reading everything, which a step off its pin once counted as. The
+    pin is also the table's word for which tests the step runs - ci_job_reads.py builds the
+    text-check step's -run from TEXT_CHECK_TESTS, the names envoy-go's step of what the race build
+    cannot run leaves out - and reading everything says nothing where the filter selects every Go
+    file already, as the text_checks filter does: a guard test dropped from that -run ran in no job
+    while this check passed, and so did one a `GOFLAGS: -skip=` in the step's env skipped. No pinned
+    step runs under such an env, shell or container. Entries of two gates pinning one text make one
+    refusal, and the gates' entries of one step one refusal of what surrounds it."""
+    label = step_label(step)
+    script = str(step["run"])
+    pins = defaultdict(set)  # (the script an entry pins, as pin_difference compares it; its directory) -> gates
+    for name, e in entries:
+        pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)
+    off_pin = False
+    for (pinned_script, directory), names in pins.items():
+        drift = [d for d in (pin_difference(script, pinned_script),
+                             "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
+        if drift:
+            off_pin = True
+            pin = "pins" if len(names) == 1 else "pin"
+            problems.append(error(path, f"{where} step \"{label}\" is off the script and directory "
+                                        f"{exact_entries(names)} {pin} it to: {'; '.join(drift)}; make the step run "
+                                        f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
+                                        f"and any list of ci_job_reads.py its text is built from, with the step"))
+    # A step already refused as off its pin is not refused again for a character its script holds.
+    moved = (around_reason(holder, job_up_to(job, step, including=False), [step])
+             or ("" if off_pin else script_reason(script)))
+    if moved:
+        problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
+                                    f"but {moved}, and that can change what its go commands compile, or which tests "
+                                    f"they run, where no pin holds it; remove it, or put what it sets on the step's "
+                                    f"own script, where the pin holds it, or, for a name with which go compiles the "
+                                    f"same files and runs the same tests, add it to ENV_ALLOWED"))
+
 
 
 # ---------------------------------------------------------------- the check
@@ -1276,8 +1541,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     # or by an Exact entry pinning the step's whole script. A line claimed by a Run is reduced only
     # in its one simple form, the whole script of its step, under an env, job, shell and directory
     # that cannot move it; its packages, -tags, -race and mode must then be exactly the Run's. Any
-    # other claimed command is unreduced and falls to everything a go command can read, as does
-    # every run of an Exact entry whose step's script, directory or surroundings differ.
+    # other claimed command is unreduced and falls to everything a go command can read. A step an
+    # Exact entry pins is refused instead when its script or directory is not the entry's, naming
+    # the first line that differs or both directories, and when its env, shell, container or job
+    # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
     # `needs: changes` and its whole `if:` in ci.yaml and holds its steps in the called file,
@@ -1313,16 +1580,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             script = str(step["run"])
             workdir = step_workdir(holder, job, step)
-            around = around_reason(holder, job, [step]) or script_reason(script)
             entries = [fe for (j, ref), fes in exacts.items() if j == own and step_matches(step, ref) for fe in fes]
-            for name, e in entries:
-                reason = (around or ("" if script.rstrip() == e.script.rstrip() else "the step's script is not the pinned text")
-                          or ("" if workdir == clean_dir(e.workdir) else f"its step runs in {workdir}, the entry's in {e.workdir}"))
-                if reason:
-                    where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\"'s pinned script"
-                    unreduced[name] += [(r, where, reason) for r in e.runs]
             if entries:
+                refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries, problems)
                 continue  # every go line of the step is claimed by its Exact entries
+            around = around_reason(holder, job_up_to(job, step), [step]) or script_reason(script)
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
@@ -1378,9 +1640,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or any of its steps (the check does not know which starts the script), no container: and
-    # no environment write of the job can move it. A job that calls a workflow runs the script from
-    # that workflow's jobs, so each of them is read the same way. Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - each job's
+    # steps up to the last one naming the script, or all of them where it names the script nowhere
+    # (around_job), since the check does not otherwise know which step starts it. A job that calls
+    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
+    # Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1396,7 +1660,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:
@@ -1692,16 +1956,16 @@ def check_push_workflows(data, filters: dict, problems: list[Annotation]) -> lis
         push = events(load_repository_yaml(REPO / path) or {}).get("push")
         paths = push.get("paths") if isinstance(push, dict) else None
         if not (isinstance(paths, list) and paths and all(isinstance(p, str) for p in paths)):
-            problems.append(error(path, f"{path} has no on.push.paths list, which must equal {WORKFLOW}'s "
+            problems.append(error(path, f"{path} has no on.push.paths list, which must equal {FILTERS_FILE}'s "
                                         f"filter {name}"))
             continue
         missing = [p for p in dict.fromkeys(filters[name]) if p not in paths]
         extra = [p for p in dict.fromkeys(paths) if p not in filters[name]]
         for p in missing:
-            problems.append(error(path, f"{path}'s on.push.paths lacks {p}, which {WORKFLOW}'s filter {name} "
+            problems.append(error(path, f"{path}'s on.push.paths lacks {p}, which {FILTERS_FILE}'s filter {name} "
                                         f"has, so a push to main that changes only a file it matches never runs {path}"))
         for p in extra:
-            problems.append(error(path, f"{path}'s on.push.paths has {p}, which {WORKFLOW}'s filter {name} "
+            problems.append(error(path, f"{path}'s on.push.paths has {p}, which {FILTERS_FILE}'s filter {name} "
                                         f"lacks; add it to the filter or drop it here"))
         verdict = "differs from" if missing or extra else "equals"
         report.append(f"{path}: on.push.paths {verdict} filter {name} ({len(set(paths))} patterns)")
@@ -1833,8 +2097,9 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list[
     job, on the pull request and again on main. Judged over repo_files() with the Expander the
     rest of the check uses, so a pattern is held to exactly the files a dorny/paths-filter run
     sees. A `!` pattern is exempt: it names what to leave out, and leaving nothing out is no
-    fault. It reads the filter block of ci.yaml alone, and no workflow ci.yaml calls: the filters
-    are the changes job's, and a declared read is the table's rather than any workflow's.
+    fault. It reads .github/ci-filters.yaml alone, and no workflow: the filters are the changes
+    job's, which its one paths-filter step reads from that file, and a declared read is the
+    table's rather than any workflow's.
 
     The rule's second direction - a filter pattern that matches files none of its job reads - is
     check_dead_gate_patterns below. The two halves are judged in different places because they
@@ -1846,8 +2111,9 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list[
         for pattern in dict.fromkeys(filters[name]):
             if pattern.startswith("!") or expander.expand(pattern):
                 continue
-            problems.append(error(WORKFLOW, f"filter {name} has {pattern}, which matches no file in the "
-                                            f"repository, so no change ever selects on it; correct the path or drop the pattern"))
+            problems.append(error(FILTERS_FILE, f"filter {name} has {pattern}, which matches no file in the "
+                                                f"repository, so no change ever selects on it; correct the path or drop "
+                                                f"the pattern"))
     for pattern, where in dict.fromkeys(declared_reads(data)):
         if expander.expand(pattern):
             continue
@@ -1890,9 +2156,10 @@ def tag_listed_files(entry, listed: dict, expander: Expander) -> list:
     leaves them out: dispatch_two_builds_go's block is the contracts modules of the dispatch
     command its step runs. A change to one of them starts the tagged run all the same, so it must
     start the untagged one with it, whatever patterns of its own the untagged filter takes that
-    tree in by. Read from the block's own lines in ci.yaml, among the blocks listed_owners accepts
-    (`listed`), each pattern expanded to the files it matches: a block whose marker names no check
-    CI runs is refused there and holds nothing here, since no check holds its lines true."""
+    tree in by. Read from the block's own lines in .github/ci-filters.yaml, among the blocks
+    listed_owners accepts (`listed`), each pattern expanded to the files it matches: a block whose
+    marker names no check CI runs is refused there and holds nothing here, since no check holds its
+    lines true."""
     block = listed.get(entry.filter)
     if block is None or block.begin < 0:
         return []
@@ -1991,9 +2258,10 @@ def check_dead_gate_patterns(data, filters: dict, gate_files: dict, expander: Ex
             matched = expander.expand(pattern) if not pattern.startswith("!") else []
             if not matched or not reads.isdisjoint(matched) or set(matched) <= required.get(name, frozenset()):
                 continue
-            problems.append(error(WORKFLOW, f"filter {name} has {pattern}, which matches no file {where}, "
-                                            f"though it matches {len(matched)} of the repository's, so a change to one "
-                                            f"of them runs that job over a change no step of it sees; drop the pattern"))
+            problems.append(error(FILTERS_FILE, f"filter {name} has {pattern}, which matches no file {where}, "
+                                                f"though it matches {len(matched)} of the repository's, so a change to "
+                                                f"one of them runs that job over a change no step of it sees; drop the "
+                                                f"pattern"))
 
 
 @dataclass
@@ -2009,8 +2277,8 @@ class GateFiles:
 SCRIPT = ".github/scripts/check-ci-filters.sh"
 WRITE = f"{SCRIPT} write"
 # A generated block's first and last line, written at the indentation of the filter's own items.
-# The first names the command that writes it, so a reader of ci.yaml knows not to edit one by
-# hand; those two prefixes are how both modes find the block again.
+# The first names the command that writes it, so a reader of the filters file knows not to edit
+# one by hand; those two prefixes are how both modes find the block again.
 BEGIN = "# BEGIN generated"
 END = "# END generated"
 BLOCK_HEAD = (
@@ -2069,13 +2337,13 @@ def ci_commands(documents: dict) -> set:
 
 
 def listed_owners(documents: dict, lines: list, problems: list[Annotation]) -> dict:
-    """The changes job's listed blocks rule 9's second direction may pass over, and rule 15 reads
-    for a tag step's filter: each one whose BEGIN line names, as the command that writes it, a
-    script a step of CI runs (ci_commands) other than this check. Passing over a block's patterns
-    is right only because another check holds them to what the job reads, so a block whose marker
-    names no such check - a script no job runs, this check itself, or nothing - holds its filter
-    to nothing: it is refused, naming the filter and the marker, and its patterns are judged like
-    any other."""
+    """The listed blocks of .github/ci-filters.yaml that rule 9's second direction may pass over,
+    and rule 15 reads for a tag step's filter: each one whose BEGIN line names, as the command that
+    writes it, a script a step of CI runs (ci_commands) other than this check. Passing over a
+    block's patterns is right only because another check holds them to what the job reads, so a
+    block whose marker names no such check - a script no job runs, this check itself, or nothing -
+    holds its filter to nothing: it is refused, naming the filter and the marker, and its patterns
+    are judged like any other."""
     runs = ci_commands(documents)
     owned = {}
     for name, block in filter_blocks(lines, [], TS_LISTED).items():
@@ -2093,10 +2361,10 @@ def listed_owners(documents: dict, lines: list, problems: list[Annotation]) -> d
             what = f"`{script} write`, this check, which passes over a listed block's lines rather than holding them"
         else:
             what = f"`{script} write`, a command no step of {WORKFLOW} or of a workflow it calls runs"
-        problems.append(error(WORKFLOW, f"filter {name}'s listed block opens with `{marker}`, which names "
-                                        f"{what}, so no check of CI holds its lines and rule 9 does not pass over them; "
-                                        f"name the check that writes and holds the block and that a job of CI runs, as "
-                                        f"`{TS_LISTED.write}` does"))
+        problems.append(error(FILTERS_FILE, f"filter {name}'s listed block opens with `{marker}`, which names "
+                                            f"{what}, so no check of CI holds its lines and rule 9 does not pass over "
+                                            f"them; name the check that writes and holds the block and that a job of CI "
+                                            f"runs, as `{TS_LISTED.write}` does"))
     return owned
 
 
@@ -2161,9 +2429,10 @@ def negation_patterns(excluded: set, read: set, tests: list) -> list:
 
 @dataclass
 class Block:
-    """One pattern list in a workflow's text: where its generated block is and what it holds, or
-    where one would go. The write mode replaces exactly those lines, so the text is read here
-    rather than the parsed document, which keeps neither comments nor order."""
+    """One pattern list in a file's text - a filter of .github/ci-filters.yaml, or a workflow's
+    on.push.paths: where its generated block is and what it holds, or where one would go. The
+    write mode replaces exactly those lines, so the text is read here rather than the parsed
+    document, which keeps neither comments nor order."""
 
     indent: str = ""  # the indentation of the list's items
     after: int = -1  # the list's last item line outside a block: where a new block goes
@@ -2172,9 +2441,10 @@ class Block:
     patterns: list = field(default_factory=list)
 
 
-FILTERS_KEY = re.compile(r"^(\s*)filters:\s*\|\s*$")
 PATHS_KEY = re.compile(r"^(\s*)paths:\s*$")
-FILTER_KEY = re.compile(r"^(\s*)([A-Za-z0-9_]+):\s*(?:&\S+\s*)?$")
+# A filter of .github/ci-filters.yaml: a key at the top level of that file, its value the list
+# below it, with or without an anchor on the key.
+FILTER_KEY = re.compile(r"^([A-Za-z0-9_]+):\s*(?:&\S+\s*)?$")
 FILTER_ITEM = re.compile(r"^(\s*)-\s+(.*?)\s*$")
 
 
@@ -2220,42 +2490,22 @@ def closed(blocks: dict, path: str, problems: list[Annotation], marks: Marks = G
     return blocks
 
 
-def one_filter_block(lines: list, key: int, marks: Marks = GENERATED) -> dict:
-    """Per key of the one `filters: |` block whose line is `key`, where its list ends in the
-    text and which of its lines are a generated block of `marks`' kind."""
-    body = range(key + 1, len(lines))
-    outer = indent_of(lines[key])
-    stop = next((i for i in body if lines[i].strip() and indent_of(lines[i]) <= outer), len(lines))
-    inner = min((indent_of(lines[i]) for i in range(key + 1, stop) if lines[i].strip()), default=0)
-    starts = [i for i in range(key + 1, stop)
-              if FILTER_KEY.match(lines[i]) and indent_of(lines[i]) == inner]
-    return {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block(), WORKFLOW,
-                                                                marks)
-            for start, end in zip(starts, starts[1:] + [stop])}
-
-
 def filter_blocks(lines: list, problems: list[Annotation], marks: Marks = GENERATED) -> dict:
-    """Per key of the changes job's `filters: |` blocks - every gate filter and every group an
-    anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
-    block of `marks`' kind. The job declares its filters in more than one such block (rule 18),
-    so every one of them is read; a group more than one of them writes out is one key here, the
-    first, since a generated block belongs to a gate filter alone and a gate filter is in one
-    step (rule 19)."""
-    keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
-    if not keys:
-        problems.append(error(WORKFLOW, "no `filters: |` block, where this check reads the ones the "
-                                        "changes job's paths-filter steps declare their filters in"))
+    """Per filter of .github/ci-filters.yaml - every gate filter and every group an anchor names -
+    where its list ends in that file's text and which of its lines are a generated block of
+    `marks`' kind. A filter's name is a key at the top level of the file, so each such key opens
+    a list and the next one closes it. The comment that stands at column 0 above a key falls in
+    the list before it, and is no line of that list either, since list_block reads items and block
+    marks alone."""
+    starts = [i for i, line in enumerate(lines) if FILTER_KEY.match(line)]
+    if not starts:
+        problems.append(error(FILTERS_FILE, "no filter at the top level of this file, where this check reads the "
+                                            "lists the changes job's paths-filter step selects its jobs by"))
         return {}
-    blocks: dict = {}
-    for key in keys:
-        for name, block in one_filter_block(lines, key, marks).items():
-            if name not in blocks:
-                blocks[name] = block
-            elif blocks[name].begin >= 0 or block.begin >= 0:
-                problems.append(error(WORKFLOW, f"{name} is written in two `filters: |` blocks and one of "
-                                                f"them holds a generated block, which belongs to the one gate filter "
-                                                f"it is computed for; delete the block, or declare {name} in one step"))
-    return closed(blocks, WORKFLOW, problems, marks)
+    blocks = {FILTER_KEY.match(lines[start]).group(1): list_block(lines, range(start + 1, end), Block(),
+                                                                  FILTERS_FILE, marks)
+              for start, end in zip(starts, starts[1:] + [len(lines)])}
+    return closed(blocks, FILTERS_FILE, problems, marks)
 
 
 def push_paths_block(lines: list, name: str, path: str, problems: list[Annotation]) -> dict:
@@ -2308,9 +2558,9 @@ def check_negations(blocks: dict, wanted: dict, filters: dict, expander: Expande
     report lines."""
     for name in sorted(blocks):
         if blocks[name].begin >= 0 and name not in wanted:
-            problems.append(error(WORKFLOW, f"{name} has a generated block, and it is no filter of a gate "
-                                            f"this check computes a read set for, so nothing says what belongs in it; "
-                                            f"delete the block"))
+            problems.append(error(FILTERS_FILE, f"{name} has a generated block, and it is no filter of a gate "
+                                                f"this check computes a read set for, so nothing says what belongs in "
+                                                f"it; delete the block"))
     for name in sorted(wanted):
         patterns, block = wanted[name], blocks.get(name, Block())
         committed = block.patterns
@@ -2325,19 +2575,19 @@ def check_negations(blocks: dict, wanted: dict, filters: dict, expander: Expande
                 says = f"has '{committed[i]}' where '{patterns[i]}' belongs"
             head = (f"filter {name}'s generated block" if block.begin >= 0
                     else f"filter {name}, which has no generated block,")
-            problems.append(error(WORKFLOW, f"{head} {says}: the `!` patterns that keep a "
-                                            f"filter off the Go test files its job does not read are generated, so a "
-                                            f"change to what the job reads rewrites them; run `{WRITE}`"))
+            problems.append(error(FILTERS_FILE, f"{head} {says}: the `!` patterns that keep a "
+                                                f"filter off the Go test files its job does not read are generated, so "
+                                                f"a change to what the job reads rewrites them; run `{WRITE}`"))
             break
         loose = [p for p in dict.fromkeys(filters[name])
                  if p.startswith("!") and p not in set(committed)
                  and any(f.endswith(TEST_SUFFIX) for f in expander.expand(p.removeprefix("!")))]
         for pattern in loose:
-            problems.append(error(WORKFLOW, f"filter {name} has {pattern} outside its generated block, and "
-                                            f"it matches a Go test file: the test files a filter excludes are this "
-                                            f"rule's to write, over the set its gates read, so move the exclusion "
-                                            f"there by running `{WRITE}`"))
-    return [f"{WORKFLOW}: {sum(len(p) for p in wanted.values())} generated `!` patterns keep "
+            problems.append(error(FILTERS_FILE, f"filter {name} has {pattern} outside its generated block, and "
+                                                f"it matches a Go test file: the test files a filter excludes are this "
+                                                f"rule's to write, over the set its gates read, so move the exclusion "
+                                                f"there by running `{WRITE}`"))
+    return [f"{FILTERS_FILE}: {sum(len(p) for p in wanted.values())} generated `!` patterns keep "
             f"{sum(1 for p in wanted.values() if p)} of {len(wanted)} gate filters off the Go test files their jobs "
             f"do not read"]
 
@@ -2364,11 +2614,116 @@ def rewrite(path: str, lines: list, blocks: dict, wanted: dict, heads=lambda nam
         (REPO / path).write_text(text)
 
 
+# Rule 20 searches every choice of a file's own tags for one go builds it under; a file naming
+# more tags than this is refused by name rather than searched.
+MAX_TRIAL_TAGS = 6
+
+
+def check_vet_tags(session: Session, data, problems: list) -> list:
+    """Rule 20: the vets for another platform of one step - the Runs of mode vet whose env sets
+    GOOS, one per tag set the step loops over - compile between them every file of their
+    packages that go builds for that platform under some choice of tags. Such a step is its
+    module's one compile for that platform, and a file outside every set it vets under is a file
+    it never reads while it still passes: the miss a hand-kept tag list makes the day a tag
+    lands, and the one a single set makes beside a file under a negated tag.
+
+    The files are those on disk under the Runs' patterns (go_build_tags.go_files, the directories
+    `./...` walks), never go list's own package list, which leaves out a package whose every file
+    a missing tag excludes. go list then says, under each Run's platform and tags, which of them
+    it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
+    or architecture feature name, none the toolchain sets), every choice of its own tags is
+    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
+    named with the tags that build it. go decides each answer; this rule's own reading of a
+    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    groups: dict = defaultdict(list)
+    for g in data.GATES:
+        for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:
+            env = dict(r.env)
+            if r.mode == "vet" and env.get("GOOS"):
+                groups[(g.job, step, r.workdir, env["GOOS"], env.get("GOARCH", ""), r.pkgs)].append(r)
+    report = []
+    for (job, step, workdir, goos, goarch, pkgs), runs in groups.items():
+        where = f'job {job} step "{step}"' if step else f"job {job}"
+        target = f"{goos}/{goarch}" if goarch else goos
+        try:
+            known = platforms(REPO / workdir)
+        except (OSError, subprocess.CalledProcessError) as failure:
+            problems.append(error(None, f"{where}: go tool dist list failed in {workdir}, so which names of a "
+                                        f"build constraint are platforms is unknown: {failure}"))
+            continue
+        disk = set()
+        for pattern in pkgs:
+            base = REPO / workdir / pattern.removesuffix("...").rstrip("/")
+            found = go_files(base) if pattern.endswith("...") else (
+                p for p in sorted(base.glob("*.go")) if not p.name.startswith(("_", ".")))
+            disk |= {rel(str(path)) for path in found}
+        if not disk:
+            problems.append(error(None, f"{where}: no .go file is on disk under {' '.join(pkgs)} in {workdir}, "
+                                        f"so rule 20 checked nothing there"))
+            continue
+        dirs = sorted({path.rsplit("/", 1)[0] for path in disk})
+        sets = [r.tags for r in runs]
+        compiled = set().union(*(compiled_files(session, r, r.tags, dirs) for r in runs))
+        tagged = misses = 0
+        trials: dict = {}
+        for path in sorted(disk - compiled):
+            names = sorted(n for n in constraint_names(REPO / path) if is_tag(n, known))
+            if not names:
+                continue
+            tagged += 1
+            if len(names) > MAX_TRIAL_TAGS:
+                problems.append(error(path, f"{where}: {path} names {len(names)} tags, more than the "
+                                            f"{MAX_TRIAL_TAGS} rule 20 tries, so whether a vet of {target} "
+                                            f"misses it is unknown"))
+                continue
+            directory = path.rsplit("/", 1)[0]
+            for bits in itertools.product((True, False), repeat=len(names)):
+                tags = ",".join(n for n, on in zip(names, bits) if on)
+                if (directory, tags) not in trials:
+                    trials[directory, tags] = compiled_files(session, runs[0], tags, [directory])
+                if path in trials[directory, tags]:
+                    misses += 1
+                    problems.append(error(path, f"{where} vets {workdir} for {target} under -tags "
+                                                f"{' and '.join(s or '(none)' for s in sets)}, and none of them "
+                                                f"compiles {path}, which go builds for {target} with -tags "
+                                                f"{tags or '(none)'}: the vet passes without reading the file. The "
+                                                f"vet steps take their tag sets from .github/scripts/"
+                                                f"go_build_tags.py, which must print a set that builds every such "
+                                                f"file"))
+                    break
+        report.append(f"{where}: vets {workdir} for {target} under -tags "
+                      f"{' and '.join(s or '(none)' for s in sets)}; go list compiles {len(compiled & disk)} of "
+                      f"the {len(disk)} .go files on disk there, {tagged} of the rest name a tag, and "
+                      f"{misses} of those build for {target} under tags no set holds")
+    return report
+
+
+def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
+    """The files go list compiles in `dirs`, each named as a directory and not as a pattern, under
+    the Run's platform and `tags`, as repository paths: GoFiles, CgoFiles and the test files,
+    which a vet reads too. A directory whose every file is excluded is still listed, with an
+    error -e keeps. `-find`, as go_build_tags.compiled runs it too, keeps go list from loading the
+    packages the listed ones import (Imports, Deps and DepsErrors stay empty), though in module
+    mode go still resolves each import: the file lists are the same, and the rule reads nothing
+    else."""
+    args = ["list", "-e", "-find", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
+    if tags:
+        args += ["-tags", tags]
+    patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]
+    out = set()
+    for pkg in decode_stream(session.go(r, args + patterns)):
+        d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+        if d is not None:
+            for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
+                out |= {f"{d}/{name}" for name in pkg.get(field) or []}
+    return out
+
+
 def check() -> int:
     # The mode check-ci-filters.sh was called in: `check`, which refuses a generated block that
-    # is not what rule 17 computes, or `write`, which writes those blocks into ci.yaml instead.
-    # Every other rule runs in both, since the blocks are computed from the read sets the rest
-    # of this check builds.
+    # is not what rule 17 computes, or `write`, which writes those blocks into
+    # .github/ci-filters.yaml instead. Every other rule runs in both, since the blocks are computed
+    # from the read sets the rest of this check builds.
     mode = os.environ.get("CI_FILTERS_MODE", "check")
     problems: list[Annotation] = []
     # ci.yaml and every workflow its jobs call: a job that calls one keeps its gate, its id and
@@ -2381,15 +2736,19 @@ def check() -> int:
     # helpers: by the time main() runs, this module is loaded whole.
     import ci_workflow_rules as rules
 
-    filters, quantifiers, holders = changes_filters(document, problems)
+    # The filters, and the text of .github/ci-filters.yaml they were read from, which rule 17 and
+    # the listed blocks read below: one read of the file serves all three.
+    filters, quantifiers, lines = changes_filters(document, problems)
     files = repo_files()
     unreduced = check_table(documents, data, filters, set(files), problems)
     check_ci_ok(documents, problems)
-    check_output_steps(document, holders, problems)
+    check_output_steps(document, filters, problems)
+    check_filter_inputs(rules.directory_workflows(), problems)
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
-    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
+    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
+    rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)
@@ -2410,11 +2769,11 @@ def check() -> int:
         patterns = filters[g.filter]
         negated = [p for p in patterns if p.startswith("!")]
         if negated and quantifiers[g.filter] == "some":
-            problems.append(error(WORKFLOW, f"filter {g.filter} has {negated[0]}, a `!` pattern under "
-                                            f"predicate-quantifier some, where it matches every file outside it"))
+            problems.append(error(FILTERS_FILE, f"filter {g.filter} has {negated[0]}, a `!` pattern under "
+                                                f"predicate-quantifier some, where it matches every file outside it"))
         if unread_filter_patterns(patterns):
-            problems.append(error(WORKFLOW, f"filter {g.filter} has {unread_filter_patterns(patterns)[0]}, "
-                                            f"a brace picomatch expands and this check does not read"))
+            problems.append(error(FILTERS_FILE, f"filter {g.filter} has {unread_filter_patterns(patterns)[0]}, "
+                                                f"a brace picomatch expands and this check does not read"))
         whys = defaultdict(list)
         seen: set = set()
         for r in gate_runs(g):
@@ -2436,7 +2795,7 @@ def check() -> int:
                    f"file of the repository and every file under a Go module's directory")
             for path in fallback:
                 reason.setdefault(path, why)
-            held.append(error(WORKFLOW, f"{why}; filter {g.filter} must select them all on any Go change"))
+            held.append(error(FILTERS_FILE, f"{why}; filter {g.filter} must select them all on any Go change"))
         matcher = PathsFilter(patterns, quantifiers[g.filter])
         uncovered = sorted(f for f in reason if not matcher.covers(f))
         where = g.job + (f' step "{g.step}"' if g.step else "")
@@ -2447,29 +2806,31 @@ def check() -> int:
             problems.append(error(f, f"{where} reads {f}, which its filter {g.filter} does not match, so a "
                                      f"change to it skips the job: {reason[f]}"))
         if len(uncovered) > SHOWN:
-            problems.append(error(WORKFLOW, f"{where} reads {len(uncovered) - SHOWN} more files its filter "
-                                            f"{g.filter} does not match"))
+            problems.append(error(FILTERS_FILE, f"{where} reads {len(uncovered) - SHOWN} more files its filter "
+                                                f"{g.filter} does not match"))
         if held and not set(fallback).isdisjoint(uncovered):
             problems += held
     # Rule 9's second direction passes over the patterns of the listed blocks whose marker names
     # the check that writes and holds them, and refuses a block whose marker names no check CI
     # runs (listed_owners); whether an owned block is well formed is its owner's to refuse. Rule
-    # 15 reads the same blocks, holding a tag step's untagged job to its filter's one.
-    lines = read_repository_text(REPO / WORKFLOW).splitlines()
+    # 15 reads the same blocks, holding a tag step's untagged job to its filter's one. Both read
+    # the lines of .github/ci-filters.yaml changes_filters read above.
     listed = listed_owners(documents, lines, problems)
     check_dead_gate_patterns(data, filters, gate_files, expander, selection, listed, problems)
+    # Rule 20: a vet for another platform passes over no file a build tag would compile.
+    report += check_vet_tags(session, data, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, listed, expander,
                              problems)
     # Rule 17, last of the rules that read a filter: it needs the files each gate reads, which
-    # the loop above has just finished, and the text of ci.yaml, read above.
+    # the loop above has just finished, and the text of .github/ci-filters.yaml, read above.
     blocks = filter_blocks(lines, problems)
     tests = [f for f in files if f.endswith(TEST_SUFFIX)]
     wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests,
                               tag_held_files(data, filters, gate_files, selection, listed, expander))
     if mode == "write":
-        rewrite(WORKFLOW, lines, blocks, wanted)
+        rewrite(FILTERS_FILE, lines, blocks, wanted)
         # Rule 8 holds a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter, so the
         # block goes into both lists or the next run of this check refuses the pair.
         for name, path in data.PUSH_WORKFLOWS.items():
@@ -2479,7 +2840,7 @@ def check() -> int:
         for name in sorted(wanted):
             if wanted[name]:
                 report.append(f"filter {name}: {len(wanted[name])} generated `!` pattern(s)")
-        report.append(f"{WORKFLOW}: wrote {sum(len(p) for p in wanted.values())} generated `!` patterns over "
+        report.append(f"{FILTERS_FILE}: wrote {sum(len(p) for p in wanted.values())} generated `!` patterns over "
                       f"{sum(1 for p in wanted.values() if p)} of {len(wanted)} gate filters")
     else:
         report += check_negations(blocks, wanted, filters, expander, problems)
@@ -2505,7 +2866,7 @@ def main() -> int:
     try:
         return check()
     except RepositoryInputError as exc:
-        print_annotation(error(exc.path, f"cannot read repository input: {exc.cause}"))
+        print_annotation(exc.annotation())
         return 1
     except BaseException:
         token = secrets.token_hex(16)

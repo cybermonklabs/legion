@@ -35,7 +35,8 @@ const (
 // GET /api/v1/issues/{key}/coverage  (any authenticated caller)
 //
 // What each requirement of the issue's spec lacks. An issue with no spec, or a spec that marks
-// no requirements, answers no requirements and the single gap line.
+// no requirements, answers no requirements and the single gap line. A caller that sent
+// `Dispatch-Trees: 1` is given each requirement's whole content as its text_tree.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -45,18 +46,25 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
 // issueCoverage reads the issue's requirements and what serves each. The documents' blocks are
 // read from the block index (document_blocks and block_refs), which every accepted write leaves
 // in step with the document it wrote; the requirements' order and words come from the live spec.
-func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) (model.IssueCoverage, error) {
+// trees is the reader of a request that answers the requirements' trees, nil for every other
+// caller: each requirement registers with it (requirementBlocksIn), in the row the answer
+// carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
+// /api/v1/reference-targets reads the same block's tree by, and the caller resolves it. The rows
+// are filled in place, so each registered pointer is into the answer itself.
+func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
@@ -69,7 +77,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID)
+	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -85,8 +93,8 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
-	coverage.Requirements = make([]model.RequirementCoverage, len(requirements))
-	for index, requirement := range requirements {
+	for index := range requirements {
+		requirement := &requirements[index]
 		requirement.Ref, _ = text.FormatBlockRef(text.Ref{
 			Kind: "block", IssueKey: issueKey, ID: "spec", Block: requirement.BlockID,
 		})
@@ -99,11 +107,11 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 		if coverage.HasPlan && requirement.PlanTasks == 0 {
 			requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 		}
-		coverage.Requirements[index] = requirement
 		for _, reason := range requirement.Gaps {
 			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
 		}
 	}
+	coverage.Requirements = requirements
 	return coverage, nil
 }
 
@@ -132,14 +140,26 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
-// words, read live out of the document's markdown (typedBlocksIn).
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string) ([]model.RequirementCoverage, error) {
+// words, read live out of the document's markdown (typedBlocksIn). trees is the request's own
+// reader, nil for a caller that asked for no tree: each requirement registers with it, as its
+// text_tree, the markdown typedBlocksIn hands over from the block's stored text, so a requirement
+// answers here the tree the batched reference read answers for it. It registers once the slice
+// has stopped growing, since what is registered is a pointer into the row, and the caller fills
+// in the rest of each row in place.
+func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", func(node *pmdoc.Node, id string) {
+	var contents []string
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, content string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
+		if trees != nil {
+			contents = append(contents, content)
+		}
 	})
 	if err != nil {
 		return nil, err
+	}
+	for index, content := range contents {
+		trees.text(&requirements[index].TextTree, content)
 	}
 	return requirements, nil
 }
@@ -195,7 +215,7 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
-// and no owner row lock is held across a read that long: four writers parked on one issue's row
+// and no owner lock is held across a read that long: four writers parked on one issue's row
 // lock already cost a read of an unrelated issue the whole seventeen seconds the lock was held
 // (store/pool.go). Nothing the lock protects is settled here - the coverage is a report the
 // answer carries, and a gap refuses nothing.
@@ -212,7 +232,7 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (ga
 	if !isSpecDocument(artifact) {
 		return []string{}, false, nil
 	}
-	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey)
+	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey, nil)
 	if err != nil {
 		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
 		return []string{}, true, nil

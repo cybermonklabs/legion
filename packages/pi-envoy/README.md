@@ -7,7 +7,7 @@ and Pi delivery local (an inbound message reaches an in-flight turn at its next 
 waiting for it to end). The Legion lifecycle — the entry a Legion pane boots a root architect, a
 phase worker or the controller with — is the separate plugin `@sjawhar/pi-legion` (`packages/pi-legion`), installed
 beside this one in a Legion deployment; it reaches this plugin through the in-process interface
-described in `packages/pi-shared/AGENTS.md`.
+described in `packages/pi-shared/src/interface.ts`.
 
 A topic subscription is an interest registered with the listener, which filters the session's own
 durable consumer on it; the session's NATS connection holds one subject, the relay the listener
@@ -72,7 +72,7 @@ task's deadline, or once its session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
---session-id`). agent-infra's sessions workload sets both once t-e-32 lands (it sets
+--session-id`). The deployment repository's sessions workload sets both once t-e-32 lands (it sets
 `AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
 pass that registers it — its start, each session event and each heartbeat — claims that role for
 it outright, last-claim-wins, under the session's own credential, which the listener holds to
@@ -132,12 +132,13 @@ notification stream and relays on `notifications.envoy.deliver.<session id>`, wh
 the session subscribes before it registers: its own agent subject, the stored copies of role
 messages to a role it holds, and every followed topic, in stream order. No session receives from
 any other NATS subscription. The
-session answers each frame `received` as it decodes and `done` once Oh My Pi wrote the card or
-turn to the session file, so a frame not written when the session stops, or published while it
-was down or disconnected, comes again and is shown once, for up to 72 hours. A
+session answers each frame `received` as it decodes, `done` once Oh My Pi wrote the card or turn
+to the session file (its `message_end`) and no sooner, and `nak` when the host lets the frame go
+unwritten, so a frame not written when the session stops, or published while it was down or
+disconnected, comes again and is shown once, for up to 72 hours. A
 `notifications.team.<name>` topic is stored and delivered like any other followed topic.
-"Consumer delivery" in `AGENTS.md` has the rules, and
-`packages/envoy/AGENTS.md`, "Session consumers", states them once for every host.
+`packages/envoy/docs/architecture.md`, "Runtime shape", states the listener's side for every host
+(its "Session consumers" item).
 
 A message published while the session's NATS connection was down, or while the session was not
 running, waits in that consumer: nothing has to be fetched back. It is shown once when the
@@ -151,12 +152,42 @@ runs nothing. What the consumer does not hold: anything older than 72 hours, any
 before the session followed the topic, and anything published before the session first
 registered. A message the session
 fails to show three times is replaced by one card naming it and saying how to read it. The
-session file keeps what it was shown, so a restart shows nothing again (up to 20,000 messages
+session file keeps what it was shown (the delivery ledger), and a frame the ledger already holds
+is dropped, so a restart at the consumer's ack floor shows nothing again (up to 20,000 messages
 shown in 72 hours); a crash between
 showing a message and recording it can show it twice, never lose it. A registration the listener
 can give no consumer is refused by name, and the session says once that Envoy inbound is
-unavailable and asks again at every heartbeat. "Each frame shown once" in `AGENTS.md` has the
-full rules.
+unavailable and asks again at every heartbeat.
+
+## A person's message from Dispatch
+
+A person's Send or Aside becomes the session's own user turn only through `acceptUserTurn`
+(`@legion/pi-shared/accept-user-turn`), which claude-envoy runs too. Only Dispatch's 200 to the
+accept makes a turn, and the turn runs the stored body that answer carries, never the frame's own
+text; every other frame, and every accept that fails, times out or is refused, stays a card. The
+record of handled attempts keys on the attempt a frame names, so a client on the bus that reads
+the `message.created` event and names that attempt first spends it, and the person's own frame
+then stays a card: that is the record's limit, which `acceptUserTurn`'s doc comment explains.
+
+The live view tags the person's message with its Dispatch id, read from the injected-user-turn
+record (`matchInjectedUserTurn` in `@legion/pi-shared/injected-user-turns`), and Dispatch's page
+shows an untagged turn twice: once from the stream and once as the message Dispatch stored. A
+turn goes untagged when the record misses it: a typed turn the host starts under a new session
+id, and, on a host without `sendUserInput`, where the record finds a turn by its text until the
+run ends, a Send the host runs as a turn of its own after the run's `agent_end` and a prompt
+template or file command, whose stream carries the expanded text.
+
+## A `task` subagent
+
+A `task` subagent runs its own instance of this extension inside its parent's process and shares
+the parent's Envoy identity (`subagentSessionCheck` in `@legion/pi-shared/subagent-session`): the
+instance skips its `session_start` and its session switches, so it registers nothing and opens no
+relay subject. Its reply address is its parent's session, found through the sessions each
+top-level instance publishes under `Symbol.for("legion.pi-envoy.envoy-session")`
+(`src/envoy-session.ts`); when none of them is its parent, it has no reply address. The listener
+forwards a role message to no holder that is the message's own source, so a subagent's
+`envoy_publish` to a role its parent holds reaches no session: the subagent reaches its parent
+with a `write` to the parent's `agent://` address.
 
 ## Session identity
 
@@ -173,7 +204,7 @@ set -g set-clipboard on
 ## What every model request carries
 
 A session with Dispatch configured — a top-level session, a Legion pane or a `task` subagent —
-sends two extra user messages with every model request of its conversation. At the head, after
+sends extra user messages with every model request of its conversation. At the head, after
 any compaction summary, it sends the `dispatch-first` skill, whose text never changes. It also
 sends what people wrote to the session in the last 72
 hours that Dispatch delivered to it: answers to its asks, replies on them and in its comment
@@ -190,37 +221,83 @@ left-out line naming no command; the log says once per session that the Dispatch
 route; and that Dispatch is not asked again for 5 minutes. Any other answer, a proxy's 404 page or
 a 200 that is no answers list included, is a failed read.
 
-The list goes after the request's last message only on the request where it first shows an item,
-new words in one, or an item taken back. Items the 8,000-character limit leaves out count too: a
-new message longer than the limit, or a comment an edit made too long to fit, moves the list,
-whose last line then says how many items were left out. An answer a person retracted leaves the
-list while its time is still inside the 72 hours, and that moves the list too; an item that only
-aged out of the 72 hours does not. On every request after that the list stays right after the
-message it followed there, with the bytes it had then, so the request ends with its own last
-message and the model does not take a list with nothing new in it for a new turn. It keeps that
-place and those bytes when it only loses items to the 72 hours or names another read, so a kept
-list can name an older read than the request's own and still show an item that has since left
-the 72 hours. A list an older copy of the extension added keeps its place only when nothing but
-its read time and reason changed. A read with no list to give, the line saying the list could not
-be read, is never hidden behind a kept list: that line goes after the last message, and the list
-goes there again once a read gives it. A read that fails but still gives the last list read, with
-the same items, keeps the kept list's place and bytes, so that request does not say that its read
-failed, unless the kept bytes are that read's own text, which say it; otherwise the log says it
-instead, with the reason, on the first such request and not again until a read has answered, so a
-failure that lasts is one line. A read that finds nothing for the session takes a kept list out of
-the request when an item it shows was taken back inside the 72 hours, as when a person retracts
-the only answer, and leaves it where it is when its items only aged out; it takes a kept failure
-line out. A Dispatch with no answers route, when no list read before from it has an item from the
-last 72 hours (none was read, or every item of it has aged out), or no Dispatch at all, leaves a
-kept list where it is. Moving the list empties its old place.
-After a compaction summarizes the message it followed, or in a new process, the list goes after
-the last message once more. It is never at the head, so a change in it costs only the bytes from
-its place on, and a list that keeps its place is inside the cached prefix of the next request.
+What people wrote goes to the model in answers messages: user messages of their own, never at
+the head and never merged into a message of the conversation. A list is one message of two text
+blocks: the list, then the sentence "This list replaces every earlier list of people's answers
+in this conversation, and every earlier line saying the list could not be read: read only the
+newest one as current." The line saying the list could not be read is a message of one block,
+with no sentence. The session file records each answers message a request sends, with its exact
+text and the message it followed. Every later request of the session, in the same process or
+in one that resumed the session, carries each of them again right after that message, with the
+same bytes. So a request changes no byte that an earlier request sent, with two exceptions: a
+request made while a compaction runs (below), and a message the session file did not record,
+because the host moved to another session while the read waited or the write failed. The
+session's next request does not carry such a message again, and adds the list anew after its own
+last message when its read still shows it. A request whose read shows nothing new adds nothing
+and ends with its own last message, so the model does not take a list with nothing new in it
+for a new turn.
+
+A request adds an answers message after its last message when its read gives a list or the
+failure line and the request holds no answers message. Otherwise it adds one only when the read
+shows a change against the newest answers message it holds: a new item, new words in one, or an
+item withdrawn while its time is still inside the 72 hours. Items the 8,000-character limit
+leaves out count too: a new message longer than the limit, or a comment an edit made too long
+to fit, adds a list whose last line says how many items were left out. The answers messages sent
+before stay where they went. An item that only aged out of the 72 hours adds nothing, and so
+does a list that differs only in the read it names. The request then still carries the newest
+list sent, which can name an older read than the request's own and still show an item that has
+since left the 72 hours. When a read finds no item for the session but an item of the newest list
+sent was withdrawn inside the 72 hours, as when a person retracts the only answer, the request
+adds a list with no item: the list's first line, then "No item: every item an earlier list
+showed was withdrawn or is now older than 72 hours.", then the same sentence. An older copy of
+the extension adds its list after the last message of every request. This copy takes that list
+as its own read, under the same rules, and compares its text, except its read time and reason,
+with the newest answers message sent.
+
+A read with no list to give adds the line saying the list could not be read, and adds it once:
+later failed reads add nothing, and the line stays the newest answers message until a read
+gives a list, which goes after the last message. A read that Dispatch answers with no item
+adds nothing after that line, so the line stays the newest answers message, unless an item of
+the newest list sent was withdrawn inside the 72 hours: then the request adds the list with no
+item. A read that fails but still gives the last list read, with the same items, adds nothing,
+so that request does not tell the model that its read failed. The log says why a read failed
+once per failure episode, whether the request tells the model or not. A failure episode runs
+from a failed read to the next read that Dispatch answers, and a read that misses the 800 ms
+deadline is a failed read, so a failure that lasts is one line. A Dispatch with no answers
+route, when no list read before from it has an item from the last 72 hours (none was read, or
+every item of it has aged out), or no Dispatch at all, adds nothing and keeps every answers
+message sent.
+
+When a compaction summarizes the message an answers message followed, or the branch moves away
+from it, that answers message leaves the request and is no longer compared. When none is left,
+the next read with a list or the failure line adds its text after the last message. While Oh My
+Pi compacts the session, a request carries none of the answers messages sent: its read's list or
+failure line goes after its last message and is not recorded. So a request made while a
+speculative compaction runs in the background changes bytes from the first answers message sent
+on, which is a known limit. On Anthropic, Oh My Pi puts no cache anchor on a message the
+extension adds, so every byte before the answers message that a change adds, the answers
+messages sent before it included, is in the cached prefix of the request before it.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
-skill but no list, and wait on no read: a side turn (a Dispatch BTW, the stop-time self-check,
-`/btw`), whose last message stays its question; the handoff, whose last message stays the handoff
-prompt; and a remote compaction's request, which ends where the compaction cuts the conversation.
+skill but no answers message, and record none: a side turn (a Dispatch BTW, the stop-time
+self-check, `/btw`), whose last message stays its question and which waits on no read; the
+handoff, whose last message stays the handoff prompt and which waits on no read either; and a
+remote compaction's request, which ends where the compaction cuts the conversation. Two others
+that the extension cannot tell from a turn, Oh My Pi's LLM-request dump and Codex live steering,
+can add and record a list after their own last message, and so can a request the host never
+sends (a stop or an abort after the extension ran). The next request then carries that list
+after that message, and no byte already sent changes. The requests of one session decide in the
+order they started. So when a new request starts while a stopped one still waits on its read,
+the new request decides after the stopped one and reads the session file again first: it
+carries the stopped request's list where it went, and the two never both add the same change.
+
+## The run-end self-check
+
+A run that a person's input armed (a typed prompt, or a Dispatch card from a person) ends with
+one side turn over the conversation, which answers WAITING or PROCEEDING. Only a reply whose first
+word is WAITING steers the agent to open a question in Dispatch. The parse is strict because a
+false WAITING has the agent page a person for nothing, while a false PROCEEDING is only silence.
+A Legion-driven session, a `task` subagent and a run with no UI context are never checked.
 
 ## Development install
 
@@ -238,6 +315,26 @@ this repo. The Legion entry (`packages/pi-legion/extensions/legion.ts`) is inert
 `LEGION_TREE`/`LEGION_ROLE`/`LEGION_CONTROLLER` in the environment and is not loaded there; the
 Legion daemon spawns every root and phase-worker process, and `legion controller start` the
 controller, with both installed packages already active (`packages/pi-legion/README.md`).
+
+## Local checks
+
+From this directory:
+
+```sh
+bun run test
+bun test extensions/envoy.test.ts -t "<name>"   # one test
+bunx tsc --noEmit
+bun run lint
+bun run build
+```
+
+The real-binary tests (`extensions/*-omp.test.ts`) skip unless `LEGION_TEST_OMP` names an Oh My Pi
+binary and, for those that start a session on NATS, `LEGION_TEST_NATS_URL` names a NATS server; on
+GitHub Actions they never skip:
+
+```sh
+LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=nats://127.0.0.1:<port> bun test ./extensions/*-omp.test.ts
+```
 
 ## Published package
 
@@ -382,10 +479,12 @@ With neither, it makes an empty document under `--name`, which a person or an ag
 afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
 its text on stdin. Every issue is created with a `spec.md`, and the command refuses an upload
 under the name of a document the issue already holds, so this one carries `--force`, which writes
-the next version of it:
+the next version of it, and the token of the version it replaces, which
+`dispatch doc-read --issue LEGION-1` prints:
 
 ```sh
-dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force <<'EOF'
+dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force \
+  --precondition-json '{"document":"sha256:…"}' <<'EOF'
 # Design
 EOF
 ```
@@ -396,6 +495,12 @@ command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan
 sends anything and names `--path`, which stores a file whose path does not end in `.md` or
 `.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
 takes `--content` once it ends in `.md`.
+
+An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
+That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
+A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
+An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as

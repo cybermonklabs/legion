@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The legion-worker skill sends a worker to the `agent-secrets` skill before it reads a GitHub `404`
+    under its own token as no access, as it already did before a worker reported a resource unreachable.
+time: 2026-11-16T21:44:51.225639665Z
+custom:
+    Issue: pr4145

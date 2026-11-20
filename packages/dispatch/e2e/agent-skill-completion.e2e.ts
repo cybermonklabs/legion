@@ -228,7 +228,9 @@ test("the menu offers the same list at the start of a message and inside a sente
 
     await input.fill("please read /");
     await expect(commandMenu(page).getByRole("option")).toHaveCount(COMMANDS.length);
-    expect(await commandMenu(page).getByRole("option").allInnerTexts()).toEqual(atStart);
+    // A count that matches says nothing yet of what the rows say, so their text is read until
+    // it matches too.
+    await expect.poll(() => commandMenu(page).getByRole("option").allInnerTexts()).toEqual(atStart);
   } finally {
     await context.close();
   }

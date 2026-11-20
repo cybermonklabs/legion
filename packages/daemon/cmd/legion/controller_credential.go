@@ -15,6 +15,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // controllerGitHubRefreshInterval is how often startControllerGitHubRefresh re-fetches the
@@ -53,45 +55,63 @@ func controllerCredentialSuperseded(err error) bool {
 // /legion/v1/controller/github-credential: the controller capability secret proves which
 // controller is asking, defaultOwner names the owner whose directory its GH_CONFIG_DIR names (empty
 // on the first fetch, which the daemon answers with the first owner), and the daemon answers the
-// review App's read-only token for every owner of the project, each rendered as the two files gh
-// reads, as a gh bundle (ghconfig.Bundle) whose every owner carries the answer's App and its
+// review App's read-only token for every owner that App is installed on, and for an owner a
+// configured rename moved a repository away from, each rendered as the two files gh
+// reads, and the configured renames its gh routes a moved repository by, as a gh bundle
+// (ghconfig.Bundle) whose every owner carries the answer's App and its
 // expiry, parsed from the API's RFC 3339 nanosecond timestamp (time.RFC3339Nano, the format
-// api.ControllerCredentialResponse's ExpiresAt is written in). An answer that is no valid bundle is
+// api.ControllerCredentialResponse's ExpiresAt is written in). Beside the bundle it answers
+// installed, the owner accounts the daemon read the review App installed on as it built that
+// bundle, lowercased and sorted (api.ControllerCredentialResponse's Installed), which the
+// first fetch reads for the controller's addressing (controllerReach) and a refresh does not
+// read. An answer that is no valid bundle,
+// a rename of it naming a repository GitHub could hold no name for included, is
 // an error. A failed request names the daemon URL, as fetchControllerSecret's does, and never
 // tries another address. A refusal is a *controllerCredentialFailure carrying the daemon's code
 // when the body parses as one (api.Failure), quoting its sentence through refusal otherwise.
-func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (ghconfig.Bundle, error) {
+func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
 	status, body, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
-		return ghconfig.Bundle{}, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
 	if status/100 != 2 {
 		var failure api.Failure
 		if json.Unmarshal(body, &failure) == nil && failure.Code != "" {
-			return ghconfig.Bundle{}, &controllerCredentialFailure{
+			return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
 				code:    failure.Code,
 				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
 			}
 		}
-		return ghconfig.Bundle{}, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body))
 	}
 	var answer api.ControllerCredentialResponse
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return ghconfig.Bundle{}, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
 	if err != nil {
-		return ghconfig.Bundle{}, fmt.Errorf("%s%s answered an expiry that is not RFC 3339: %w", daemonURL, route, err)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an expiry that is not RFC 3339: %w", daemonURL, route, err)
 	}
-	bundle := ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
+	bundle = ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
 	for owner, files := range answer.Owners {
 		bundle.Dirs[owner] = ghconfig.Rendered{Hosts: files.Hosts, Config: files.Config, App: answer.App, ExpiresAt: expiresAt}
 	}
-	if err := bundle.Validate(); err != nil {
-		return ghconfig.Bundle{}, fmt.Errorf("%s%s answered a credential that is no gh bundle: %w", daemonURL, route, err)
+	for _, pair := range answer.Renames {
+		from, err := ghrepo.Parse("the repository a rename moved", pair.From)
+		if err != nil {
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+		}
+		to, err := ghrepo.Parse("the repository a rename moved it to", pair.To)
+		if err != nil {
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+		}
+		bundle.Pairs = append(bundle.Pairs, ghrepo.Rename{From: from, To: to})
 	}
-	return bundle, nil
+	if err := bundle.Validate(); err != nil {
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a credential that is no gh bundle: %w", daemonURL, route, err)
+	}
+	return bundle, answer.Installed, nil
 }
 
 // controllerGHDir is the root of the controller's gh bundle within stateDir, its
@@ -99,56 +119,70 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 // GH_CONFIG_DIR.
 func controllerGHDir(stateDir string) string { return filepath.Join(stateDir, "gh") }
 
+// controllerReach is the owners the controller's addressing names (daemon.RepositoriesSentence,
+// which says of each that the role's GitHub App is installed on it and that its token reaches
+// every repository of it): the owners of installed, the accounts the daemon read the review App
+// installed on, that bundle also holds a directory for, in installed's order, which is sorted.
+//
+// Both are consulted because each proves one half of that sentence and neither proves both.
+// The bundle's directories prove the token and not the installation: a bundle also holds a
+// directory for an owner a configured rename moved a repository away from, an alias, whose
+// token is the lease of the owner the repository moved to, on an account the App may not be
+// installed on at all. An alias is never named, because it is not in installed. The
+// installations prove the installation and not the token: an owner can be in installed while
+// GitHub refused its reading lease, so the bundle holds no directory for it (appauth's
+// mintBundle), and "its token reaches every repository of those owners" would be false of that
+// owner. The installed owners the bundle also holds a directory for are the only set the whole
+// sentence is true of.
+func controllerReach(installed []string, bundle ghconfig.Bundle) []string {
+	reach := make([]string, 0, len(installed))
+	for _, owner := range installed {
+		if _, held := bundle.Dirs[owner]; held {
+			reach = append(reach, owner)
+		}
+	}
+	return reach
+}
+
 // controllerStartGitHubCredential is the first fetch controllerStart makes after it writes the
 // secret file: success writes the controller's gh bundle under controllerGHDir(stateDir)
-// (ghconfig.WriteBundle), names its App and owners on stderr, starts the refresh loop, logging to
-// stateDir/github-credential.log, and answers the bundle's default owner, whose directory the
-// controller's GH_CONFIG_DIR names; a daemon with no GitHub App for this project
+// (ghconfig.WriteBundle), names its App and directories on stderr, starts the refresh loop,
+// logging to stateDir/github-credential.log, and answers the bundle's default owner, whose
+// directory the controller's GH_CONFIG_DIR names, and reach, the owners the controller's
+// addressing names (controllerReach); a daemon with no GitHub App for this project
 // (GITHUB_TOKEN_SOURCE_UNAVAILABLE or GITHUB_OWNER_UNCONFIGURED) is not a refusal, since nothing
 // is wrong — it just has nothing to act as — so this removes everything an earlier run left in the
-// gh directory, leaving it empty 0700, no loop running and no default, so a token an earlier run
-// minted against a daemon that had an App never outlives a start that says gh acts as nobody; any
-// other failure is this function's error, which controllerStart treats as every other post-mint
-// failure (exit 1, Oh My Pi never started, the secret file left as it is). It answers a function
-// that stops the loop — a no-op when none started — for controllerStart to defer.
-func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, stateDir string, stderr io.Writer) (stop func(), defaultOwner string, err error) {
+// gh directory, leaving it empty 0700, no loop running, no default and no owner, so a token an
+// earlier run minted against a daemon that had an App never outlives a start that says gh acts as
+// nobody; any other failure is this function's error, which controllerStart treats as every other
+// post-mint failure (exit 1, Oh My Pi never started, the secret file left as it is). It answers a
+// function that stops the loop — a no-op when none started — for controllerStart to defer.
+func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, stateDir string, stderr io.Writer) (stop func(), defaultOwner string, reach []string, err error) {
 	ghDir := controllerGHDir(stateDir)
 	noop := func() {}
-	bundle, err := fetchControllerCredential(ctx, daemonURL, secret, "")
+	bundle, installed, err := fetchControllerCredential(ctx, daemonURL, secret, "")
 	if err != nil {
 		var failure *controllerCredentialFailure
 		if !errors.As(err, &failure) || (failure.code != "GITHUB_TOKEN_SOURCE_UNAVAILABLE" && failure.code != "GITHUB_OWNER_UNCONFIGURED") {
-			return noop, "", err
+			return noop, "", nil, err
 		}
-		if err := os.MkdirAll(ghDir, 0o700); err != nil {
-			return noop, "", fmt.Errorf("create %s: %w", ghDir, err)
-		}
-		if err := os.Chmod(ghDir, 0o700); err != nil {
-			return noop, "", fmt.Errorf("chmod %s: %w", ghDir, err)
-		}
-		entries, err := os.ReadDir(ghDir)
-		if err != nil {
-			return noop, "", fmt.Errorf("read %s: %w", ghDir, err)
-		}
-		for _, entry := range entries {
-			if err := os.RemoveAll(filepath.Join(ghDir, entry.Name())); err != nil {
-				return noop, "", fmt.Errorf("remove %s: %w", filepath.Join(ghDir, entry.Name()), err)
-			}
+		if err := ghconfig.EmptyBundle(ghDir); err != nil {
+			return noop, "", nil, fmt.Errorf("empty %s: %w", ghDir, err)
 		}
 		fmt.Fprintln(stderr, "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody")
-		return noop, "", nil
+		return noop, "", nil, nil
 	}
 	if _, err := ghconfig.WriteBundle(ghDir, bundle); err != nil {
-		return noop, "", fmt.Errorf("write the controller's gh files: %w", err)
+		return noop, "", nil, fmt.Errorf("write the controller's gh files: %w", err)
 	}
 	written := bundle.Dirs[bundle.Default]
 	fmt.Fprintf(stderr, "[legion] the controller's gh acts as the %s App for owners %s (read-only) from %s; this process refreshes the tokens before they expire (%s)\n",
 		written.App, strings.Join(bundle.DirNames(), ", "), ghDir, written.ExpiresAt.Format(time.RFC3339))
 	stop, err = startControllerGitHubRefresh(daemonURL, secret, ghDir, bundle.Default, filepath.Join(stateDir, "github-credential.log"))
 	if err != nil {
-		return noop, "", err
+		return noop, "", nil, err
 	}
-	return stop, bundle.Default, nil
+	return stop, bundle.Default, controllerReach(installed, bundle), nil
 }
 
 // startControllerGitHubRefresh starts the loop that keeps the controller's gh bundle fresh while
@@ -171,7 +205,7 @@ func startControllerGitHubRefresh(daemonURL, secret, dir, defaultOwner, logPath 
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", logPath, err)
 	}
-	log := slog.New(slog.NewTextHandler(logFile, nil))
+	log := slog.New(slog.NewTextHandler(logFile, redact.HandlerOptions(nil)))
 	loopCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -199,7 +233,7 @@ func startControllerGitHubRefresh(daemonURL, secret, dir, defaultOwner, logPath 
 // refreshControllerGitHubCredential is one tick of startControllerGitHubRefresh's loop. It
 // answers false when the loop must stop (a superseded capability), true otherwise.
 func refreshControllerGitHubCredential(ctx context.Context, daemonURL, secret, dir, defaultOwner string, log *slog.Logger) bool {
-	bundle, err := fetchControllerCredential(ctx, daemonURL, secret, defaultOwner)
+	bundle, _, err := fetchControllerCredential(ctx, daemonURL, secret, defaultOwner)
 	if err != nil {
 		if controllerCredentialSuperseded(err) {
 			log.Info("controller: github credential refresh stopped", "reason", err.Error())

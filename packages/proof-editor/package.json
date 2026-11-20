@@ -34,6 +34,7 @@
       "bun": "./src/document-reading.ts",
       "default": "./src/document-reading.ts"
     },
+    "./block-nesting": "./src/block-nesting.ts",
     "./style.css": "./src/lib.css"
   },
   "main": "src/lib.ts",

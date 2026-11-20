@@ -11,13 +11,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// testExchangeAudience is the audience production's broker trades a pod's identity at: agent-infra
+// testExchangeAudience is the audience production's broker trades a pod's identity at: deployment
 // shared/broker.ExchangeAudience, which the broker sets as BROKER_EXCHANGE_K8S_AUDIENCE
 // (dispatch://INFRA-748's R1) and legion.yaml renders as agent_secrets.exchange_audience.
 const testExchangeAudience = "legion-broker-exchange"
 
 // The two variables a pod's broker clients read to decide which identity the machine proves and
-// where its token is (packages/broker-client/src/environment.ts, IDENTITY_VAR and
+// where its token is (packages/cipher-client/src/environment.ts, IDENTITY_VAR and
 // MACHINE_TOKEN_FILE_VAR).
 const (
 	identityVariable  = "AGENT_SECRETS_MACHINE_IDENTITY"

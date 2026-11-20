@@ -77,17 +77,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(reopened.Close)
-		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
-			Namespace: "legion", Project: "legion", Store: reopened, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-			BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
-			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
-			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-		})
+		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), issueSandboxOptions(t, reopened, quietLogger()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -173,6 +163,161 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	if live, err := st.TreeLive(ctx, "legion", issue.Tree); err != nil || live {
 		t.Fatalf("tree after its linger cleanup is live = %t, %v; want its cleanup confirmed", live, err)
 	}
+}
+
+// issueSandboxOptions are the options these tests build the real Sandbox runtime of project legion
+// from, reading st and logging to log.
+func issueSandboxOptions(t *testing.T, st sandbox.Store, log *slog.Logger) sandbox.Options {
+	t.Helper()
+	return sandbox.Options{
+		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
+		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: log,
+		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+	}
+}
+
+// issueSandboxRuntime is the real Sandbox runtime of project legion over api, which it serves,
+// reading st, built with the options TestIssueCloseDeletesTheSandboxAfterARestart gives its own
+// (issueSandboxOptions). The runtime stops when the test ends, before the server closes: a server
+// closed while the runtime's watches are open waits for them, and they never end.
+func issueSandboxRuntime(t *testing.T, api *issueSandboxAPI, st sandbox.Store) *sandbox.Runtime {
+	t.Helper()
+	url := api.serve(t)
+	// Cleanups run last first, so this one, registered after the server's, runs before it.
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	rt, err := sandbox.New(ctx, sandboxRESTConfig(url), issueSandboxOptions(t, st, quietLogger()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
+}
+
+// sandboxTeardowns is the idle rig's runtime with the issue's two teardowns, the close's
+// (SuspendIssue) and the release's (ReleaseIssue), made by the real Sandbox runtime over the
+// test's API. What else a release asks of the runtime — the bundle, the role stops, and the pod
+// the idle pass reads — stays the rig's.
+type sandboxTeardowns struct {
+	*releaseRuntime
+	sandboxes *sandbox.Runtime
+}
+
+func (r *sandboxTeardowns) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+	return r.sandboxes.SuspendIssue(ctx, issue, tree, authorize)
+}
+
+func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+	return r.sandboxes.ReleaseIssue(ctx, issue, tree, authorize)
+}
+
+// A release leaves the issue in the workflow, so its teardown row (record.IssueRelease) asks the
+// runtime's release (runtime.IssueReleaser): the Sandbox of a kept volume stays, Suspended, with
+// the same uid, and the volume it owns with it, for the issue's next pod. A Sandbox with an
+// ephemeral volume holds nothing the next pod can use, and is deleted in the foreground. Both
+// release rules do this: the idle release, and the release of a pod no claim of the issue owns. A
+// close takes the issue out of the workflow, and its row (record.IssueSuspend) deletes the kept
+// volume's Sandbox in the foreground too.
+func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
+	ctx := context.Background()
+	// overSandbox is the idle rig whose issue's Sandbox the test API holds, Running, owning a kept
+	// volume where kept is true and no volume otherwise, with the issue's teardowns made by the
+	// real Sandbox runtime over that API.
+	overSandbox := func(t *testing.T, kept bool) (*idleRig, *issueSandboxAPI, string) {
+		t.Helper()
+		rig := newIdleRig(t)
+		name := sandbox.SandboxName(rig.token)
+		object := issueSandbox(name, "sandbox-uid", rig.issue.Tree, rig.issue.Key)
+		if kept {
+			object = keptIssueSandbox(name, "sandbox-uid", rig.issue.Tree, rig.issue.Key, "Running")
+		}
+		api := newIssueSandboxAPI(object)
+		rig.sup.deps.Runtime = &sandboxTeardowns{releaseRuntime: rig.rt, sandboxes: issueSandboxRuntime(t, api, rig.st)}
+		return rig, api, name
+	}
+	// served fails the test on a request the API did not know or a request on a claim.
+	served := func(t *testing.T, api *issueSandboxAPI) {
+		t.Helper()
+		api.requireServed(t)
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		if api.pvcRequests != 0 {
+			t.Fatalf("the runtime sent %d PVC requests, want none", api.pvcRequests)
+		}
+	}
+	for _, release := range []struct {
+		name  string
+		queue func(t *testing.T, rig *idleRig)
+	}{
+		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }},
+		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
+			rig.stoppedImplementer(t, false)
+			rig.w.releaseUnownedPods(ctx)
+		}},
+	} {
+		t.Run(release.name+" keeps a kept volume's Sandbox", func(t *testing.T) {
+			rig, api, name := overSandbox(t, true)
+			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
+				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+			}
+			rig.drain(t)
+			if rig.marked(t) {
+				t.Fatal("the release left its mark behind, so its teardown never finished")
+			}
+			if got := api.mode(name); got != "Suspended" {
+				t.Fatalf("the kept volume's Sandbox after the release is %s, want it kept, Suspended", got)
+			}
+			if got := api.uid(name); got != "sandbox-uid" {
+				t.Fatalf("the kept volume's Sandbox after the release has uid %q, want sandbox-uid kept", got)
+			}
+			if options, deleted := api.deleted(name); deleted {
+				t.Fatalf("the release deleted the kept volume's Sandbox (%+v), want it kept", options)
+			}
+			served(t, api)
+		})
+		t.Run(release.name+" deletes a Sandbox with an ephemeral volume", func(t *testing.T) {
+			rig, api, name := overSandbox(t, false)
+			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
+				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
+			}
+			rig.drain(t)
+			if rig.marked(t) {
+				t.Fatal("the release left its mark behind, so its teardown never finished")
+			}
+			if got := api.mode(name); got != "deleted" {
+				t.Fatalf("the Sandbox with an ephemeral volume after the release is %s, want it deleted", got)
+			}
+			if options, deleted := api.deleted(name); !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
+				t.Fatalf("the Sandbox's delete = %+v (requested %t), want foreground propagation", options, deleted)
+			}
+			served(t, api)
+		})
+	}
+	t.Run("a close deletes a kept volume's Sandbox", func(t *testing.T) {
+		rig, api, name := overSandbox(t, true)
+		engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+			Linger: time.Hour}, quietLogger())
+		rig.runner.handlers = []intake.Handler{engine}
+		// A person parks the root: the close stops its role and queues the issue's suspension.
+		if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "park", intake.DispatchIssue{
+			Key: rig.issue.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "backlog", Title: rig.issue.Title, Rank: rig.issue.Rank}, engine); err != nil {
+			t.Fatal(err)
+		}
+		rig.drain(t)
+		if got := api.mode(name); got != "deleted" {
+			t.Fatalf("the kept volume's Sandbox after the close is %s, want it deleted", got)
+		}
+		if options, deleted := api.deleted(name); !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
+			t.Fatalf("the kept volume's Sandbox delete = %+v (requested %t), want foreground propagation", options, deleted)
+		}
+		served(t, api)
+	})
 }
 
 // issueLaunchSpecs builds a launch the Sandbox runtime accepts for any workflow claim: a role prompt
@@ -422,17 +567,9 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	t.Cleanup(stopRuntime)
-	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
-		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-	})
+	opts := issueSandboxOptions(t, st, logger)
+	opts.BootTimeout, opts.TerminationGrace = 300*time.Millisecond, 100*time.Millisecond
+	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

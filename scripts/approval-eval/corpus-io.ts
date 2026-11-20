@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
@@ -83,6 +84,13 @@ export interface Corpus {
   /** The directory it was read from, resolved. */
   directory: string;
   snapshot: CorpusSnapshot;
+  /**
+   * The sha256 of the bytes of `snapshot.json` and of `corpus.jsonl` this read parsed. A later
+   * stage of the claim run records them (`draw.ts`, `s10-inputs.ts`), so a stage reads only the
+   * build the stage before it read, and no other build can be put in its place between them.
+   */
+  snapshotSha256: string;
+  corpusSha256: string;
   /**
    * The cases in the order `corpus.jsonl` holds them, which is answer time. A case the reserve
    * holds (`reserve.ts`) is in neither this nor `byCaseId`, unless `claim.ts` registers this read.
@@ -288,7 +296,9 @@ export async function readCorpus(
   if (access.kind === "refused") throw new CorpusError(access.reason);
   const readUnder = access.kind === "read" ? access.reference : null;
   const ended = access.kind === "ended" ? access.record : null;
-  const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));
+  const snapshotBytes = await bytesOf(directory, "snapshot.json");
+  const snapshotSha256 = createHash("sha256").update(snapshotBytes).digest("hex");
+  const snapshot = snapshotOf(directory, snapshotBytes.toString("utf8"));
   const leftOut = snapshot.reserve?.leftOut === true ? snapshot.reserve : null;
   if (access.kind === "read" && snapshot.reserve?.readUnder !== access.reference) {
     throw new CorpusError(`${directory} ${notBuiltUnder(snapshot.reserve, access.reference)}`);
@@ -309,7 +319,9 @@ export async function readCorpus(
         `which are development data since the reserve ended (${access.record}): build it again`
     );
   }
-  const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
+  const corpusBytes = await bytesOf(directory, "corpus.jsonl");
+  const corpusSha256 = createHash("sha256").update(corpusBytes).digest("hex");
+  const lines = corpusBytes.toString("utf8").split("\n");
   const rows: CaseRow[] = [];
   const byCaseId = new Map<string, CaseRow>();
   const reservedIssues = new Set<string>();
@@ -361,6 +373,8 @@ export async function readCorpus(
   return {
     directory,
     snapshot,
+    snapshotSha256,
+    corpusSha256,
     rows,
     byCaseId,
     reserve: { cases: held.cases, issues: held.issues, readUnder },
@@ -515,10 +529,10 @@ export function span(interval: Interval): string {
   return `[${signedBound(interval.lower)}, ${signedBound(interval.upper)}]`;
 }
 
-async function textOf(directory: string, name: string): Promise<string> {
+async function bytesOf(directory: string, name: string): Promise<Buffer> {
   const path = join(directory, name);
   try {
-    return await readFile(path, "utf8");
+    return await readFile(path);
   } catch {
     throw new CorpusError(`${path} could not be read: --corpus takes a directory a build wrote`);
   }

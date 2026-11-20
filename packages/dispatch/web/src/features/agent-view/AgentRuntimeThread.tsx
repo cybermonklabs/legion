@@ -80,6 +80,7 @@ export function AgentRuntimeThread({
   conversation,
   empty,
   front,
+  notice,
   onSend,
   ownSendCount,
   sends,
@@ -98,6 +99,9 @@ export function AgentRuntimeThread({
   /** Whether this is the view the person is looking at; the transcript's own scrolling reads
    *  it (`AgentThread`). */
   front: boolean;
+  /** The line above a transcript that holds turns while the session is silent, by the relay's
+   *  word or the session list's, or undefined for none (`AgentThread`). */
+  notice: string | undefined;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
   onSend: (body: string) => void;
   /** Bumped once per message this viewer sent that the session accepted, so their own send takes
@@ -124,7 +128,8 @@ export function AgentRuntimeThread({
     // A person's direct message the session took as its own user turn is in the stream too,
     // normally tagged with its Dispatch id: then it shows once, where the session took it, still
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
-    // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
+    // taken, so it shows twice (`packages/pi-envoy/README.md`, "A person's message from
+    // Dispatch", says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
     // streamed message saying what that person wrote - beside what the stream names of what the
     // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its
@@ -284,6 +289,7 @@ export function AgentRuntimeThread({
         front={front}
         held={sendDisabled}
         initialPlace={initialPlace}
+        notice={notice}
         onPlace={onPlace}
         ownSendCount={ownSendCount}
         placeholder={placeholder}

@@ -2,8 +2,11 @@ package leakguard
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -426,15 +430,16 @@ func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
 	}
 }
 
-// The two shared-check failures: no check resolves at all, and a check that exits 2. Each refuses
-// the write, and each says it is a failure of setup rather than of the text.
+// The two shared-check failures: no check resolves at all under a deployment that names one (its
+// checker, CheckerVar, in the environment), and a check that exits 2. Each refuses the write, and
+// each says it is a failure of setup rather than of the text.
 func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 	t.Run("no check resolves", func(t *testing.T) {
 		// An environment with no PUBLIC_LEAK_CHECK, a PATH with no check on it, and a
 		// configuration home holding no pointer file: the three places Resolve looks.
 		guard := New(Options{
 			Visibility: answers(Public, nil),
-			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()),
+			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir(), CheckerVar+"="+theChecker),
 		})
 		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
@@ -453,4 +458,438 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 			t.Errorf("the message is %q, want the shared check's own setup-error line", failed.Error())
 		}
 	})
+}
+
+// theChecker stands for the deployment's manifest digest (Setting.ManifestSHA256) in an environment whose
+// deployment runs a shared leak check: no check of these tests hashes to it.
+var theChecker = strings.Repeat("5e", 32)
+
+// A deployment that names no shared leak check (no CheckerVar in the environment) refuses no
+// write for the check's absence: with no check named anywhere, a push, a text and a gh call each
+// pass the guard with no shared check run, and this repository's own rules still read each — the
+// gh call's body on standard input among them, which the guard buffers itself where no check's
+// handshake asks for it, and hands back for gh. A broken setup is refused whatever the deployment
+// runs, naming the path it is broken at (BrokenAt): a check named and not there, a file of the
+// check's name on PATH that is no executable (a dangling link, no execute bit), and a pointer file
+// that names nothing or cannot be read as a file.
+func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
+	noCheck := func(t *testing.T, extra ...string) *Guard {
+		t.Helper()
+		return New(Options{
+			Visibility: answers(Public, nil),
+			Env:        append(append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()), extra...),
+		})
+	}
+	t.Run("a clean text passes", func(t *testing.T) {
+		if err := noCheck(t).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}); err != nil {
+			t.Fatalf("a clean text = %v, want it cleared", err)
+		}
+	})
+	t.Run("the rules refuse a text", func(t *testing.T) {
+		err := noCheck(t).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a title\na body naming " + theHost + "\n"})
+		if refused := refusal(t, err); refused.By != byRules {
+			t.Fatalf("the refusal is by %q, want this repository's own rules", refused.By)
+		}
+	})
+	t.Run("a clean gh call passes and its body comes back", func(t *testing.T) {
+		const body = "a clean body\n"
+		answer, err := noCheck(t).GhCall(bound(t), GhRequest{
+			Args: []string{"pr", "create", "--body-file", "-"}, Stdin: strings.NewReader(body), Repo: "invented-org/invented-repo",
+		})
+		if err != nil || string(answer.Stdin) != body || answer.CheckedOnly {
+			t.Fatalf("a clean gh call = %+v, %v; want it cleared, its body handed back whole and not checked-only", answer, err)
+		}
+	})
+	t.Run("the rules refuse a gh call's body on standard input", func(t *testing.T) {
+		for _, req := range []GhRequest{
+			{Args: []string{"pr", "create", "--body-file", "-"}},
+			{Args: []string{"pr", "create", "--body-file", "-"}, Files: []GhFile{}, StdinSent: true},
+		} {
+			req.Stdin, req.Repo = strings.NewReader("a body naming "+theHost+"\n"), "invented-org/invented-repo"
+			_, err := noCheck(t).GhCall(bound(t), req)
+			if refused := refusal(t, err); refused.By != byRules {
+				t.Fatalf("the refusal of %+v is by %q, want this repository's own rules", req, refused.By)
+			}
+		}
+	})
+	t.Run("a read is guarded whole", func(t *testing.T) {
+		var asked []string
+		guard := New(Options{
+			Visibility: answers(Public, &asked),
+			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()),
+		})
+		answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}, WritesNothing: true})
+		if err != nil || answer.CheckedOnly || len(asked) != 1 {
+			t.Fatalf("a read = %+v, %v after %d visibility reads; want it cleared by the whole guard, one read", answer, err, len(asked))
+		}
+	})
+	t.Run("a push passes and the rules still read it", func(t *testing.T) {
+		// The push's records are read with git, so the guard's PATH holds git's own directory
+		// and nothing else: no check is on it.
+		git, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		push := func(t *testing.T, message string) error {
+			t.Helper()
+			home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			fixture := fixturegit.Isolated(t, home)
+			fixture.Run(filepath.Dir(repo), fixturegit.InitWorkTree(repo, "main")...)
+			fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", message)
+			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			return noCheck(t, "PATH="+filepath.Dir(git)).Push(bound(t), PushRequest{
+				Dir: repo, Remote: "origin", URL: "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+			})
+		}
+		if err := push(t, "a commit of nothing in particular"); err != nil {
+			t.Fatalf("a clean push = %v, want it cleared", err)
+		}
+		if refused := refusal(t, push(t, "a commit naming "+theHost)); refused.By != byRules {
+			t.Fatalf("the refusal of the push is by %q, want this repository's own rules", refused.By)
+		}
+	})
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Dir(git)
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) (extra []string, at string)
+	}{
+		{"a check named and not there", func(t *testing.T) ([]string, string) {
+			gone := filepath.Join(t.TempDir(), checkName)
+			return []string{CheckVar + "=" + gone}, gone
+		}},
+		{"a check named that has no execute bit", func(t *testing.T) ([]string, string) {
+			file := filepath.Join(t.TempDir(), checkName)
+			if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{CheckVar + "=" + file}, file
+		}},
+		{"a check named that is a directory", func(t *testing.T) ([]string, string) {
+			dir := filepath.Join(t.TempDir(), checkName)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return []string{CheckVar + "=" + dir}, dir
+		}},
+		{"a dangling link of the check's name on PATH", func(t *testing.T) ([]string, string) {
+			dir := t.TempDir()
+			link := filepath.Join(dir, checkName)
+			if err := os.Symlink(filepath.Join(t.TempDir(), "moved"), link); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"PATH=" + dir + ":" + gitDir}, link
+		}},
+		{"a file of the check's name on PATH with no execute bit", func(t *testing.T) ([]string, string) {
+			dir := t.TempDir()
+			file := filepath.Join(dir, checkName)
+			if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"PATH=" + dir + ":" + gitDir}, file
+		}},
+		{"a pointer file that names nothing", func(t *testing.T) ([]string, string) {
+			config := t.TempDir()
+			pointer := filepath.Join(config, pointerFile)
+			if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pointer, []byte("\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"XDG_CONFIG_HOME=" + config}, pointer
+		}},
+		{"a pointer file that is a directory", func(t *testing.T) ([]string, string) {
+			config := t.TempDir()
+			pointer := filepath.Join(config, pointerFile)
+			if err := os.MkdirAll(pointer, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"XDG_CONFIG_HOME=" + config}, pointer
+		}},
+		{"a pointer file naming a file with no execute bit", func(t *testing.T) ([]string, string) {
+			config := t.TempDir()
+			pointer := filepath.Join(config, pointerFile)
+			file := filepath.Join(t.TempDir(), checkName)
+			if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pointer, []byte(file+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"XDG_CONFIG_HOME=" + config}, file
+		}},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			extra, at := tc.setup(t)
+			guard := noCheck(t, append([]string{"PATH=" + gitDir}, extra...)...)
+			_, resolveErr := guard.Resolve()
+			if broken, ok := BrokenAt(resolveErr); !ok || broken != at || NoneNamed(resolveErr) {
+				t.Fatalf("Resolve = %v, want a broken setup at %s", resolveErr, at)
+			}
+			err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+			if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), at) {
+				t.Fatalf("the text's setup failure is %q, want the broken setup at %s named", failed.Error(), at)
+			}
+			// A push runs the check through bash, which would run a file the other shapes cannot:
+			// it is refused alike, before any record is read.
+			home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			fixture := fixturegit.Isolated(t, home)
+			fixture.Run(filepath.Dir(repo), fixturegit.InitWorkTree(repo, "main")...)
+			fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", "a commit of nothing in particular")
+			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			err = guard.Push(bound(t), PushRequest{
+				Dir: repo, Remote: "origin", URL: "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+			})
+			if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), at) {
+				t.Fatalf("the push's setup failure is %q, want the broken setup at %s named", failed.Error(), at)
+			}
+		})
+	}
+	t.Run("a file of the check's name on PATH that does not run hides no pointer file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Symlink(filepath.Join(t.TempDir(), "moved"), filepath.Join(dir, checkName)); err != nil {
+			t.Fatal(err)
+		}
+		good := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+		config := t.TempDir()
+		pointer := filepath.Join(config, pointerFile)
+		if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pointer, []byte(good+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		guard := noCheck(t, "PATH="+dir+":"+gitDir, "XDG_CONFIG_HOME="+config)
+		if check, err := guard.Resolve(); err != nil || check != good {
+			t.Fatalf("Resolve = %q, %v; want the check the pointer file names, %s", check, err, good)
+		}
+		if err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}); err != nil {
+			t.Fatalf("a clean text = %v, want it cleared by the check the pointer file names", err)
+		}
+	})
+}
+
+// Under a deployment's manifest digest (CheckerVar) a write runs only under the check that digest
+// names: a check whose manifest (the launcher script, the program, the README and the must-pass
+// lines beside it) has that digest runs and clears the write. One whose program is another, one
+// whose launcher script is edited to `exit 0` beside an untouched program, and one missing a file
+// of the manifest are each refused as whyOtherCheck naming the digest and what is there, and the
+// check is never run. With no digest told, the same checks run, as they did before the setting.
+func TestAGuardUnderACheckerRunsOnlyTheCheckItNames(t *testing.T) {
+	const otherProgram = "# a check of another version\n"
+	launcher := leakguardtest.Recording(leakguardtest.Passes)
+	install := func(t *testing.T, launcher, program string, drop string) string {
+		t.Helper()
+		dir := t.TempDir()
+		check := leakguardtest.Write(t, dir, launcher)
+		leakguardtest.Companions(t, dir, program)
+		if drop != "" {
+			if err := os.Remove(filepath.Join(dir, drop)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return check
+	}
+	digestOf := func(t *testing.T, check string) string {
+		t.Helper()
+		digest, err := manifestSHA256(check)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return digest
+	}
+	deployments := digestOf(t, install(t, launcher, leakguardtest.Program, ""))
+	guard := func(t *testing.T, check, checker string) (*Guard, string) {
+		t.Helper()
+		record := filepath.Join(t.TempDir(), "record")
+		env := append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record)
+		if checker != "" {
+			env = append(env, CheckerVar+"="+checker)
+		}
+		return New(Options{Check: check, Visibility: answers(Public, nil), Env: env}), record
+	}
+	ran := func(t *testing.T, record string) bool {
+		t.Helper()
+		got, err := os.ReadFile(record)
+		return err == nil && len(got) > 0
+	}
+	text := TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}
+	for _, tc := range []struct {
+		name, program, checker string
+	}{
+		{name: "the deployment's own check", program: leakguardtest.Program, checker: deployments},
+		{name: "no digest told and no program", program: "", checker: ""},
+		{name: "no digest told and another program", program: otherProgram, checker: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, record := guard(t, install(t, launcher, tc.program, ""), tc.checker)
+			if err := g.Text(bound(t), text); err != nil || !ran(t, record) {
+				t.Fatalf("a clean text = %v, check ran %t; want it cleared by the check", err, ran(t, record))
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name     string
+		launcher string
+		program  string
+		drop     string
+		readable bool
+	}{
+		{name: "a program of another digest", launcher: launcher, program: otherProgram, readable: true},
+		{name: "a launcher edited to exit 0 beside an untouched program", launcher: leakguardtest.Recording("exit 0\n"), program: leakguardtest.Program, readable: true},
+		{name: "no program beside the check", launcher: launcher, program: ""},
+		{name: "no must-pass lines beside the check", launcher: launcher, program: leakguardtest.Program, drop: leakguardtest.MustPassName},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, shape := range []struct {
+				name  string
+				write func(*Guard) error
+			}{
+				{"a text", func(g *Guard) error { return g.Text(bound(t), text) }},
+				{"a gh call", func(g *Guard) error {
+					_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}})
+					return err
+				}},
+			} {
+				check := install(t, tc.launcher, tc.program, tc.drop)
+				want := []string{CheckerVar + "=" + deployments, "could not be read"}
+				if tc.readable {
+					want = []string{CheckerVar + "=" + deployments, "has the manifest digest " + digestOf(t, check)}
+				}
+				g, record := guard(t, check, deployments)
+				failed := setupFailure(t, shape.write(g))
+				if failed.Why != whyOtherCheck {
+					t.Errorf("%s: the setup failure is %q, want %q", shape.name, failed.Error(), whyOtherCheck)
+				}
+				for _, w := range want {
+					if !strings.Contains(failed.Error(), w) {
+						t.Errorf("%s: the setup failure %q does not name %q", shape.name, failed.Error(), w)
+					}
+				}
+				if ran(t, record) {
+					t.Errorf("%s: the check ran, want it never run under another digest", shape.name)
+				}
+			}
+		})
+	}
+	// A check that runs a file the manifest does not cover is refused, though the four files beside
+	// what runs are the deployment's own: a public-leak-check.sh linked to a `pass.sh` beside copies
+	// of the real files, and a check named as `other.sh` beside them. The digest holds the file that
+	// runs, not only the files beside it.
+	for _, tc := range []struct {
+		name  string
+		check func(t *testing.T) string
+	}{
+		{"a launcher linked out beside copies", func(t *testing.T) string {
+			copies := t.TempDir()
+			leakguardtest.Write(t, copies, launcher)
+			leakguardtest.Companions(t, copies, leakguardtest.Program)
+			pass := filepath.Join(copies, "pass.sh")
+			if err := os.WriteFile(pass, []byte(leakguardtest.Recording("exit 0\n")), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), checkName)
+			if err := os.Symlink(pass, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}},
+		{"a check of another name beside copies", func(t *testing.T) string {
+			copies := t.TempDir()
+			leakguardtest.Write(t, copies, launcher)
+			leakguardtest.Companions(t, copies, leakguardtest.Program)
+			other := filepath.Join(copies, "other.sh")
+			if err := os.WriteFile(other, []byte(leakguardtest.Recording("exit 0\n")), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return other
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, record := guard(t, tc.check(t), deployments)
+			failed := setupFailure(t, g.Text(bound(t), text))
+			if failed.Why != whyOtherCheck || !strings.Contains(failed.Error(), "which is not the "+checkName+" its manifest covers") {
+				t.Errorf("the setup failure is %q, want %q naming the file that runs", failed.Error(), whyOtherCheck)
+			}
+			if ran(t, record) {
+				t.Errorf("the check ran, want it never run")
+			}
+		})
+	}
+}
+
+// The manifest digest is what the check's own install procedure records and an operator computes
+// with one shell line: `(cd <dir> && sha256sum public-leak-check.sh public_leak_check.py README.md
+// must-pass-lines.txt) | sha256sum`. sha256sumLineDigest is a portable oracle for those exact
+// lines, so this test runs on a host with no sha256sum binary and still holds the Go digest to the
+// documented formula; a reordering of the files, a missing file and an edit of any one of them
+// each change the digest or refuse it.
+func TestTheManifestDigestIsWhatSha256sumPrintsOfTheCheck(t *testing.T) {
+	dir := t.TempDir()
+	check := leakguardtest.Write(t, dir, leakguardtest.Passes)
+	leakguardtest.Companions(t, dir, leakguardtest.Program)
+	oracle := sha256sumLineDigest(t, dir, ManifestFiles)
+	got, err := manifestSHA256(check)
+	if err != nil || got != oracle {
+		t.Fatalf("manifestSHA256 = %q, %v; want %q, what sha256sum prints", got, err, oracle)
+	}
+	if !slices.Equal(ManifestFiles, []string{"public-leak-check.sh", "public_leak_check.py", "README.md", "must-pass-lines.txt"}) {
+		t.Fatalf("ManifestFiles = %q, want the install procedure's home set in its order", ManifestFiles)
+	}
+	reordered := []string{ManifestFiles[1], ManifestFiles[0], ManifestFiles[2], ManifestFiles[3]}
+	if other := sha256sumLineDigest(t, dir, reordered); other == oracle {
+		t.Fatalf("the reordered sha256sum lines digest to %s, want a digest other than %s", other, oracle)
+	}
+	for _, name := range ManifestFiles {
+		t.Run("an edit of "+name, func(t *testing.T) {
+			edited := t.TempDir()
+			leakguardtest.Write(t, edited, leakguardtest.Passes)
+			leakguardtest.Companions(t, edited, leakguardtest.Program)
+			f, err := os.OpenFile(filepath.Join(edited, name), os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString("# an edit\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if other, err := manifestSHA256(filepath.Join(edited, checkName)); err != nil || other == oracle {
+				t.Fatalf("an edit of %s left the digest %q (%v), want another", name, other, err)
+			}
+		})
+	}
+	if err := os.Remove(filepath.Join(dir, ManifestFiles[len(ManifestFiles)-1])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifestSHA256(check); err == nil {
+		t.Fatal("manifestSHA256 succeeded with a manifest file missing")
+	}
+}
+
+func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
+	t.Helper()
+	var lines strings.Builder
+	for _, name := range files {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		if _, err := fmt.Fprintf(&lines, "%x  %s\n", sum, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := sha256.Sum256([]byte(lines.String()))
+	return fmt.Sprintf("%x", sum)
 }

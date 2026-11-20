@@ -40,7 +40,8 @@ func endOf(t *testing.T, observations <-chan runtime.Observation, loc runtime.Lo
 // running in its issue pod, built from the earlier image, and launches again the implementer's
 // launch its predecessor did not finish (LEGION-729). The launch keeps the drifted pod — ending it
 // there would end the architect's turn and take the issue's disk with it — and the pod is replaced
-// only by its update round, once every worker in it has answered or at the round's bound
+// only by its update round, once every worker in it has answered, no turn runs and no claim's
+// activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
 // (ReplacePod). That replacement is the daemon's own act: the runtime reports the architect
 // Displaced, and its Machine resumes its kept session in the new pod at once, charging nothing,
 // and registers and is ready there, its process alive.
@@ -362,5 +363,110 @@ func TestReplacingAnEndedPodNamesNothing(t *testing.T) {
 				t.Fatalf("the tester recorded in the ended pod: %s, Displaced (%s); want the pod's own end", obs.Kind, obs.Detail)
 			}
 		})
+	}
+}
+
+// An eviction ends every role of the pod, and the roles' checks run one after another, so a
+// sibling's launch can replace the evicted pod before a role's check reads it. The pod's own
+// reason goes with the pod, so the launch that replaces it records that end on the Sandbox, keyed
+// by the pod's uid, and the role checked afterwards reads the eviction there: the tester is
+// evicted, the reviewer's start replaces the pod, and the tester's next check carries the eviction
+// — this daemon's check, and a restarted daemon's, which reads the same Sandbox. Its end is still
+// the pod's own and never the daemon's, so it is not Displaced. The negative control is the
+// replacement suspending the Sandbox as before, recording nothing: the tester's check then reads
+// `not_recorded_process` with no pod end and no eviction in its detail, which is what
+// INFRA-2009's review measured at b7085e21.
+func TestARoleCheckedAfterASiblingReplacedItsEvictedPodReadsTheEviction(t *testing.T) {
+	g := newRig(t, nil)
+	testerLoc := g.spawn(workerSpec(t))
+	name := testerLoc.Sandbox.Name
+	g.update(g.pod(name), func(p *corev1.Pod) {
+		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted", Message: evictedMessage,
+			ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")}}
+	})
+	g.eventually("the eviction to reach the pod store", func() bool {
+		pod := g.r.storedPod(name)
+		return pod != nil && terminal(pod) && pod.Status.Reason == "Evicted"
+	})
+
+	reviewerLoc := g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
+	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
+		t.Fatalf("the reviewer's launch kept the evicted pod %s", testerLoc.Sandbox.PodUID)
+	}
+	if pod := g.pod(name); pod == nil || string(pod.UID) == testerLoc.Sandbox.PodUID {
+		t.Fatalf("the evicted pod %s is still the Sandbox's after the reviewer's launch: this case is for a check that comes after the replacement", testerLoc.Sandbox.PodUID)
+	}
+
+	want := runtime.PodEnd("Evicted", evictedMessage)
+	first := g.r
+	restarted := secondRuntime(t, g, func(*Options) {})()
+	for _, check := range []struct {
+		name string
+		r    *Runtime
+	}{{"this daemon's", first}, {"a restarted daemon's", restarted}} {
+		obs, err := check.r.Probe(g.ctx, testerLoc)
+		if err != nil {
+			t.Fatalf("%s check of the tester: %v", check.name, err)
+		}
+		if obs.Kind != runtime.Gone && obs.Kind != runtime.NotRecordedProcess {
+			t.Errorf("%s check of the tester reads %s (%s), want its process ended", check.name, obs.Kind, obs.Detail)
+		}
+		if obs.PodEnd != want {
+			t.Errorf("%s check of the tester carries pod end %q, want the eviction %q (detail: %s)", check.name, obs.PodEnd, want, obs.Detail)
+		}
+		if !strings.Contains(obs.Detail, "Evicted") || !strings.Contains(obs.Detail, "ephemeral-storage") {
+			t.Errorf("%s check of the tester does not name the eviction in its detail: %q", check.name, obs.Detail)
+		}
+		if obs.Displaced {
+			t.Errorf("%s check of the tester reads Displaced (%s): the pod ended before the daemon replaced it", check.name, obs.Detail)
+		}
+	}
+}
+
+// The end a replacement records is written in the suspension, which the Sandbox store can hear of
+// after the pod store has shown the replacing pod: the two informers are ordered by nothing. A
+// check made in that window confirms its verdict with one read of the Sandbox itself (evaluate),
+// and a verdict that read no end off the cached Sandbox is read again from the one that records
+// it. The negative control is that read again left out: the check then carries no pod end.
+func TestAnEndedPodsRecordIsReadPastALaggingSandboxStore(t *testing.T) {
+	labels := claimLabels(claim.RoleTester)
+	name := SandboxName(workerToken)
+	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels),
+		podObject(name, recorded, sandboxUID, labels, corev1.PodStatus{Phase: corev1.PodRunning})},
+		withoutController(), withLaggingSandboxInformer(2*time.Second))
+	want := runtime.PodEnd("Evicted", evictedMessage)
+
+	// The launch's suspension, as the API server holds it: the record of the ended pod's end.
+	stored, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := stored.(*unstructured.Unstructured).DeepCopy()
+	recording.SetAnnotations(map[string]string{endedPodAnnotation: recorded, endedPodEndAnnotation: want})
+	if err := g.dyn.Tracker().Update(sandboxGVR, recording, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	// The pod that replaced it, which the pod store, undelayed, shows first.
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.kube.Tracker().Add(podObject(name, "uid-pod-newer", sandboxUID, labels, corev1.PodStatus{Phase: corev1.PodRunning})); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the pod store to show the replacing pod", func() bool {
+		pod := g.r.storedPod(name)
+		return pod != nil && string(pod.UID) == "uid-pod-newer"
+	})
+	if cached, err := g.r.storedSandbox(name); err != nil || endedPod(cached, sandboxLocator(workerToken, recorded)) != "" {
+		t.Fatalf("the cached Sandbox is %+v (%v), want one that has not heard the record yet: this case is for a lagging store", cached, err)
+	}
+
+	obs, err := g.r.Probe(g.ctx, sandboxLocator(workerToken, recorded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Kind != runtime.NotRecordedProcess || obs.PodEnd != want {
+		t.Fatalf("the tester's check behind a lagging Sandbox store reads %s with pod end %q (%s), want not_recorded_process carrying %q",
+			obs.Kind, obs.PodEnd, obs.Detail, want)
 	}
 }

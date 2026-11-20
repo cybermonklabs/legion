@@ -22,10 +22,10 @@
 # The corpus is .github/scripts/check-private-names.test.sh's, case for case: its 16 rule cases
 # are ported here with the mapping table below, and its 13 argument-handling cases are run too,
 # each one recording what the engine does instead of the frozen script's own path handling, which
-# the engine replaces rather than inherits. Its 10 pull-request-text cases belong to
-# check-pr-text.sh and stay there. Beyond the corpus the five rules are driven over a file's
-# content and over a file's path, the conditional allow-list is driven with each half holding
-# alone, and the frozen script's own selection rules are driven one by one.
+# the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
+# and its term-list cases to a rule with no port (below). Beyond the corpus the five rules are
+# driven over a file's content and over a file's path, the conditional allow-list with each half
+# holding alone, and the frozen script's own selection rules one by one.
 #
 # A class the mapping table does not hold fails its case rather than passing it silently: a port
 # that grew a sixth class, or renamed one, is a port nobody has compared.
@@ -80,6 +80,16 @@ chmod +x "$PUBLIC_LEAK_CHECK"
 # A local path as the push's URL names no GitHub repository, so the guard reads the destination as
 # public (its fail-closed answer) and scans, without a gh call.
 remote_url="$work/remote.git"
+
+# The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
+# secret), has no port: no rule file of a public repository can spell those terms, and this job
+# holds no secret. So every case runs the frozen script with no list on a pull request's event,
+# where it runs the four rules it spells and warns that it did (a line read_frozen does not read).
+# Whatever list or event the job's own environment holds is replaced, never read, and with no
+# tracing, which would print a term once a case sets one.
+set +x
+export GITHUB_EVENT_NAME=pull_request
+unset PRIVATE_NAME_TERMS
 
 # The names the rules hunt are assembled from the pieces below, so this file holds none of them
 # whole and the guard scans it like any other file. The two that are this repository's own are
@@ -344,7 +354,6 @@ mentions=(
 compare_each company mentions
 
 echo "rule case 4: a private internal host, whatever its case"
-# shellcheck disable=SC2034 # read by name through compare_each's nameref
 hosts=(
   "https://$host_label.$internal.$host_suffix"
   "https://$host_label.${internal^^}.$host_suffix"
@@ -353,13 +362,45 @@ hosts=(
   "https://$host_label.$internal.$example_host_suffix.$host_suffix"
   "https://a.$internal.$example_host_suffix and https://b.${internal^^}.$host_suffix"
   "this.$internal.push(value)"
+  "https://${host_label^^}.${internal^^}.${host_suffix^^}"
+  "https://$host_label.$internal.${host_suffix^}.net"
+  "$host_label.$internal.$host_suffix"
+  "see _$host_label.$internal.${host_suffix}_ in italics"
+  "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$host_suffix"
+  "${host_label^}.$internal.$host_suffix answers on 443."
+  "${host_label^^}.$internal.$host_suffix"
+  "fooBar.$internal.$host_suffix"
+  "${host_label^}.${internal^^}.$host_suffix"
+  "Lean.$internal.otherName"
+  "Lean.$internal.cmdlineSnapshotsX.get opts"
+  "xLean.$internal.cmdlineSnapshots"
+  "Lean.$internal.cmdlineSnapshots.get.$host_label"
 )
-compare_each host hosts
+for index in "${!hosts[@]}"; do
+  compare "host-$index" "${hosts[index]}"
+  check "host-$index: both engines refuse it" "$(is "$frozen_status:$door_status" 1:3)"
+done
 
-echo "rule case 5: a reserved example host passes"
-compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPoint it at api.%s.%s.' \
+echo "rule case 5: a reserved example host passes, and so do Lean and OCaml names"
+compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPoint it at api.%s.%s.\n%s.%s.%s at the start of a line\nnow https://ENVOY.%s.%s' \
   "$host_label" "$internal" "$example_host_suffix" \
-  "$internal" "$example_host_suffix" "$internal" "$example_host_suffix")"
+  "$internal" "$example_host_suffix" "$internal" "$example_host_suffix" \
+  "$host_label" "$internal" "$example_host_suffix" "${internal^^}" "${example_host_suffix^^}")"
+check "example-host: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
+namespaces=(
+  "import Std.${internal^}.UV.System"
+  "  if Environ.${internal^}.is_above_prop env q then"
+  "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
+  "      Classes.${internal^}.add_instance ~locality inst"
+  "This module proves the one-step unfolding lemma \`repeatM.${internal^}.eq_of_monadTail\`,"
+  "  rw [repeatM.${internal^}.eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]"
+  "    rw [_root_.repeatM.${internal^}.eq_of_monadTail (f := f) a]"
+  "  let opts := Lean.$internal.cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone"
+)
+for index in "${!namespaces[@]}"; do
+  compare "namespace-$index" "${namespaces[index]}"
+  check "namespace-$index: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
+done
 # The other half of that case — the vendored NATS client's own property, which the frozen script
 # allows in the one bundle that vendors it — is the conditional allow-list, driven below where
 # both of its halves can be driven.

@@ -1,0 +1,12 @@
+{
+  "code": "PROJECT_PAUSED",
+  "error": "spawn of legion-legion-legion-209-implementer refused: the project is paused (pause 7, by the operator since 2026-11-15T09:00:00Z: the model provider is refusing every turn), and a paused project starts no turn of a role but the controller's; nothing of legion-legion-legion-209-implementer changed. Resume the project first",
+  "pause": {
+    "id": 7,
+    "since": "2026-11-15T09:00:00Z",
+    "by": {
+      "kind": "operator"
+    },
+    "reason": "the model provider is refusing every turn"
+  }
+}

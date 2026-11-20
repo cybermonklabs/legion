@@ -287,15 +287,15 @@ require_app_inputs() {
 # tier, a human-tier request naming no lifetime gets 15 minutes, and the daemon renews a lease
 # about 40 minutes after it mints one, so without the flag every renewal of such a run would wait
 # for a person again. With it the approver reads the twelve hours on the card and decides them
-# once. The three `${…}` expansions are the command's own, expanded by the sh the daemon runs it
+# once. The two `${…}` expansions are the command's own, expanded by the sh the daemon runs it
 # with: LEGION_GITHUB_OWNER, when set, narrows the release to that owner's installation
-# (--github-owner), LEGION_GITHUB_REPOS, when set, to those repositories of it, one --github-repo
-# for each name the daemon's single spaces separate, and LEGION_GITHUB_READ_ONLY, when set, to
-# contents, metadata, pull requests and Actions read (--github-read-only). It depends on nothing
-# but NAME.
+# (--github-owner), and LEGION_GITHUB_READ_ONLY, when set, to contents, metadata, pull requests,
+# Actions, checks and statuses read (--github-read-only). A release reaches every repository the
+# installation holds: the daemon asks for no narrowing by repository (INFRA-2543). It depends on
+# nothing but NAME.
 app_token_command() {
   # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
-  printf 'agent-secrets %s --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_REPOS:+$(printf '\'' --github-repo %%s'\'' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c '\''printf %%s "$%s"'\''\n' "$1" "$1"
+  printf 'agent-secrets %s --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c '\''printf %%s "$%s"'\''\n' "$1" "$1"
 }
 
 # app_token_dir_ok DIR fails unless DIR is a path of letters, digits and `_ . / -` alone, since the
@@ -541,10 +541,10 @@ app_token_mint_command() {
 # read-only flag READ_ONLY, through app_token_mint_command, whose status it returns.
 app_token_mint_file() {
   local file=$1 owner=$2 ro=$3 secret=$4
-  # The three variables are the token command's own inputs, as the daemon sets them for it.
-  # LEGION_GITHUB_REPOS is empty, never the run's own: a recorded release is keyed by owner and the
-  # read-only flag alone, so it must reach every repository of that installation.
-  LEGION_GITHUB_OWNER=$owner LEGION_GITHUB_REPOS='' LEGION_GITHUB_READ_ONLY=$ro \
+  # The two variables are the token command's own inputs, as the daemon sets them for it: a
+  # release is keyed by the owner and the read-only flag, and reaches every repository that
+  # installation holds.
+  LEGION_GITHUB_OWNER=$owner LEGION_GITHUB_READ_ONLY=$ro \
     app_token_mint_command "$file" "$(app_token_command "$secret")"
 }
 # app_token_mint_key DIR writes the review App's private key, once, to DIR/review/key.pem (mode
@@ -580,8 +580,11 @@ mint_app_tokens() {
   app_token_dir_ok mint_app_tokens "$dir"
   [ -d "$dir" ] || fail "mint_app_tokens: the token directory $dir is not a directory"
   [ "${#github_apps_read[@]}" -gt 0 ] || fail "mint_app_tokens: require_app_inputs has not run"
+  # An owner is a GitHub account login as the daemon reads one (ghrepo's ownerName): a letter or
+  # digit, then up to 38 letters, digits, hyphens and underscores, since a managed user's login
+  # ends in `_<shortcode>` (`mona-cat_octo`) and its repositories are ones a run may serve.
   for owner in "$@"; do
-    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] ||
+    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$ ]] ||
       fail "mint_app_tokens: '$owner' is not a GitHub account login"
   done
   app_token_owners=("$@")
@@ -656,10 +659,9 @@ stop_app_token_refresher() {
 #                    releases the implement App's token_command then reads instead of running
 #                    agent-secrets: DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json
 #                    with the owner lowercased, with `cat --`. That form serves what the refresher
-#                    minted, which is keyed by owner and the read-only flag alone, so it ignores
-#                    LEGION_GITHUB_REPOS and answers a token over every repository of the owner's
-#                    installation: the refresher mints one release an owner rather than one per
-#                    scope a role asks for.
+#                    minted, which is keyed by owner and the read-only flag, as every release the
+#                    daemon asks for is, and answers a token over every repository of the owner's
+#                    installation: the refresher mints one release an owner.
 # The two name one key file by two routes, so a call naming both is refused. Either DIR must be a
 # path the caller's cleanup removes unconditionally, on every exit, since the App's private key is
 # in it: not the evidence directory, and not a workspace a failing run keeps for debugging — the
@@ -704,8 +706,13 @@ write_github_apps() {
     else
       field=token_command
       if [ -n "$token_dir" ]; then
+        # The owner the daemon names is a lowercased login (ghrepo's ownerName): a letter or digit,
+        # then up to 38 letters, digits, hyphens and underscores, since a managed user's login ends
+        # in `_<shortcode>`. Nothing else names a release file: the release of every installation is
+        # the empty owner's `_all.json`, which no login names, since none opens with an underscore,
+        # and with no `.` or `/` admitted no owner's file lies outside the role's directory.
         # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
-        command=$(printf 'owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr "[:upper:]" "[:lower:]"); case $owner in *[!a-z0-9-]*) echo "no release file for owner $owner" >&2; exit 2;; esac; cat -- '\''%s/%s/'\''"${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json"' "$token_dir" "$role")
+        command=$(printf 'owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr "[:upper:]" "[:lower:]"); case $owner in [!a-z0-9]* | *[!a-z0-9_-]*) false ;; esac && [ "${#owner}" -le 39 ] || { echo "no release file for owner $owner" >&2; exit 2; }; cat -- '\''%s/%s/'\''"${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json"' "$token_dir" "$role")
       else
         # The implement App is the one role whose token_command asks the broker, so its secret is
         # named here rather than reached through the role.

@@ -32,16 +32,23 @@ import (
 // launcher role's process finds its own launcher token projection, memory-backed private directory
 // (where its launcher writes each generation's boot token and launch credentials), state directory,
 // gh bundle and agent-secrets key directory. The controller's pod mounts them there in its one
-// container. An issue pod's one container runs every workflow role, so it mounts each role's under
-// RolesDir (roleDir) instead, and each role's namespace (`legion launcher role-init`) covers
-// RolesDir and binds its own back at these paths, all but the launcher token, which no role's
-// process sees. GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
+// container, unless the session database names a writer audience (controllerPod.launcherContainer).
+// An issue pod's one container runs every workflow role, so it mounts each role's under RolesDir
+// (roleDir) instead, and so does the controller's pod for its one role under a writer audience
+// (rolesDirLayout). Each role's namespace (`legion launcher role-init`) covers RolesDir and binds
+// its own back at these paths, all but the launcher token, which no role's process sees.
+// GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
 // projection of its role Secret's gh files, one directory per entry of the role's gh bundle
 // (GitHubHostsKey(dir) as <dir>/ghconfig.HostsFile, GitHubConfigKey(dir) as
-// <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner of the project or one of its
-// repositories, `<owner>/<repo>`), whose default owner's directory (GitHubDefaultKey) is its
-// GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion git-credential`
-// helper read the token of the owner a command names from. The kubelet rewrites a whole-volume
+// <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner account, a bundle of this daemon
+// holding no repository directory), with the bundle's configured renames beside them in the root
+// (GitHubPairsKey as ghconfig.PairsFile) and the default owner's directory (GitHubDefaultKey)
+// its GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion
+// git-credential` helper read the token that answers for the repository a command names from —
+// the owner's own directory, or, for a repository one of those renames moved, the directory of
+// the owner it moved to. The helper alone also answers a fork whose owner has no directory with
+// the directory of its parent's or else its source's owner, which it reads from GitHub with
+// GH_CONFIG_DIR's token. The kubelet rewrites a whole-volume
 // Secret projection in place when the Secret changes, and a bind of it sees the rewrite, so the
 // refresher's Secret update is what the next gh runs with. CacheRoot is where a repository cache's
 // pod mounts its own volume. The
@@ -73,11 +80,12 @@ const (
 )
 
 // RolesDir is where an issue pod's one container mounts every workflow role's own volumes, one
-// directory per role (roleDir), and the role homes volume at RoleHomesDir. `legion launcher
-// --roles-dir` reads each role's launcher token there, and `legion launcher role-init` covers the
-// whole directory inside the role's namespaces and binds the role's own gh, private, state and
-// agent-secrets directories back at GHConfigDir, LauncherPrivateDir, StateDir and
-// AgentSecretsKeyDir, and makes the role's home overlay, temporary directories and own config
+// directory per role (roleDir), and the role homes volume at RoleHomesDir, as the controller's pod
+// does for the controller where the session database names a writer audience (rolesDirLayout).
+// `legion launcher --roles-dir` reads each role's launcher token there, and `legion launcher
+// role-init` covers the whole directory inside the role's namespaces and binds the role's own gh,
+// private, state and agent-secrets directories back at GHConfigDir, LauncherPrivateDir, StateDir
+// and AgentSecretsKeyDir, and makes the role's home overlay, temporary directories and own config
 // home under its directory of RoleHomesDir. The names under it are internal/launcher's layout
 // (launcher.RoleGHDir and its siblings), which both sides read.
 const (
@@ -90,6 +98,12 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// TestPGLogFile is where `legion launcher role-init` binds that cluster's server log, the one
+	// file, read-only, in every role's namespace of such a pod, over the empty file the worker
+	// image makes there; the launcher names it to every role as launcher.TestPGLogVariable. No
+	// container mounts anything at it, and legionMountPaths fences it all the same, since an
+	// operator's mount there would turn that bind into a refusal of every role's start.
+	TestPGLogFile = launcher.FixedRoot + "/" + launcher.RoleTestPGLog
 	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
 	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
 	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
@@ -97,6 +111,14 @@ const (
 	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
 	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
 	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
+	// SessionWriterDir is where a pod whose session database names a writer audience
+	// (ompsessions.Database.WriterAudience) mounts, read-only, the projected ServiceAccount token
+	// of that audience (sessionWriterTokenVolume), at launcher.SessionWriterTokenFile in it: the
+	// file the launcher reads under its roles directory and gives to its session proxy alone,
+	// which exchanges it to impersonate the session database's service account. It is under
+	// RolesDir, which every role's namespace covers, so no role's process reads the token: a role
+	// that could would write every session of the project's session database.
+	SessionWriterDir = RolesDir + "/" + launcher.SessionWriterDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -107,21 +129,15 @@ const (
 	RoleProbeDir = launcher.FixedRoot + "/role-probe"
 )
 
-// SkillsDir is where an issue pod mounts its skills volume: the clone of the deployment's skills
-// marketplace (runtime.kubernetes.skills_repository) that skills-fetch filled, with the commit,
-// the marketplace's name and its plugins recorded beside it (workspace.SkillsClone and its
-// siblings). It is read-write in skills-fetch alone and read-only in the pod's launcher
-// container, and it is not under RolesDir or HomeMountsDir, the two directories a role's
-// namespaces cover, so every role of the pod reads it at this one path.
-const SkillsDir = launcher.FixedRoot + "/skills"
-
-// roleDir is role's own directory of an issue pod's one container, under RolesDir: its launcher
-// token and gh projections of its role Secret, read-only, and its memory-backed private, state and
-// agent-secrets key directories, the last only in a pod enrolled with the secrets broker, each one
-// volume's mount at that name of launcher's layout.
+// roleDir is role's own directory of a pod's one container that runs the launcher's roles-dir
+// form (rolesDirLayout), under RolesDir: its launcher token and gh projections of its role Secret,
+// read-only, and its memory-backed private, state and agent-secrets key directories, the last only
+// in a pod enrolled with the secrets broker, each one volume's mount at that name of launcher's
+// layout.
 func roleDir(role claim.Role) string { return RolesDir + "/" + string(role) }
 
-// homeMountsView is mounts as an issue pod's roles container carries them: every mount at or
+// homeMountsView is mounts as a container that runs the launcher's roles-dir form carries them (an
+// issue pod's roles container, and the controller's under a writer audience): every mount at or
 // under the image's home (podHome) at the same path relative to HomeMountsDir instead
 // (containerHomePath), so the home itself carries no mount, and every other mount as it is.
 // `legion launcher role-init` binds each back at its own path under the role's home overlay.
@@ -281,11 +297,19 @@ const (
 )
 
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each
-// bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), and the bundle's
-// default owner, written for every launcher role: every workflow role of an issue pod and the
-// controller's. credentialFromSecret hashes the launcher token alone, so the refresher rewrites
-// the gh keys without changing the launcher's binding.
+// bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), the bundle's
+// configured renames and its default owner, written for every launcher role: every workflow role
+// of an issue pod and the controller's. credentialFromSecret hashes the launcher token alone, so
+// the refresher rewrites the gh keys without changing the launcher's binding.
 const GitHubDefaultKey = "github-default"
+
+// GitHubPairsKey is the role Secret's key holding the bundle's configured renames, the file the
+// pod projects into its gh bundle's root (ghconfig.PairsFile): the pairs `legion gh` and `legion
+// git-credential` route a request for a moved repository by. It is written for every launcher
+// role, empty where the project configures no rename that resolves, so a pod of this daemon
+// always projects it and the drift check can read its absence as a pod of an older one
+// (movedGhDirs).
+const GitHubPairsKey = "github-renames"
 
 // githubHostsPrefix and githubConfigPrefix are the one spelling of the gh keys' prefixes, which
 // GitHubHostsKey and GitHubConfigKey write and GitHubHostsDir reads back.
@@ -323,7 +347,9 @@ func GitHubHostsDir(key string) (dir string, ok bool) {
 
 // The labels every object of a claim carries: the Sandbox, its pod template (the only place the
 // controller copies pod labels from), the claim's Secret, and the controller Sandbox's volume
-// claim template (copied to the PVC). The informers select on the project label.
+// claim template (copied to the PVC). The informers select on the project label. A kept issue
+// volume's claim template carries the project and issue labels alone, with labelVolume
+// (issuePod.disk).
 const (
 	labelProject = "legion.dev/project"
 	labelTree    = "legion.dev/tree"
@@ -338,11 +364,45 @@ const (
 // from the sandbox the launch that builds it decided.
 const labelSandbox = "legion.dev/sandbox"
 
+// labelVolume marks the claim template of an issue's kept volume with the one value volumeKept:
+// the `issue` template that issuePod.disk writes for a microVM pod under keep_volume
+// (keptVolume). It is what tells a stored issue Sandbox that keeps its volume (keptTemplate) from
+// one of the release before the pod-owned disk, whose `issue` template carries no such label.
+// Agent Sandbox copies a template's labels onto the claim it makes, so
+// `kubectl -n legion get pvc -l legion.dev/volume=kept` lists every kept claim.
+const (
+	labelVolume = "legion.dev/volume"
+	volumeKept  = "kept"
+)
+
+// volumeResetAnnotation is the reset mark on the Sandbox of an issue's kept volume. Its value names
+// the init container that failed on the volume for a cause local to it (localInitFailure), its exit
+// code and the uid of its pod (volumeFault). ReplacePod and the release write it in the patch that
+// suspends the Sandbox, when the pod they take down shows such a failure, because the issue's next
+// launch then reads no pod. A launch that resets the volume for the pod's fault writes it before
+// its delete too, because a launch can stop before that delete: in the patch that suspends a
+// Running Sandbox (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended
+// (relaunch). A launch that failed after its Running patch writes it from the pod that patch made
+// (suspendFailedLaunch). Each of them writes it through suspendOver. The next launch resets the
+// volume on the mark (volumeReset): it deletes the Sandbox, with the claim it owns, and creates a
+// new one, which carries no mark.
+const volumeResetAnnotation = "legion.dev/volume-reset"
+
+// secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
+// it deleted the Secrets the Sandbox owns: the provisioning Secret and the six role Secrets
+// (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it once every delete
+// has succeeded, so it is never on a Sandbox that still owns one of them. A launch that keeps the
+// Sandbox removes it before it writes the first Secret (relaunch, annotate). A Sandbox
+// that a launch creates carries none. IssueSandbox reads it: a Suspended kept Sandbox that carries
+// it holds nothing that a release can take.
+const secretsReleasedAnnotation = "legion.dev/secrets-released"
+
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
-// and the name of the one volume claim template the controller's Sandbox owns — an issue's owns
-// none, its disk being the pod's own ephemeral volume. The Agent Sandbox controller names the
-// claim it makes from a template `<template>-<sandbox>` (v1.0.3, sandbox_controller.go:1641),
-// which is IssueClaimName.
+// and the name of the one volume claim template that the controller's Sandbox owns. The Sandbox of
+// an issue that keeps its volume owns one of this name too (issuePod.disk). Every other issue's
+// Sandbox owns none: its disk is the pod's own ephemeral volume. The Agent Sandbox controller
+// names the claim it makes from a template `<template>-<sandbox>` (v1.0.3,
+// sandbox_controller.go:1641), which is IssueClaimName.
 const issueVolume = "issue"
 
 // A repository cache's identity and parts. labelCache marks every object of a cache — its Sandbox,
@@ -418,11 +478,16 @@ func cacheSecretName(sandbox string) string { return sandbox + "-token" }
 // Sandbox's cacheVolume template.
 func cacheClaimName(sandbox string) string { return cacheVolume + "-" + sandbox }
 
-// IssueClaimName is the volume claim of the project controller's Sandbox, as the Agent Sandbox
-// controller names the claim it makes from that Sandbox's `issue` template. An issue's Sandbox
-// owns no template and so no claim of this name: its pod's disk is an ephemeral volume the pod
-// owns. The token is cut to the Sandbox's name as SandboxName cuts it.
-func IssueClaimName(t claim.Token) string { return issueVolume + "-" + SandboxName(t) }
+// issueClaimName is the volume claim the controller makes from the `issue` template of the
+// Sandbox named sandbox (IssueClaimName).
+func issueClaimName(sandbox string) string { return issueVolume + "-" + sandbox }
+
+// IssueClaimName is the volume claim that the Agent Sandbox controller makes from a Sandbox's
+// `issue` template, by the name it gives that claim: the project controller's claim, and the kept
+// volume of an issue whose microVM pod keeps its volume (issuePod.disk). Every other issue's
+// Sandbox owns no template and so no claim of this name: its pod's disk is an ephemeral volume
+// that the pod owns. The token is cut to the Sandbox's name as SandboxName cuts it.
+func IssueClaimName(t claim.Token) string { return issueClaimName(SandboxName(t)) }
 
 // secretName is the claim's Secret, which its Sandbox owns.
 func secretName(sandbox string) string { return sandbox + "-boot" }

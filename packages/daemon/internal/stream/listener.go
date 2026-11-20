@@ -53,9 +53,10 @@ type HelloResolver func(bootToken string) (c claim.Token, generation uint64, sta
 // a launcher never binds a claim's child shim connection or emits an agent Event. An accepted
 // launcher's acknowledgement is the resolver's whole answer, which the listener writes as it is
 // given: every member the daemon hands a launcher on that line (the memory guard's settings,
-// shimwire.LauncherHelloAck.MemoryGuard, among them) is decided where the launcher is accepted,
-// so a change that adds a member edits the one constructor that builds the ack and never this
-// listener. A refusal returns the zero ack, which nothing writes.
+// shimwire.LauncherHelloAck.MemoryGuard, and the cache trimmer's, LauncherHelloAck.VolumeTrim,
+// among them) is decided where the launcher is accepted, so a change that adds a member edits the
+// one constructor that builds the ack and never this listener. A refusal returns the zero ack,
+// which nothing writes.
 type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string)
 
 // LauncherHandler owns one authenticated launcher connection after the listener has written its
@@ -180,6 +181,22 @@ func (l *Listener) Addr() string { return l.addr }
 // listener has ended and every connection's Closed has been delivered. The consumer ranges over
 // it until it closes.
 func (l *Listener) Events() <-chan Event { return l.events.out }
+
+// Drain queues a Drained for token behind every event already queued, and returns what its
+// consumer closes once it has handled the events of token before the mark. An event a connection
+// queues after the call — a frame still in the socket, or read and not yet queued — comes after the
+// mark. A listener that has ended queues nothing more, so its answer is closed at once.
+func (l *Listener) Drain(token claim.Token) <-chan struct{} {
+	done := make(chan struct{})
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		close(done)
+		return done
+	}
+	l.events.push(Drained{Claim: token, Done: done})
+	return done
+}
 
 // SetLauncherResolver registers the issue-pod runtime's launcher acceptor after that runtime has
 // been constructed and its informer caches have synced. A launcher that dials before that waits
@@ -522,7 +539,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 	}
 	conn := newConn(nc, token, l.timeout, l.log, l.events)
 	l.registrations++
-	conn.seq = l.registrations
+	conn.seq, conn.generation = l.registrations, generation
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any
 	// frame a caller sends the moment Conn or Await returns it — a shim drops every line that
 	// precedes its hello_ack (worker-shim.ts:492-497). The lock is held across the write because

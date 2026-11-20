@@ -14,10 +14,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 )
 
-// Under runtime tmux, `legion start --check-config` refuses, with exit 1 and no Config OK, a file
+// Under runtime tmux, `legion config check` refuses, with exit 1 and no Config OK, a file
 // role_config_files names that a pane of the role could not read, naming the role and the file, as
 // boot does before any pane starts; a file that is there passes.
-func TestStartCheckConfigRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
+func TestConfigCheckRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
 	legionState(t)
 	dir := t.TempDir()
 	present, missing := filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "missing.yml")
@@ -27,25 +27,25 @@ func TestStartCheckConfigRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
 
 	config, _ := workflowConfig(t, 13370, "role_config_files: {implementer: ["+present+"]}\n")
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a present overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 
 	config, _ = workflowConfig(t, 13370, "role_config_files: {implementer: ["+present+", "+missing+"]}\n")
 	out.Reset()
 	errb.Reset()
-	code = run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	want := "legion start: role_config_files.implementer names " + missing + ", which the implementer's Oh My Pi could not read: stat " + missing + ": no such file or directory\n"
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	want := "legion config check: role_config_files.implementer names " + missing + ", which the implementer's Oh My Pi could not read: stat " + missing + ": no such file or directory\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("a missing overlay: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
 }
 
-// Under runtime kubernetes, `legion start --check-config` refuses a role's overlay no mount of the
+// Under runtime kubernetes, `legion config check` refuses a role's overlay no mount of the
 // operator's pod block holds, since no pod could read it, and passes one a mount holds; whether the
 // ConfigMap holds the key is the image probe's to read.
-func TestStartCheckConfigRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
+func TestConfigCheckRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 	legionState(t)
 	const pod = "    pod:\n" +
 		"      volumes:\n" +
@@ -57,7 +57,7 @@ func TestStartCheckConfigRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 
 	config := kubernetesCheckConfig(t, pod+"role_config_files: {implementer: [/etc/legion-operator/fallback.yml], merger: [/etc/legion-operator/fallback.yml]}\n")
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a mounted overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -65,8 +65,8 @@ func TestStartCheckConfigRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 	config = kubernetesCheckConfig(t, pod+"role_config_files: {tester: [/etc/legion-fallback/fallback.yml]}\n")
 	out.Reset()
 	errb.Reset()
-	code = run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	want := "legion start: role_config_files.tester entry /etc/legion-fallback/fallback.yml is under no runtime.kubernetes.pod.volume_mounts mount_path: a role's pod and the image probe's see only the image and the operator's mounts, so mount the ConfigMap that holds it there\n"
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	want := "legion config check: role_config_files.tester entry /etc/legion-fallback/fallback.yml is under no runtime.kubernetes.pod.volume_mounts mount_path: a role's pod and the image probe's see only the image and the operator's mounts, so mount the ConfigMap that holds it there\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("an unmounted overlay: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
@@ -85,9 +85,12 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		{"the timeout alone", "", 0},
 	} {
 		var stderr bytes.Buffer
-		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
+		code, noVerdict := checkRoleOverlays(context.Background(), []roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), "timed out after 1m0s") {
 			t.Errorf("%s: exit %d, stderr %q; want %d and the timeout", tc.name, code, stderr.String(), tc.code)
+		}
+		if len(noVerdict) != 0 {
+			t.Errorf("%s: steps with no verdict %q under a live context, want none", tc.name, noVerdict)
 		}
 		if refused := strings.Contains(stderr.String(), bootprobe.RoleOverlaysRefusedLine("merger", tc.why)); refused != (tc.why != "") {
 			t.Errorf("%s: stderr %q, refusal line printed %t", tc.name, stderr.String(), refused)
@@ -121,13 +124,16 @@ func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 
 	var read, alone [][]string
 	var stderr bytes.Buffer
-	code := checkRoleOverlays(flag, func(value, own []string) (string, error) {
+	code, noVerdict := checkRoleOverlays(context.Background(), flag, func(value, own []string) (string, error) {
 		read = append(read, value)
 		alone = append(alone, own)
 		return "", nil
 	}, &stderr)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("checkRoleOverlays = %d, stderr %q; want 0 and nothing", code, stderr.String())
+	}
+	if len(noVerdict) != 0 {
+		t.Errorf("checkRoleOverlays steps with no verdict = %q under a live context, want none", noVerdict)
 	}
 	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
 		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)

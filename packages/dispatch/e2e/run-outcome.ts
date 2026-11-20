@@ -29,8 +29,9 @@
  *  So the tally is turned around, and silence is a failure: a run has passed only when at least
  *  one row was RECORDED and none of the recorded rows failed. A run nothing reported keeps its
  *  logs, which costs one directory under TMPDIR and loses nothing. The precise answer is bought
- *  back where it pays: `.github/workflows/dispatch-browser.yaml` names `./e2e/failure-reporter.ts`
- *  in both of its `--reporter` lists, so a green CI leg records its rows and deletes its own logs.
+ *  back where it pays: `.github/scripts/dispatch-browser-shard-suite.sh` and
+ *  `dispatch-browser-alone-suite.sh` name `./e2e/failure-reporter.ts` in their `--reporter`
+ *  lists, so a green CI leg records its rows and deletes its own logs.
  *
  *  A row that failed and passed on its retry is a failure here, and the logs of that run are
  *  kept, although the run exits 0: a flaky row is exactly the one whose cause is in a server's

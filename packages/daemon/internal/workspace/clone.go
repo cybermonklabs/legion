@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
@@ -36,20 +37,35 @@ printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOK
 
 // remote is how a clone or fetch reaches the repository: the environment it runs with, the
 // directory of the one-shot credential that environment names, if any, removed once it is done,
-// the bookmarks a fetch brings (every one when empty), and, for a pod's feed, the local feed
-// directory the clone starts from.
+// the token that credential was made with, the bookmarks a fetch brings (every one when empty),
+// and, for a pod's feed, the local feed directory the clone starts from.
 type remote struct {
 	env      []string
 	dir      string
+	token    string
 	branches []string
 	feed     string
+}
+
+// scrub is text with the credential's token replaced by ***, so that nothing a run under the
+// credential returns carries it, wherever git echoed it. Fetch, which rewrites the token before each
+// transfer (setToken), scrubs every token it has held itself (fetchCredential.scrub).
+func (r remote) scrub(text string) string {
+	if r.token == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, r.token, "***")
 }
 
 // newProvisioningCredential ports workspace.ts's createProvisioningCredential, the one-shot
 // credential. The Go daemon keeps the token in a 0600 file under parent, so the processes it is
 // handed to receive only a file pointer and never a secret environment value. GIT_ASKPASS is set
 // empty, which git reads as no askpass at all — neither core.askPass nor SSH_ASKPASS — and terminal
-// prompts are off.
+// prompts are off. parent is the operator's root, not a role's: the tmux daemon's state
+// directory (FromGitHub) or a pod's TMPDIR (Fetch, the repository cache), either of which may be
+// reached through a symlink. It is resolved once here, so the credential directory is made, and
+// removed (rolefile.RemoveTree, which refuses a parent that is a link), under the directory the
+// operator's link names, and no link below it is followed.
 func newProvisioningCredential(parent, token string) (remote, error) {
 	if token == "" {
 		return remote{}, errors.New("workspace provisioning token is required")
@@ -57,12 +73,16 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return remote{}, fmt.Errorf("create provisioning credential parent %s: %w", parent, err)
 	}
-	directory, err := os.MkdirTemp(parent, "provisioning-credential-")
+	root, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return remote{}, fmt.Errorf("resolve provisioning credential parent %s: %w", parent, err)
+	}
+	directory, err := os.MkdirTemp(root, "provisioning-credential-")
 	if err != nil {
 		return remote{}, fmt.Errorf("create provisioning credential directory: %w", err)
 	}
 	cleanup := func(cause error) (remote, error) {
-		if removeErr := os.RemoveAll(directory); removeErr != nil {
+		if removeErr := rolefile.RemoveTree(directory); removeErr != nil {
 			return remote{}, fmt.Errorf("%w; remove provisioning credential directory: %v", cause, removeErr)
 		}
 		return remote{}, cause
@@ -79,7 +99,8 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 		return cleanup(fmt.Errorf("chmod provisioning credential helper: %w", err))
 	}
 	return remote{
-		dir: directory,
+		dir:   directory,
+		token: token,
 		env: []string{
 			"GIT_ASKPASS=",
 			"GIT_TERMINAL_PROMPT=0",
@@ -112,7 +133,7 @@ func (r remote) remove() error {
 	if r.dir == "" {
 		return nil
 	}
-	if err := os.RemoveAll(r.dir); err != nil {
+	if err := rolefile.RemoveTree(r.dir); err != nil {
 		return fmt.Errorf("remove provisioning credential directory: %w", err)
 	}
 	return nil
@@ -277,7 +298,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 		} else if complete {
 			return nil
 		}
-		if err := os.RemoveAll(cloneDir); err != nil {
+		if err := rolefile.RemoveTree(cloneDir); err != nil {
 			return fmt.Errorf("remove incomplete clone %s: %w", cloneDir, err)
 		}
 	}
@@ -290,13 +311,13 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 		return fmt.Errorf("create temporary clone directory: %w", err)
 	}
 	defer func() {
-		_ = os.RemoveAll(temporary)
+		_ = rolefile.RemoveTree(temporary)
 	}()
 
 	// Every step runs in the clone's parent, the directory os.MkdirAll made above: it is there
 	// before the first step starts, and it outlives them all, where temporary is filled by the
 	// steps themselves and then renamed or removed.
-	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(CloneTimeout), dir: filepath.Dir(cloneDir)}
+	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(CloneTimeout), dir: filepath.Dir(cloneDir), credential: source}
 	if source.feed != "" {
 		if err := feedClone(ctx, run, steps, temporary, remote, defaultBranch, source); err != nil {
 			return err
@@ -363,9 +384,10 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
-	present, err := runCommand(ctx, run, []string{"git", "--git-dir=" + gitDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + defaultBranch}, nil, temporary)
-	if err != nil {
-		return fmt.Errorf("run git rev-parse refs/remotes/origin/%s: %w", defaultBranch, err)
+	revParse := []string{"git", "--git-dir=" + gitDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + defaultBranch}
+	present, err := runCommand(ctx, run, revParse, nil, temporary)
+	if err := answered(revParse, present, err); err != nil {
+		return err
 	}
 	if present.ExitCode != 0 {
 		return nil
@@ -380,11 +402,13 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 // directory the shared clone is made beside, since a jj that opens no workspace would otherwise
 // search upwards from whatever directory the daemon or a test happens to run in and write the
 // repository it finds there. A step that does open a repository names its own directory instead,
-// the directory its own -R names (runIn).
+// the directory its own -R names (runIn). credential is the clone's remote, whose token every
+// step's stderr is scrubbed of before the step's error is made from it.
 type cloneSteps struct {
-	clock    Clock
-	deadline time.Time
-	dir      string
+	clock      Clock
+	deadline   time.Time
+	dir        string
+	credential remote
 }
 
 // run runs one size-following step of the shared clone's clone in s.dir, the directory for a step
@@ -402,6 +426,7 @@ func (s cloneSteps) runIn(ctx context.Context, run Runner, dir string, argv, env
 		return fmt.Errorf("the shared clone's %s bound ran out before %s", CloneTimeout, strings.Join(argv, " "))
 	}
 	result, err := runCommandTimeout(ctx, run, argv, env, dir, left)
+	result.Stderr = s.credential.scrub(result.Stderr)
 	_, err = checkedResult(argv, result, err)
 	return err
 }
