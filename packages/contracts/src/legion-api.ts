@@ -1124,6 +1124,56 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
+/** `record.IntakeGiveUpReason` — why the intake gave a message up: `bound`, JetStream delivered it
+ * at least the bound's count of times and its first failure is at least the bound's hour old; `did
+ * not end`, a delivery whose handling never ended, which the next delivery found once the bound was
+ * reached; `retention`, the stream would delete it before its next delivery; `undecodable`, it did
+ * not decode, given up at its first delivery; and `consumer moved past`, an open failure the
+ * consumer moved past without delivering it again. */
+const LEGION_INTAKE_GIVE_UP_REASONS = [
+  "bound",
+  "did not end",
+  "retention",
+  "undecodable",
+  "consumer moved past",
+] as const;
+
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 184): its `name`,
+ * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
+ * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. */
+const legionIntakeGiveUpCount = z.object({
+  name: nonEmptyString,
+  open: z.number().int().positive(),
+  newestSeq: z.number().int().positive(),
+});
+
+/** `api.IntakeGiveUpView` — one open give-up as the state lists it, without the message's headers
+ * and payload, which the record keeps whole: its record `id`, the `consumer` that delivered it, its
+ * `subject`, `streamSeq` and `storedAt`, the fact's `eventId`, null for a message that did not
+ * decode, how many `deliveries` JetStream made of it, `gaveUpAt` and `reason`, and `lastError`,
+ * the first 300 characters of its last error. */
+const legionIntakeGiveUp = z.object({
+  id: z.number().int().positive(),
+  consumer: nonEmptyString,
+  subject: nonEmptyString,
+  streamSeq: z.number().int().positive(),
+  storedAt: timestamp,
+  eventId: nonEmptyString.nullable(),
+  deliveries: z.number().int().nonnegative(),
+  gaveUpAt: timestamp,
+  reason: z.enum(LEGION_INTAKE_GIVE_UP_REASONS),
+  lastError: z.string(),
+});
+
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 184), the messages it gave up on
+ * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
+ * `newest`, the newest of them, latest given up first, at most 50. Both lists are never null, and
+ * both are empty while nothing is open. */
+const legionIntakeGiveUps = z.object({
+  consumers: z.array(legionIntakeGiveUpCount),
+  newest: z.array(legionIntakeGiveUp),
+});
+
 /** `api.PauseActorView` — who paused the project or ended its pause (contract 178): the
  * controller, with the session it acted from, or the operator, who acts from none. The daemon's
  * store holds these two shapes and no other (`project_pauses_by_session` and
@@ -1236,7 +1286,12 @@ const legionPaused = z.object({
  * most, and neither before the project's first pause. Both are optional for that reason, and for
  * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 178,
  * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
- * nothing of the pause from a state that carries neither. */
+ * nothing of the pause from a state that carries neither. `intakeGiveUps` is the intake's open
+ * give-ups, the messages it gave up on that no replay or discard has closed, counted by consumer
+ * and the newest of them listed (contract 184). The daemon writes it on every body, its two lists
+ * empty while nothing is open, and it is optional for the reason `wakesWaiting` is: the route
+ * strips it for a caller in a pod below 184, and for that caller alone (`api.stateFor`,
+ * `withoutIntakeGiveUps`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),
@@ -1255,6 +1310,7 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories,
   settings: legionSettings,
   consumers: z.array(legionConsumerLag),
+  intakeGiveUps: legionIntakeGiveUps.optional(),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;
@@ -1754,6 +1810,42 @@ export const LegionPauseFailureResponse = z.object({
   lastPause: legionEndedPause.optional(),
 });
 
+/** `api.ReplayedGiveUpView`'s `outcome` — how one give-up's replay ended: its fact `applied`, its
+ * fact was applied already (`already applied`), the message holds `no fact`, each of which closes
+ * the record, or it `failed`, which leaves the record as it stood, open or discarded, keeping the
+ * new error. */
+const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", "failed"] as const;
+
+/** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
+ * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
+ * (contract 184): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
+ * error; and `remaining`, the open records of the selection left after it, which another call
+ * takes. */
+export const LegionIntakeReplayResponse = z.object({
+  replayed: z.array(
+    z.object({
+      id: z.number().int().positive(),
+      consumer: nonEmptyString,
+      streamSeq: z.number().int().positive(),
+      outcome: z.enum(LEGION_INTAKE_REPLAY_OUTCOMES),
+      error: nonEmptyString.optional(),
+    })
+  ),
+  remaining: z.number().int().nonnegative(),
+});
+
+export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
+
+/** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
+ * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
+ * (contract 184): `discarded`, the id of each record it closed, in stream order. */
+export const LegionIntakeDiscardResponse = z.object({
+  discarded: z.array(z.number().int().positive()),
+});
+
+export type LegionIntakeDiscard = z.output<typeof LegionIntakeDiscardResponse>;
+
 /** `api.GrantRequest`, the session form that mints one short-lived credential grant: it serves every
  * redemption for sixty seconds while its claim holds the registration that minted it. */
 export const LegionGrantRequest = z.strictObject({
@@ -1890,6 +1982,41 @@ export const LegionProjectPauseRequest = z.strictObject({
 export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
 });
+
+/** The two forms of `api.IntakeSelection`, the give-ups a replay or a discard takes: `giveUp`, one
+ * record by its id, or `consumer` with `throughSeq`, every open record of that consumer at or below
+ * that stream sequence. The state's `intakeGiveUps` gives both: each listed record's id, and each
+ * consumer's newest sequence. */
+const oneGiveUp = { giveUp: z.number().int().positive() };
+const giveUpsThroughSeq = {
+  consumer: nonEmptyString,
+  throughSeq: z.number().int().positive(),
+};
+
+/** `api.IntakeReplayRequest`, the controller's replay of give-ups: its grant and one form of the
+ * selection. Each form is a strict object, so a body that names both forms, or neither, parses as
+ * neither. The daemon refuses such a body (`GIVE_UP_REQUEST_INVALID`), a grant that is not the
+ * controller's (`CONTROLLER_REQUIRED`), an id of no give-up of its project (`GIVE_UP_NOT_FOUND`),
+ * an id whose record a replay closed (`GIVE_UP_CLOSED`, naming how and when), an id a running
+ * replay holds (`GIVE_UP_BEING_REPLAYED`), and every replay where it runs no intake
+ * (`NO_INTAKE`). */
+export const LegionIntakeReplayRequest = z.union([
+  z.strictObject({ grantId: nonEmptyString, ...oneGiveUp }),
+  z.strictObject({ grantId: nonEmptyString, ...giveUpsThroughSeq }),
+]);
+
+export type LegionIntakeReplayRequestBody = z.output<typeof LegionIntakeReplayRequest>;
+
+/** `api.IntakeDiscardRequest`, the controller's discard of give-ups: the replay's body, and why its
+ * records are let go. The daemon refuses what it refuses of a replay, an id whose record is closed
+ * in any way included, and a reason that is blank or longer than 2,048 characters
+ * (`GIVE_UP_REQUEST_INVALID`). */
+export const LegionIntakeDiscardRequest = z.union([
+  z.strictObject({ grantId: nonEmptyString, ...oneGiveUp, reason: nonEmptyString }),
+  z.strictObject({ grantId: nonEmptyString, ...giveUpsThroughSeq, reason: nonEmptyString }),
+]);
+
+export type LegionIntakeDiscardRequestBody = z.output<typeof LegionIntakeDiscardRequest>;
 
 /** `api.OperatorPauseRequest`, the operator's pause of the project (`legion project pause`, under
  * the operator's bearer): why the project is paused. The operator's resume sends no body, so it
