@@ -1162,14 +1162,20 @@ type ClaimFailed struct {
 
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
-// SessionLost is a claim whose recorded session no session store holds any more: its worker now
-// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
-// is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
-// because a worker that silently lost its memory looks like one that is merely slow.
+// SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
+// has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
+// said it. It is told on the issue, to its architect and to the controller, because a worker that
+// silently lost its memory looks like one that is merely slow.
+//
+// Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
+// Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
+// workflow names in the words of a cause whose message does not quote Detail.
 type SessionLost struct {
-	Issue  string
-	Role   claim.Role
-	Detail string
+	Issue   string
+	Role    claim.Role
+	Detail  string
+	Cause   supervise.SessionLoss
+	Session string
 }
 
 func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }

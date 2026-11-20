@@ -69,10 +69,10 @@ import (
 // outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047) and
-// dispatch://INFRA-4729's 20261120055717, so an upgrade of a database main migrated applies it just
-// before those four. It adds pull_requests.statuses at its default, the empty list, and it touches
-// no outbox_kind_check.
+// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
+// dispatch://INFRA-4108's 20261120042902 and dispatch://INFRA-4729's 20261120055717, so an upgrade
+// of a database main migrated applies it just before those five. It adds pull_requests.statuses at
+// its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -114,14 +114,18 @@ import (
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but the design news and
-// dispatch://INFRA-4729's 20261120055717: it names every kind the plan-record list names and its
-// own two, phase_ended among them. The same migration deletes the queued phase_ended rows, the
-// seeded one below among them, and adds pull_requests.conflict_read and
-// pull_requests.merge_forward, both null on every row it finds.
+// (20261119003157) stands above every other version of this list but the design news,
+// dispatch://INFRA-4108's 20261120042902 and dispatch://INFRA-4729's 20261120055717: it names every
+// kind the plan-record list names and its own two, phase_ended among them. The same migration
+// deletes the queued phase_ended rows, the seeded one below among them, and adds
+// pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
-// 20261120055717, is the last of them to rewrite outbox_kind_check: it names those kinds and
-// design_changes.
+// 20261120042902 and 20261120055717, is the last of them to rewrite outbox_kind_check: it names
+// those kinds and design_changes.
+// dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
+// (20261120042902) stands above every other version of this list, the design news among them, but
+// dispatch://INFRA-4729's 20261120055717; it adds claims.agent_resume_generation at its default, 0,
+// on every row it finds, and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // is applied after all of these, the design news among them, and touches no outbox_kind_check: it
 // adds columns to dispatch_issues at their defaults, an index on its parent, and a refill mark for
@@ -136,7 +140,7 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
-	20261119203047, 20261120055717,
+	20261119203047, 20261120042902, 20261120055717,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -152,9 +156,10 @@ var thisBranchsMigrations = []int{
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
 // forward (20261117064152), the kind list with the plan record (20261117023932),
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047 and
-// dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
+// dispatch://INFRA-4108's 20261120042902 and dispatch://INFRA-4729's 20261120055717. That is why
+// the loop below holds the list rather than counting it, so that a version added above any of them
+// is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

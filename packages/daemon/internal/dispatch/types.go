@@ -629,8 +629,8 @@ func unknownNewerField(message string) bool {
 // read — rather than anything Dispatch itself answered. request wraps every such failure in it
 // (client.go), the way appauth.TransientError wraps GitHub's, so a caller can tell "Dispatch
 // never answered" from "Dispatch answered and refused" without inspecting the wrapped error's
-// own type. A certificate the client does not trust is deliberately not wrapped: request types
-// that shape out on purpose, since no wait fixes a bad certificate.
+// own type. A refusal of the transport no wait fixes (TransportRefusal) is deliberately not
+// wrapped.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -644,8 +644,14 @@ func (e *TransientError) Unwrap() error { return e.Err }
 // restart to take effect, same as a queued write already accepts). Anything else — a genuine coded
 // refusal PermanentRefusal does call permanent, or an error that is neither a TransientError nor
 // a Dispatch *Error at all, such as a 200 response whose body is not the JSON it promised — is not
-// an outage this waits out.
+// an outage this waits out. A refusal of the transport (TransportRefusal) is read first and wins
+// over an outage it is joined with — a TLS alert on one read beside a TransientError of another,
+// as the boot's catch-up joins the reads of one root — so a boot gate stops on it rather than
+// wait it out, as internal/natsauth's Unreachable lets an alert win.
 func Unreachable(err error) bool {
+	if TransportRefusal(err) {
+		return false
+	}
 	var transient *TransientError
 	if errors.As(err, &transient) {
 		return true
