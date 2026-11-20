@@ -1,7 +1,11 @@
 package testnats
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -10,11 +14,10 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. It is too short
-// for a create of a stream of more than one copy on a cluster: nats-server answers that create
-// from the stream's first leader, once its members have elected one (processStreamLeaderChange),
-// and on a loaded machine that election can come after jetStreamWait, which ends the request with
-// `context deadline exceeded` although the server makes the stream. Such a create goes through
+// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. A create of a
+// stream of more than one copy on a cluster is answered from the stream's first leader, once its
+// members have elected one (processStreamLeaderChange), and on a loaded machine that election can
+// come after jetStreamWait, or the answer never come (sendCreate). Such a create goes through
 // Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
@@ -32,20 +35,90 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	return js
 }
 
-// CreateStream creates the stream config names on a connection of its own to the cluster
-// (Connect), sending the create once through the context createJetStream opens, and fails the
-// test with the server's answer when the create is refused. A successful create of a stream of
-// more than one copy is answered by that stream's first leader, once its members have elected one
-// (processStreamLeaderChange), which on a loaded machine can come after jetStreamWait; a refusal,
-// such as a placement the cluster cannot make, is answered before any election
-// (jsClusteredStreamRequest).
+// CreateStream creates the stream config names on a connection of its own to the cluster, sending
+// the create until the cluster answers it (sendCreate), and fails the test with the cluster's
+// refusal. The connection reconnects after a drop, so a create whose answer the drop lost is sent
+// again on it. A stream the cluster already holds under the name with another configuration is
+// refused as "stream name already in use", and the failure then names each field config sets
+// that the stream the cluster holds sets otherwise (streamDifference): a send again of this
+// create is answered with the stream it made, so that refusal is never this create's own stream.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
-	conn := Connect(t, c.URL())
+	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
+	if err != nil {
+		t.Fatalf("connect to the cluster to create stream %s: %v", config.Name, err)
+	}
 	defer conn.Close()
-	if _, err := createJetStream(t, conn).AddStream(&config); err != nil {
+	js, err := conn.JetStream(natsgo.MaxWait(createSendWait))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	err = sendCreate(t, "create stream "+config.Name, func() error {
+		_, err := js.AddStream(&config)
+		return err
+	})
+	if errors.Is(err, natsgo.ErrStreamNameAlreadyInUse) {
+		info, readErr := js.StreamInfo(config.Name)
+		if readErr != nil {
+			t.Fatalf("create stream %s: the cluster holds a stream of that name with another configuration, and its read failed: %v", config.Name, readErr)
+		}
+		t.Fatalf("create stream %s: the cluster holds a stream of that name with another configuration: %s", config.Name, streamDifference(config, info.Config))
+	}
+	if err != nil {
 		t.Fatalf("create stream %s: %v", config.Name, err)
 	}
+}
+
+// streamDifference names each field asked sets that held sets otherwise, as the stream API writes
+// the field, held's value first: asked's unset fields are left out, as the server fills them in,
+// and of asked's metadata only the keys asked names, as the server adds keys of its own. When no
+// field asked sets differs, the server judged a field asked leaves unset, and the whole of held
+// is named.
+func streamDifference(asked, held natsgo.StreamConfig) string {
+	askedFields, heldFields := apiFields(asked), apiFields(held)
+	if len(asked.Metadata) > 0 {
+		kept := make(map[string]string, len(asked.Metadata))
+		for key := range asked.Metadata {
+			if value, ok := held.Metadata[key]; ok {
+				kept[key] = value
+			}
+		}
+		heldFields["metadata"], _ = json.Marshal(kept)
+	}
+	var differences []string
+	for _, field := range slices.Sorted(maps.Keys(askedFields)) {
+		if heldValue, ok := heldFields[field]; !ok || !bytes.Equal(heldValue, askedFields[field]) {
+			if !ok {
+				heldValue = []byte("unset")
+			}
+			differences = append(differences, fmt.Sprintf("%s holds %s, asked %s", field, heldValue, askedFields[field]))
+		}
+	}
+	if len(differences) == 0 {
+		whole, _ := json.Marshal(held)
+		return "every field the create sets matches the stream held, which is " + string(whole)
+	}
+	return strings.Join(differences, "; ")
+}
+
+// apiFields is config as the stream API writes it, field by field: the fields config leaves at
+// their zero value are absent, as the API omits them.
+func apiFields(config natsgo.StreamConfig) map[string]json.RawMessage {
+	encoded, _ := json.Marshal(config)
+	fields := map[string]json.RawMessage{}
+	_ = json.Unmarshal(encoded, &fields)
+	return fields
+}
+
+// heldStream is the configuration the cluster holds for stream, as the stream API writes it, or
+// why it could not be read.
+func heldStream(js natsgo.JetStreamContext, stream string) string {
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		return fmt.Sprintf("a stream %s whose read failed: %v", stream, err)
+	}
+	encoded, _ := json.Marshal(info.Config)
+	return string(encoded)
 }
 
 // Copies is how many copies of a stream or a consumer a cluster holds, its leader's and its
