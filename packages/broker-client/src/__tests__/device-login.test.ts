@@ -408,7 +408,8 @@ test("of two callers that find one stale lock, exactly one takes it", async () =
       await work("B", Promise.resolve())();
     },
     {
-      foundStale: async () => {
+      at: async (step) => {
+        if (step !== "lock-stale") return;
         bFound.resolve();
         await bGoes.promise;
       },
@@ -476,6 +477,100 @@ test("a take-over waits while another caller takes over, and not for one that di
     },
   });
   expect(deadWaits).toBe(1);
+  expect(await stat(steal).catch(() => null)).toBeNull();
+});
+
+// A file another caller makes in place of one this caller found stale can carry the very inode
+// number of the one it replaced: XFS hands a new file the number freed a moment before (5 of 5
+// tries on a review box). These rows write the other caller's file into the stale file's own
+// inode, which is exactly what such a filesystem gives the check to see, so they hold on every
+// filesystem: the same device and inode, and a fresh modification time and holder value.
+
+test("of two callers inside one take-over, the one that comes second puts the lock back", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that died holding it");
+  const old = new Date(Date.now() - 31_000);
+  await utimes(lock, old, old);
+
+  // A is under its own take-over lock, has found the lock still stale, and is held before it
+  // moves the lock aside: it stopped there for over 5 s, so B took A's take-over lock as dead,
+  // took the stale lock over and now holds a fresh one. A then goes on. It must find the lock it
+  // moves is B's, put it back and wait for B, never take it from B.
+  const aTaking = Promise.withResolvers<void>();
+  const aGoes = Promise.withResolvers<void>();
+  let bHolds = false;
+  let heldAtFirstWait = "";
+  let ranWhileBHeld: boolean | undefined;
+  const a = withDeviceLoginLock(
+    path,
+    async () => {
+      ranWhileBHeld = bHolds;
+    },
+    {
+      at: async (step) => {
+        if (step !== "taking") return;
+        aTaking.resolve();
+        await aGoes.promise;
+      },
+      sleep: async () => {
+        if (heldAtFirstWait === "") {
+          heldAtFirstWait = await readFile(lock, "utf8").catch(() => "(no lock)");
+        }
+        // B's work ends, and B lets go.
+        bHolds = false;
+        await Bun.file(lock).delete();
+      },
+    }
+  );
+  await aTaking.promise;
+  await writeFile(lock, "B holds it");
+  bHolds = true;
+  aGoes.resolve();
+  await a;
+  expect(heldAtFirstWait).toBe("B holds it");
+  expect(ranWhileBHeld).toBe(false);
+  expect(await stat(lock).catch(() => null)).toBeNull();
+});
+
+test("a dead take-over lock is removed only while it is still the dead one", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = new Date(Date.now() - 31_000);
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+  await writeFile(steal, "a caller that died taking over");
+  const stealOld = new Date(Date.now() - 6_000);
+  await utimes(steal, stealOld, stealOld);
+
+  // B finds the take-over lock dead and is held before it removes it, while C removes that dead
+  // one and starts a take-over of its own. B then goes on: it must leave C's take-over lock in
+  // place, and wait for C.
+  const bFound = Promise.withResolvers<void>();
+  const bGoes = Promise.withResolvers<void>();
+  let stealAtFirstWait = "";
+  const b = withDeviceLoginLock(path, async () => {}, {
+    at: async (step) => {
+      if (step !== "steal-stale" || stealAtFirstWait !== "") return;
+      bFound.resolve();
+      await bGoes.promise;
+    },
+    sleep: async () => {
+      if (stealAtFirstWait === "") {
+        stealAtFirstWait = await readFile(steal, "utf8").catch(() => "(no take-over lock)");
+      }
+      // C's take-over ends.
+      await Bun.file(steal).delete();
+    },
+  });
+  await bFound.promise;
+  await writeFile(steal, "C takes over");
+  bGoes.resolve();
+  await b;
+  expect(stealAtFirstWait).toBe("C takes over");
   expect(await stat(steal).catch(() => null)).toBeNull();
 });
 
