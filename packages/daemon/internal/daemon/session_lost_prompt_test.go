@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -22,7 +21,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 	}
 	c := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleTester}
 
-	kept, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
+	kept, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,12 +29,12 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 		t.Fatalf("a claim whose session is intact is told %q, want nothing of a lost session", kept)
 	}
 
-	c.SessionLost = true
-	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
+	c.SessionLost = supervise.SessionLossGone
+	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"found in no session store", "only what you pushed and committed survives", "tell your architect"} {
+	for _, want := range []string{"found in no session store", "only what you pushed and committed survives", "tell the architect named above what you found"} {
 		if !strings.Contains(lost, want) {
 			t.Errorf("the fresh agent is told %q, want it to say %q", lost, want)
 		}

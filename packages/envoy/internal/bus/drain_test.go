@@ -439,12 +439,11 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 }
 
 // A connection closed while nats.go drains it, as nats.go closes a connection whose server goes
-// away during the drain, ends the drain at once. nats.go v1.50.0 marks such a connection draining
-// again and waits 5 s for a reply on the socket it closed, so a drain that read the connection's
-// state could miss the close and wait those 5 s out. bus.Connect makes no JetStream request (it
-// ensures no stream, unlike ConnectOwningStream), so nats.go has no request subscription to drain
-// and marks the connection draining again as soon as the close empties its subscriptions; whether a
-// reader of the state misses it is a race, so the test runs it several times.
+// away during the drain, ends the drain at once. nats.go v1.55.0 keeps the connection closed rather
+// than returning it to a draining state, so the CLOSED-event wait returns without a stale-state
+// poll. bus.Connect makes no JetStream request (it ensures no stream, unlike ConnectOwningStream),
+// so nats.go has no request subscription to drain. The test repeats the close/drain overlap and
+// requires each drain to return with a closed connection.
 func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
 	uri := testnats.URL(t)
 	for attempt := 1; attempt <= 10; attempt++ {

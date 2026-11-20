@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  The secrets broker's Go packages and commands moved to their Cipher directories, with no change to
+  what any of them does, reads or prints: `cmd/broker` is `cmd/cipherd`, `cmd/agent-secrets` is
+  `cmd/cipher`, `cmd/agent-secrets-helper` is `cmd/cipher-helper`, `cmd/agent-secrets-devrelay` is
+  `cmd/cipher-devrelay`, `cmd/broker-refgen` is `cmd/cipher-refgen`, `cmd/dev-airlock-stands` is
+  `cmd/dev-proxy-stands`, `internal/broker` is `internal/cipher` (its `airlock` is `proxyrules`,
+  `airlock/airlocktest` is `proxyrules/proxyrulestest`, `airlockproxy` is `proxy` and `brokertest` is
+  `ciphertest`), `internal/brokerclient` is `internal/cipherclient`, `internal/brokertoken` is
+  `internal/ciphertoken` (with `ciphertokentest`), `internal/dispatch/agentsecrets` is
+  `internal/dispatch/cipher`, and the public `brokeraddr`, `brokerclient` and `brokertest` are
+  `cipheraddr`, `cipherclient` and `ciphertest`. A build from source names the new directory, for
+  example `go build -o agent-secrets ./cmd/cipher`; the released binaries and archives keep their
+  names (`agent-secrets`, `agent-secrets-helper`, `envoy-broker`).
+time: 2026-11-20T06:14:08Z
+custom:
+    Issue: cipher-directories

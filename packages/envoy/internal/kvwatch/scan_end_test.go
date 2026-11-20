@@ -14,7 +14,7 @@ import (
 )
 
 // natsContextWaits counts the goroutines nats.go parks on a subscription's context for its life
-// (nats.go v1.50.0 js.go:2052-2058), one per watch until its context is cancelled. The trace names
+// (nats.go v1.55.0 js.go:2070-2076), one per watch until its context is cancelled. The trace names
 // the package nats%2ego, so the function is matched without its package.
 func natsContextWaits() int {
 	n := 0

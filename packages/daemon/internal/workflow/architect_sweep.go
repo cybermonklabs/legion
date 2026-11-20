@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -19,8 +20,8 @@ import (
 //
 //   - a root standing at phase.Admitted, whatever its design gate. record.AtWork answers false
 //     for such a root once its gate has opened, because no phase worker of it works there; its
-//     own architect still does, since it is the only role of the tree at work, and the measured
-//     defect is a relaunched architect of such a root (dispatch://INFRA-2614).
+//     own architect still does, since it is the only role at work on the root itself, and the
+//     measured defect is a relaunched architect of such a root (dispatch://INFRA-2614).
 //   - a root a hand-over carried in, in every phase that carries a run (record.Issue.CarriesRun)
 //     at the generation the hand-over opened, which the record states as the hand-over row of
 //     this generation (ArchitectCarried, the reading the catch-up makes). R5 names a root a
@@ -205,13 +206,24 @@ const (
 // move. A next move wins over a failing start, so RelaunchFailing means that no start is the next
 // move.
 //
+// A start's age is counted from no earlier than floor, which admit's stall reading passes as the
+// end of the project's latest pause (its stallFloor): a pause holds every start (record's
+// pauseHolds), so a start queued before the pause ended has been the outbox's to run only since
+// then, as the stuck clocks restart at the resume (decision 14 and departure 2 of
+// dispatch://INFRA-3759). So the age read is the lesser of the start's Age and now less floor.
+// It is read as the lesser of two durations rather than from the later of two moments because
+// each duration is taken in one clock: Age in the store's, and now less floor in the daemon's,
+// which is the clock now is read in and the clock the resume wrote the pause's end in
+// (internal/pause's Service.Resume). A project no pause has ended passes the zero floor, and now
+// less the zero time is the largest duration (time.Time.Sub), so that floor bounds no age.
+//
 // Stranded reads the same claim through StartFor, which counts every start above the acting stop
 // whatever its age, its lease and its attempts, and the two readings answer different questions.
 // Stranded asks whether nothing will start the claim again, and a failing start will, since the
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
 // (the architect's reading of R7 at dispatch://INFRA-2614).
-func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
+func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.Time) ArchitectRelaunch {
 	stop := actingStop(run, root)
 	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
@@ -226,7 +238,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 			relaunch = RelaunchFailing
 			continue
 		}
-		if queued.Age <= StrandedReleaseWake {
+		if min(queued.Age, now.Sub(floor)) <= StrandedReleaseWake {
 			return RelaunchNext
 		}
 	}

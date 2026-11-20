@@ -1,8 +1,11 @@
 // Oh My Pi's native modules for the tests that run the real binary under a fresh HOME
 // (omp-harness.ts's ompRoot). Oh My Pi extracts the one its CPU needs from its own binary into
-// .omp/natives/<version> under any HOME that lacks it, about 116 MiB at the pin, and has no
-// setting for that directory short of XDG_DATA_HOME, which moves its whole profile. Each HOME's
-// natives are instead hardlinks to one copy per binary under the user's cache directory.
+// .omp/natives/<version> under any HOME that lacks it, about 123 MiB at the pin. It reads that
+// directory from elsewhere only under a variable a test would have to set (getNativesDir,
+// @oh-my-pi/pi-natives native/loader-state.js, in this order): PI_NATIVES_DIR or
+// OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing $XDG_DATA_HOME/omp, which moves
+// its whole profile, then OMP_CONFIG_ROOT, which moves its whole config root. Each HOME's natives
+// are instead hardlinks to one copy per binary under the user's cache directory.
 //
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
 // testbin.OMPHome): the same directory, name, layout, lock and fill, so a machine holds one copy per

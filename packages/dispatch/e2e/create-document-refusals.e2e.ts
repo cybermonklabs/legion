@@ -7,6 +7,7 @@ import {
   createProject,
   createProjectDocument,
   dashboardOrigin,
+  documentBase,
   getProjectArtifact,
   listIssueArtifacts,
   patchIssue,
@@ -116,10 +117,13 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
   expect(plan?.name).toBe("plan.md");
 
   // The refusal is of a create that carries nothing, never of the name: the same name with
-  // content is taken, and writes a version of the issue's plan document.
+  // content is taken, and writes a version of the issue's plan document. That write replaces the
+  // plan whole, so it names the token of the version it replaces, as every replacement does.
+  if (plan === undefined) throw new Error("the issue holds no plan document");
   const accepted = await postAsPage(page, `/api/v1/issues/${issue.key}/artifacts`, {
     content: "# Plan\n\nThe steps, in order, corrected.\n",
     name: "plan.md",
+    precondition: await documentBase(plan.id),
   });
   expect(accepted.status()).toBe(201);
   const made = await accepted.json();

@@ -60,14 +60,16 @@ func (w *Watcher) Stop() {
 // no such line. That line, and not the state of the watcher's consumer, is what says the watcher
 // ended: a consumer the server lost does not stay lost, since nats.go's ordered consumer creates a
 // new one in its place once its idle heartbeats have been missing for a whole check (5 s
-// heartbeats, checked every 10 s: nats.go v1.53.1 js.go, activityCheck). End then deletes that one
+// heartbeats, checked every 10 s: nats.go v1.55.0 js.go, activityCheck). End then deletes that one
 // with nothing else to report, or, while its create is still in flight, deletes nothing, since
-// nats.go has not yet named it to the subscription (js.go deleteConsumer), and leaves it for the
-// server to remove once its interest is gone.
+// nats.go has not yet named it to the subscription (js.go deleteConsumer). nats.go deletes that
+// one itself once the create answers and it finds the subscription closed (resetOrderedConsumer),
+// but in a goroutine nothing waits for, so a connection that closes first leaves it for the server
+// to remove once its interest is gone.
 //
 // End stops each watcher at once, whether or not its scan has ended: each watcher's subscription
 // must end, and the consumer it names be deleted, before the connection drains (a consumer nats.go
-// has not yet named, above, is the server's to remove). That is safe with the jetstream watcher,
+// has not yet named, above, may be left to the server). That is safe with the jetstream watcher,
 // which sends nothing once its subscription has ended, and its consume reads it until it closes.
 func (w *Watcher) End(ctx context.Context) {
 	w.endOnce.Do(func() { w.end(ctx) })
@@ -146,10 +148,11 @@ func takeWithinAfter[T any](ctx context.Context, c <-chan T, ended func()) (T, b
 
 // lostConnection reports whether err says the connection was lost before a request reached the
 // server or its answer came back: the drain hook's own cause (bus.ErrConnectionLost), and what
-// nats.go answers a request with when its connection is closed, reconnecting, or, with the
-// reconnect buffer off, refusing a publish until it reconnects.
+// nats.go answers a request with when its connection is closed, disconnected by a reconnect,
+// reconnecting, or, with the reconnect buffer off, refusing a publish until it reconnects.
 func lostConnection(err error) bool {
 	return errors.Is(err, bus.ErrConnectionLost) || errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrDisconnected) ||
 		errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrReconnectBufExceeded)
 }
 

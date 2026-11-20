@@ -1,19 +1,21 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
 `if:` must say, what ci-caches.yaml must save
-for the entries ci.yaml restores and which packages its race build must compile, which workspaces
+for the entries ci.yaml restores and which packages the daemon fill job's race build must compile, which workspaces
 ci_job_reads.py's WORKSPACES must name, and
 that no other workflow of this repository runs on a merge group.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
 ci_filter_coverage.main()
-is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
-alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
-workflow its jobs call, since a job's restore moves with its steps; the push-condition rule over
+is what runs them, over the documents it already loaded where the rule reads only those - the
+rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
+rule over ci.yaml and every workflow its jobs call, since a job's restore moves with its steps,
+and over every other workflow of the directory, which it reads itself, for the key and paths,
+since a release build's restore misses as silently; the push-condition rule over
 ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
-others) - the workspace rule over the
+others, and reads the directory to find them) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
-and the DAEMON_RACE_PACKAGES list main() hands it the same way, since what this module imports is
+and the DAEMON_RACE_PACKAGES list and DAEMON_RACE_FILL_JOB job main() hands it the same way, since what this module imports is
 the engine's names, never the data's, and the merge-group rule over the workflow directory, which
 it reads itself.
 
@@ -78,8 +80,9 @@ WORKFLOW_SUFFIXES = (".yaml", ".yml")
 @cache
 def directory_workflows() -> dict:
     """Every workflow of this repository, as {its repository-relative path: the parsed document},
-    in path order. The two rules that walk the directory read this one answer: parsing each file
-    for each of them is a second read of every workflow in the repository."""
+    in path order. The three rules that walk the directory - the push-condition rule (through
+    ci_only_documents), the cache rule and the merge-group rule - read this one answer: parsing
+    each file for each of them is a second read of every workflow in the repository."""
     try:
         paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
     except Exception as exc:
@@ -98,7 +101,7 @@ def ci_only_documents(documents: dict) -> dict:
     file two workflows call is live under each caller's events, and a file with a trigger of its
     own has runs no caller starts at all. Both cases are in this repository today:
     .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
-    to main, and docs-site.yaml:189 carries `github.event_name == 'push'` for exactly that
+    to main, and docs-site.yaml's cache save step carries `github.event_name == 'push'` for that
     caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
     .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
     other case: nothing else calls them and they run on workflow_call alone, so a push condition
@@ -153,7 +156,8 @@ def check_push_conditions(documents: dict, problems: list) -> None:
 # job's check run is a passing required check, so the term that saves every other job from a dead
 # group would hand that group the check it merges on, concluded by nothing. Each of those jobs
 # runs on every attempt and refuses an attempt above the first in a step, which fails and makes
-# the check a failure; the comment above each one's `if:` in ci.yaml says so.
+# the check a failure; .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
+# and .github/ci-notes/ci.md#why-a-re-run-attempt-of-a-merge-group-run-is-refused-in-a-step say so.
 RERUN_GUARD = ("(github.event_name != 'merge_group' || github.run_attempt == '1')",
                re.compile(r"\(\s*github\.event_name\s*!=\s*'merge_group'\s*\|\|"
                           r"\s*github\.run_attempt\s*==\s*'1'\s*\)"))
@@ -224,12 +228,14 @@ def cache_steps(document: dict, action: str) -> list:
 
 
 def restores_of(documents: dict) -> dict:
-    """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
-    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
-    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
-    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
-    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
-    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
+    document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
+    dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore go-envoy and
+    go-envoy-test for ci.yaml's dispatch-browser job - it is every restore of ci.yaml's run;
+    paired against ci.yaml alone, a save that only a called workflow restores would read as a fill
+    nobody wants. Given the rest of the directory, it is the restores of the release builds and
+    the other workflows. The set holds each file once however many of ci.yaml's jobs name it, so
+    each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):
@@ -254,11 +260,20 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The restores are collected from every document of the set, ci.yaml and each workflow its
     jobs call, since a job that gives its steps to a called file takes its restore there with
-    them and the entry it reads is the same one; each refusal names the file the restore is in."""
+    them and the entry it reads is the same one; each refusal names the file the restore is in.
+
+    The key and the paths are held for every other workflow of the directory too: a release
+    build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
+    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
+    the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
+    another workflow restores is still a fill ci.yaml does not read."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     restores = restores_of(documents)
+    elsewhere = restores_of({path: document for path, document in directory_workflows().items()
+                             if path not in documents})
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
@@ -268,7 +283,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                                   f"family nothing restores is a fill nobody reads: restore it there, "
                                                   f"or drop the save"))
             continue
-        for restore_where, restored in restores[family]:
+        for restore_where, restored in restores[family] + elsewhere.get(family, []):
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:
@@ -295,51 +310,65 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
 # ------------------------------------------- the race build that fills the race lane's cache
 # What makes a line of ci-caches.yaml the race build this rule holds: a `go test` running with
-# -race. Spelled as the engine's tag-run triggers are, so `-racy` is not the flag and a go vet or
-# go build line is no such command, and read through script_lines, so a comment is no trigger. The
-# packages are the words beginning `./`, which is how a go command names one and how
-# ci_job_reads.py's DAEMON_RACE_PKGS spells that same list; the `-o /dev/null` of the build is no
-# package. TABLE, the file the list is in, is the workspaces section's constant below: both rules
-# name that one file, so there is one spelling of it here.
+# -race, in the job that fills the daemon's family (RACE_JOB, the job id ci_job_reads.py's
+# DAEMON_RACE_FILL_JOB names). Spelled as the engine's tag-run triggers are, so `-racy` is not the
+# flag and a go vet or go build line is no such command, and read through script_lines, so a
+# comment is no trigger. The packages are the words beginning `./`, which is how a go command
+# names one and how ci_job_reads.py's DAEMON_RACE_PKGS spells that same list; the `-o /dev/null`
+# of the build is no package. TABLE, the file the list is in, is the workspaces section's constant
+# below: both rules name that one file, so there is one spelling of it here. A race build of
+# another job fills another family's cache, for another lane, and is not this rule's: the
+# envoy-infra job's fills envoy-infra-go's unit step.
 RACE_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 RACE_FLAG = re.compile(r"(?<![\w-])-race\b")
 RACE_LIST = "DAEMON_RACE_PACKAGES"
+RACE_JOB = "DAEMON_RACE_FILL_JOB"
 
 
-def race_builds(document: dict) -> list:
-    """Every race build of a workflow: (its job, its line, the packages that line names)."""
+def race_builds(document: dict, only_job: str) -> list:
+    """Every race build of a workflow's job only_job: (the job, its line, the packages that line
+    names)."""
     return [(job_id, line, [word for word in line.split() if word.startswith("./")])
-            for job_id, job in (document.get("jobs") or {}).items()
+            for job_id, job in (document.get("jobs") or {}).items() if job_id == only_job
             for step in ((job or {}).get("steps") or [])
             for line in script_lines(str((step or {}).get("run", "")))
             if RACE_TEST.search(line) and RACE_FLAG.search(line)]
 
 
-def check_race_fill_packages(packages: list, problems: list) -> None:
-    """ci-caches.yaml's race build compiles exactly the packages the daemon's race lane runs. The
-    workflow fills on a push to main the build cache ci.yaml's race step restores, so the two
-    sides must name one set: a package the fill compiles and the lane does not leaves the entry
-    holding a race binary no job ever restores, and a package the lane runs that the fill leaves
-    out is linked from nothing in every run of that step. Neither fails anything - it is the
-    silence check_cache_round_trip is about one level up, where the entry is found and holds the
-    wrong objects - and the command has drifted twice for want of this rule: the fill kept
-    ./internal/record/ after #2867 took it out of the lane. The packages are held as a set and in
-    order, each spelled as a command spells it (./internal/daemon/), since a command that reads in
-    another order than the list is one a reader must sort before comparing, and an unreadable pair
-    is where the next drift hides. A workflow with no race build at all fails too, rather than
-    passing quietly: this rule exists to hold that one command, so a tree without it is a lane
-    nothing fills, not a rule with nothing to do. A ci-caches.yaml that is not in the repository
-    fills nothing, and so has nothing to hold.
+def check_race_fill_packages(packages: list, job: str, problems: list) -> None:
+    """The race build of ci-caches.yaml's job `job`, the one that fills the daemon's family,
+    compiles exactly the packages the daemon's race lane runs. The workflow fills on a push to main
+    the build cache ci.yaml's race step restores, so the two sides must name one set: a package the
+    fill compiles and the lane does not leaves the entry holding a race binary no job ever
+    restores, and a package the lane runs that the fill leaves out is linked from nothing in every
+    run of that step. Neither fails anything - it is the silence check_cache_round_trip is about
+    one level up, where the entry is found and holds the wrong objects - and the command has
+    drifted twice for want of this rule: the fill kept ./internal/record/ after #2867 took it out
+    of the lane. The packages are held as a set and in order, each spelled as a command spells it
+    (./internal/daemon/), since a command that reads in another order than the list is one a
+    reader must sort before comparing, and an unreadable pair is where the next drift hides. A job
+    with no race build at all fails too, rather than passing quietly: this rule exists to hold that
+    one command, so a tree without it is a lane nothing fills, not a rule with nothing to do; and
+    so does a workflow with no such job. A race build of any other job fills another family, and
+    this rule does not read it. A ci-caches.yaml that is not in the repository fills nothing, and
+    so has nothing to hold.
 
-    The list is an argument, as check_workspace_table's is: main() holds ci_job_reads.py already,
-    and nothing here imports it - the engine's names are all this module takes."""
+    The list and the job are arguments, as check_workspace_table's table is: main() holds
+    ci_job_reads.py already, and nothing here imports it - the engine's names are all this module
+    takes."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     wanted = [f"./{package}/" for package in packages]
-    builds = race_builds(caches)
+    if job not in (caches.get("jobs") or {}):
+        problems.append(error(CACHE_WORKFLOW, f"this workflow has no job {job}, which {TABLE}'s {RACE_JOB} names "
+                                              f"as the one that fills the cache {WORKFLOW}'s race step restores, so nothing "
+                                              f"fills it and that step links {', '.join(wanted) or '(no package)'} from nothing "
+                                              f"on every run; name the fill job there, or drop this rule with the lane it holds"))
+        return
+    builds = race_builds(caches, job)
     if not builds:
-        problems.append(error(CACHE_WORKFLOW, f"no step of this workflow runs a `go test` with -race, so "
+        problems.append(error(CACHE_WORKFLOW, f"no step of job {job} runs a `go test` with -race, so "
                                               f"nothing fills the build cache {WORKFLOW}'s race step restores and that step links "
                                               f"{', '.join(wanted) or '(no package)'} from nothing on every run; put the race build "
                                               f"back, or drop this rule with the lane it holds"))
@@ -369,6 +398,52 @@ def check_race_fill_packages(packages: list, problems: list) -> None:
                                                   f"command as the list reads, so the next change to either shows as a difference"))
 
 
+def check_race_fill_scripts(fills: list, problems: list) -> None:
+    """Each (fill job, script, its workdir, its compile call) of `fills` is a ci-caches.yaml job
+    that fills a family whose race step runs a script: the job's steps in that workdir run the
+    script's compile call, exactly as written, and no `go test` with -race of their own. The
+    script holds the package list and -race the race step runs, so the fill and the step cannot
+    name other packages or flags only while the fill reaches them through that script; a race
+    build the fill wrote itself is the copy this rule exists to stop, and nothing fails when it
+    drifts. A line that names the script with any other arguments fails too, naming the line, as
+    does a fill job that is gone or never calls the script.
+
+    The table is an argument, as check_race_fill_packages' list is: main() holds ci_job_reads.py,
+    and nothing here imports it."""
+    if not (REPO / CACHE_WORKFLOW).is_file():
+        return
+    jobs = (load_repository_yaml(REPO / CACHE_WORKFLOW) or {}).get("jobs") or {}
+    for job_id, script, workdir, call in fills:
+        name = script.rsplit("/", 1)[-1]
+        if job_id not in jobs:
+            problems.append(error(CACHE_WORKFLOW, f"this workflow has no job {job_id}, which {TABLE} names as the one "
+                                                  f"that fills the race objects {script} compiles; name the fill job there, "
+                                                  f"or drop the entry with the step it serves"))
+            continue
+        calls = 0
+        for step in (jobs[job_id] or {}).get("steps") or []:
+            if (step or {}).get("working-directory", "") != workdir:
+                continue
+            for line in script_lines(str((step or {}).get("run", ""))):
+                if name in line:
+                    if line == call:
+                        calls += 1
+                    else:
+                        problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{line}`, where the fill runs "
+                                                              f"`{call}` and nothing else of {script}: the step that "
+                                                              f"restores this cache runs the script's other mode, so any "
+                                                              f"other call compiles objects the step does not link"))
+                elif RACE_TEST.search(line) and RACE_FLAG.search(line):
+                    problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{line}`, a race build of its own: "
+                                                          f"its race objects come from `{call}`, which takes the "
+                                                          f"packages and flags from {script}, so a copy of them here "
+                                                          f"can drift from the step and nothing fails"))
+        if calls != 1:
+            problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{call}` {calls} times in {workdir}, where it "
+                                                  f"fills the race objects {script} compiles once: with none the step "
+                                                  f"links them from nothing on every run"))
+
+
 # ---------------------------------------------------------------- the workspaces and the table
 # The root manifest, whose workspaces ci_job_reads.py's WORKSPACES must name one for one, and the
 # file that table is in. Both are named in the errors below, each in the one it is about.
@@ -381,7 +456,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     A frozen `bun install` reads every workspace manifest, so bun_job() declares each of
     WORKSPACES as a read of every Bun job, and the engine holds every filter gating such a job to
     all of them. A workspace the table leaves out is therefore a manifest no filter has to select,
-    and a change to that package starts no job at all - which is how packages/broker-client came
+    and a change to that package starts no job at all - which is how packages/cipher-client came
     to have its typecheck and its tests run nowhere. The other way round is a read every Bun job
     declares of a manifest no install reads. The table is an argument because main() holds it
     already, and because nothing here imports ci_job_reads: the engine's names are all this

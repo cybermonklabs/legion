@@ -69,7 +69,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -91,9 +91,10 @@ const (
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
 // service-account token and the shared token each name no project and prove no session, so a
 // request presenting no DPoP-bound token is outside both checks. A credential that does not
-// resolve is outside them too: its own refusal is the handler's to write.
+// resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
+// write and by the handler for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
-	if _, presented := brokertoken.Presented(r); !presented {
+	if _, presented := ciphertoken.Presented(r); !presented {
 		return model.Actor{}, false
 	}
 	actor, _, err := s.optionalActor(r)

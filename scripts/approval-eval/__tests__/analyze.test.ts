@@ -19,6 +19,8 @@ import {
   readCase,
   readRound,
   renderReport,
+  type SendBackCase,
+  sendBackFiguresOf,
 } from "../analyze";
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import { type Corpus, CorpusError } from "../corpus-io";
@@ -207,6 +209,8 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
       readFinishedAt: "2026-11-11T01:00:00Z",
       reserve: null,
     },
+    snapshotSha256: "0".repeat(64),
+    corpusSha256: "0".repeat(64),
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),
     reserve: { cases: 0, issues: 0, readUnder: null },
@@ -1432,6 +1436,188 @@ describe("the claim's measure, over the final test's trees", () => {
   });
 });
 
+/** How many trees `sendBackCases` has named, so each request it makes alone is in a new one. */
+let sendBackTrees = 0;
+
+/**
+ * `times` requests as the send-back figures read them: each in a tree of its own, or every one
+ * of them in the tree `tree` names.
+ */
+function sendBackCases(
+  times: number,
+  person: CaseVerdict,
+  arm: CaseVerdict | null,
+  tree?: string
+): SendBackCase[] {
+  return Array.from({ length: times }, () => {
+    sendBackTrees += 1;
+    return { tree: tree ?? `tree:own-${sendBackTrees}`, person, arm };
+  });
+}
+
+describe("the send-back figures beside item 8", () => {
+  test("a hand table: each class, a request not decided on each side, another option's answer", () => {
+    const figures = sendBackFiguresOf([
+      ...sendBackCases(3, "request_changes", "request_changes"),
+      ...sendBackCases(1, "request_changes", "approve"),
+      ...sendBackCases(1, "request_changes", null),
+      ...sendBackCases(1, "request_changes", "other"),
+      ...sendBackCases(6, "approve", "approve"),
+      ...sendBackCases(2, "approve", "request_changes"),
+      ...sendBackCases(2, "approve", null),
+      ...sendBackCases(1, "other", "approve"),
+      ...sendBackCases(1, "approve", "other"),
+    ]);
+    expect(figures.label).toBe("chosen option");
+    expect(figures.requests).toBe(18);
+    // Another option the person chose is no send-back, and is counted in the figures.
+    expect(figures.otherAnswers).toBe(1);
+    // Another option the arm decided is no send-back; a request it did not decide is wrong.
+    expect(figures.caught).toBe(3);
+    expect(figures.missed).toBe(3);
+    expect(figures.cleared).toBe(8);
+    expect(figures.falseSendBacks).toBe(4);
+    expect(figures.notDecided).toEqual({ missed: 1, falseSendBacks: 2 });
+    // The intervals are checked against an exact binomial bisection, not against stats.ts.
+    expect(figures.recall.share).toBe(0.5);
+    expect(figures.recall.interval?.lower).toBeCloseTo(0.118_117, 5);
+    expect(figures.recall.interval?.upper).toBeCloseTo(0.881_883, 5);
+    // The registration counts a request not decided as wrong in every figure, precision too.
+    expect(figures.precision.count).toBe(3);
+    expect(figures.precision.total).toBe(7);
+    expect(figures.precision.interval?.lower).toBeCloseTo(0.098_988, 5);
+    expect(figures.precision.interval?.upper).toBeCloseTo(0.815_948, 5);
+    expect(figures.specificity.count).toBe(8);
+    expect(figures.specificity.total).toBe(12);
+    expect(figures.specificity.interval?.lower).toBeCloseTo(0.348_876, 5);
+    expect(figures.specificity.interval?.upper).toBeCloseTo(0.900_754, 5);
+    // The mean of 3 of 6 and 8 of 12, and of their exact intervals at 97.5 percent each.
+    expect(figures.balancedAccuracy.value).toBeCloseTo(7 / 12, 10);
+    expect(figures.balancedAccuracy.interval?.lower).toBeCloseTo(0.202_355, 5);
+    expect(figures.balancedAccuracy.interval?.upper).toBeCloseTo(0.913_644, 5);
+    expect(figures.agreement.count).toBe(11);
+    expect(figures.agreement.total).toBe(18);
+    expect(figures.agreement.interval?.lower).toBeCloseTo(0.357_451, 5);
+    expect(figures.agreement.interval?.upper).toBeCloseTo(0.827_014, 5);
+    expect(figures.alwaysApprove.recall).toBe(0);
+    expect(figures.alwaysApprove.specificity).toBe(1);
+    expect(figures.alwaysApprove.balancedAccuracy).toBe(0.5);
+    expect(figures.alwaysApprove.agreement.count).toBe(12);
+    expect(figures.alwaysApprove.agreement.interval?.lower).toBeCloseTo(0.409_925, 5);
+    expect(figures.alwaysApprove.agreement.interval?.upper).toBeCloseTo(0.866_573, 5);
+    // One request to a tree: the effective size is the count, and both intervals are one.
+    expect(figures.recall.effectiveTotal).toBe(6);
+    expect(figures.recall.treeInterval?.lower).toBeCloseTo(0.118_117, 5);
+    expect(figures.balancedAccuracy.treeInterval?.upper).toBeCloseTo(0.913_644, 5);
+  });
+
+  test("at the edges each exact interval takes its closed form", () => {
+    const figures = sendBackFiguresOf([
+      ...sendBackCases(10, "request_changes", "request_changes"),
+      ...sendBackCases(10, "approve", "request_changes"),
+    ]);
+    // 10 of 10: the lower end is 0.025 ^ (1 / 10); 0 of 10: the upper end is 1 minus that.
+    expect(figures.recall.interval?.lower).toBeCloseTo(0.025 ** 0.1, 10);
+    expect(figures.recall.interval?.upper).toBe(1);
+    expect(figures.specificity.interval?.lower).toBe(0);
+    expect(figures.specificity.interval?.upper).toBeCloseTo(1 - 0.025 ** 0.1, 10);
+    // Each part at 97.5 percent, so each tail is 0.0125.
+    expect(figures.balancedAccuracy.value).toBe(0.5);
+    expect(figures.balancedAccuracy.interval?.lower).toBeCloseTo(0.0125 ** 0.1 / 2, 10);
+    expect(figures.balancedAccuracy.interval?.upper).toBeCloseTo(1 - 0.0125 ** 0.1 / 2, 10);
+    expect(figures.precision.share).toBe(0.5);
+  });
+
+  test("requests that share a tree are worth fewer than their count", () => {
+    // Ten send-backs in one tree, all caught, are one tree's worth: the exact interval leaves out
+    // a recall of 0.5, which one tree going one way cannot rule out, and the tree interval keeps it.
+    const oneTree = sendBackFiguresOf(sendBackCases(10, "request_changes", "request_changes", "A"));
+    expect(oneTree.recall.interval?.lower).toBeCloseTo(0.691_503, 5);
+    expect(oneTree.recall.effectiveTotal).toBe(1);
+    expect(oneTree.recall.treeInterval?.lower).toBeCloseTo(0.025, 10);
+    expect(oneTree.recall.treeInterval?.upper).toBe(1);
+    const noneOfOneTree = sendBackFiguresOf(sendBackCases(10, "request_changes", "approve", "A"));
+    expect(noneOfOneTree.recall.treeInterval?.upper).toBeCloseTo(0.975, 10);
+    // Trees of three and one: Kish's effective size is 16 / 10, and 3 of 4 is read at 1.6.
+    const twoTrees = sendBackFiguresOf([
+      ...sendBackCases(3, "request_changes", "request_changes", "B"),
+      ...sendBackCases(1, "request_changes", "approve", "C"),
+    ]);
+    expect(twoTrees.recall.share).toBe(0.75);
+    expect(twoTrees.recall.effectiveTotal).toBeCloseTo(1.6, 10);
+    // Checked against a power-series incomplete beta, not against stats.ts.
+    expect(twoTrees.recall.treeInterval?.lower).toBeCloseTo(0.033_892, 5);
+    expect(twoTrees.recall.treeInterval?.upper).toBeCloseTo(0.999_962, 5);
+  });
+
+  test("a class that holds no request gives no figure over it", () => {
+    const figures = sendBackFiguresOf(sendBackCases(4, "approve", "approve"));
+    expect(figures.recall).toEqual({
+      count: 0,
+      total: 0,
+      share: null,
+      interval: null,
+      effectiveTotal: null,
+      treeInterval: null,
+    });
+    // The arm sent nothing back, so precision is over nothing too.
+    expect(figures.precision.share).toBeNull();
+    expect(figures.specificity.share).toBe(1);
+    expect(figures.balancedAccuracy).toEqual({ value: null, interval: null, treeInterval: null });
+    expect(figures.alwaysApprove.recall).toBeNull();
+    expect(figures.alwaysApprove.balancedAccuracy).toBeNull();
+    expect(figures.alwaysApprove.specificity).toBe(1);
+  });
+
+  test("the claim reads them over every answered approval request of the eligible trees", () => {
+    const { cases, rows, trees } = claimFixture();
+    const figures = analysisOf({ cases, rows, finalTestTrees: trees }).arms[0]?.claim?.sendBack;
+    // T1 and T2's first: approved and decided approve. T2's second: sent back, decided approve.
+    // T3, under the threshold, and T4, held: approved, and not decided. T6 holds a question.
+    expect(figures?.requests).toBe(6);
+    expect(figures?.caught).toBe(0);
+    expect(figures?.missed).toBe(1);
+    expect(figures?.cleared).toBe(3);
+    expect(figures?.falseSendBacks).toBe(2);
+    expect(figures?.notDecided).toEqual({ missed: 0, falseSendBacks: 2 });
+    expect(figures?.recall.interval?.upper).toBeCloseTo(0.975, 10);
+    expect(figures?.precision.total).toBe(2);
+    expect(figures?.precision.interval?.upper).toBeCloseTo(0.841_886, 5);
+    expect(figures?.specificity.interval?.lower).toBeCloseTo(0.146_633, 5);
+    expect(figures?.balancedAccuracy.value).toBeCloseTo(0.3, 10);
+    expect(figures?.balancedAccuracy.interval?.lower).toBeCloseTo(0.057_167, 5);
+    expect(figures?.balancedAccuracy.interval?.upper).toBeCloseTo(0.975_406, 5);
+    // Specificity's five requests sit in trees of two, one, one and one: 25 / 7 of a request.
+    expect(figures?.specificity.effectiveTotal).toBeCloseTo(25 / 7, 10);
+    expect(figures?.specificity.treeInterval?.lower).toBeCloseTo(0.093_239, 5);
+    expect(figures?.specificity.treeInterval?.upper).toBeCloseTo(0.972_682, 5);
+    expect(figures?.balancedAccuracy.treeInterval?.lower).toBeCloseTo(0.033_307, 5);
+    expect(figures?.balancedAccuracy.treeInterval?.upper).toBeCloseTo(0.985_421, 5);
+    expect(figures?.alwaysApprove.agreement.share).toBeCloseTo(5 / 6, 10);
+    // At a named threshold of 0, T3's split verdict is decided, and only T4 is left undecided.
+    const named = analysisOf({ cases, rows, finalTestTrees: trees, claimThreshold: 0 });
+    const atZero = named.arms[0]?.claim?.sendBack;
+    expect(atZero?.cleared).toBe(4);
+    expect(atZero?.notDecided).toEqual({ missed: 0, falseSendBacks: 1 });
+  });
+
+  test("an approval case with no verdict stops the reading", () => {
+    const { cases, rows, trees } = claimFixture();
+    const unread = cases.map((row) => (row.caseId === "t1-a" ? { ...row, verdict: null } : row));
+    expect(() => analysisOf({ cases: unread, rows, finalTestTrees: trees })).toThrow(CorpusError);
+  });
+
+  test("the report prints them over requests, over trees, and beside the always-approve baseline", () => {
+    const { cases, rows, trees } = claimFixture();
+    const text = renderReport(analysisOf({ cases, rows, finalTestTrees: trees })).join("\n");
+    expect(text).toContain("### The send-back figures beside item 8");
+    expect(text).toContain("0.600 [0.147, 0.947] (3/5)");
+    expect(text).toContain("0.300 [0.057, 0.975]");
+    expect(text).toContain("[0.093, 0.973] at 3.6");
+    expect(text).toContain("0.833 [0.359, 0.996] (5/6)");
+  });
+});
+
 describe("the command over a draw that recorded the final test's trees", () => {
   test("reads the trees from draw.json and prints the claim's measure", async () => {
     const { cases, rows, trees } = claimFixture();
@@ -1461,5 +1647,6 @@ describe("the command over a draw that recorded the final test's trees", () => {
     expect(claim?.trees).toBe(5);
     expect(claim?.decided).toBe(2);
     expect(claim?.disagreeing).toBe(1);
+    expect(claim?.sendBack.cleared).toBe(3);
   });
 });

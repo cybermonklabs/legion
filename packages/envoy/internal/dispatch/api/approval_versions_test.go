@@ -704,6 +704,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 		{"an upload", time.Hour, func(t *testing.T, doc *document) {
 			if uploaded := sessionRequest(t, doc.handler, http.MethodPost, "/api/v1/issues/"+doc.issueKey+"/artifacts", map[string]any{
 				"actor": sessionActor(), "name": "spec.md", "content": "A revised spec",
+				"precondition": uploadBase(t, doc.handler, doc.artifactID),
 			}); uploaded.Code != http.StatusCreated {
 				t.Fatalf("upload a version: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 			}
@@ -721,10 +722,20 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer earlierTx.Rollback(earlierCtx)
 			earlierJoined, earlierLedger := doc.documentService.Join(earlierCtx, earlierTx)
 			defer earlierLedger.Discard()
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice); err != nil {
+			// The token is read on the joined context, which reads the tree this write works on:
+			// the undo names what the write before it left, not what the room held before both.
+			earlierBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice, earlierBase); err != nil {
 				t.Fatalf("write the earlier edit: %v", err)
 			}
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice); err != nil {
+			undoBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token for the undo: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice, undoBase); err != nil {
 				t.Fatalf("undo the earlier edit: %v", err)
 			}
 			if err := earlierLedger.Commit(earlierCtx); err != nil {
@@ -742,7 +753,11 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer tx.Rollback(ctx)
 			joined, ledger := doc.documentService.Join(ctx, tx)
 			defer ledger.Discard()
-			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker); err != nil {
+			base, err := replacementPrecondition(ctx, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker, base); err != nil {
 				t.Fatalf("the agent's joined write: %v", err)
 			}
 			if err := ledger.Commit(ctx); err != nil {
@@ -848,15 +863,23 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, "")
-		if err != nil {
+		joined, ledger := doc.documentService.Join(ctx, tx)
+		defer ledger.Discard()
+		edits := askEventCount(t, doc.database, doc.askID, "ask.edited")
+		if err := docs.MoveApprovalAsk(joined, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, ""); err != nil {
 			t.Fatalf("move with no known writer: %v", err)
 		}
-		if err := tx.Commit(ctx); err != nil {
+		// The move queues its writes on the ledger and appends its event to it, as every document
+		// operation does, so the ledger's Commit is what sends them and publishes the event; the
+		// row it wrote is read back from the table below.
+		if err := ledger.Commit(ctx); err != nil {
 			t.Fatalf("commit: %v", err)
 		}
-		if len(moved) != 1 || !moved[0].Actor.SameAs(docs.SettlementActor) {
-			t.Fatalf("moved events = %#v, want one ask.edited by %#v", moved, docs.SettlementActor)
+		if appended := askEventCount(t, doc.database, doc.askID, "ask.edited") - edits; appended != 1 {
+			t.Fatalf("the move appended %d ask.edited events, want one", appended)
+		}
+		if actor := latestAskEventActor(t, doc.database, doc.askID, "ask.edited"); !actor.SameAs(docs.SettlementActor) {
+			t.Fatalf("the moved ask.edited actor = %#v, want %#v", actor, docs.SettlementActor)
 		}
 		ask := decodeBody[askRead](t, dispatchRequest(t, doc.handler, http.MethodGet, "/api/v1/asks/"+doc.askID, nil, "alice")).Ask
 		if ask.State != "open" || ask.Approval.Version != 2 || ask.Approval.RequestedVersion != 1 {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -72,7 +73,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logs := captureLogs(t)
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			listener, err := testport.ListenLoopback()
 			if err != nil {
 				t.Fatalf("listen: %v", err)
 			}
@@ -163,7 +164,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 // the peer's close, the peer's reset and a read past its deadline. An error the handshake builds
 // itself, as a credentials callback's, is none of them.
 func TestAHandshakeReadFailsTheWaysARealReadFails(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

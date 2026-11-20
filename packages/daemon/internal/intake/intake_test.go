@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -103,6 +105,30 @@ func TestAppliedNamesOnlyTheFactsApplyFactAppliedFromTheSource(t *testing.T) {
 	}
 	if none, err := Applied(ctx, pool, "supervise", nil); err != nil || len(none) != 0 {
 		t.Fatalf("Applied of no ids = %v, %v; want none and no error", none, err)
+	}
+}
+
+// An event id is built of what the fact's source sent — the API's from a reported commit, the
+// daemon's reads from what GitHub answered — so it can hold a NUL, and the store records the id
+// as storetext.Text makes it. Applied answers each id under the id its caller gave, so a caller
+// that looks its own id up finds the fact applied: a completion the workflow already took reads
+// as taken, not as new.
+func TestAppliedAnswersAnIDHoldingNULThatApplyFactRecordedAsApplied(t *testing.T) {
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	const id = "handoff:LEGION-208:1:1:1:implementer:implementing:1:commit\x00sha:"
+	if _, err := ApplyFact(ctx, pool, "api", id, DispatchIssue{Key: "LEGION-208"}); err != nil {
+		t.Fatalf("apply %q: %v", id, err)
+	}
+	applied, err := Applied(ctx, pool, "api", []string{id, "never\x00applied", "never-applied"})
+	if err != nil {
+		t.Fatalf("Applied: %v", err)
+	}
+	if want := map[string]bool{id: true}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("Applied = %#v, want %#v", applied, want)
+	}
+	if result, err := ApplyFact(ctx, pool, "api", id, DispatchIssue{Key: "LEGION-208"}); err != nil || !result.Duplicate {
+		t.Fatalf("ApplyFact of %q again = %+v, %v; want the duplicate it is", id, result, err)
 	}
 }
 
@@ -249,19 +275,19 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch issue created",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.created",
 			file:    "dispatch/issue-created.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU"},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}},
 		},
 		{
 			name:    "Dispatch issue updated",
 			subject: "notifications.dispatch.issue.CAPTURE-3.issue.updated",
 			file:    "dispatch/issue-updated.json",
-			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion"},
+			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
 		},
 		{
 			name:    "Dispatch issue closed",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.closed",
 			file:    "dispatch/issue-closed.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion"},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
 		},
 		{
 			name:    "Dispatch artifact version",
@@ -589,8 +615,9 @@ func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 }
 
 // An issue event's labels say whether it is handed to Legion; decodeDispatchFact resolves that
-// once, into HandedOver, matching the label in any case among any others, never carrying the raw
-// list itself.
+// once, into HandedOver, matching the label in any case among any others, and every decision reads
+// that bool. The raw list rides on the fact too (Labels), for the copy of Dispatch's issues, which
+// is its one reader.
 func TestADispatchIssueEventResolvesHandedOverFromItsLabels(t *testing.T) {
 	data := strings.Replace(string(capturedIssueUpdatedEnvelope(t)), `\"labels\":[]`, `\"labels\":[\"frontend\",\"Legion\"]`, 1)
 	got, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, []byte(data))
@@ -618,7 +645,7 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 	if err != nil {
 		t.Fatalf("decode of an event without resolved_repo = %v, want it decoded", err)
 	}
-	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true}
+	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("fact = %#v, want %#v", decoded.Fact, want)
 	}
@@ -914,6 +941,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
+			case "sub_issue":
+				if decoded.Fact != nil {
+					t.Fatalf("%s's sub-issue event decoded %#v, want no fact: the workflow reads no sub-issue", repository, decoded.Fact)
+				}
 			}
 			if (kind == "pr" || kind == "review" || kind == "push") && decoded.Fact == nil {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
@@ -1132,6 +1163,35 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 		t.Fatalf("poison logs after ack wait = %d, want 2", got)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+}
+
+// A GitHub envelope with no payload, as an Envoy listener published every commit status on its
+// repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
+// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
+// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
+// acknowledgement.
+func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	stop := startConsume(t, js, spec, pool, writeHandler("push", nil))
+	defer stop()
+
+	poison := publish(t, js, "notifications.github.sjawhar.legion.comment", capturedGitHubEnvelope(t, "status-no-payload.json"))
+	last := publish(t, js, "notifications.github.sjawhar.legion.push.branch.main", capturedGitHubEnvelope(t, "push-base.json"))
+	assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), last)
+	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
+		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
+	}
+	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
+	time.Sleep(3 * spec.AckWait)
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
+		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	}
+	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
 
 // One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own

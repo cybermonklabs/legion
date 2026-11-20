@@ -163,27 +163,35 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	}
 }
 
-// drainingStopKV is heldWatchKV whose watcher's Stop answers as nats.go's Unsubscribe does once its
-// connection's drain has begun (nats.go v1.50.0, nats.go:5069-5070): "connection draining". It
-// stops the real watcher first, so the test leaves no consumer behind.
-type drainingStopKV struct{ *heldWatchKV }
+// failingStopKV is heldWatchKV whose watcher's Stop stops the real watcher, so the test leaves no
+// consumer behind, and then answers stopErr: nats.go's ErrConnectionDraining, as its Unsubscribe
+// answers once the connection's drain has begun (nats.go v1.55.0, nats.go:5492-5494), or its
+// ErrDisconnected, as a consumer delete answers when a token renewal's ForceReconnect cuts the
+// request (nats.go v1.55.0, nats.go:2667, context.go:68-74).
+type failingStopKV struct {
+	*heldWatchKV
+	stopErr error
+}
 
-func (k drainingStopKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+func (k failingStopKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	watcher, err := k.heldWatchKV.Watch(ctx, keys, opts...)
 	if err != nil {
 		return watcher, err
 	}
-	return drainingStop{watcher}, nil
+	return failingStop{KeyWatcher: watcher, err: k.stopErr}, nil
 }
 
 // handle is k as the bus.KeyValue a watcher takes.
-func (k drainingStopKV) handle() bus.KeyValue { return bus.NewKeyValue(k.legacy, k, k.streams) }
+func (k failingStopKV) handle() bus.KeyValue { return bus.NewKeyValue(k.legacy, k, k.streams) }
 
-type drainingStop struct{ jetstream.KeyWatcher }
+type failingStop struct {
+	jetstream.KeyWatcher
+	err error
+}
 
-func (w drainingStop) Stop() error {
+func (w failingStop) Stop() error {
 	_ = w.KeyWatcher.Stop()
-	return natsgo.ErrConnectionDraining
+	return w.err
 }
 
 // A watch still starting when End gives up on it because the connection was lost arms its watcher
@@ -193,7 +201,7 @@ func (w drainingStop) Stop() error {
 func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	held := drainingStopKV{holdWatch(kv)}
+	held := failingStopKV{heldWatchKV: holdWatch(kv), stopErr: natsgo.ErrConnectionDraining}
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
@@ -213,6 +221,36 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 		bus.ErrConnectionLost.Error() + ": " + natsgo.ErrConnectionDraining.Error()
 	if got, want := strings.Join(warnings(records()), ", "), lost+", "+late; got != want {
 		t.Fatalf("End and the late watch logged %q, want %q", got, want)
+	}
+}
+
+// A DeleteConsumer answered ErrDisconnected during a drain (a token renewal's ForceReconnect cut
+// the request) is a lost connection, logged at WARN: the server deletes a consumer whose interest
+// is gone on its own. Without ErrDisconnected in lostConnection, it falls to ERROR.
+func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T) {
+	uri := testnats.URL(t)
+	_, kv := bucket(t, uri)
+	held := failingStopKV{heldWatchKV: holdWatch(kv), stopErr: natsgo.ErrDisconnected}
+	logger, records := jsonLogger(t)
+	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
+	w.Start()
+	select {
+	case <-held.watched:
+	case <-time.After(5 * time.Second):
+		close(held.release)
+		t.Fatal("the watch never armed its watcher")
+	}
+	close(held.release)
+	eventually(t, "the first read to follow", w.Following)
+	w.End(context.Background())
+	got := warnings(records())
+	for _, line := range got {
+		if strings.HasPrefix(line, "ERROR") {
+			t.Fatalf("End logged an error for a disconnected delete: %s", line)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "WARN") || !strings.Contains(got[0], natsgo.ErrDisconnected.Error()) {
+		t.Fatalf("End logged %v, want one WARN naming ErrDisconnected", got)
 	}
 }
 

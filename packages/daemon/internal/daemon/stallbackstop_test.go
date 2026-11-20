@@ -74,15 +74,15 @@ func newBackstopRig(t *testing.T) *backstopRig {
 	rig.s = &supervision{
 		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}},
 		refreshGate: supervise.NewRefreshGate(0),
-		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) error {
+		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 			rig.mu.Lock()
 			defer rig.mu.Unlock()
 			rig.attempts++
 			if rig.refuse != nil {
-				return rig.refuse
+				return false, rig.refuse
 			}
 			rig.rows[issue] = append(rig.rows[issue], payloads...)
-			return nil
+			return true, nil
 		},
 	}
 	// The machines tell supervision what each stall backstop ended, as the daemon's own boot
@@ -514,7 +514,7 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 				notices []record.Notice
 			)
 			s := &supervision{log: quietLogger(), plan: plan{clock: stillClock{}}}
-			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) error {
+			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) (bool, error) {
 				mu.Lock()
 				refusing, inside := refused, during
 				during = nil
@@ -527,12 +527,12 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 				}
 				mu.Unlock()
 				if !refusing {
-					return nil
+					return true, nil
 				}
 				if inside != nil {
 					inside()
 				}
-				return errors.New("the store is down")
+				return false, errors.New("the store is down")
 			}
 			s.oweStallNotice(c, older)
 			if tc.newerOwed == "during" {
@@ -561,8 +561,8 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 }
 
 // A tree architect's own stall is told to the controller as well, in a row of its own: every
-// other notice of the tree reaches that architect, so nobody outside it would hear of the turn
-// the daemon ended. A worker's stall is its architect's alone.
+// notice of the tree that no child's own architect takes reaches that architect, so nobody outside
+// it would hear of the turn the daemon ended. A worker's stall is its architect's alone.
 func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) {
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)
@@ -629,7 +629,7 @@ func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
 // A turn a held suspension ended is told as that. The machine ends such a turn in a suspension
 // rather than a relaunch (replaceProcess, endHeld), so the notice names the suspension, says
 // the claim is suspended with nothing queued for it, and names what it waits on — a resume, or
-// the close of its tree — rather than promising a resume nobody has asked for.
+// a close that retires it — rather than promising a resume nobody has asked for.
 func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-222", backstopBound+time.Hour, true)
@@ -653,7 +653,7 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 		t.Fatalf("resumes = %d, want none: the held suspension ended the process rather than replacing it", len(resumes))
 	}
 	for _, want := range []string{"still owed", "a suspension that was already waiting for this claim ran instead of a replacement",
-		"the claim is suspended with nothing queued for it", "what it waits on is a resume, or the close of its tree, which retires it",
+		"the claim is suspended with nothing queued for it", "what it waits on is a resume, or a close that retires it (its tree's, or, for a claim of a child, that child's close as done)",
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
@@ -745,12 +745,12 @@ func TestTheStallBackstopTellsAStopTheRuntimeWouldNotMake(t *testing.T) {
 }
 
 // And a turn whose replacement the runtime refused until the claim's launch budget was gone:
-// the claim has failed, nothing relaunches it, and the notice says so rather than leaving its
-// owner waiting for a session that is never coming back. The launch failures that end is made
-// of are the one thing a stall does charge, and the notice counts them: the clause is the same
-// derived one every end carries, read from what the machine says this replacement charged
-// (stallChargeClause), so the end that failed the claim says how many rather than keeping a
-// sentence of its own.
+// the claim has failed, nothing is queued to relaunch it, and the notice says so and names what
+// can, rather than leaving its owner waiting for a relaunch that nothing has queued. The launch
+// failures that end is made of are the one thing a stall does charge, and the notice counts them:
+// the clause is the same derived one every end carries, read from what the machine says this
+// replacement charged (stallChargeClause), so the end that failed the claim says how many rather
+// than keeping a sentence of its own.
 func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleTester, "LEGION-224", backstopBound+time.Hour, true)
@@ -774,8 +774,9 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 		t.Fatalf("the claim is %s, want it failed: every try at the replacement was refused", c.State)
 	}
 	for _, want := range []string{"still owed", "every try at the replacement was refused",
-		"the claim is failed and the daemon starts nothing for it",
-		"what it waits on is a retry, or the close of its tree, which retires it",
+		"the claim is failed and nothing is queued for it",
+		"what it waits on is a retry, a later start of its role (a child's next phase start starts that child's failed architect again), " +
+			"or a close that retires it (its tree's, or, for a claim of a child, that child's close as done)",
 		fmt.Sprintf("the %d launch failures the replacement charged are what it was charged", rig.sup.deps.Limits.LaunchFailures),
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {

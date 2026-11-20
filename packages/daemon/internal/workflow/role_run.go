@@ -103,7 +103,8 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 
 // queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor,
 // unpromptedPhaseWorker and catch_up.go's queuedRowCovers all read it, so they answer that term
-// alike.
+// alike, and effects.go's architectStartQueued reads it with a stop of 0, which every row's id is
+// above (the outbox's ids start at one), so any queued start for current counts.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if startActs(queued, stop, current) {

@@ -11,6 +11,7 @@ import {
   isDeliveryNotConfigured,
   isDocumentNewerContent,
   isDocumentSchemaError,
+  isReferencesTimeout,
   isRetryableQueryError,
   isUnauthorized,
   NetworkError,
@@ -811,12 +812,12 @@ test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/sea
 
   await api.search("astrolabe", { status: "in_progress" });
   await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
-  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+  await api.search("astrolabe", { author: "sami@example.com", updated_since: "2026-11-01" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v1/search/results?q=astrolabe&status=in_progress",
     "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
-    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
+    "/api/v1/search/results?q=astrolabe&author=sami%40example.com&updated_since=2026-11-01",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {
@@ -971,6 +972,17 @@ test(
         )
       ).fetch
     );
+    const referencesTimeout = createApiClient(
+      stubFetch(() =>
+        Response.json(
+          {
+            error: "the issue's reference closure ran past its 2s bound",
+            code: "REFERENCES_TIMEOUT",
+          },
+          { status: 503 }
+        )
+      ).fetch
+    );
 
     const [
       unauthorizedError,
@@ -978,6 +990,7 @@ test(
       documentSchemaError,
       serverErrorResult,
       deliveryUnsetError,
+      referencesTimeoutError,
     ] = await Promise.all([
       unauthorized.whoAmI().catch((error: unknown) => error),
       featureOff.getCredentialGrants().catch((error: unknown) => error),
@@ -985,6 +998,7 @@ test(
       serverError.whoAmI().catch((error: unknown) => error),
       // The run route answers 404 DELIVERY_NOT_CONFIGURED while no settings row exists.
       deliveryUnset.getDeliveryRun(7).catch((error: unknown) => error),
+      referencesTimeout.getIssueReferences("CORE-1").catch((error: unknown) => error),
     ]);
 
     expect(isRetryableQueryError(unauthorizedError)).toBe(false);
@@ -994,6 +1008,9 @@ test(
     expect(isRetryableQueryError(serverErrorResult)).toBe(true);
     expect(isDeliveryNotConfigured(deliveryUnsetError)).toBe(true);
     expect(isRetryableQueryError(deliveryUnsetError)).toBe(false);
+    // A references walk cut at its bound costs the database the bound again on each retry.
+    expect(isReferencesTimeout(referencesTimeoutError)).toBe(true);
+    expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
   }
 );
 

@@ -26,12 +26,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A child Dispatch already shows todo when its architect releases it — set todo before its tree was
-// live, by a person or another session, so no todo event of it ever reached the live tree — is
-// recorded under the tree and started by the release, as a child the release moves into todo is by
-// that move's event. Dispatch makes no event for a status an issue already has, so before, the
-// release answered the child released and nothing recorded or started it: read_record found no
-// record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
+// A child Dispatch already shows todo when an architect above it releases it — set todo before its
+// tree was live, by a person or another session, so no todo event of it ever reached the live tree
+// — is recorded under the tree and started by the release, as a child the release moves into todo
+// is by that move's event. Dispatch makes no event for a status an issue already has, so before,
+// the release answered the child released and nothing recorded or started it: read_record found
+// no record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
 // retry of the same wave changes nothing more.
 func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T) {
 	h := newHarness(t)
@@ -133,13 +133,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 			}
 			architect := newLiveClaim(t, h, root, claim.RoleArchitect)
 			recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
-			var failure struct{ Code, Error string }
-			if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
-				t.Fatalf("wave release = %d %q, not a failure body: %v", recorder.Code, recorder.Body, err)
-			}
-			if recorder.Code != tc.status || failure.Code != tc.code || failure.Error != tc.want {
-				t.Fatalf("wave release = %d %s %q, want %d %s %q", recorder.Code, failure.Code, failure.Error, tc.status, tc.code, tc.want)
-			}
+			refusedSaying(t, recorder, tc.status, tc.code, tc.want)
 			if recorded := recordedChild(t, h, child); recorded != nil {
 				t.Fatalf("the child's record = %#v after a failed preparation, want none", recorded)
 			}
@@ -164,13 +158,16 @@ func (r unreadRepositories) ResolveRepository(resolved string) (workflow.Resolut
 
 // unreadRelease is a harness whose release_children runs over a live tree LEGION-208 on
 // acme/widgets, with zeta/tools left out while unread is set, and every child it leaves to a
-// recovery (Options.AwaitRecovery) in awaited.
+// recovery (Options.AwaitRecovery) in awaited. While refuse is set the recovery refuses every
+// wait, as the daemon does once its recovery has stopped holding the repository unread between
+// the route's read of RepositoryUnread and its call of AwaitRecovery.
 type unreadRelease struct {
 	h        *harness
 	records  record.Store
 	engine   *workflow.Engine
 	statuses *statusRecorder
 	unread   *atomic.Bool
+	refuse   atomic.Bool
 	awaited  []string
 	grant    func() string
 }
@@ -188,8 +185,12 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 		Controller: u.h.store, Grants: credential.New(nil), Pool: u.h.store.Pool(), Record: u.records,
 		Handlers: []intake.Handler{u.engine, admit.New(u.records, u.engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: u.statuses,
 		RepositoryUnread: func(resolved string) bool { return resolved == "zeta/tools" && u.unread.Load() },
-		AwaitRecovery: func(repo, tree, child, _ string) {
+		AwaitRecovery: func(repo, tree, child, _ string) bool {
+			if u.refuse.Load() {
+				return false
+			}
 			u.awaited = append(u.awaited, repo+" "+tree+" "+child)
+			return true
 		},
 	}).Handler
 	u.h.recordIssue(record.Issue{Key: unreadRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: unreadRoot, Project: testProject, Title: unreadRoot, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
@@ -344,6 +345,62 @@ func TestWaveReleaseSendsNoNoticeForAChildUnderATodoParentNotRecordedYet(t *test
 	}
 }
 
+// A todo child left for a repository the daemon stops holding unread between this route's read of
+// it and the wait is not answered released: the daemon refuses the wait (Options.AwaitRecovery
+// answers false), so no recovery would ever read the child or tell its architect, and the route
+// schedules the child-release retry instead, as for a child on no unread repository. The retry is
+// what picks the child up: its release-retry record stands, the answer tells the architect to
+// retry, and the retry records the child once its parent is. No child-release-stalled notice is
+// written, since its reason would say the repository is left out. Before, the child was answered
+// released on the strength of a wait the daemon no longer read, and nothing ever came back for it.
+func TestWaveReleaseRetriesAChildWhoseRepositoryTheDaemonStoppedHoldingUnread(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// issues is what Dispatch shows: the child, and its parent where that is not the
+		// recorded root; recorded is whether the retry records the child once the daemon reads
+		// zeta/tools, which it does only under a recorded parent.
+		issues   []dispatch.Issue
+		recorded bool
+	}{
+		{name: "a child under the recorded root", recorded: true,
+			issues: []dispatch.Issue{on("LEGION-240", "zeta/tools", "todo", unreadRoot, 2)}},
+		{name: "a child under a backlog parent the recovery would not record it under",
+			issues: []dispatch.Issue{on("LEGION-241", "zeta/tools", "backlog", unreadRoot, 2), on("LEGION-240", "zeta/tools", "todo", "LEGION-241", 3)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const child = "LEGION-240"
+			u := newUnreadRelease(t, tc.issues...)
+			u.refuse.Store(true)
+			recorder := u.h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": u.grant(), "issues": []string{child}}, nil)
+			if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "CHILD_NOT_RECORDED") {
+				t.Fatalf("wave release of %s = %d: %s, want the child-release retry's CHILD_NOT_RECORDED", child, recorder.Code, recorder.Body)
+			}
+			if !u.retryRow(t, child) {
+				t.Fatalf("%s has no release-retry record, want the retry scheduled: nothing else picks it up", child)
+			}
+			if len(u.awaited) != 0 {
+				t.Fatalf("children left to the recovery = %q, want none: the daemon refused the wait", u.awaited)
+			}
+			if notices := u.notices(t); len(notices) != 0 {
+				t.Fatalf("notices = %q, want none: the daemon no longer holds zeta/tools unread", notices)
+			}
+			if recordedChild(t, u.h, child) != nil {
+				t.Fatalf("%s recorded before its retry", child)
+			}
+			if !tc.recorded {
+				return
+			}
+			// The daemon reads zeta/tools now, and the architect's retry records the child.
+			u.unread.Store(false)
+			u.refuse.Store(false)
+			u.release(t, child)
+			if got := recordedChild(t, u.h, child); got == nil || got.Tree != unreadRoot {
+				t.Fatalf("%s = %+v after its retry, want it recorded in %s's tree", child, got, unreadRoot)
+			}
+		})
+	}
+}
+
 // A todo child left for an unread repository is answered released, with no notice, when the
 // recovery will record it: under the recorded root, or under a chain of todo issues up to it.
 // Under a parent the recovery will not record (one in
@@ -454,7 +511,7 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 
 // A child whose parent still has not reached the daemon does not make an architect retry forever.
 // After the bounded backoff attempts, release_children answers CHILD_RELEASE_STALLED and queues one
-// notice to the tree architect.
+// notice to the architect that released it.
 func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()
@@ -487,7 +544,7 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 		child:  {Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "todo", Parent: &parent, LastSeq: 5},
 	}
 	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil), http.StatusConflict, "CHILD_RELEASE_STALLED")
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil), http.StatusConflict, "CHILD_RELEASE_STALLED")
 	var notices int
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'notice' and payload->>'kind' = 'child-release-stalled'`, root).Scan(&notices)

@@ -31,10 +31,11 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process with its pod once every worker of the pod has answered and no turn runs, or at
-// the round's bound whatever the workers answered, and tells the controller when something holds
-// it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it
-// would replace a process the round is about to replace and start its clock again.
+// that process with its pod once every worker of the pod has answered, no turn runs and no
+// claim's activity report holds it (roundEnd.holding), or at the round's bound whatever the
+// workers answered and whatever runs, and tells the controller when something holds it past that
+// bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would replace a
+// process the round is about to replace and start its clock again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
@@ -150,12 +151,13 @@ type stallNoticeOwed struct {
 	stop  supervise.StallBackstopStop
 }
 
-// tellStallBackstopped tells the owner of the stalled worker's issue — the architect the issue's
-// notices reach — what the daemon's stall backstop did to this turn, with the record the machine
-// acted on in the notice: how long the agent was silent, the bound it passed, when the turn
-// began and the call the record names, if any. The call's arguments are in no part of it: their
-// text is in no column either, a shell command routinely holding a credential
-// (supervise.StepRecord).
+// tellStallBackstopped tells the architect that owns the stall's notice — for a phase worker the
+// architect its issue's notices reach, for a child's own architect the architect above that child,
+// and for a tree's architect that architect itself, with the controller — what the daemon's stall
+// backstop did to this turn, with the record the machine acted on in the notice: how long the
+// agent was silent, the bound it passed, when the turn began and the call the record names, if
+// any. The call's arguments are in no part of it: their text is in no column either, a shell
+// command routinely holding a credential (supervise.StepRecord).
 //
 // What the lines below say of the end is the record itself, which carries it: the end says what
 // became of the claim's process, the machine's own record of the stop says whether the runtime
@@ -167,7 +169,9 @@ type stallNoticeOwed struct {
 // It reports whether the owner was told: a row the store refuses is owed and told again at the
 // next sweep, as a stalled update round's is (tellUpdateStalled). The project controller's own
 // claim has no issue and so no owner to tell; the line it logs is the whole of its telling, and
-// the record is in it.
+// the record is in it. So is the line of a claim of another project's issue, which the operator's
+// spawn makes: its owner's notice would be a row keyed by that issue, which only that project's
+// daemon runs, so none is written (supervision.enqueue), and the line says so.
 func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop) bool {
 	found := stallBackstopRecord(c, stop, s.plan.clock.Now().Sub(stop.LastStep))
 	if c.Issue == "" {
@@ -180,12 +184,18 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
 	}
-	if err := s.enqueueStallNotice(ctx, c, found); err != nil {
+	written, err := s.enqueueStallNotice(ctx, c, found)
+	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the owner what the daemon's stall backstop did to a stalled turn; telling again at the next sweep",
 				"claim", c.Token, "issue", c.Issue, "error", err)
 		}
 		return false
+	}
+	if !written {
+		s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn of a claim of another project's issue, whose rows this daemon writes none of; no owner is told",
+			"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
+		return true
 	}
 	s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn; the owner is told",
 		"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
@@ -194,11 +204,13 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 
 // enqueueStallNotice writes the owner's notice rows, both in one call so a stall told to one
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
-// for one call). A worker's stall is its issue's architect's to read, as its death is. A tree
-// architect's own stall is told to the controller as well, in a row of its own: every other
-// notice of the tree reaches that architect, and nobody inside the tree is left to act on it
-// (workflow's claimFailed, which tells a failed tree architect's death the same way).
-func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) error {
+// for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
+// is read by the architect that owns its issue, and a child's own architect's stall by the
+// architect above that child, as each one's death is. A tree architect's own stall is told to the
+// controller as well, in a row of its own: every notice of the tree that no child's own architect
+// takes reaches that architect, and nobody inside the tree is left to act on it (workflow's
+// claimFailed, which tells a failed tree architect's death the same way).
+func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
@@ -459,8 +471,8 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 // refuses the launch and leaves the process as it stands (runWake, relaunchRefused), a tree's
 // close drops the queued launch with the process (letGo), and a retry of a launch can run the
 // claim's budget out and fail it (launchNow, fail). Where nothing is queued — suspended, failed
-// — the row says so and names what a person has to do, rather than promising a resume or a
-// retry that may never come.
+// — the row says so and names what can bring the claim back or end it, rather than promising a
+// resume or a retry that may never come.
 //
 // No row names the stalled process or the stalled turn — not to say the
 // process was stopped, however plainly its end let that process go, and not that the turn was
@@ -501,12 +513,13 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 	supervise.EndSuspended: {
 		did: "in the suspension that was already waiting for it",
 		end: "a suspension that was already waiting for this claim ran instead of a replacement, and the claim is suspended with nothing queued for it: " +
-			"what it waits on is a resume, or the close of its tree, which retires it",
+			"what it waits on is a resume, or a close that retires it (its tree's, or, for a claim of a child, that child's close as done)",
 		process: stallProcessLetGo},
 	supervise.EndFailed: {
 		did: "and could not make the replacement, which failed the claim",
-		end: "every try at the replacement was refused, which ran the claim's launch budget out, so the claim is failed and the daemon starts nothing for it: " +
-			"what it waits on is a retry, or the close of its tree, which retires it",
+		end: "every try at the replacement was refused, which ran the claim's launch budget out, so the claim is failed and nothing is queued for it: " +
+			"what it waits on is a retry, a later start of its role (a child's next phase start starts that child's failed architect again), " +
+			"or a close that retires it (its tree's, or, for a claim of a child, that child's close as done)",
 		process: stallProcessLetGo},
 }
 

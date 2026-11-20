@@ -39,8 +39,8 @@ import (
 // second preparation did. Neither of them fails reliably when the keeper is gone, and the reason
 // is the daemon's own client. It asks for one message at a time (jetstream.PullMaxMessages with
 // consumerFetchBatch in consumeConsumer) and nats.go calls the handler inline, sending the next
-// pull request only after the handler returns (nats.go v1.53.1's (*pullConsumer).Consume, whose
-// internal handler calls the handler and only then checkPending, which sends the next pull
+// pull request only after the handler returns (nats.go v1.55.0's (*pullConsumer).Consume,
+// jetstream/pull.go:291-295, whose internal handler calls the handler and only then checkPending, which sends the next
 // request), so no request of the daemon's is open while the fact is held. A redelivery can only
 // reach the daemon through the request that follows the handler, and that request races the
 // acknowledgement the handler's end sent — the server works the two on separate queues,
@@ -217,8 +217,8 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// callback consumeConsumer passes to Consume: from that entry to the keeper's start —
 	// lagWatch.observe and decodeMessage — was at most 1.544 ms, measured in this pod under 16
 	// busy loops on 2 CPUs over 3 runs of 200 deliveries, whose worst values were 372 µs,
-	// 1.544 ms and 264 µs. The library's own dispatch into that callback (nats.go v1.53.1 calls
-	// it at jetstream/pull.go:287) and the server-to-client hop before it are outside that figure
+	// 1.544 ms and 264 µs. The library's own dispatch into that callback (nats.go v1.55.0 calls
+	// it from jetstream/pull.go's Consume handler) and the server-to-client hop before it are outside that figure
 	// and are unmeasured. At consumerSpec's 200 ms this row is not sound: measured in this pod at
 	// the base commit, under 16 busy loops on 2 CPUs, it failed 11 of 300 runs, each failure a
 	// delivery too many with one event prepared twice, while the control below passed 300 of 300.
@@ -480,7 +480,7 @@ func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
 }
 
 // progressSignal is the acknowledgement-protocol payload a progress signal carries, the
-// ackProgress of nats.go v1.53.1.
+// ackProgress of nats.go v1.55.0.
 const progressSignal = "+WPI"
 
 // watchProgressSignals answers how many messages the daemon's client reported in progress within a
@@ -583,7 +583,7 @@ func (h *heldNak) window() (time.Time, time.Time) {
 // So the row measures that retry. It also watches the signals themselves, because the retry alone
 // would not catch the fault this row is here for: a stop() left to a defer after the terminal
 // call. nats.go marks a message acknowledged for a nak and refuses every later signal for it
-// (ErrMsgAlreadyAckd, nats.go v1.53.1's (*jetStreamMsg).ackReply), so a keeper that outlives the
+// (ErrMsgAlreadyAckd, nats.go v1.55.0's `(*jetStreamMsg).ackReply`), so a keeper that outlives the
 // nak publishes nothing and the retry stands anyway — on that client. What such a keeper does do
 // is report the message in progress between its handler's end and the nak, which is where the row
 // looks, and the one thing between the two the row can hold is the line nakResolve writes there

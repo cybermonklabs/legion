@@ -53,15 +53,17 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 //     replacements before the SIGTERM, so End meets them and warns of nothing. It deletes each, or,
 //     if a replacement's create is still in flight in the listener (the server has made it, the
 //     listener has not yet read the answer), deletes nothing, since nats.go has not yet named it to
-//     the subscription, and the server removes it once its interest is gone. So that row requires
-//     no empty bucket, only that End met no consumer gone.
+//     the subscription. nats.go deletes that one once the answer comes and it finds the
+//     subscription closed (nats.go v1.55.0 js.go, resetOrderedConsumer), but in a goroutine nothing
+//     waits for, so a connection closed first leaves it for the server to remove once its interest
+//     is gone. So that row requires no empty bucket, only that End met no consumer gone.
 //   - Connection reconnecting at the drain: the server stops answering until the listener's
 //     connection reads as lost, so the drain runs its hooks on a context already ended, and each
 //     end says its consumer was left to the server.
 //
 // A bucket "carries none" counts only consumers nats.go did not make itself in a lost one's place
-// (consumersLeft): such a replacement, in flight when its watcher's end ran, is the server's to
-// remove.
+// (consumersLeft): such a replacement, in flight when its watcher's end ran, may be left to the
+// server to remove.
 func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	for _, test := range []struct {
@@ -257,7 +259,7 @@ func busRecords(output string, msgs ...string) []map[string]string {
 // carrying the error that ended the connection came after its last reconnect, so the connection was
 // still lost when the shutdown drained it. A disconnect with no error is a close, which leaves a
 // lost connection lost: nats.go's close reports one whenever the connection has a socket (nats.go
-// v1.53.1 nats.go, close), and a reconnect to a frozen server has one, since the kernel still
+// v1.55.0 nats.go, close), and a reconnect to a frozen server has one, since the kernel still
 // accepts the dial, so the drain's close of a connection still reconnecting can log one after the
 // loss. remade: it reconnected at least once, which makes every KV watcher again (the reconnect
 // hook's rewatch).
@@ -370,8 +372,9 @@ func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, stream string) 
 
 // consumersLeft names the consumers stream carries other than those nats.go made itself in the
 // place of a lost one (replacedByNATS). Such a replacement can be in flight when the shutdown
-// ends its watcher, which then deletes nothing, and the server removes it once its interest is
-// gone; any other consumer left is one the shutdown did not end.
+// ends its watcher, which then deletes nothing, and nats.go's own delete of it once the create
+// answers can come after the connection's close, which leaves it to the server; any other consumer
+// left is one the shutdown did not end.
 func consumersLeft(t *testing.T, js jetstream.JetStream, stream string) []string {
 	t.Helper()
 	var left []string

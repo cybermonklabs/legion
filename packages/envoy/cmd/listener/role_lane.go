@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/roles"
 )
 
 // roleForwardWaitLimit bounds the role forwards the role lane holds at once, queued behind their
@@ -22,10 +23,14 @@ const roleForwardWaitLimit = 4096
 const roleLaneSlowConsumerInterval = 5 * time.Second
 
 // roleForward is one role message the role lane resolved to its holder, every guard passed: item is
-// the message as it arrived and sessionID its holder.
+// the message as it arrived and sessionID its holder. resolvedAt is when the resolution that chose
+// that holder started, on the listener's clock, which the forward is judged by when its publish
+// starts (roleForwarder.publish, roles.ForwardFenceAge); the kept lane's walk, which reads the
+// role's claim before each copy, leaves it zero.
 type roleForward struct {
-	item      contracts.Envelope
-	sessionID string
+	item       contracts.Envelope
+	sessionID  string
+	resolvedAt time.Time
 }
 
 // roleForwarder runs the role lane's forwards off its NATS handler, so a forward the stream is slow
@@ -79,10 +84,11 @@ func (f roleForward) forwarded() contracts.Envelope {
 // message. A forward whose envelope's own key names its event
 // (contracts.DedupeKeyNamesTheUpstreamEvent, asked of the message as it arrived: the forward's
 // prefix hides a webhook key's shape) is named by the forward's dedupe key and the subject, as
-// the publish route's forwards are (bus.ForwardMsgID). Any other key is its sender's choice and
-// two distinct envelopes can share one, so such a forward is named by its event id and the
-// subject instead: a repeat of one message is still stored once, and two messages under one key
-// are two messages, which the stream stores both of.
+// the publish route's forwards are (bus.ForwardMsgID); a takeover's copy carries such a key
+// (takenFrameDedupeKey). Any other key is its sender's choice and two distinct envelopes can share
+// one, so such a forward is named by its event id and the subject instead: a repeat of one message
+// is still stored once, and two messages under one key are two messages, which the stream stores
+// both of.
 func (f roleForward) msgID(subject string) string {
 	if contracts.DedupeKeyNamesTheUpstreamEvent(f.item) {
 		return bus.ForwardMsgID(f.forwarded().DedupeKey, subject)
@@ -105,9 +111,14 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 }
 
 // publish is sessionID's worker: it publishes the holder's queued forwards in order, hands each
-// one's wait to a goroutine of its own, and ends once the queue is empty.
+// one's wait to a goroutine of its own, and ends once the queue is empty. A forward whose
+// resolution is roles.ForwardFenceAge old or older when its publish starts - one that waited that
+// long behind its holder's earlier forwards - resolves the role's holder again first
+// (refreshStaleRoleForward) and goes to the holder that resolution finds, or is kept or refused as
+// the lane keeps or refuses a message on that resolution: a takeover's copy reads the previous
+// holder's subject for its record's life, and a forward started on a fresher resolution is stored
+// where that copy reads it.
 func (f *roleForwarder) publish(sessionID string) {
-	subject := contracts.LegacyAgentSubject(sessionID)
 	for {
 		f.mu.Lock()
 		queue := f.queues[sessionID]
@@ -121,6 +132,15 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
+		if roles.ResolutionTooOld(forward.resolvedAt, f.cfg.now()) {
+			refreshed, ok := refreshStaleRoleForward(f.cfg, forward)
+			if !ok {
+				f.release()
+				continue
+			}
+			forward = refreshed
+		}
+		subject := contracts.LegacyAgentSubject(forward.sessionID)
 		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
 			f.finish(forward, err)
@@ -130,11 +150,35 @@ func (f *roleForwarder) publish(sessionID string) {
 	}
 }
 
+// refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
+// resolution was roles.ForwardFenceAge old when its publish started, by the rules the lane's own
+// delivery resolves and judges by (resolveRoleForward), and reports the forward to make and
+// whether to make one. A role with no live holder now has the message kept as the lane keeps it,
+// and a holder beforeForward refuses has it refused as the lane refuses it, each with the lane's
+// own outcome, and no forward is made.
+func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward) (roleForward, bool) {
+	item := forward.item
+	cfg.attemptCache.Clear(item.DedupeKey, forward.sessionID)
+	cfg.logger.LogEvent(slog.LevelInfo, "listener role forward resolves its role's holder again: its resolution is too old to forward on",
+		slog.String("event_id", item.EventID),
+		slog.String("session_id", forward.sessionID),
+		slog.String("topic", item.Topic),
+		slog.Duration("age", cfg.now().Sub(forward.resolvedAt)))
+	return resolveRoleForward(cfg, item)
+}
+
+// release frees the slot of a forward that ends with no publish and no outcome of its own to
+// report: one whose fresh resolution kept or refused the message and reported that
+// (refreshStaleRoleForward).
+func (f *roleForwarder) release() {
+	<-f.slots
+	f.pending.Done()
+}
+
 // finish reports forward's outcome and frees its slot.
 func (f *roleForwarder) finish(forward roleForward, err error) {
 	finishRoleForward(f.cfg, forward, err)
-	<-f.slots
-	f.pending.Done()
+	f.release()
 }
 
 // outstanding is how many forwards are queued or waiting for their outcome.

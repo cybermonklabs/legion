@@ -481,7 +481,7 @@ test("--write leaves the block after the one that closes a <pre> as it is: close
 });
 
 test("a <code> named inside a code span opens no element, so later blocks are still checked", async () => {
-  // docs/kubernetes.md and packages/pi-envoy/AGENTS.md name `(<code>)` in a code span.
+  // docs/kubernetes.md names `(<code>)` in a code span.
   const path = await markdownFile("Use `<code>` for code.\n\nLater one. Later two.\n");
   const { exitCode, stdout } = run([path]);
   expect(stdout).toContain(`${path}:3: R1:`);

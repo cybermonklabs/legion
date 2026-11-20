@@ -5,7 +5,7 @@
 #
 # Two jobs run it, and that is why it is one script: ci.yaml's lint job (its notices step), on
 # every pull request and merge group the go_notices filter selects, and
-# .github/workflows/ci-caches.yaml's daemon job, on a push to main, to fill the go-notices cache
+# .github/workflows/ci-caches.yaml's notices job, on a push to main, to fill the go-notices cache
 # entry lint restores. The fill must build exactly what lint builds, or the entry warms nothing
 # and lint rebuilds it cold on every run with nothing failing, which is what two copies of these
 # loops drift into the moment a target list or a command changes.
@@ -15,9 +15,12 @@
 # .github/go-release-targets.json; the agent-secrets client, over
 # .github/agent-secrets-client-targets.json; and every envoy-infra command
 # (release-envoy-infra.yaml), over .github/envoy-infra-targets.json. Each build uses that
-# release build's own GOOS, GOARCH and CGO_ENABLED, so the notices are the ones the release
-# ships, and a module whose license cannot be determined fails the pull request before a release
-# does. Writing notices loads packages without type-checking them, so the darwin agent-secrets
+# release build's own GOOS and GOARCH, and its CGO_ENABLED wherever the release sets one, so the
+# notices are the ones the release ships, and a module whose license cannot be determined fails
+# the pull request before a release does. The listener's release build sets none, so its notices
+# here are written with the default of the runner this script runs on, which on
+# ubuntu-24.04-arm is not the release's (the loop below says why that leaves them the same).
+# Writing notices loads packages without type-checking them, so the darwin agent-secrets
 # client and every envoy-infra command are compiled here as well, with their release builds'
 # CGO_ENABLED and -buildvcs: a compile error on one platform fails the pull request rather than
 # the release after the merge.
@@ -58,17 +61,24 @@ for arch in $(jq -r '.envoy[]' .github/go-release-targets.json); do
     cd packages/envoy
     # The listener's release build sets no CGO_ENABLED, so its notices are written with the
     # default; the agent-secrets pair's sets 0, which is exported after it rather than before.
+    # The default is the runner's: cgo on for the native architecture and off for the other one,
+    # so on ubuntu-24.04-arm it is the reverse of the release's on ubuntu-24.04. The notices do not
+    # change with it: the one package cgo adds is the standard library's runtime/cgo, and
+    # measured on 2026-11-17 at go1.27.3 the listener's notices are byte for byte the same with
+    # CGO_ENABLED 0 and 1 for each of amd64 and arm64, while amd64's and arm64's differ. The
+    # listener itself is compiled in the release's own mode by ci.yaml's envoy-go-checks, which
+    # runs on ubuntu-24.04 for that reason.
     ../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener
     export CGO_ENABLED=0
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/cipher ./cmd/cipher-helper
   )
 done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
-    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/agent-secrets
+    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/cipher
     cd packages/envoy
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/agent-secrets
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/cipher
   )
 done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do

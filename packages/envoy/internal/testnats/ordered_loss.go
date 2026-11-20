@@ -13,7 +13,7 @@ import (
 )
 
 // heartbeatEvery is how often HoldConsumerLost sends its idle heartbeat: well inside nats.go's
-// heartbeat check, two 5 s heartbeat intervals for an ordered consumer (nats.go v1.53.1 js.go,
+// heartbeat check, two 5 s heartbeat intervals for an ordered consumer (nats.go v1.55.0 js.go,
 // orderedHeartbeatsInterval and hbcThresh), so a check never finds a whole interval without one.
 const heartbeatEvery = 500 * time.Millisecond
 
@@ -42,18 +42,19 @@ type ConsumerHold struct {
 // later still on a loaded machine, rather than the loss it meant to test. HoldConsumerLost sends the
 // subscription, on the consumer's deliver subject, the idle heartbeat the server would, every
 // heartbeatEvery: the sequences it carries are the consumer's own as it last reported them, so
-// nats.go finds no gap, marks the subscription active and resets nothing. A stop of that
-// subscription then deletes the consumer it still names and finds it gone, however long the code
-// under test takes to get there.
+// nats.go finds no gap (js.go checkForSequenceMismatch reads one only where the heartbeat's last
+// consumer sequence is at or past the next the subscription expects), marks the subscription active
+// and resets nothing. A stop of that subscription then deletes the consumer it still names and
+// finds it gone, however long the code under test takes to get there.
 //
 // The heartbeats are timers of the test's process, so a stall of the test or of the client under
 // test past a whole heartbeat check still lets nats.go replace the consumer. Replaced says whether
 // it did, from the server's own record of the create, so a test reads the loss only where it held.
 //
-// The heartbeats are published through conn, a connection of the test's own. A consumer that
-// delivered a message after its info was read would carry a later sequence than the heartbeat, and
-// nats.go would then reset it, so the bucket must be idle: no write lands on it while the hold
-// runs.
+// The heartbeats are published through conn, a connection of the test's own. A subscription that
+// had not yet taken every message the consumer delivered before its info was read would read the
+// heartbeat's sequence as a gap, and nats.go would then reset it, so the client must have caught up
+// and the bucket must be idle: no write lands on it while the hold runs.
 func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) *ConsumerHold {
 	t.Helper()
 	js, err := conn.JetStream()

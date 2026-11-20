@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A Legion session whose role claim the Envoy listener answers `503` no longer stops. The listener
+    writes no claim when it answers `503` (every try met a conflict, or the takeover record a claim
+    writes first did not store), so the claim boot claims the role again after a wait that starts at
+    one second and doubles up to thirty, with one log line per wait naming the attempt and the
+    listener's answer, until the claim lands or is refused. Any other refusal still stops the
+    session so the daemon launches it again.
+time: 2026-11-19T16:31:04.000000000Z
+custom:
+    Issue: pr4387

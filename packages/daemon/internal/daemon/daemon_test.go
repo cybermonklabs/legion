@@ -14,7 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -39,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -298,7 +301,7 @@ type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
 	address    string
-	apps       appauth.Tokens
+	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
 	mapped     func() []ghrepo.Repository
@@ -308,7 +311,7 @@ type built struct {
 // real stream listener, store, and machines, with nothing launched for real.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
 			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
@@ -341,14 +344,15 @@ func boots(t *testing.T, cfg config.Config) (int, time.Time) {
 	return count, firstBootAt
 }
 
-// A daemon told to stop still owes its store a recorded, stamped boot: the restart count and the
-// first boot time are what `legion state` answers from.
+// A daemon told to stop once its store is open still owes the store a recorded, stamped boot: the
+// restart count and the first boot time are what `legion state` answers from. The stop arrives as
+// the runtime is built, after the store opened and before the boot is recorded; a stop that
+// arrives before the store opens ends the start with nothing recorded
+// (TestRunStopsAtOnceWhileItWaitsToOpenItsStore).
 func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	cfg := testConfig(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
-	if err := run(ctx, cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
+	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	count, firstBootAt := boots(t, cfg)
@@ -360,7 +364,7 @@ func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	}
 
 	rebindHeldPorts(t, &cfg)
-	if err := run(ctx, cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
+	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	countAgain, firstBootAgain := boots(t, cfg)
@@ -372,15 +376,35 @@ func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	}
 }
 
-// The refusal an operator reads when Postgres is not there names where the daemon went, and
-// never how it would have got in.
+// runStoppedOnceItsStoreIsOpen runs the daemon on cfg with a stop that arrives as its runtime is
+// built (openSupervision): after the store opened and migrated, before the boot is recorded.
+func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	build := o.runtime
+	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		cancel()
+		return build(buildCtx, listener, address, apps, repository, st, mapped)
+	}
+	return run(ctx, cfg, quietLogger(), o)
+}
+
+// The refusal an operator reads when Postgres is never there comes after the start's ten attempts,
+// each wait logged, and names where the daemon went and never how it would have got in
+// (c-boot-db-retry case 5). The waits between the attempts are a millisecond here; the number of
+// attempts is the production policy's.
 func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.PostgresDSN = "postgres://legion:hunter2@127.0.0.1:1/legion"
+	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.storeOpenRetry = &bootprobe.Retry{Initial: time.Millisecond, Max: time.Millisecond, Attempts: storeOpenRetry.Attempts}
+	var logs syncBuffer
 
 	refused := make(chan error, 1)
 	go func() {
-		refused <- run(context.Background(), cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
+		refused <- run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logs, nil)), o)
 	}()
 
 	select {
@@ -388,14 +412,308 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		if err == nil {
 			t.Fatal("run started without a Postgres to start against")
 		}
-		if !strings.Contains(err.Error(), "127.0.0.1:1") {
-			t.Errorf("the refusal does not name the host it could not reach: %v", err)
+		if want := fmt.Sprintf("within its retry budget (%d attempts): connect to Postgres at 127.0.0.1:1: ", storeOpenRetry.Attempts); !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal = %v, want it to hold %q", err, want)
 		}
 		if strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("the refusal leaks the DSN password: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not refuse an unreachable Postgres within one second")
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not refuse an unreachable Postgres within 10s")
+	}
+	waits := storeOpenWaits(t, logs.String())
+	if len(waits) != storeOpenRetry.Attempts-1 {
+		t.Fatalf("the start logged %d waits between its %d attempts, want %d; the log holds:\n%s", len(waits), storeOpenRetry.Attempts, storeOpenRetry.Attempts-1, logs.String())
+	}
+	for n, wait := range waits {
+		if want := fmt.Sprintf("%d/%d", n+1, storeOpenRetry.Attempts); wait["attempt"] != want {
+			t.Errorf("wait %d is attempt %v, want %s", n+1, wait["attempt"], want)
+		}
+		detail, _ := wait["detail"].(string)
+		if !strings.Contains(detail, "127.0.0.1:1") || strings.Contains(detail, "hunter2") {
+			t.Errorf("wait %d's detail = %q, want the host it could not reach and not the password", n+1, detail)
+		}
+	}
+}
+
+// secretDSN is a DSN for a Postgres at address whose password, hunter2, a refusal must never
+// print. It is built from its parts rather than written as one literal, because the pre-push leak
+// guard refuses a URL that holds a password in its userinfo.
+func secretDSN(address string) string {
+	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
+}
+
+// pgConnection is what pgProxy does with one connection it accepts.
+type pgConnection int
+
+const (
+	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
+	forwardConnection pgConnection = iota
+	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
+	resetConnection
+	// silentConnection holds the connection open and never answers it.
+	silentConnection
+)
+
+// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
+// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
+// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
+// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
+// test of the attempts counts one connection to each. The proxy and every connection through it
+// close when the test ends.
+func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
+	t.Helper()
+	upstream, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
+	}
+	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
+	proxied, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the Postgres proxy: %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	closed := false
+	// hold keeps conns until the test ends, or closes them at once when it has.
+	hold := func(conns ...net.Conn) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			for _, conn := range conns {
+				_ = conn.Close()
+			}
+			return false
+		}
+		held = append(held, conns...)
+		return true
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+	go func() {
+		for n := 0; ; n++ {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			handling := forwardConnection
+			if n < len(plan) {
+				handling = plan[n]
+			}
+			switch handling {
+			case resetConnection:
+				_ = client.(*net.TCPConn).SetLinger(0)
+				_ = client.Close()
+			case silentConnection:
+				hold(client)
+			default:
+				go func() {
+					postgres, err := net.Dial("tcp", server)
+					if err != nil {
+						_ = client.Close()
+						return
+					}
+					if !hold(client, postgres) {
+						return
+					}
+					go func() {
+						_, _ = io.Copy(postgres, client)
+						_ = postgres.Close()
+						_ = client.Close()
+					}()
+					_, _ = io.Copy(client, postgres)
+					_ = postgres.Close()
+					_ = client.Close()
+				}()
+			}
+		}
+	}()
+	proxied.Host = listener.Addr().String()
+	query := proxied.Query()
+	query.Set("sslmode", "disable")
+	proxied.RawQuery = query.Encode()
+	return proxied.String()
+}
+
+// refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
+// and message, as a Postgres that refuses the connection answers it, and returns its address and
+// the count of the connections it has accepted.
+func refusingPostgres(t *testing.T, code, message string) (string, *atomic.Int32) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := &atomic.Int32{}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			go func() {
+				defer conn.Close()
+				backend := pgproto3.NewBackend(conn, conn)
+				if _, err := backend.ReceiveStartupMessage(); err != nil {
+					return
+				}
+				backend.Send(&pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message})
+				_ = backend.Flush()
+			}()
+		}
+	}()
+	return listener.Addr().String(), accepted
+}
+
+// storeOpenWaits is each wait the daemon logged between two attempts to open its store.
+func storeOpenWaits(t *testing.T, logs string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedMessages(t, logs, "boot probe failed transiently; waiting to run it again"), func(line map[string]any) bool {
+		return line["probe"] != "Postgres store"
+	})
+}
+
+// A Postgres whose first two connections are reset opens on the third attempt, and the daemon
+// serves (c-boot-db-retry case 1). Each wait is logged with its attempt, its wait and the reset,
+// after one line that names the bound of the attempts.
+func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	proxy, err := url.Parse(cfg.PostgresDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuffer
+	startDaemonLogging(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}), slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	waits := storeOpenWaits(t, logs.String())
+	if len(waits) != 2 {
+		t.Fatalf("the start logged %d waits to open its store, want 2, one after each reset; the log holds:\n%s", len(waits), logs.String())
+	}
+	for n, want := range []struct{ attempt, retryIn string }{{"1/10", "1s"}, {"2/10", "2s"}} {
+		wait := waits[n]
+		if wait["attempt"] != want.attempt || wait["retryIn"] != want.retryIn {
+			t.Errorf("wait %d is attempt %v, retryIn %v; want attempt %s, retryIn %s", n+1, wait["attempt"], wait["retryIn"], want.attempt, want.retryIn)
+		}
+		detail, _ := wait["detail"].(string)
+		if !strings.Contains(detail, "connect to Postgres at "+proxy.Host) || !strings.Contains(detail, "reset by peer") {
+			t.Errorf("wait %d's detail = %q, want the reset at %s", n+1, detail, proxy.Host)
+		}
+	}
+	bound := loggedMessages(t, logs.String(), "daemon: opening the store; a connection error that the next attempt can clear is tried again")
+	if len(bound) != 1 {
+		t.Fatalf("the start logged %d lines naming the bound of its attempts, want 1; the log holds:\n%s", len(bound), logs.String())
+	}
+	for key, want := range map[string]any{"attempts": float64(10), "attemptLimit": "10s", "firstWait": "1s", "longestWait": "16s", "longestTotal": "3m15s"} {
+		if bound[0][key] != want {
+			t.Errorf("the bound's %s = %v, want %v", key, bound[0][key], want)
+		}
+	}
+}
+
+// A Postgres that refuses the daemon's password answers the same at every attempt, so the start
+// exits at its first refusal (c-boot-db-retry case 3): one connection and no wait, and the
+// refusal names the host and not the password.
+func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
+	address, connections := refusingPostgres(t, "28P01", `password authentication failed for user "legion"`)
+	cfg := testConfig(t)
+	cfg.PostgresDSN = secretDSN(address)
+	var logs syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	refused := make(chan error, 1)
+	go func() {
+		refused <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), fakeRuntime(fake.NewRuntime(), &built{}))
+	}()
+
+	select {
+	case err := <-refused:
+		if err == nil {
+			t.Fatal("run started against a Postgres that refuses its password")
+		}
+		if !strings.Contains(err.Error(), address) || !strings.Contains(err.Error(), "SQLSTATE 28P01") {
+			t.Errorf("the refusal = %v, want it to name %s and the server's 28P01", err, address)
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("the refusal leaks the DSN password: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-refused
+		t.Errorf("run did not exit within 5s of a refused password")
+	}
+	if n := connections.Load(); n != 1 {
+		t.Errorf("the start made %d connections to a Postgres that refused its password, want 1", n)
+	}
+	if waits := storeOpenWaits(t, logs.String()); len(waits) != 0 {
+		t.Errorf("the start waited to try a refused password again: %v", waits)
+	}
+}
+
+// A stop that arrives while the start waits to open its store again ends the start at once and
+// cleanly (c-boot-db-retry case 6): run returns nil, names the stop in its log, and records no
+// boot.
+func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
+	cfg := testConfig(t)
+	// The store the start would have recorded its boot in, which boots reads.
+	recorded := cfg
+	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
+	var logs syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), fakeRuntime(fake.NewRuntime(), &built{}))
+	}()
+
+	var ended error
+	returned := false
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		select {
+		case ended = <-done:
+			returned = true
+			return true
+		default:
+		}
+		return strings.Contains(logs.String(), `"attempt":"2/10"`)
+	}) {
+		t.Fatalf("the start logged no second wait to open its store within 10s; the log holds:\n%s", logs.String())
+	}
+	if returned {
+		t.Fatalf("run returned %v before its second wait to open its store; the log holds:\n%s", ended, logs.String())
+	}
+	cancel()
+	stopped := time.Now()
+	select {
+	case err := <-done:
+		took := time.Since(stopped)
+		if err != nil {
+			t.Fatalf("run stopped during its wait = %v, want a clean stop", err)
+		}
+		if took > 200*time.Millisecond {
+			t.Errorf("run returned %s after its stop, want within 200ms", took)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return within 30s of its stop")
+	}
+	if lines := loggedMessages(t, logs.String(), "legion daemon stopped before it opened its store"); len(lines) != 1 || lines[0]["project"] != cfg.Project {
+		t.Errorf("the stop's lines = %v, want one naming project %s", lines, cfg.Project)
+	}
+	if count, _ := boots(t, recorded); count != 0 {
+		t.Errorf("boots after a start stopped before its store opened = %d, want 0", count)
 	}
 }
 
@@ -419,6 +737,39 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	}
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Fatalf("boots after a start that never served = %d, want 0", count)
+	}
+}
+
+// The boot itself says once which shared leak check the deployment runs: run logs it
+// (logLeakCheck) before it takes its port, so a boot that then fails on its port has logged it all
+// the same — the not-configured line under no setting, and the configured line, which names the
+// setting's repository and checker, under the deployment's.
+func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		setting                   leakguard.Setting
+		notConfigured, configured int
+	}{
+		{name: "no shared leak check", notConfigured: 1},
+		{name: "the deployment's check", setting: leakCheckSetting, configured: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.LeakCheck = tc.setting
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.listen = nil
+			var logged strings.Builder
+			if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+				t.Fatal("run returned no error although another listener held its port")
+			}
+			named := `"repository":"` + tc.setting.Repository.String() + `","manifest_sha256":"` + tc.setting.ManifestSHA256 + `"`
+			if got := strings.Count(logged.String(), leakCheckNotConfigured); got != tc.notConfigured {
+				t.Fatalf("the boot logged the not-configured line %d times, want %d; log:\n%s", got, tc.notConfigured, logged.String())
+			}
+			if got := strings.Count(logged.String(), leakCheckConfigured+`",`+named); got != tc.configured {
+				t.Fatalf("the boot logged the configured line naming %s %d times, want %d; log:\n%s", named, got, tc.configured, logged.String())
+			}
+		})
 	}
 }
 
@@ -833,7 +1184,10 @@ type daemon struct {
 	transport *http.Transport
 	client    *http.Client
 	base      string
-	stopped   bool
+	// stopped is set once the test has begun stopping this run, before the run closes anything:
+	// a goroutine that answers the daemon over a worker stream reads it (stepClaimant.serve) to
+	// tell a write the test's own stop failed from one the daemon failed.
+	stopped atomic.Bool
 }
 
 // startDaemon runs the daemon until the test stops it, and returns once it answers /healthz.
@@ -884,7 +1238,7 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		}
 		select {
 		case exited := <-d.done:
-			d.stopped = true
+			d.stopped.Store(true)
 			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
 		default:
 		}
@@ -922,10 +1276,9 @@ func repositoriesGitHub(t *testing.T) string {
 // against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
-	if d.stopped {
+	if d.stopped.Swap(true) {
 		return
 	}
-	d.stopped = true
 	d.transport.CloseIdleConnections()
 	d.cancel()
 	select {
@@ -983,8 +1336,8 @@ func (d *daemon) state() api.State {
 
 // claims is the operator's view of every claim the daemon holds, in one read: what a caller that
 // asks about more than one of them takes, rather than listing them again per claim. One listing
-// serves the rig's release wave (idleWakeRig.awaitReleased), where nine reads a poll would take
-// the daemon's own Postgres away from the work they wait for.
+// serves the rig's release wave (idleWakeRig.awaitReleased), where a read per pod at every poll
+// would take the daemon's own Postgres away from the work they wait for.
 func (d *daemon) claims() []api.OperatorClaim {
 	d.t.Helper()
 	status, body := d.request(http.MethodGet, "/legion/v1/operator/claims", nil, true)
@@ -1058,6 +1411,12 @@ type shim struct {
 	conn   net.Conn
 	lines  *bufio.Reader
 	writer *shimwire.Writer
+	// stopping closes when the test ends the connection (end): a goroutine serving it that is
+	// handing a frame on lets it go and returns.
+	stopping chan struct{}
+	// serving counts the goroutines answering the daemon on conn (serve), each of which end waits
+	// for before it closes conn.
+	serving sync.WaitGroup
 }
 
 // dialShim connects to the worker stream at address and says hello with bootToken, returning
@@ -1068,13 +1427,36 @@ func dialShim(t *testing.T, address, bootToken string) *shim {
 	if err != nil {
 		t.Fatalf("dial the worker stream %s: %v", address, err)
 	}
-	t.Cleanup(func() { conn.Close() })
-	s := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	s := newTestShim(t, conn)
 	s.send(shimwire.Hello2{BootToken: bootToken})
 	if frame := s.next(); frame.FrameType() != shimwire.TypeHelloAck {
 		t.Fatalf("the daemon answered the hello with %#v, want hello_ack", frame)
 	}
 	return s
+}
+
+// serve runs answer on a goroutine of its own, the pane's reader of every frame the daemon sends
+// on this connection, with no read deadline, from the read the hello_ack came through on. answer
+// returns once a read fails, and hands a frame on only in a select that also takes s.stopping.
+func (s *shim) serve(answer func()) {
+	_ = s.conn.SetReadDeadline(time.Time{})
+	s.serving.Add(1)
+	go func() {
+		defer s.serving.Done()
+		answer()
+	}()
+}
+
+// end is the test's end of the connection, run as its cleanup: it stops every goroutine serving
+// the connection, cutting short the read each waits in, waits until each has returned, and only
+// then closes the connection. An answer a goroutine is writing as the test ends so meets the
+// connection still open rather than the test's own close, and no goroutine serving it runs, or
+// reports anything, once the test is over.
+func (s *shim) end() {
+	close(s.stopping)
+	_ = s.conn.SetReadDeadline(time.Now())
+	s.serving.Wait()
+	_ = s.conn.Close()
 }
 
 func (s *shim) send(frame shimwire.Frame) {
@@ -1173,7 +1555,8 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}}}
+	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
+		Apps: &api.AppInstallationsView{Implement: true}}}}
 	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
 		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
 	}
@@ -1327,56 +1710,57 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	natsURL := workflowNATS(t)
 	js := workflowJetStream(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
 	captured, err := os.ReadFile("../intake/testdata/dispatch/issue-updated.json")
 	if err != nil {
 		t.Fatalf("read the captured Dispatch issue.updated event: %v", err)
 	}
-	// The event is this daemon's project's, with an id of its own: processed events are deduplicated
-	// by Envoy's event id across the shared database. The captured issue carries no labels; this one
-	// is handed to Legion.
-	moved := strings.ReplaceAll(strings.ReplaceAll(string(captured), "CAPTURE", cfg.Project), `"dispatch-15"`, `"dispatch-`+cfg.Project+`"`)
-	moved = strings.Replace(moved, `\"labels\":[]`, `\"labels\":[\"legion\"]`, 1)
-	moved = strings.Replace(moved, `\"resolved_repo\":\"sjawhar/legion\"`, `\"resolved_repo\":\"acme/widgets\"`, 1)
-	key := cfg.Project + "-3"
+	var key, moved string
 	var once sync.Once
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/"+key {
-			// The admission event of an issue not yet recorded is prepared as Dispatch's detail
-			// shows the issue now: as the move left it.
+	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
+		// The event is this daemon's project's, with an id of its own: processed events are
+		// deduplicated by Envoy's event id across the shared database. The captured issue carries
+		// no labels; this one is handed to Legion.
+		moved = strings.ReplaceAll(strings.ReplaceAll(string(captured), "CAPTURE", project), `"dispatch-15"`, `"dispatch-`+project+`"`)
+		moved = strings.Replace(moved, `\"labels\":[]`, `\"labels\":[\"legion\"]`, 1)
+		moved = strings.Replace(moved, `\"resolved_repo\":\"sjawhar/legion\"`, `\"resolved_repo\":\"acme/widgets\"`, 1)
+		key = project + "-3"
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/"+key {
+				// The admission event of an issue not yet recorded is prepared as Dispatch's
+				// detail shows the issue now: as the move left it.
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"key": key, "project": project, "title": "Captured workflow issue",
+					"status": "todo", "rank": "UUU", "labels": []string{"legion"}, "last_seq": 2, "resolved_repo": "acme/widgets"}); err != nil {
+					t.Errorf("write Dispatch issue: %v", err)
+				}
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				// Once the move is admitted, the outbox reads and writes this project's issue;
+				// those calls are not what this test is about. Another project's issue is never
+				// this daemon's.
+				if !strings.HasPrefix(r.URL.Path, "/api/v1/issues/"+project+"-") {
+					t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				}
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			// The move lands while the listing is read, which is already past it.
+			once.Do(func() {
+				if _, err := js.Publish(r.Context(), "notifications.dispatch.issue."+key+".issue.updated", []byte(moved)); err != nil {
+					t.Errorf("publish the move: %v", err)
+				}
+			})
 			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{"key": key, "project": cfg.Project, "title": "Captured workflow issue",
-				"status": "todo", "rank": "UUU", "labels": []string{"legion"}, "last_seq": 2, "resolved_repo": "acme/widgets"}); err != nil {
-				t.Errorf("write Dispatch issue: %v", err)
-			}
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			// Once the move is admitted, the outbox reads and writes this project's issue; those
-			// calls are not what this test is about. Another project's issue is never this daemon's.
-			if !strings.HasPrefix(r.URL.Path, "/api/v1/issues/"+cfg.Project+"-") {
-				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			}
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		// The move lands while the listing is read, which is already past it.
-		once.Do(func() {
-			if _, err := js.Publish(r.Context(), "notifications.dispatch.issue."+key+".issue.updated", []byte(moved)); err != nil {
-				t.Errorf("publish the move: %v", err)
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
 			}
 		})
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
-	github := newBranchGitHub(t, nil, branchCreated)
+	})
+	github := workflowBranchGitHub(t, branchCreated)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -1515,28 +1899,26 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
-	cfg := workflowConfig(t, natsURL)
 	var requests atomic.Int64
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			return
-		}
-		if requests.Add(1) <= 2 {
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-
-	cfg.DispatchURL = dispatchServer.URL
+	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				return
+			}
+			if requests.Add(1) <= 2 {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
+			}
+		})
+	})
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	startDaemon(t, cfg, o)
@@ -1555,28 +1937,27 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	quickAppMints(t)
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
-	cfg := workflowConfig(t, workflowNATS(t))
 	refusals := int64(appMintRetry.Attempts + 2)
 	var reads atomic.Int64
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
-			http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
-			return
-		}
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
+	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
+				http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
+				return
+			}
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
+			}
+		})
+	})
 
 	if err := bootsOrExits(t, cfg, &workflowTokenRecorder{}, 60*time.Second); err != nil {
 		t.Fatalf("boot = %v, want it to wait out %d failed mapping reads and come up", err, refusals)
@@ -1586,13 +1967,47 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	}
 }
 
-// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues.
+// workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
+const workflowDispatchToken = "dispatch-test-token"
+
+// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues
+// (workflowDispatch).
 func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Helper()
+	return workflowConfigOn(t, natsURL, workflowDispatch)
+}
+
+// workflowConfigOn is workflowConfig over the Dispatch board that board starts for the
+// configuration's project, in place of workflowConfig's own: a test that passes its own board here
+// starts no second one.
+func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, project string) string) config.Config {
+	t.Helper()
 	cfg := testConfig(t)
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Boot reads this process's environment, so the real gh is named here: the first gh on a
+	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_GH_PATH", executable)
+	cfg.DispatchURL = board(t, cfg.Project)
+	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch token: %v", err)
+	}
+	cfg.Projects = map[string]config.Project{cfg.Project: {}}
+	cfg.NatsURLs = []string{natsURL}
+	return cfg
+}
+
+// workflowDispatch is workflowConfig's board (dispatchBoard): the calls every boot makes
+// (servedBootCall) and an empty listing of issues, and any other call of the daemon's fails the
+// test.
+func workflowDispatch(t *testing.T, project string) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case servedBootCall(t, w, r, cfg.Project):
+		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
@@ -1601,23 +2016,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 		default:
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
-	cfg.DispatchURL = dispatchServer.URL
-	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte("dispatch-test-token\n"), 0o600); err != nil {
-		t.Fatalf("write Dispatch token: %v", err)
-	}
-	cfg.Projects = map[string]config.Project{cfg.Project: {}}
-	cfg.NatsURLs = []string{natsURL}
-	return cfg
+	})
 }
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
@@ -1630,6 +2029,10 @@ func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	return js
 }
 
+// workflowAppToken is the GitHub App token of each lease a workflowTokenRecorder's Token mints
+// (ReadToken's lease carries it with "-read" after it).
+const workflowAppToken = "workflow-test-token"
+
 type workflowTokenRecorder struct {
 	mu    sync.Mutex
 	roles []appauth.AppRole
@@ -1639,12 +2042,12 @@ type workflowTokenRecorder struct {
 	failing map[string]error
 }
 
-func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.roles = append(r.roles, role)
 	// Each App has its own bot login, as a real token manager's leases do.
-	return appauth.Lease{Token: "workflow-test-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
+	return appauth.Lease{Token: workflowAppToken, ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
 }
 
 // AppLogin answers each App's own bot login, as its lease names it.
@@ -1663,6 +2066,13 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 		return false, err
 	}
 	return !r.missing[key], nil
+}
+
+// InstalledOwners answers no owner list: the recorder knows which repositories each App is
+// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
+// each replaces the runtime that would. A rig that builds one names its owners itself.
+func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:
@@ -1726,8 +2136,8 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	return true
 }
 
-func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := r.Token(ctx, role, ghrepo.Repository{})
+func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := r.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }

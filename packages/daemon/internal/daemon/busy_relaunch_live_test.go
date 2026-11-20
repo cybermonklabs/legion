@@ -25,9 +25,14 @@
 //     session counts as streaming the whole time, so a held recall is the measured wait between
 //     the acknowledgement and the turn (dispatch://INFRA-3276/artifact/r4-repeat-source-md). The
 //     stand-in answers every recall 503, held or not: a recall that succeeds is committed to the
-//     session and the next prompt recalls nothing, and one that fails is not, which a run of the
-//     pin made for this proof read (a recall answered 200 made the next prompt start its turn at
-//     once; one answered 503 made the next prompt recall again).
+//     session and the next prompt recalls nothing, and one that fails is not, which a run made for
+//     this proof on 18.16.0-sami.20261105-032528, the pin then, read (a recall answered 200 made
+//     the next prompt start its turn at once; one answered 503 made the next prompt recall again).
+//     The pinned build pauses automatic recall after a failed one, for hindsight.recallCooldownMs
+//     (60,000 ms by default, doubled for each further failure in a row up to 30 minutes, and kept
+//     in the process's memory: hindsight/recall-wait.ts and hindsight/settings.ts at the pinned
+//     tag), and 0 turns the pause off. The memory overlay sets it to 0 (writeOverlays), so each
+//     prompt after a 503 recalls again, as on the pin that read was made on.
 //   - a scripted answer in front of paneStandin (scriptedStandin): a `tool_use` answer, which the
 //     live proofs' shared streamAnthropicToolUse writes (live_agent_proof_test.go; at 7df0a64c,
 //     late_completion_live_test.go) as the plugins' own pane harness scripts one
@@ -306,7 +311,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 // real.
 func (r *busyRelaunchLive) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
@@ -1123,7 +1128,8 @@ func (r *busyRelaunchLive) writeOmpProfile() {
 // deployment renders when Hindsight is on (dispatch://INFRA-3328): the backend, the run's
 // stand-in as its API, and the two features that would call it beside the recall — the mental
 // models read at the session's start and the retain after a turn — off, so the recall is the one
-// call it is asked.
+// call it is asked, and the pause after a failed recall off too (hindsight.recallCooldownMs 0), so
+// every prompt after a 503 is asked again.
 func (r *busyRelaunchLive) writeOverlays(work string) map[claim.Token][]string {
 	t := r.t
 	t.Helper()
@@ -1144,7 +1150,7 @@ func (r *busyRelaunchLive) writeOverlays(work string) map[claim.Token][]string {
 		}
 		memory := filepath.Join(dir, pane.provider+"-memory.yml")
 		writeProofFile(t, memory, fmt.Sprintf("# The pane's memory overlay: Hindsight, at the run's own stand-in.\n"+
-			"memory:\n  backend: hindsight\nhindsight:\n  apiUrl: %s\n  mentalModelsEnabled: false\n  autoRetain: false\n", r.hindsight.url))
+			"memory:\n  backend: hindsight\nhindsight:\n  apiUrl: %s\n  mentalModelsEnabled: false\n  autoRetain: false\n  recallCooldownMs: 0\n", r.hindsight.url))
 		overlays[pane.token] = append(overlays[pane.token], memory)
 	}
 	return overlays
@@ -1434,8 +1440,9 @@ func contentText(content json.RawMessage) (string, bool) {
 // Pi's Hindsight client (hindsight/client.ts at the pin) asks it
 // `POST /v1/default/banks/<bank>/memories/recall` before each prompt's turn, and nothing else at
 // the overlay's settings. Every recall is answered 503, after the hold a step armed for the next
-// one (holdNext) or at once: a failed recall commits nothing to the session, so the next prompt
-// recalls again and a later step can hold that one too.
+// one (holdNext) or at once: a failed recall commits nothing to the session, and the overlay turns
+// the pinned build's pause after a failed recall off, so the next prompt recalls again and a later
+// step can hold that one too.
 type hindsightStandin struct {
 	url string
 
