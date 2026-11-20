@@ -935,8 +935,8 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 // second, which held no "://" for the rule to find its query by. A run of maxLogLine bytes with no
 // such byte is cut at the mark still. The line arrives in writes of 4 KiB, as a pipe's reads give
 // it, and in writes of 7 bytes and of one, as a child that writes a byte at a time gives it: the
-// writer keeps how much of what it holds it has searched for a newline, and every size of write
-// gives the same log.
+// writer searches only the bytes each write adds for a newline, since what it holds from earlier
+// writes holds none, and every size of write gives the same log.
 func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
 	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
 	for _, tc := range []struct {

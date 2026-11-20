@@ -56,8 +56,8 @@ func Bytes(text string, n int) (kept string, cut bool) {
 // first because a cut that keeps a text's end can start inside a URL's userinfo or its query,
 // after the "://" or the "?", where the rule then finds neither and keeps what the cut left of
 // them. Where it cuts, the start moves forward to where a rune starts, looking at most
-// utf8.UTFMax bytes ahead and staying put where none starts there, so a valid character is never
-// split and a run of bytes that start no character cannot take the whole tail.
+// utf8.UTFMax-1 bytes ahead and staying put where none starts there, so a valid character is
+// never split and a run of bytes that start no character cannot take the whole tail.
 func Tail(text string, n int) (tail string, cut int) {
 	text = URLCredentials(text)
 	if len(text) <= n {
@@ -100,11 +100,11 @@ func Read(text string, cut bool) string {
 	return URLCredentials(text)
 }
 
-// ReadBounded reads r to its end or to limit bytes, and one byte more, so a read its bound cut is
-// told from one read whole: it answers the first limit bytes, whether they were cut, and the read's
-// error. A read that ended on an error is cut as well, where the error came: that can be inside a
-// URL before its "@", as the bound's place can, so a caller that quotes what was kept and drops
-// the error still gives it to Read as cut.
+// ReadBounded reads r to its end or to limit bytes, limit at least 0, and one byte more, so a read
+// its bound cut is told from one read whole: it answers the first limit bytes, whether they were
+// cut, and the read's error. A read that ended on an error is cut as well, where the error came:
+// that can be inside a URL before its "@", as the bound's place can, so a caller that quotes what
+// was kept and drops the error still gives it to Read as cut.
 func ReadBounded(r io.Reader, limit int) (kept []byte, cut bool, err error) {
 	kept, err = io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	cut = len(kept) > limit || err != nil

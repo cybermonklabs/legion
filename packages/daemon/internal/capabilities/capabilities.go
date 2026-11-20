@@ -479,18 +479,23 @@ func redactOnce(text string) string {
 }
 
 // truncate is text cut to at most max bytes on a rune boundary, so a cut never leaves a partial
-// character behind. Its one caller is cleanDetail, whose line credentialRules have read whole
-// before the cut, and their first rule writes every URL's userinfo as `***`, so the cut cannot
-// stop inside one. It is not redact.Bytes: the URL rule would remove what the shared fixture keeps
-// of a detail (a userinfo as `***@`, a query's names), and the plugin cleans its report as the
-// fixture says.
+// character behind: it looks back at most utf8.UTFMax-1 bytes for the start of a character and
+// stays at max where none starts there, as redact.Bytes does, so a run of bytes that start no
+// character cannot take the whole detail. Its one caller is cleanDetail, whose line
+// credentialRules have read whole before the cut, and their first rule writes every URL's
+// userinfo as `***`, so the cut cannot stop inside one. It is not redact.Bytes: the URL rule would
+// remove what the shared fixture keeps of a detail (a userinfo as `***@`, a query's names), and
+// the plugin cleans its report as the fixture says.
 func truncate(text string, max int) string {
 	if len(text) <= max {
 		return text
 	}
 	cut := max
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
+	for at := max; at > 0 && at > max-utf8.UTFMax; at-- {
+		if utf8.RuneStart(text[at]) {
+			cut = at
+			break
+		}
 	}
 	return text[:cut]
 }
