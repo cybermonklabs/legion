@@ -32,12 +32,16 @@ export type WriteEvent =
   /** A 2xx whose body was read whole: Dispatch ran the write, or replayed the answer it stored
    *  under the key. */
   | "applied"
-  /** A non-2xx final refusal that a repeat cannot change: `422 KEY_REUSED`,
-   *  `409 KEY_COMMITTED`, or a validation refusal. */
+  /** A non-2xx final refusal, settled even after a possible landing: an answer marked
+   *  `Idempotency-Replayed: ?1` (a stored or a recovery replay), `409 KEY_COMMITTED`,
+   *  `422 KEY_REUSED` echoing exactly this request's key (every attempt of a call carries its
+   *  bytes, so a key held under another digest was claimed by no attempt of it), or a fresh
+   *  answer echoing exactly this request's key with a 4xx Dispatch stores (not 401, 408 or 429)
+   *  and none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. It holds once every replica
+   *  runs `b1c42d1d7d`; an older one could land an attempt unkeyed. */
   | "judged"
-  /** A non-2xx answer that ends the write without a final refusal: a page something in Dispatch's
-   *  place wrote, a refusal Dispatch's auth made before its keyed layer ran (`401`,
-   *  `403 READ_ONLY_TOKEN`), a second dead token, or a 1xx. */
+  /** A non-2xx answer without that proof: a page, a refusal made before the key claim (none
+   *  echoes the key), an answer echoing another key, a second dead token, or a 1xx. */
   | "unjudged"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */

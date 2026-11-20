@@ -53,6 +53,18 @@ const posted = {
   comment: { id: "comment-1", body: "Shipped." },
 } as unknown as CommentWriteResponse;
 
+/** The candidates of a `409 POSSIBLE_DUPLICATE`, as the dispatch command's issue create reads them. */
+const duplicates = [
+  {
+    href: "/issues/DSP-9",
+    key: "DSP-9",
+    shared_terms: 1,
+    snippet: "<mark>Shipped</mark>.",
+    status: "todo",
+    title: "Shipped.",
+  },
+];
+
 /**
  * What a step of a write met, by what Dispatch and the broker say it is:
  * - `applied`: a 2xx whose body arrives whole;
@@ -99,8 +111,8 @@ interface Kind {
   /** Where it happens: an attempt's answer or failure, a credential's presentation, or a wait (a
    *  pause, the rolling-release wait, or the presentation that comes first). */
   readonly at: "attempt" | "credential" | "wait";
-  /** Whether the answer carries the request's key back, as Dispatch's keyed layer answers. */
-  readonly echoed?: boolean;
+  /** How the response's `Idempotency-Key` relates to this request's key. */
+  readonly keyEcho?: "exact" | "different";
   /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
    *  keyed write, whatever the process knows of the layer. */
   readonly notJson?: boolean;
@@ -233,21 +245,19 @@ const KINDS: readonly Kind[] = [
     name: "201",
     role: "applied",
     at: "attempt",
-    echoed: true,
+    keyEcho: "exact",
     respond: (key) => json(posted, 201, key),
   },
   {
     name: "201 un-echoed",
     role: "applied",
     at: "attempt",
-    echoed: false,
     respond: () => json(posted, 201),
   },
   {
     name: "200 portal page",
     role: "applied",
     at: "attempt",
-    echoed: false,
     notJson: true,
     respond: () => page(200, "OK"),
   },
@@ -255,7 +265,6 @@ const KINDS: readonly Kind[] = [
     name: "200 empty",
     role: "applied",
     at: "attempt",
-    echoed: false,
     notJson: true,
     respond: () =>
       new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -264,14 +273,14 @@ const KINDS: readonly Kind[] = [
     name: "204",
     role: "applied",
     at: "attempt",
-    echoed: true,
+    keyEcho: "exact",
     respond: (key) => new Response(null, { status: 204, headers: { "Idempotency-Key": key } }),
   },
   {
     name: "205",
     role: "applied",
     at: "attempt",
-    echoed: true,
+    keyEcho: "exact",
     respond: (key) => new Response(null, { status: 205, headers: { "Idempotency-Key": key } }),
   },
   {
@@ -291,7 +300,7 @@ const KINDS: readonly Kind[] = [
     role: "repeatable",
     at: "attempt",
     followsCommit: true,
-    echoed: true,
+    keyEcho: "exact",
     respond: (key, init, run) => partBody(key, init, run, "broken"),
   },
   {
@@ -299,7 +308,7 @@ const KINDS: readonly Kind[] = [
     role: "repeatable",
     at: "attempt",
     followsCommit: true,
-    echoed: true,
+    keyEcho: "exact",
     respond: (key) =>
       new Response(JSON.stringify(posted).slice(0, 11), {
         status: 201,
@@ -307,14 +316,28 @@ const KINDS: readonly Kind[] = [
       }),
   },
   {
-    name: "422 KEY_REUSED",
+    // Every resend of one write carries identical bytes (writeRequestFields), so a key held
+    // under another digest proves no attempt of this write claimed it.
+    name: "422 KEY_REUSED exact echo",
     role: "refusal",
     at: "attempt",
     status: 422,
     code: IDEMPOTENCY_KEY_REUSED,
-    writer: "other",
+    writer: "keyed-layer",
+    keyEcho: "exact",
     respond: (key) =>
       refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
+  },
+  {
+    name: "422 KEY_REUSED with a different key echo",
+    role: "refusal",
+    at: "attempt",
+    status: 422,
+    code: IDEMPOTENCY_KEY_REUSED,
+    writer: "keyed-layer",
+    keyEcho: "different",
+    respond: (key) =>
+      refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", `${key}-other`),
   },
   {
     name: "400 KEY_INVALID before claim",
@@ -340,6 +363,7 @@ const KINDS: readonly Kind[] = [
     status: 409,
     code: IDEMPOTENCY_KEY_COMMITTED,
     writer: "keyed-layer",
+    keyEcho: "exact",
     respond: (key) => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
   },
   {
@@ -350,6 +374,24 @@ const KINDS: readonly Kind[] = [
     code: "UNAUTHORIZED",
     writer: "before-claim",
     respond: () => refused(401, "UNAUTHORIZED", "a token is required"),
+  },
+  {
+    name: "413 REQUEST_TOO_LARGE before claim",
+    role: "refusal",
+    at: "attempt",
+    status: 413,
+    code: "REQUEST_TOO_LARGE",
+    writer: "before-claim",
+    respond: () => refused(413, "REQUEST_TOO_LARGE", "request body exceeds the limit"),
+  },
+  {
+    name: "400 REQUEST_BODY_UNREADABLE before claim",
+    role: "refusal",
+    at: "attempt",
+    status: 400,
+    code: "REQUEST_BODY_UNREADABLE",
+    writer: "before-claim",
+    respond: () => refused(400, "REQUEST_BODY_UNREADABLE", "could not read the request body"),
   },
   ...[
     "OAUTH_SCOPE_REQUIRED",
@@ -396,6 +438,93 @@ const KINDS: readonly Kind[] = [
       }),
   },
   {
+    name: "403 handler PROJECT_SCOPE fresh exact echo",
+    role: "refusal",
+    at: "attempt",
+    status: 403,
+    code: "PROJECT_SCOPE",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) => refused(403, "PROJECT_SCOPE", "the handler refused another project", key),
+  },
+  {
+    name: "400 handler CAP_EXCEEDED fresh exact echo for the typed-input fallback reply",
+    role: "refusal",
+    at: "attempt",
+    status: 400,
+    code: "CAP_EXCEEDED",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) => refused(400, "CAP_EXCEEDED", "a block is longer than a comment takes", key),
+  },
+  {
+    name: "409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list",
+    role: "refusal",
+    at: "attempt",
+    status: 409,
+    code: "POSSIBLE_DUPLICATE",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) =>
+      json(
+        {
+          code: "POSSIBLE_DUPLICATE",
+          error: "possible duplicate of DSP-9",
+          candidates: duplicates,
+        },
+        409,
+        key
+      ),
+  },
+  {
+    name: "409 handler TARGET_AMBIGUOUS fresh exact echo for docEdit candidates",
+    role: "refusal",
+    at: "attempt",
+    status: 409,
+    code: "TARGET_AMBIGUOUS",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) =>
+      json(
+        {
+          code: "TARGET_AMBIGUOUS",
+          error: "the target is ambiguous",
+          candidates: [{ from: 1, to: 2, context: "same" }],
+        },
+        409,
+        key
+      ),
+  },
+  {
+    name: "401 handler fresh exact echo",
+    role: "refusal",
+    at: "attempt",
+    status: 401,
+    code: "UNAUTHORIZED",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) => refused(401, "UNAUTHORIZED", "the session lapsed mid-write", key),
+  },
+  {
+    name: "409 handler TARGET_AMBIGUOUS with a different key echo",
+    role: "refusal",
+    at: "attempt",
+    status: 409,
+    code: "TARGET_AMBIGUOUS",
+    writer: "handler",
+    keyEcho: "different",
+    respond: (key) =>
+      json(
+        {
+          code: "TARGET_AMBIGUOUS",
+          error: "the target is ambiguous",
+          candidates: [{ from: 1, to: 2, context: "same" }],
+        },
+        409,
+        `${key}-other`
+      ),
+  },
+  {
     name: "403 page",
     role: "refusal",
     at: "attempt",
@@ -404,13 +533,13 @@ const KINDS: readonly Kind[] = [
     respond: () => page(403, "Forbidden"),
   },
   {
-    name: "404 ID_AMBIGUOUS before claim",
+    name: "409 ID_AMBIGUOUS before claim",
     role: "refusal",
     at: "attempt",
-    status: 404,
+    status: 409,
     code: "ID_AMBIGUOUS",
     writer: "before-claim",
-    respond: () => refused(404, "ID_AMBIGUOUS", "the path prefix is ambiguous"),
+    respond: () => refused(409, "ID_AMBIGUOUS", "the path prefix is ambiguous"),
   },
   {
     name: "404 page",
@@ -452,7 +581,7 @@ const KINDS: readonly Kind[] = [
     name: "503 echoed",
     role: "repeatable",
     at: "attempt",
-    echoed: true,
+    keyEcho: "exact",
     followsCommit: true,
     respond: (key) => refused(503, "UNAVAILABLE", "the database is restarting", key),
   },
@@ -467,7 +596,8 @@ const KINDS: readonly Kind[] = [
     name: "409 KEY_IN_FLIGHT",
     role: "repeatable",
     at: "attempt",
-    echoed: true,
+    writer: "keyed-layer",
+    keyEcho: "exact",
     followsCommit: true,
     running: true,
     respond: (key) =>
@@ -501,7 +631,7 @@ const KINDS: readonly Kind[] = [
     name: "429 echoed",
     role: "repeatable",
     at: "attempt",
-    echoed: true,
+    keyEcho: "exact",
     own: { as: "refusal", status: 429 },
     respond: (key) => refused(429, "RATE_LIMITED", "too many requests", key),
   },
@@ -635,12 +765,53 @@ type Decision = { readonly asks: true } | { readonly asks: false; readonly endin
 
 const UNSETTLED: Ending = { as: "unsettled" };
 
+/** The fresh keyed-layer codes that do not prove a handler's answer was stored. */
+const KEYED_LAYER_OWN_CODES = new Set([
+  IDEMPOTENCY_KEY_IN_FLIGHT,
+  IDEMPOTENCY_KEY_COMMITTED,
+  IDEMPOTENCY_KEY_REUSED,
+]);
+
+/** Whether `storedStatus` keeps a fresh 4xx handler answer under its request key. */
+function storedFourXX(status: number | undefined): boolean {
+  return (
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 401 &&
+    status !== 408 &&
+    status !== 429
+  );
+}
+
 /**
  * Ground truth from Dispatch, rather than the client: route layers outside `keyedWrites` answer
- * before its claim (server.go:840-916, request_keys.go:247-312), while `replayStoredAnswer`
- * writes `Idempotency-Replayed: ?1` only for the stored answer after it
- * (request_keys.go:998-1011). A writer field makes each row say which truth it exercises.
+ * before its claim with no key echo (server.go:840-916, request_keys.go:247-312), and
+ * `Idempotency-Replayed: ?1` marks a stored replay and a recovery replay alike. Whether a refusal
+ * after a possible landing is final follows from which layer wrote it, which each row names, so
+ * the oracle never reads the client's classifier:
+ * - the keyed layer: `422 KEY_REUSED` under this request's exact key. Every resend of one call
+ *   carries identical bytes, so a key held under another digest proves no attempt of this write
+ *   claimed it. (`409 KEY_COMMITTED` is landed and `409 KEY_IN_FLIGHT` a retry, by their roles.)
+ * - a handler after the claim: its replay, or a fresh answer under this request's exact key whose
+ *   4xx `storedStatus` keeps and whose code is none of the keyed layer's own.
+ * - before the claim, or something other than Dispatch: never.
  */
+function finalAfterLanding(event: Kind): boolean {
+  if (event.replayed === true) return true;
+  switch (event.writer) {
+    case "keyed-layer":
+      return event.keyEcho === "exact" && event.code === IDEMPOTENCY_KEY_REUSED;
+    case "handler":
+      return (
+        event.keyEcho === "exact" &&
+        storedFourXX(event.status) &&
+        !KEYED_LAYER_OWN_CODES.has(event.code ?? "")
+      );
+    default:
+      return false;
+  }
+}
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
@@ -668,10 +839,7 @@ function oracle(events: readonly Kind[]): Decision[] {
         if (event.notJson) return end(UNSETTLED);
         return end({ as: "resolved" });
       case "refusal":
-        return event.writer === "keyed-layer" ||
-          (event.writer === "handler" && event.replayed === true)
-          ? end(refusal)
-          : endAfter(refusal);
+        return finalAfterLanding(event) ? end(refusal) : endAfter(refusal);
       case "committed":
         return end({ as: "landed" });
       case "redirect":
@@ -925,6 +1093,71 @@ test("a replayed handler 403 after a possibly landed answer settles as its refus
   expect(error).toEqual(expect.objectContaining({ name: "DispatchServiceError", status: 403 }));
 });
 
+test.each([
+  kind("403 handler PROJECT_SCOPE fresh exact echo"),
+  kind("400 handler CAP_EXCEEDED fresh exact echo for the typed-input fallback reply"),
+  kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
+  kind("409 handler TARGET_AMBIGUOUS fresh exact echo for docEdit candidates"),
+  kind("422 KEY_REUSED exact echo"),
+])("after a gateway page, $name settles as Dispatch's own refusal", async (answer) => {
+  const { run, error } = await drive([kind("502 page"), answer]);
+
+  expect(run.keys).toHaveLength(2);
+  expect(new Set(run.keys).size).toBe(1);
+  expect(error).toBeInstanceOf(DispatchServiceError);
+  expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+  expect(error).toEqual(
+    expect.objectContaining({ code: answer.code, status: answer.status, fromDispatch: true })
+  );
+});
+
+// The named callers read these fields: the dispatch command's duplicate list and docEdit's
+// callers read `candidates`, pi-envoy's typed-input reply falls back on a `fromDispatch` refusal,
+// and AskGate's decision record reads `422 KEY_REUSED` from Dispatch as "another writer made it".
+test("after a gateway page, the callers' stored refusals keep what their callers read", async () => {
+  const duplicate = await drive([
+    kind("502 page"),
+    kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
+  ]);
+  expect((duplicate.error as DispatchServiceError).candidates).toEqual(duplicates);
+  const ambiguous = await drive([
+    kind("502 page"),
+    kind("409 handler TARGET_AMBIGUOUS fresh exact echo for docEdit candidates"),
+  ]);
+  expect((ambiguous.error as DispatchServiceError).candidates).toEqual([
+    { from: 1, to: 2, context: "same" },
+  ]);
+  const reply = await drive([
+    kind("502 page"),
+    kind("400 handler CAP_EXCEEDED fresh exact echo for the typed-input fallback reply"),
+  ]);
+  expect(reply.error).toEqual(
+    expect.objectContaining({
+      fromDispatch: true,
+      message: "a block is longer than a comment takes",
+    })
+  );
+  const reused = await drive([kind("502 page"), kind("422 KEY_REUSED exact echo")]);
+  expect(reused.error).toEqual(
+    expect.objectContaining({ code: IDEMPOTENCY_KEY_REUSED, status: 422, fromDispatch: true })
+  );
+});
+
+test.each([
+  kind("409 handler TARGET_AMBIGUOUS with a different key echo"),
+  kind("422 KEY_REUSED with a different key echo"),
+  kind("401 handler fresh exact echo"),
+  kind("403 PROJECT_SCOPE before claim"),
+  kind("413 REQUEST_TOO_LARGE before claim"),
+  kind("400 REQUEST_BODY_UNREADABLE before claim"),
+])("after a gateway page, $name leaves the write unsettled", async (answer) => {
+  const { run, error } = await drive([kind("502 page"), answer]);
+
+  expect(run.keys).toHaveLength(2);
+  expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+  expect((error as DispatchWriteUnsettledError).key).toBe(run.keys[0] as string);
+});
+
 /** The events of each kind of step that asks again, rotated along a path so each appears. */
 const ASKING_AGAIN: readonly (readonly Kind[])[] = [
   KINDS.filter((one) => one.role === "repeatable" && one.followsCommit === true),
@@ -946,7 +1179,8 @@ const ENDINGS: readonly Kind[] = [
   kind("205"),
   kind("201 body outlives deadline"),
   kind("201 body stopped"),
-  kind("422 KEY_REUSED"),
+  kind("422 KEY_REUSED exact echo"),
+  kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
   kind("409 KEY_COMMITTED"),
   kind("401 auth"),
   kind("403 page"),

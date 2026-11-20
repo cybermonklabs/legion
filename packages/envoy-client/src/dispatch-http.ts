@@ -85,6 +85,7 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
+  IDEMPOTENCY_KEY_REUSED,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   jitteredDelay,
@@ -181,14 +182,15 @@ export class DispatchGatewayError extends DispatchServiceError {
 }
 
 /**
- * A write that ended, once an attempt of it may have landed (write-outcome.ts), with anything but
- * Dispatch's own 2xx read whole or a final refusal Dispatch decided, so it may or may not have
- * taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off with no attempt
- * or time left; a page something in Dispatch's place wrote, a 2xx that is no answer of Dispatch's,
- * a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a credential that could not
- * present, or that would present as another identity than the attempts before it; or no answer at
- * all: its last attempt cut off for silence, the call's deadline or the caller's stop. This is
- * deliberately no `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
+ * A write that ended, once an attempt may have landed (write-outcome.ts), without Dispatch's 2xx
+ * read whole, its `409 KEY_COMMITTED` or a final refusal, so it may or may not have taken effect.
+ * A final refusal is an answer marked `Idempotency-Replayed: ?1` (including a recovery replay),
+ * `422 KEY_REUSED` echoing exactly this request's key, or a fresh answer echoing exactly that key
+ * with a 4xx Dispatch stores (not 401, 408 or 429) and no keyed-layer code (`answerEvent`).
+ * Everything else — a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a broken body, a page, a 3xx, a
+ * refusal before the key claim, an answer echoing another key, a credential failure, a silence
+ * cut, the deadline or the caller's stop — ends here. This is deliberately no
+ * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
  * `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key` every attempt of the
  * write carried, each attempt that may have landed as one identity: a resend under it, as that
  * identity, is answered from what Dispatch stored, never written twice. The message always says
@@ -609,8 +611,10 @@ interface WriteAnswer {
    *  answer is one. */
   readonly code: string | undefined;
   readonly error: string | undefined;
-  /** Whether Dispatch replayed the answer it stored under this key (`request_keys.go`). */
+  /** Whether Dispatch replayed the stored answer or a recovery answer under this key. */
   readonly replayed: boolean;
+  /** The response's echoed request key, where a server sent one. */
+  readonly keyEcho: string | undefined;
 }
 
 /** A body parsed as JSON, or undefined where it is empty, not typed JSON, or not JSON. */
@@ -675,6 +679,7 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
       code: undefined,
       error: undefined,
       replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
+      keyEcho: response.headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined,
     };
   }
   const text = await response.text();
@@ -691,22 +696,35 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
     code: own ? shape.code : undefined,
     error: own ? (shape.error as string) : undefined,
     replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
+    keyEcho: response.headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined,
   };
 }
 
+/** Whether `storedStatus` (request_keys.go:1016-1019) keeps this answer under the key. */
+function isStoredKeyStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+}
+
 /**
- * The table's event for an answer (`WriteEvent`, write-outcome.ts).
- * - A 2xx is `applied` once its body was read whole, except where it is no answer of Dispatch's
- *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
- *   a captive portal's 200 page for one. A 2xx whose body is not the JSON it says it is was cut
- *   short on the way (`body-malformed`).
- * - `401 BROKER_TOKEN_NOT_ACTIVE` and an old build's `404 NOT_FOUND` "no route for …" are read by
- *   their codes before this rule. A non-2xx answer Dispatch explicitly replayed (`Idempotency-Replayed:
- *   ?1`) is the stored answer after the key claim, so it is a final refusal whatever its code.
- *   Every other non-retry answer is unjudged after a possible landing: outer layers and an old/new
- *   rolling release can write the same JSON codes before the claim.
+ * The table's event for an answer (`WriteEvent`, write-outcome.ts). After the retries
+ * (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
+ * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
+ * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
+ * - it is `422 KEY_REUSED` echoing exactly this request's key: every attempt of a call carries the
+ *   call's one key (`#writeCall`) and the bytes encoded once for the call, so a key held under
+ *   another digest (`writeRequestFields`, request_keys.go:517-531) proves no attempt of this
+ *   write claimed it;
+ * - it is a fresh answer echoing exactly this request's key, with a 4xx `storedStatus` keeps and
+ *   none of the keyed layer's own codes: a handler ran under the claim and its answer is the key's.
+ * Every other answer is `unjudged`. A layer before the claim and a build without the keyed layer
+ * echo no key. Each rule holds only once every replica runs `b1c42d1d7d`: before it, an attempt
+ * could land unkeyed. The key decides only how a final answer reads; every retry goes regardless.
  */
-function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
+function answerEvent(
+  answer: WriteAnswer,
+  requestKey: string,
+  canTellDeadToken: boolean
+): WriteEvent {
   const { status } = answer.response;
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
@@ -729,7 +747,11 @@ function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent
     return status >= 500 ? "server-error" : "try-later";
   }
   if (answer.replayed || answer.code === IDEMPOTENCY_KEY_COMMITTED) return "judged";
-  return "unjudged";
+  if (answer.keyEcho !== requestKey || !isStoredKeyStatus(status)) return "unjudged";
+  if (answer.code === IDEMPOTENCY_KEY_REUSED) return "judged";
+  // The fresh-handler clause: no keyed-layer code is a handler's stored answer. `KEY_COMMITTED`
+  // and `KEY_REUSED` were read by their own clauses above.
+  return answer.code === IDEMPOTENCY_KEY_IN_FLIGHT ? "unjudged" : "judged";
 }
 
 /**
@@ -2307,7 +2329,11 @@ export class DispatchClient {
         };
       }
       return {
-        event: answerEvent(answer, this.#credential.stale !== undefined && !deadTokenTold),
+        event: answerEvent(
+          answer,
+          write.key,
+          this.#credential.stale !== undefined && !deadTokenTold
+        ),
         answer,
         presented,
         sent,

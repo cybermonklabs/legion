@@ -28,8 +28,9 @@ import {
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
 // that call, and asks Dispatch again under it while an attempt gets no definitive answer, so a
 // dropped answer never makes the session's write land twice and a short outage never fails it.
-// Every Dispatch runs the keyed layer on every write route, so the write asks again without asking
-// anything first (dispatch-keyed-resend.test.ts holds that against a real server).
+// Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the write
+// asks again without asking anything first. `dispatch-keyed-resend.test.ts` uses a Bun stand-in;
+// `dispatch-keyed-resend-live.test.ts` is the real-server coverage.
 
 interface Sent {
   readonly method: string;
@@ -388,7 +389,7 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  test("a 409 after a possibly landed retry is unsettled", async () => {
+  test("a stored 409 after a retry keeps its code, candidates and message", async () => {
     const candidates = [{ from: 1, to: 2, context: "same" }];
     const { fetchImpl } = scripted([
       page(502, "Bad Gateway"),
@@ -400,7 +401,15 @@ describe("DispatchClient's writes", () => {
         ops: [{ op: "delete", find: "same" }],
         actor,
       })
-    ).rejects.toBeInstanceOf(DispatchWriteUnsettledError);
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code: "TARGET_AMBIGUOUS",
+        status: 409,
+        message: "quote is ambiguous",
+        candidates,
+      })
+    );
   });
 
   // R1-8710 (the review of 87105ed7e8): a 5xx can come after Dispatch committed the write, so a

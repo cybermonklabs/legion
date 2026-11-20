@@ -392,11 +392,15 @@ Every Dispatch judges the key on every `POST` and `PATCH` route, so the command 
 it asks again. Dispatch makes the write once per key and answers a repeat with the first answer, so
 the command never makes a write twice. When the write landed but Dispatch has no answer to give for
 it (`409 KEY_COMMITTED`, or a first answer too large to keep), the command exits 0 and says it was
-made: read it back to see it. When an attempt may have landed and the command gets neither a 2xx
-read whole nor a final refusal Dispatch decided (no attempt answered, a page something in
-Dispatch's place wrote, a 2xx that is empty, not typed JSON or not JSON, but a bodiless 204 or
-205), it says the write may or may not have taken effect: read it back before you run the command
-again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of `dispatch follow`
+made: read it back to see it. When an attempt may have landed, the command settles only on a 2xx
+read whole or a final refusal: `Idempotency-Replayed: ?1` (also a recovery replay),
+`422 KEY_REUSED` that echoes exactly its request key (every attempt of one command sends the same
+bytes, so a key held for another request was never claimed by this one), or a fresh answer that
+echoes exactly its request key, has a stored 4xx other than 401, 408 or 429, and is none of
+`KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs
+`b1c42d1d7d`. Every other answer says the write may or may not have taken effect: read it back
+before you run the command again, since a new command is a new key. Reads, and the `PUT` and
+`DELETE` of `dispatch follow`
 and `dispatch claim --release`, carry no key. Each goes once, and again only where Dispatch did
 nothing with it: once more after Dispatch calls the token it presented dead, and on an old build's
 "no route" during a rolling release. A script that calls

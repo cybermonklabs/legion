@@ -656,21 +656,47 @@ was made, since its 60 s deadline counts from there. The numbers come from the 3
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that. How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
+that.
+How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
 loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
 silence (an upload's included), failed in transport after it went out (a reset after Dispatch
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
 ended by either while it was in flight; a refused connection or a name that did not resolve
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
-body is read whole. From "may have landed", only such a 2xx or a final refusal settles the write.
-A 2xx that is no answer of Dispatch settles nothing from either state: one whose body is empty or
-not typed JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204
-or 205). Every other end — a 3xx, a page something in Dispatch's place
-wrote, a refusal Dispatch's auth made before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a
-second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the
-deadline, the caller's stop, or no attempt or time left, a 5xx included — is
-`DispatchWriteUnsettledError`, with what ended it as its cause and the write's key as its `key`.
+body is read whole. From "may have landed", only such a 2xx, `409 KEY_COMMITTED` (a landing) or
+a final refusal settles the write. A final refusal is one of these:
+
+- an answer marked `Idempotency-Replayed: ?1`: Dispatch's stored answer, or a recovery replay;
+- `422 KEY_REUSED` that echoes exactly this request's key. Every attempt of one call sends the
+  call's one key and its bytes encoded once, and Dispatch's digest covers the method, the route
+  pattern, its path values, the query, the content type less its boundary, and the body
+  (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
+  call. That needs the client never to send one key for two different writes: `#writeCall`
+  (`src/dispatch-http.ts:2067`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  Idempotency-Key per write call") shows five writes going under five keys, and
+  `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
+  names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
+  record reads `KEY_REUSED` as another writer of that intent;
+- a fresh answer that echoes exactly this request's key, has a 4xx status `storedStatus` keeps
+  (not 401, 408 or 429), and has none of the keyed layer's own codes `KEY_IN_FLIGHT`,
+  `KEY_COMMITTED` and `KEY_REUSED`: a handler answered under the key's claim, and Dispatch keeps
+  that answer for the key.
+
+A refusal made before the key claim echoes no key (a 401, a 403, a 413,
+`400 REQUEST_BODY_UNREADABLE`), and neither does a build without the keyed layer, so each leaves
+the write unsettled. The key decides only how a final answer reads; every retry goes regardless.
+Each clause holds only once every replica runs `b1c42d1d7d` (below). Every resend starts within
+55 s of the first attempt, far below the 24 h `IdempotencyKeyTTL`
+(`packages/envoy/internal/contracts/generated.go`), after which Dispatch deletes a key and claims
+a later request under it fresh. A 2xx that is no answer of Dispatch
+settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205). Every other end — a 3xx,
+a page something in Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer
+ran (a 401, `403 READ_ONLY_TOKEN`, a second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that
+cannot present, no route to the end, the deadline, the caller's stop, or no attempt or time left,
+a 5xx included — is `DispatchWriteUnsettledError`, with what ended it as its cause and the
+write's key as its `key`.
 Before anything may have landed, a write that ends is told that event's own error: the refusal (a
 3xx included, which says nothing reached Dispatch), the transport's failure (a refused connection
 on every attempt is told as Dispatch being unreachable), the credential's, the deadline's or the
@@ -694,20 +720,23 @@ it again, since a new command sends it under a new key. A conversion that writes
 markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 
 Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATCH` route. A retry
-therefore always sends the same key and encoded body again, without reading a key echo, probing
-`/healthz`, or keeping process or session memory of a server capability. A transport failure, a
-silence cut, a gateway or Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the
-write's pacing and deadline. `dispatch-keyed-resend.test.ts` drives a Bun stand-in that stores one
-comment for a retry under its key while `/healthz` is unavailable.
-`dispatch-keyed-resend-live.test.ts` starts a real Dispatch whose first caller lookup answers 503
-before it stores anything, then proves the client's same-key resend stores one comment.
-`dispatch-write-outcomes.test.ts` drives every (state, event) pair and every sequence of events up to its limits.
+therefore always sends the same key and encoded body again, without probing `/healthz` or keeping
+process or session memory of a server capability. A transport failure, a silence cut, a gateway or
+Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the write's pacing and
+deadline. `dispatch-keyed-resend.test.ts` uses a Bun stand-in that stores one comment for a retry
+under its key while `/healthz` is unavailable. `dispatch-keyed-resend-live.test.ts` starts a real
+Dispatch whose first caller lookup answers 503 before it stores anything, then proves the client's
+same-key resend stores one comment. `dispatch-write-outcomes.test.ts` drives every (state, event)
+pair and every sequence of events up to its limits.
 
-Before sessions use this client, move every Dispatch process to `b1c42d1d7d` or later: that build
-answers a caller it cannot resolve before its handler runs (cybermonklabs/legion#4350). An older
-build can run that caller's first attempt with no key, then run this client's retry under its key,
-so the write lands twice. Do not roll Dispatch back below that build while sessions use this client;
-fix forward instead.
+Before sessions use this client, every replica that can serve a write route must run
+`b1c42d1d7d` or later; only then does a final refusal prove that nothing earlier landed. An older
+build runs the handler with no key when it cannot resolve the caller or the body is past its limit
+(`keyedWrites`), so an earlier attempt can land unkeyed and lose its answer: this client's retry
+under its key then runs the write again, and a fresh echoed refusal or a `KEY_REUSED` after it
+would read as nothing written. A fleet commit that names `b1c42d1d7d` while a rollout is still
+going does not prove that every replica runs it. Do not roll Dispatch back below that build while
+sessions use this client; fix forward instead.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
