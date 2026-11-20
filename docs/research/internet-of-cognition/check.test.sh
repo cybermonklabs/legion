@@ -3954,6 +3954,46 @@ for figure in 12,618 12,617; do
     fi
 done
 
+# 130. A figure marked as an estimate is exempt by name (the architect's rule of round 40):
+# an estimate is no measurement, and the judgement marks each one with "by our estimate".
+# At 4ea5f7b1 citation-figures held every figure of a sentence that cites a row to that
+# row, so the judgement's own Cost line "by our estimate, about 7 engineer-days ... against
+# about 2 [m-eval-cost]" failed it. The case writes, after the fixture's sentence on the
+# one thing to do first, a sentence that cites f-figure-1, which prints 12617 rows and no 9,
+# and states about 9 engineer-days, in four forms, and runs --citations over each: with
+# "by our estimate" in the figure's clause it passes citation-figures; with the words alone
+# between commas after the figure's clause it passes too; with no marking it fails
+# citation-figures, naming 9; and with the marked clause beside one that states 12,618 rows
+# it fails citation-figures once, naming 12,618 and not 9, so the marking reaches no
+# further than its clause.
+for form in marked aside unmarked beside; do
+    case "$form" in
+    marked) sentence='It costs about 9 engineer-days by our estimate [f-figure-1].' ;;
+    aside) sentence='It costs about 9 engineer-days, by our estimate, and its count reads 12,617 rows [f-figure-1].' ;;
+    unmarked) sentence='It costs about 9 engineer-days [f-figure-1].' ;;
+    beside) sentence='It costs about 9 engineer-days by our estimate, and its count reads 12,618 rows [f-figure-1].' ;;
+    esac
+    dir="$(fresh "estimate-$form")"
+    sed -i "s/^The Envoy field\\.\$/The Envoy field. $sentence/" "$dir/judgement.md"
+    grep -qxF "The Envoy field. $sentence" "$dir/judgement.md" || {
+        printf 'FAIL the %s sentence could not be planted in the fixture judgement\n' "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    marked) honest_result "a figure its clause marks by our estimate passes citation-figures, though no row it cites prints it" citation-figures "$out" ;;
+    aside) honest_result "a figure whose clause the words by our estimate follow alone between commas passes citation-figures" citation-figures "$out" ;;
+    unmarked)
+        case_result "the same figure with no marking fails citation-figures, naming it" \
+            'citation-figures: line [0-9]+ of the judgement states 9 in a sentence that cites f-figure-1' "$out"
+        ;;
+    beside)
+        one_failure_result "a marked clause beside a clause stating a figure no cited row prints fails citation-figures once, naming that figure alone" citation-figures \
+            '^1 of 6 assertions failed: citation-figures$' '^FAIL citation-figures: line [0-9]+ of the judgement states 12,618 in a sentence that cites f-figure-1' "$out"
+        ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

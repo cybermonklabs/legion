@@ -620,7 +620,7 @@ citation-project-code|citations|every citation into one of the projects names a 
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
-citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites|a figure no row its sentence cites prints
+citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
 landed-proof|landed|every landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, and the committed command passes|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
@@ -1660,7 +1660,9 @@ coverage_report() {
   shallowly passes.
 - whether a cited text supports the claim beside it. It resolves the citation, reads the
   quoted words and holds each figure of a sentence that cites a row to the output or the
-  command of a row it cites; the judgement of what they support is the reader's.
+  command of a row it cites; the judgement of what they support is the reader's. A number
+  written in words is not read, so a measured figure is written in digits, and an
+  estimate carries "by our estimate", which no row is held to print.
 - whether a candidate that cannot be argued in one page was left off the list, and whether
   one fact is written once with the other half linking to it. Both are a reviewer's
   reading, and the plan of this issue names them so that nobody reads this gate as
@@ -5297,14 +5299,26 @@ report_unchecked_parts() {
 #   a question's number after the word Question, as Question 12: it is Q12 written out, the
 #     entry of questions.md that question-list holds the judgement to, and the front page
 #     must write it in digits for a question no page answers;
-#   a number written in words, as two pull requests or about four engineer-days: a row
-#     prints digits, so a word names no spelling to look for in its output, and the
-#     judgement writes in words what it orders or estimates rather than measures.
+#   a number written in words, as two pull requests or about four engineer-days: it is not
+#     read, since a row prints digits and a word names no spelling to look for in its
+#     output, so a measured figure is written in digits, and an estimate carries "by our
+#     estimate".
+# A figure marked as an estimate is exempt by name: an estimate is not a measurement, and
+# the judgement marks each one with the words "by our estimate", so no row is held to
+# print it. The words mark their clause, the stretch of their sentence between the commas
+# and semicolons around them, each a comma or a semicolon before a space outside a code
+# span and a citation, so a thousands separator cuts no clause; they mark the whole
+# sentence when they open it, after any list marker and field label, as in "- **Cost:** by
+# our estimate, about 7 engineer-days ... against about 2", since there they qualify all
+# that follows; and where they stand alone in their clause, as in "about 4 engineer-days,
+# by our estimate, for ..." or "about 4 engineer-days, by our estimate.", they mark the
+# clause before them too, which is the one they qualify. A figure outside a marked clause
+# is held to the cited rows as any other.
 # Each figure no cited row prints fails, naming the line of the judgement, the figure and
 # the rows its sentence cites; by the expected-set rule a judgement that states no figure in
-# a sentence that cites a row fails too, since then nothing is checked.
+# a sentence that cites a row, but estimates, fails too, since then nothing is checked.
 citation_figures() {
-    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence judged=0 checked=0 bad=0
+    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence judged=0 checked=0 estimates=0 bad=0
     claims_parsed || {
         fail citation-figures "the parse of claims.jsonl did not run to its end, so no row a sentence of the judgement cites is read"
         return
@@ -5330,6 +5344,11 @@ QUESTION = re.compile(r"\bQuestions?\s+(\d+)\b", re.IGNORECASE)
 TOKEN = re.compile(r"[^\s()\[\]{}\"'`=|<>;\u201c\u201d\u2018\u2019]+")
 PIECES = re.compile(r"[-:\u2013\u2014]|,(?!\d{3}(?!\d))")
 FIGURE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?")
+ESTIMATE = re.compile(r"\bby our estimate\b", re.IGNORECASE)
+CLAUSE_END = re.compile(r"[,;](?=\s)")
+# What may stand before the words for them to open their sentence: a list marker and a
+# field label, as "- **Cost:** ".
+OPENING = re.compile(r"\s*(?:[-*+]|\d*\.)?\s*(?:\*\*[^*]+:\*\*\s*)?")
 
 
 def blank(text, start, end, fill=" "):
@@ -5337,6 +5356,7 @@ def blank(text, start, end, fill=" "):
 
 
 def figures(text):
+    # Each figure of text, with where it stands in text, in order.
     found = []
     for date in citations.DATE.finditer(text):
         if not re.match(r"[\w-]", text[date.start() - 1:date.start()] or " "):
@@ -5352,7 +5372,24 @@ def figures(text):
         for piece in PIECES.split(word):
             if FIGURE.fullmatch(piece) and not citations.HEX_SHORT.fullmatch(piece):
                 found.append((token.start(), piece))
-    return [figure for _, figure in sorted(found)]
+    return sorted(found)
+
+
+def estimated(marks, start, end):
+    # The stretches of the sentence marks[start:end] that "by our estimate" marks, each as
+    # (from, to), by the clause rule above.
+    cuts = [start] + [m.end() for m in CLAUSE_END.finditer(marks, start, end)] + [end]
+    spans = []
+    for words in ESTIMATE.finditer(marks, start, end):
+        if OPENING.fullmatch(marks[start:words.start()]):
+            spans.append((start, end))
+            continue
+        clause = max(k for k in range(len(cuts) - 1) if cuts[k] <= words.start())
+        spans.append((cuts[clause], cuts[clause + 1]))
+        alone = re.sub(r"[\W_]+", "", marks[cuts[clause]:cuts[clause + 1]]).lower() == "byourestimate"
+        if alone and clause > 0:
+            spans.append((cuts[clause - 1], cuts[clause]))
+    return spans
 
 
 def prints(figure, text):
@@ -5370,16 +5407,17 @@ def prints(figure, text):
     return False
 
 
-judged = checked = 0
+judged = checked = estimates = 0
 with open(judgement_path, encoding="utf-8") as handle:
     lines = handle.read().splitlines()
 for number, line in enumerate(lines, 1):
     if citations.HEADING.match(line):
         continue
-    # Two copies of the line, each its length, so one offset reads both: bounds, where a
-    # sentence may end, with each reference, address and code span covered; and quiet,
+    # Three copies of the line, each its length, so one offset reads all three: bounds,
+    # where a sentence may end, with each reference, address and code span covered; quiet,
     # where a figure may stand, with each reference, address, citation, list number and
-    # question number covered.
+    # question number covered; and marks, where a clause may end and "by our estimate"
+    # stand, which is quiet with each code span covered too.
     quiet = line
     for ref in citations.DISPATCH_REF.finditer(line):
         quiet = blank(quiet, ref.start(), ref.start() + len(ref.group(0).rstrip(citations.TRAILING)))
@@ -5397,6 +5435,7 @@ for number, line in enumerate(lines, 1):
     for covered in [LIST_NUMBER.match(quiet)] + list(QUESTION.finditer(quiet)):
         if covered:
             quiet = blank(quiet, covered.start(1), covered.end(1))
+    marks = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
     start = 0
     for end in [m.end() for m in SENTENCE_END.finditer(bounds)] + [len(line)]:
         rows = []
@@ -5406,19 +5445,23 @@ for number, line in enumerate(lines, 1):
         if rows:
             judged += 1
             text = "\n".join(printed[i] for i in rows)
-            for figure in figures(quiet[start:end]):
+            spans = estimated(marks, start, end)
+            for at, figure in figures(quiet[start:end]):
+                if any(begin <= start + at < finish for begin, finish in spans):
+                    estimates += 1
+                    continue
                 checked += 1
                 if not prints(figure, text):
                     print("F\t%d\t%s\t%s\t%s" % (number, figure, ", ".join(rows), " ".join(line[start:end].split())[:80]))
         start = end
-print("N\t%d\t%d" % (judged, checked))
+print("N\t%d\t%d\t%d" % (judged, checked, estimates))
 PY
         fail citation-figures "the reader of the figures of the judgement did not run to its end: $(tail -1 "$found.err" | head -c 240)"
         return
     fi
     while IFS=$'\t' read -r kind number figure rows sentence; do
         case "$kind" in
-        N) judged="$number" checked="$figure" ;;
+        N) judged="$number" checked="$figure" estimates="$rows" ;;
         F)
             bad=$((bad + 1))
             fail citation-figures "line $number of the judgement states $figure in a sentence that cites $rows, and none of them prints it in its output or its command: '$sentence'"
@@ -5426,9 +5469,9 @@ PY
         esac
     done <"$found"
     if [ "$checked" -eq 0 ]; then
-        fail citation-figures "the judgement states no figure in a sentence that cites a row of claims.jsonl, in $judged such sentences, so no figure is checked"
+        fail citation-figures "the judgement states no figure in a sentence that cites a row of claims.jsonl, in $judged such sentences, but $estimates marked by our estimate, so no figure is checked"
     elif [ "$bad" -eq 0 ]; then
-        pass citation-figures "each of the $checked figures the judgement states in its $judged sentences that cite a row of claims.jsonl is printed by the output or the command of a row its sentence cites"
+        pass citation-figures "each of the $checked figures the judgement states in its $judged sentences that cite a row of claims.jsonl is printed by the output or the command of a row its sentence cites, and $estimates more are marked by our estimate, which no row is held to print"
     fi
 }
 
