@@ -691,6 +691,24 @@ func (s *server) boundedClosure(ctx context.Context, issueKey string) (refs.Refe
 	return refs.Closure(ctx, tx, issueKey)
 }
 
+// errClosureBudgetSpent is setStatementBudget's answer when less than a millisecond of
+// referencesClosureBound is left before a statement of boundedClosure's read: the read is at its
+// bound, and the route answers it as it answers a statement Postgres cancelled there.
+var errClosureBudgetSpent = errors.New("the reference closure's budget has less than 1ms left")
+
+// setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
+// referencesClosureBound, left, so that the statements of the read share the one bound rather
+// than each having it whole. It sets statement_timeout for the rest of tx to the whole
+// milliseconds of left, rounded down, with `select set_config('statement_timeout', $1, true)`:
+// 1ms at 1 ms left. Under 1 ms left it sends no statement and answers errClosureBudgetSpent,
+// which closureBoundHit reads as the bound, because the timeout rounded down would be 0, and a
+// statement_timeout of 0 turns the timeout off.
+func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) error {
+	// This build sets no budget yet: TestReferencesBudgetRefusesUnderOneMillisecond holds the
+	// contract above and fails until it does.
+	return nil
+}
+
 // closureBoundHit says whether boundedClosure's walk ended at its bound: Postgres cancelled the
 // statement (SQLSTATE 57014) or the context expired first.
 func closureBoundHit(err error) bool {
