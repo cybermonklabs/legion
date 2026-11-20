@@ -328,8 +328,9 @@ now=''
 if command -v date >/dev/null 2>&1; then
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 fi
+# No line names this machine's host name: the output goes to logs anyone may read, such as a
+# public CI log.
 printf 'outside-edge-refusals: address %s\n' "$given"
-printf 'outside-edge-refusals: device %s\n' "${HOSTNAME:-unknown}"
 printf 'outside-edge-refusals: time %s\n' "${now:-unknown (no date command answered)}"
 printf 'outside-edge-refusals: curl %s\n' "$version"
 printf 'outside-edge-refusals: routed %s (%s)\n' "$OUTSIDE_EDGE_ROUTED" "$routed"

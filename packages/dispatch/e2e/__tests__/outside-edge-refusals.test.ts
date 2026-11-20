@@ -16,11 +16,11 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import type { Edge, Route, Seen } from "./outside-edge-refusals-edge";
 import { bash, closedPort, curl, fakeHost, type Run, verdict } from "./outside-path-reach-fixtures";
@@ -36,7 +36,15 @@ const withoutTools = skipWithout(
   ...(hostTool("sha256sum") === null && hostTool("shasum") === null ? ["sha256sum"] : [])
 );
 
-const scratch = temporaryDirectory("outside-edge-refusals");
+// On tmpfs where the host has one that allows exec (the `curl` scripts the rows write here run),
+// as the reach fixtures' scratch is: on a disk other programs share, a hook of this file, whose
+// only hooks make and remove this directory, timed out after the file's last row, at 10,971 ms
+// past Bun's 5 s default, in a `bun test` of it on a dev box at a load of about 350. Each run of
+// the script writes at most its two lists here, and a few rows a PATH directory or a TMPDIR of
+// their own: under 200 files, a tmpfs page each, so 1 MiB a run, times six runs sharing a host.
+const scratch = temporaryDirectory("outside-edge-refusals", {
+  root: memoryRoot({ need: 6 * 2 ** 20 }),
+});
 
 const edgeHost = fakeHost(
   fileURLToPath(new URL("./outside-edge-refusals-edge.ts", import.meta.url)),
@@ -793,6 +801,35 @@ describe(scriptName, () => {
     },
     // The script, a bounded child under the short bound.
     rowLimit("short")
+  );
+
+  // A run's output goes to logs anyone may read, such as a public CI log, so it names this
+  // machine's host name nowhere: neither a HOSTNAME the environment hands bash, which bash keeps,
+  // nor the one bash reads from the system where the environment names none.
+  test.skipIf(withoutTools)(
+    "prints the machine's host name in no line, whether the environment names it or bash reads it",
+    async () => {
+      const edge = await standIn(production);
+      try {
+        const planted = `planted-host-${randomUUID()}`;
+        for (const { label, name, env } of [
+          { label: "planted", name: planted, env: { HOSTNAME: planted } },
+          { label: "read", name: hostname(), env: {} },
+        ]) {
+          const run = await check(`host name ${label}`, {
+            OUTSIDE_EDGE_ADDRESS: edge.address,
+            ...planLists(),
+            ...env,
+          });
+          expect(verdict(run), said(run)).toBe(passVerdict);
+          expect(run.stdout.split("\n").filter((line) => line.includes(name))).toEqual([]);
+        }
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The script twice, one after the other, each a bounded child under the short bound.
+    rowLimit("short", "short")
   );
 
   // The run's `curl` sends SIGTERM to the script's own bash at the first probe, found as the

@@ -52,8 +52,9 @@
 # later refuse a bound past 2147483 s where a long has 32 bits. They do not bound the probes, whose
 # 3 s to connect and 5 s in all the classifier's rules count on.
 #
-# It prints the origin, this device's name and the UTC time, a line for the origin's positive
-# control and one per target, then its verdict:
+# It prints the origin and the UTC time, never this device's host name (its output can be posted
+# where anyone reads it), then a line for the origin's positive control and one per target, then
+# its verdict:
 #   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v1/projects with no
 #            credential 401 with Dispatch's own NO_IDENTITY refusal), the probe connected to the
 #            origin in every round, and every target was unreachable.
@@ -518,8 +519,9 @@ now=''
 if command -v date >/dev/null 2>&1; then
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 fi
+# No line names this device's host name: the output can be posted where anyone reads it, such as a
+# public CI log.
 printf 'outside-path-reach: origin %s\n' "$origin"
-printf 'outside-path-reach: device %s\n' "${HOSTNAME:-unknown}"
 printf 'outside-path-reach: time %s\n' "${now:-unknown (no date command answered)}"
 printf 'outside-path-reach: curl %s\n' "$version"
 printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"

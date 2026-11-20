@@ -781,9 +781,10 @@ rounds are 6 s apart because a tunnel whose first handshake packet was lost stay
 WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
 together would all fall inside that.
 Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
-the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
-not by curl's exit code alone, since our services accept a connection and then wait for the
-client:
+the run measures what that device itself reaches. No line of its output names the device's host
+name, since that output can be posted where anyone reads it. Each probe is judged by whether TCP
+connected, not by curl's exit code alone, since our services accept a connection and then wait for
+the client:
 
 | curl's answer | Class |
 |---|---|
@@ -873,7 +874,8 @@ marker says nothing where no marker can be seen. Then each refusal line reads:
 | no status (a connect or TLS failure, a timeout), or a 404 with no marker curl did not read whole | `UNKNOWN` |
 
 Each line prints the status, the marker (`none` for none) and the SHA-256 of the body, so two runs
-can be compared, and curl's exit code and first message where curl did not exit 0. `PASS` (exit 0)
+can be compared, and curl's exit code and first message where curl did not exit 0; no line names
+the machine's host name, since the output goes to logs anyone may read. `PASS` (exit 0)
 needs every control's marker and every refusal line refused; `FAIL` (exit 1) names each line
 reached, whatever else the run could not read; every run that proved nothing is `UNKNOWN` (exit
 2): an input refused, a tool missing, an empty or unreadable list, a control's marker not seen, a
