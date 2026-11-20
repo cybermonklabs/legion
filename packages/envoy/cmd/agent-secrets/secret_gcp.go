@@ -365,8 +365,8 @@ func chooseGcloudAccount(chosen string, accounts []string, active, configured st
 
 // gcloudToken is the oauth2.TokenSource of one gcloud login: each Token runs
 // `gcloud auth print-access-token` for its account and takes the token to last gcloudTokenLife.
-// No error carries the token: a failure names the account and what gcloud wrote on its standard
-// error.
+// No error carries the token: a failure names the account and gcloud's exit status, never what
+// gcloud wrote on its standard error, which runGcloud discards.
 type gcloudToken struct {
 	ctx     context.Context
 	gcloud  gcloudCommand
@@ -411,9 +411,10 @@ func (s gcloudToken) Token() (*oauth2.Token, error) {
 // off, so gcloud fails rather than waits on one, file logging off (core/disable_file_logging:
 // log.py's AddLogsDir adds no file handler), so no run leaves a log file behind, and HTTP logging
 // off (core/log_http), whatever this command's environment or gcloud's configuration sets: with
-// it on, and its token redaction off, a failed refresh prints its request body, the refresh token
-// in it, on the standard error runGcloud quotes in its errors. A variable outranks the
-// configuration file, and given twice takes its last value.
+// it on, and its token redaction off, a failed refresh writes its request body, the refresh token
+// in it, on gcloud's standard error, which runGcloud discards but which a person who runs the same
+// gcloud command to read its message sees. A variable outranks the configuration file, and given
+// twice takes its last value.
 func gcloudEnv() []string {
 	dropped := []string{"CLOUDSDK_AUTH_ACCESS_TOKEN"}
 	env := slices.DeleteFunc(os.Environ(), func(variable string) bool {
