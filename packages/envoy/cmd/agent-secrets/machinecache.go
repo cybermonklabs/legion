@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -73,6 +74,17 @@ func machineCacheHolds(dir string) bool {
 	return dir != "" && exists(filepath.Join(dir, keyFile)) && exists(filepath.Join(dir, enrollmentFile))
 }
 
+// machineCacheName is how a message names the machine cache: by where it is, never by its path,
+// since it holds the machine session's key.pem. machineCacheKeyFile names that key.pem (loadKey),
+// machineCacheEnrollment the enrollment file beside it, and machineCacheAudienceFile the kept
+// Google exchange audience (googleAudienceFile).
+const (
+	machineCacheName         = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
+	machineCacheKeyFile      = "key.pem in " + machineCacheName
+	machineCacheEnrollment   = "the enrollment file in " + machineCacheName
+	machineCacheAudienceFile = googleAudienceFile + " in " + machineCacheName
+)
+
 // readMachineCache is the signer of the session the machine cache holds, or nil and no error
 // where it holds none, read under the cache's shared lock. A session there that cannot be read
 // is an error naming the file: the source is present but broken.
@@ -94,17 +106,13 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 	if !machineCacheHolds(dir) {
 		return nil, nil
 	}
-	key, err := loadKey(filepath.Join(dir, keyFile))
+	key, err := loadKey(filepath.Join(dir, keyFile), machineCacheKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	enrollment := filepath.Join(dir, enrollmentFile)
-	id, err := readTrimmed(enrollment)
+	id, err := readEnrollment(filepath.Join(dir, enrollmentFile), machineCacheEnrollment)
 	if err != nil {
 		return nil, err
-	}
-	if id == "" {
-		return nil, fmt.Errorf("%s: empty", enrollment)
 	}
 	return &fileSigner{key: key, enrollmentID: id, register: machineReregister}, nil
 }
@@ -117,12 +125,12 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 func readMachineCacheNow() (*fileSigner, error) {
 	dir := machineCacheDir()
 	if !machineCacheHolds(dir) {
-		return nil, absent("%s holds no session", machineCacheWords)
+		return nil, absent("%s holds no session", machineCacheName)
 	}
 	unlock, err := lockMachineCache(dir, false, false)
 	switch {
 	case errors.Is(err, errLockWouldBlock):
-		return nil, absent("another command is registering this machine's session in %s", machineCacheWords)
+		return nil, absent("another command is registering this machine's session in %s", machineCacheName)
 	case err != nil:
 		return nil, err
 	}
@@ -132,18 +140,13 @@ func readMachineCacheNow() (*fileSigner, error) {
 	case err != nil:
 		return nil, err
 	case signer == nil:
-		return nil, absent("%s holds no session", machineCacheWords)
+		return nil, absent("%s holds no session", machineCacheName)
 	}
 	signer.register = func(context.Context, string) (*ecdsa.PrivateKey, string, error) {
-		return nil, "", fmt.Errorf("this machine's session in %s is not live; this secret form does not trade a machine identity here: run agent-secrets self", machineCacheWords)
+		return nil, "", fmt.Errorf("this machine's session in %s is not live; this secret form does not trade a machine identity here: run agent-secrets self", machineCacheName)
 	}
 	return signer, nil
 }
-
-// machineCacheWords is how the held lookup's lines name the machine cache: by where it lives, in
-// words, never by its path, since every secret write prints them and a path set by a person can
-// hold what they pasted.
-const machineCacheWords = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
 
 // registerMachine is this machine's session made under the machine cache's exclusive lock, held
 // from its read of the cache to its write. A session the cache holds whose enrollment is not
@@ -204,7 +207,7 @@ func registerMachine(ctx context.Context, stale string) (*fileSigner, error) {
 func machineReregister(ctx context.Context, stale string) (*ecdsa.PrivateKey, string, error) {
 	signer, err := registerMachine(ctx, stale)
 	if errors.Is(err, errSourceAbsent) {
-		return nil, "", fmt.Errorf("this machine's session in %s is not live, and the machine proves no identity to register it again: %v", machineCacheDir(), err)
+		return nil, "", fmt.Errorf("this machine's session in %s is not live, and the machine proves no identity to register it again: %v", machineCacheName, err)
 	}
 	if err != nil {
 		return nil, "", err
@@ -221,18 +224,21 @@ func writeMachineCache(dir string, key *ecdsa.PrivateKey, enrollmentID string) e
 		return err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, keyFile), pemBytes, 0o600); err != nil {
-		return err
+		return fmt.Errorf("write %s: %w", machineCacheKeyFile, redact.File(err))
 	}
-	return writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n"), 0o600)
+	if err := writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", machineCacheEnrollment, redact.File(err))
+	}
+	return nil
 }
 
 // ensureMachineCacheDir makes dir, and holds it to this user alone whether it made it or not.
 func ensureMachineCacheDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("make the machine cache %s: %w", dir, err)
+		return fmt.Errorf("make %s: %w", machineCacheName, redact.File(err))
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("hold the machine cache %s to this user: %w", dir, err)
+		return fmt.Errorf("hold %s to this user: %w", machineCacheName, redact.File(err))
 	}
 	return nil
 }
@@ -292,15 +298,14 @@ func checkGoogleAudience(base brokeraddr.Address, audience string) error {
 	if dir == "" {
 		return nil
 	}
-	path := filepath.Join(dir, googleAudienceFile)
-	kept, err := readTrimmed(path)
+	kept, err := readTrimmed(filepath.Join(dir, googleAudienceFile))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	case err != nil:
-		return err
+		return fmt.Errorf("read %s: %w", machineCacheAudienceFile, redact.File(err))
 	}
-	return sameGoogleAudience(base, audience, kept, path)
+	return sameGoogleAudience(base, audience, kept)
 }
 
 // keepGoogleAudience keeps audience as the one this machine's identity tokens are minted for,
@@ -314,21 +319,20 @@ func keepGoogleAudience(base brokeraddr.Address, audience string) error {
 	if err := ensureMachineCacheDir(dir); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, googleAudienceFile)
-	kept, err := keepFirst(path, audience)
+	kept, err := keepFirst(filepath.Join(dir, googleAudienceFile), audience)
 	if err != nil {
-		return fmt.Errorf("keep the broker's Google exchange audience in %s: %w", path, err)
+		return fmt.Errorf("keep the broker's Google exchange audience in %s: %w", machineCacheAudienceFile, redact.File(err))
 	}
-	return sameGoogleAudience(base, audience, kept, path)
+	return sameGoogleAudience(base, audience, kept)
 }
 
 // sameGoogleAudience is the refusal of audience, which the broker at base names, where this
-// machine kept another one in path. Both audiences are text a broker's settings answer wrote, so
-// it prints them as base lets that text print (brokeraddr.Address.Words).
-func sameGoogleAudience(base brokeraddr.Address, audience, kept, path string) error {
+// machine kept another one (machineCacheAudienceFile). Both audiences are text a broker's settings
+// answer wrote, so it prints them as base lets that text print (brokeraddr.Address.Words).
+func sameGoogleAudience(base brokeraddr.Address, audience, kept string) error {
 	if kept != audience {
 		return fmt.Errorf("the broker at %s names %s as its Google exchange audience, and this machine first read %s there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
-			base, base.Words(strconv.Quote(audience)), base.Words(strconv.Quote(kept)), path, path)
+			base, base.Words(strconv.Quote(audience)), base.Words(strconv.Quote(kept)), machineCacheAudienceFile, machineCacheAudienceFile)
 	}
 	return nil
 }
@@ -363,7 +367,9 @@ func keepFirst(path, value string) (string, error) {
 // systems; where the cache already holds a session, the key directory's is removed and the
 // cache's kept. The marker goes last, so a move cut short is finished by the next command, and a
 // second command that waited on the lock finds no marker and moves nothing. A key directory with
-// no marker is a launcher's, and nothing here touches it.
+// no marker is a launcher's, and nothing here touches it. Both directories hold a key.pem, so a
+// refusal names them by keyDirName and machineCacheName, with the system's reason alone
+// (redact.File).
 func migrateKeyDirMachineSession(keyDir string) error {
 	marker := filepath.Join(keyDir, machineSessionMarker)
 	if !exists(marker) {
@@ -371,7 +377,7 @@ func migrateKeyDirMachineSession(keyDir string) error {
 	}
 	cache := machineCacheDir()
 	if cache == "" {
-		return fmt.Errorf("%s holds a machine session to move to the machine cache, and neither XDG_STATE_HOME nor HOME names a directory for it, nor does the password database give this user a home", keyDir)
+		return fmt.Errorf("%s holds a machine session to move to the machine cache, and neither XDG_STATE_HOME nor HOME names a directory for it, nor does the password database give this user a home", keyDirName())
 	}
 	if err := ensureMachineCacheDir(cache); err != nil {
 		return err
@@ -392,16 +398,16 @@ func migrateKeyDirMachineSession(keyDir string) error {
 		}
 		if keep {
 			if err := moveFile(src, filepath.Join(cache, name)); err != nil {
-				return fmt.Errorf("move this machine's session from %s to the machine cache %s: %w", keyDir, cache, err)
+				return fmt.Errorf("move this machine's session from %s to %s: %w", keyDirName(), machineCacheName, redact.File(err))
 			}
 			continue
 		}
 		if err := os.Remove(src); err != nil {
-			return fmt.Errorf("remove the machine session %s left, which the machine cache %s replaces: %w", keyDir, cache, err)
+			return fmt.Errorf("remove the machine session %s held, which %s replaces: %w", keyDirName(), machineCacheName, redact.File(err))
 		}
 	}
 	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", marker, err)
+		return fmt.Errorf("remove the %s marker in %s: %w", machineSessionMarker, keyDirName(), redact.File(err))
 	}
 	return nil
 }

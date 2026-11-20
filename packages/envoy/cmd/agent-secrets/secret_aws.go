@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,14 +21,17 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/logging"
 	"github.com/aws/smithy-go/middleware"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
@@ -63,20 +67,65 @@ var (
 // not hold is refused, as R1 refuses a source that is present but fails: the SDK refuses such an
 // AWS_PROFILE itself, and ignores such an AWS_DEFAULT_PROFILE
 // (config.loadSharedConfigIgnoreNotExist), which would sign in under the rest of its chain - an
-// instance role among them - while the profile was the caller's choice. Tests replace it.
+// instance role among them - while the profile was the caller's choice. Where the sign-in is the
+// web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, the file is read here first, and the
+// SDK reads it through webIdentityToken every time after, so a file that cannot be read is refused
+// naming the variable, never the path the SDK's own error quotes. The SDK's own log lines go
+// nowhere (logging.Nop): it writes them to the process's stderr with no redaction - a response's
+// Date header it cannot parse, quoted whole, which whoever answers at the store's or STS's address
+// writes, among them - as gcpClientDial discards Secret Manager's. Tests replace it.
 var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	options := []func(*config.LoadOptions) error{config.WithRegion(region), config.WithLogger(logging.Nop{})}
+	if file := awsWebIdentityTokenFile(); file != "" {
+		if _, err := file.GetIdentityToken(); err != nil {
+			return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
+		}
+		options = append(options, config.WithWebIdentityRoleCredentialOptions(func(o *stscreds.WebIdentityRoleOptions) {
+			o.TokenRetriever = file
+		}))
+	}
+	cfg, err := config.LoadDefaultConfig(ctx, options...)
+	var missing config.SharedConfigProfileNotExistError
+	if errors.As(err, &missing) && missing.Profile != "" && missing.Profile == os.Getenv("AWS_PROFILE") {
+		return nil, nil, nil, missingAWSProfile("AWS_PROFILE")
+	}
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
+		return nil, nil, nil, awsSignInFailure("load your AWS sign-in", err)
 	}
 	if named := os.Getenv("AWS_DEFAULT_PROFILE"); named != "" && os.Getenv("AWS_PROFILE") == "" && !loadedProfile(cfg) {
-		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w (AWS_DEFAULT_PROFILE names it)", config.SharedConfigProfileNotExistError{Profile: named})
+		return nil, nil, nil, missingAWSProfile("AWS_DEFAULT_PROFILE")
 	}
 	var sources []aws.CredentialSource
 	if provider, ok := cfg.Credentials.(aws.CredentialProviderSource); ok {
 		sources = provider.ProviderSources()
 	}
 	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), sources, nil
+}
+
+// webIdentityToken is the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, as the AWS
+// SDK's stscreds.IdentityTokenRetriever reads it: a file that cannot be read is refused naming the
+// variable and the system's reason alone (redact.File). The SDK's own IdentityTokenFile quotes the
+// path twice ("unable to read file at <path>: open <path>: ..."), with %v, so no redaction of its
+// error can reach the path, and the variable is where a person who pasted the token itself puts it.
+type webIdentityToken string
+
+func (f webIdentityToken) GetIdentityToken() ([]byte, error) {
+	data, err := os.ReadFile(string(f))
+	if err != nil {
+		return nil, fmt.Errorf("read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: %w", redact.File(err))
+	}
+	return data, nil
+}
+
+// awsWebIdentityTokenFile is the file AWS_WEB_IDENTITY_TOKEN_FILE names where it is the source the
+// SDK signs in with (awsSourceOf: no access keys in the environment outrank it), else "".
+func awsWebIdentityTokenFile() webIdentityToken {
+	idVar, _ := firstSet("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY")
+	secretVar, _ := firstSet("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY")
+	if idVar != "" && secretVar != "" {
+		return ""
+	}
+	return webIdentityToken(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE"))
 }
 
 // loadedProfile reports whether the SDK found the profile it looked for in the shared config and
@@ -103,7 +152,7 @@ var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AW
 func requireAccount(ctx context.Context, st stsAPI, settings Settings, another string) (arn string, err error) {
 	id, err := st.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
-		return "", fmt.Errorf("read your AWS sign-in: %w", err)
+		return "", awsSignInFailure("read your AWS sign-in", err)
 	}
 	arn, account := aws.ToString(id.Arn), aws.ToString(id.Account)
 	if account != settings.AWSAccountID {
@@ -117,17 +166,18 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings, another s
 // not match the account and region in kms_key_arn. The broker derives both from the key ARN the same
 // way (internal/broker/api handlers_secrets.go, secrets.AWSKeyARNParts), so the account the sign-in is
 // checked against (requireAccount) and the region the SDK is pinned to are the key ARN's, not a
-// separately-sent field a spoofed or plain-http broker could set on its own to steer a write.
+// separately-sent field a spoofed or plain-http broker could set on its own to steer a write. Each
+// field a refusal names prints as the broker's address lets its answer print (Settings.words).
 func checkSettingsKeyARN(settings Settings) error {
 	if !secrets.ValidAWSKeyARN(settings.KMSKeyARN) {
-		return fmt.Errorf("the broker's settings name an invalid KMS key ARN %q (expected arn:aws:kms:<region>:<account>:key/<key id>)", settings.KMSKeyARN)
+		return fmt.Errorf("the broker's settings name an invalid KMS key ARN %s (expected arn:aws:kms:<region>:<account>:key/<key id>)", settings.words(strconv.Quote(settings.KMSKeyARN)))
 	}
 	region, account := secrets.AWSKeyARNParts(settings.KMSKeyARN)
 	if settings.AWSAccountID != account {
-		return fmt.Errorf("the broker's settings name account %s, but its KMS key ARN %s is in account %s: the broker's settings are inconsistent", settings.AWSAccountID, settings.KMSKeyARN, account)
+		return fmt.Errorf("the broker's settings name account %s, but its KMS key ARN %s is in account %s: the broker's settings are inconsistent", settings.words(settings.AWSAccountID), settings.words(settings.KMSKeyARN), settings.words(account))
 	}
 	if settings.AWSRegion != region {
-		return fmt.Errorf("the broker's settings name region %s, but its KMS key ARN %s is in region %s: the broker's settings are inconsistent", settings.AWSRegion, settings.KMSKeyARN, region)
+		return fmt.Errorf("the broker's settings name region %s, but its KMS key ARN %s is in region %s: the broker's settings are inconsistent", settings.words(settings.AWSRegion), settings.words(settings.KMSKeyARN), settings.words(region))
 	}
 	return nil
 }
@@ -193,7 +243,13 @@ func firstSet(names ...string) (name, value string) {
 // source profile or credential source) chooses nothing either: the SDK goes on to a container's
 // credentials endpoint or the instance's role (resolveCredsFromProfile), and sources, the ones it
 // resolved, then start with that one (profileFellThrough), so the phrase names it too. The phrase
-// names no key and no token, only the variables and the file's path.
+// names no key and no token, and no file's path: the web identity token file holds a token, so it
+// is named by its variable, as every file that holds a credential is, and AWS_WEB_IDENTITY_TOKEN_FILE
+// is where a person who pasted the token itself puts it. Only the prefix, the command a person
+// pastes to run again (signInPrefix), carries the path, once STS took the token the file holds
+// (the pasted commands follow requireAccount): the file was read and signed in with, so its path
+// is no token pasted in its place. A file that cannot be read is refused naming the variable alone
+// (webIdentityToken).
 func awsSourceOf(sources []aws.CredentialSource) awsSource {
 	profileVar, profile := firstSet("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
 	outranks := func(verb string) string {
@@ -219,7 +275,7 @@ func awsSourceOf(sources []aws.CredentialSource) awsSource {
 			}
 		}
 		return awsSource{
-			phrase:  "the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") + ")" + outranks("outranks"),
+			phrase:  "the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names" + outranks("outranks"),
 			another: "choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			prefix:  prefix,
 		}

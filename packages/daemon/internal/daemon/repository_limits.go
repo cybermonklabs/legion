@@ -7,12 +7,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -41,27 +45,189 @@ const primaryLimitMessage = "api rate limit exceeded"
 // gives as the least to wait.
 const unnamedLimitWait = time.Minute
 
+// answerLimit is whether answer, GitHub's answer other than 2xx to a call, is GitHub's rate limit,
+// with how long GitHub asks the caller to wait: an answer githubrest reads as the limit
+// (Answer.RateLimited: a 429, or a 403 its headers or the secondary limit's message name a limit
+// on), waited its RetryAfter, or a 403 whose body names the primary limit (primaryLimitMessage)
+// while its headers do not, waited unnamedLimitWait. GitHub has refused an installation's reads of
+// a repository with that 403 while the same installation's other requests were answered with
+// thousands of calls left in x-ratelimit-remaining. The body is read here, for the reads of a
+// default branch and the start's App calls alone, and not in githubrest, whose other callers each
+// decide what such an answer means for their own reads.
+func answerLimit(answer *githubrest.Answer) (time.Duration, bool) {
+	switch {
+	case answer.RateLimited:
+		return answer.RetryAfter, true
+	case answer.Status == http.StatusForbidden && strings.Contains(strings.ToLower(answer.Body), primaryLimitMessage):
+		return unnamedLimitWait, true
+	}
+	return 0, false
+}
+
 // defaultBranchLimit is GitHub's answer in err, a read of a default branch that failed, when that
-// answer is GitHub's rate limit, with how long GitHub asks the reader to wait: an answer githubrest
-// reads as the limit (Answer.RateLimited: a 429, or a 403 its headers or the secondary limit's
-// message name a limit on), waited its RetryAfter, or a 403 whose body names the primary limit
-// (primaryLimitMessage) while its headers do not, waited unnamedLimitWait. GitHub has refused an
-// installation's reads of a repository with that 403 while the same installation's other requests
-// were answered with thousands of calls left in x-ratelimit-remaining. The body is read here, for
-// the reads of a default branch alone, and not in githubrest, whose other callers each decide
-// what such an answer means for their own reads.
+// answer is GitHub's rate limit (answerLimit), with how long GitHub asks the reader to wait. A
+// failed mint of the read's token is none: appauth keeps GitHub's answer to it out of the error's
+// chain (appauth.AnswerError), and the start waits out a rate limit there itself (bootLimit).
 func defaultBranchLimit(err error) (*githubrest.Answer, time.Duration, bool) {
 	var answer *githubrest.Answer
-	switch {
-	case !errors.As(err, &answer):
+	if !errors.As(err, &answer) {
 		return nil, 0, false
-	case answer.RateLimited:
-		return answer, answer.RetryAfter, true
-	case answer.Status == http.StatusForbidden && strings.Contains(strings.ToLower(answer.Body), primaryLimitMessage):
-		return answer, unnamedLimitWait, true
 	}
-	return nil, 0, false
+	wait, limited := answerLimit(answer)
+	if !limited {
+		return nil, 0, false
+	}
+	return answer, wait, true
 }
+
+// bootLimit is GitHub's answer to an App call of the start that failed with err — the answer
+// appauth's error carries (appauth.AnswerError) — when that answer is GitHub's rate limit
+// (answerLimit), with how long GitHub asks the start to wait. A token exchange's 422 carrying the
+// limit's headers is no limit githubrest names, so it is none here: the start retries it as
+// GitHub's trouble (appTransient), as before.
+func bootLimit(err error) (*githubrest.Answer, time.Duration, bool) {
+	var refused *appauth.AnswerError
+	if !errors.As(err, &refused) {
+		return nil, 0, false
+	}
+	wait, limited := answerLimit(refused.Answer)
+	if !limited {
+		return nil, 0, false
+	}
+	return refused.Answer, wait, true
+}
+
+// rateLimitPolicy is how the start waits for GitHub's rate limit (dispatch://INFRA-2597/spec R4):
+// Max, the longest one wait lasts, whatever GitHub names; Bound, how long after the start's first
+// such wait every one of them ends, none ending at all when it is zero; and NoTime, the wait for a
+// call's first refusal that names no time, doubled for each further one of the same call.
+type rateLimitPolicy struct {
+	Max, Bound, NoTime time.Duration
+}
+
+// startRateLimits is the start's policy. A wait lasts at most an hour, the window of GitHub's REST
+// limit, so a spent counter is waited until its reset and a Retry-After longer than that is not
+// waited whole. All waits of one start end 70 minutes after the first, the hour and ten minutes
+// more: the refusals of 2026-11-14 and 2026-11-15 ended 5.6 to 13.9 minutes after the first exit.
+// A refusal that names no time waits a minute, the least GitHub's REST documentation gives. Tests
+// shorten its fields.
+var startRateLimits = rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}
+
+// startWaits is one start's waits for GitHub's rate limit on one policy and one clock, now: the
+// App logins read and the token mints (wait) and the default-branch reads (readUntil). end is the
+// start's end, zero until its first wait sets it Bound after that wait begins; noTime is the last
+// wait each App call took for a refusal that named no time; waited is the time the start has spent
+// in at least one wait, and latest the end of the latest wait. It is safe for concurrent use: the
+// default-branch reads' waits overlap (waitOutLimits).
+type startWaits struct {
+	policy rateLimitPolicy
+	now    func() time.Time
+
+	mu     sync.Mutex
+	end    time.Time
+	noTime map[string]time.Duration
+	waited time.Duration
+	latest time.Time
+}
+
+// newStartWaits is one start's waits on policy and the clock now.
+func newStartWaits(policy rateLimitPolicy, now func() time.Time) *startWaits {
+	return &startWaits{policy: policy, now: now, noTime: map[string]time.Duration{}}
+}
+
+// orUnbounded is s, or, for a nil s — a runtime a test builds as a literal — waits of their own for
+// one wait, on the wall clock, with the start's maximum and no end.
+func (s *startWaits) orUnbounded() *startWaits {
+	if s != nil {
+		return s
+	}
+	return newStartWaits(rateLimitPolicy{Max: startRateLimits.Max, NoTime: startRateLimits.NoTime}, time.Now)
+}
+
+// wait is the wait for GitHub's rate limit on the start's App call call (the logins read, a mint),
+// asked as soon as the call's attempt returned with answer, GitHub's refusal, from which
+// answerLimit read githubWait. Where GitHub named a time (namesTime), the wait is githubWait with
+// at most Max; where it named none, NoTime for the call's first such refusal of the start and two
+// times its wait before for each further one. It says until when, at the start's end at the
+// latest, and the time the start has waited so far, this wait included (register); or, once now is
+// at or past the start's end, ended, with no wait: the call then ends the start.
+func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait time.Duration) (until time.Time, waited time.Duration, ended bool) {
+	s = s.orUnbounded()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	if !s.end.IsZero() && !now.Before(s.end) {
+		return now, s.waited, true
+	}
+	wait := min(githubWait, s.policy.Max)
+	if !namesTime(answer.Limit, now) {
+		wait = s.policy.NoTime
+		if last, ok := s.noTime[call]; ok {
+			wait = 2 * last
+		}
+		s.noTime[call] = wait
+	}
+	until, waited = s.register(now, now.Add(wait))
+	return until, waited, false
+}
+
+// readUntil is the wait for read, a default-branch read GitHub's rate limit refused: #4043's wait,
+// counted from when GitHub answered (limitedRead), with at most Max, and at the start's end at the
+// latest. until is now, with no wait, when that wait is not ahead of now or now is at or past the
+// start's end. It keeps no wait of a refusal that named no time: each repository's read waits once,
+// so several refused together each wait GitHub's own wait. waited is the time the start has waited
+// so far, this wait included (register).
+func (s *startWaits) readUntil(read limitedRead) (until time.Time, waited time.Duration) {
+	s = s.orUnbounded()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	until = read.until.Add(min(read.wait, s.policy.Max) - read.wait)
+	if !s.end.IsZero() && !now.Before(s.end) || !until.After(now) {
+		return now, s.waited
+	}
+	return s.register(now, until)
+}
+
+// register counts a wait from begin until until, cut at the start's end, and says until and the
+// time the start has waited so far: the length of the union of its waits, each adding the part of
+// it past the latest end so far. The waits are registered in time order under mu, so the sum is
+// exact and overlapping waits count once. The start's first wait sets its end, Bound after that
+// wait begins.
+func (s *startWaits) register(begin, until time.Time) (time.Time, time.Duration) {
+	if s.end.IsZero() && s.policy.Bound > 0 {
+		s.end = begin.Add(s.policy.Bound)
+	}
+	if !s.end.IsZero() && until.After(s.end) {
+		until = s.end
+	}
+	from := begin
+	if s.latest.After(from) {
+		from = s.latest
+	}
+	if until.After(from) {
+		s.waited += until.Sub(from)
+		s.latest = until
+	}
+	return until, s.waited
+}
+
+// namesTime is whether limit, the rate-limit headers of GitHub's answer, names when the limit ends,
+// as GitHub's REST documentation reads them: a Retry-After of more than 0 seconds, or no call left
+// (X-RateLimit-Remaining 0) with an X-RateLimit-Reset still ahead of now. A 403 named by its body
+// alone, and a reset already past, name none.
+func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
+	if seconds, err := strconv.Atoi(limit.RetryAfter); err == nil && seconds > 0 {
+		return true
+	}
+	reset, err := strconv.ParseInt(limit.Reset, 10, 64)
+	return limit.Remaining == "0" && err == nil && time.Unix(reset, 0).After(now)
+}
+
+// backfillWait is how long the backfill waits for a read GitHub's rate limit refused, GitHub asking
+// for wait: at most the start's Max, with no end, since the backfill reads until GitHub answers
+// (backfillRead).
+func backfillWait(wait time.Duration) time.Duration { return min(wait, startRateLimits.Max) }
 
 // answeredRefusal is whether err, a read of a default branch that failed, is GitHub's answer about
 // the repository, which no later read is expected to change: a 404, or any other answer below 500
@@ -181,15 +347,17 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 // GitHub's rate limit refused and that the daemon holds no default branch for (holdLimited): it
 // waits as long as GitHub asks (githubrest's retryAfter: the Retry-After, else until the reset when
 // no call is left, at most an hour, else a minute; a minute too for a limit named by its body
-// alone), logging one line that names the repository, the limit as GitHub's answer gave it and the
-// time it waits until, and then reads it once more. A repository that read answers is served as
-// GitHub names it (named). One GitHub answers about, such as with a 404, refuses the boot, as it
-// does on the first read (answeredRefusal). One it does not answer — the limit again, a 5xx, a
-// failed mint of the token, a transport failure, or no answer within appMintAttempt — is left out
-// for now (unread), as a repository whose installation read failed is, and read again on
-// installReadRetry until GitHub answers, so the limit costs that repository and not the project's
-// boot. The waits overlap, each for its own limit, so the boot waits as long as the longest of them
-// asks, and the reads after them run mappingReads at a time, as the first reads did.
+// alone), counted from GitHub's answer, with at most the start's maximum and to the start's end at
+// the latest (startWaits.readUntil), logging one line that names the repository, the limit as
+// GitHub's answer gave it, the time it waits until and the time the start has waited so far, and
+// then reads it once more. A repository that read answers is served as GitHub names it (named). One
+// GitHub answers about, such as with a 404, refuses the boot, as it does on the first read
+// (answeredRefusal). One it does not answer — the limit again, a 5xx, a failed mint of the token, a
+// transport failure, or no answer within appMintAttempt — is left out for now (unread), as a
+// repository whose installation read failed is, and read again on installReadRetry until GitHub
+// answers, so the limit costs that repository and not the project's boot. The waits overlap, each
+// for its own limit, so the boot waits as long as the longest of them, and the reads after them run
+// mappingReads at a time, as the first reads did.
 func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRead) (named []mappedRepository, unread []refusedRepository, _ error) {
 	if len(unheld) == 0 {
 		return nil, nil, nil
@@ -201,12 +369,18 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 	group, waiting := errgroup.WithContext(ctx)
 	for index, read := range unheld {
 		group.Go(func() error {
+			until, waited := w.startWaits.readUntil(read)
+			// The line's wait is the wait the boot takes, counted from GitHub's answer as read.wait
+			// is, so a wait the maximum or the start's end cut reads as cut; the headers beside it
+			// say what GitHub asked.
+			taken := read
+			taken.wait = until.Sub(read.until.Add(-read.wait))
 			w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch and the daemon holds none for it, so the boot waits as long as GitHub asks and reads it once more",
-				append([]any{"repo", read.mapped.Repo.String(), "waitUntil", read.until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
+				append([]any{"repo", read.mapped.Repo.String(), "waitUntil", until.UTC().Format(time.RFC3339), "waited", bootprobe.ShownWait(waited)}, limitAttributes(taken)...)...)
 			select {
 			case <-waiting.Done():
 				return waiting.Err()
-			case <-time.After(time.Until(read.until)):
+			case <-time.After(time.Until(until)):
 			}
 			select {
 			case <-waiting.Done():
@@ -277,12 +451,13 @@ func limitAttributes(read limitedRead) []any {
 // that, only a read GitHub's limit refuses is answered from the last read or hold, however old; a
 // read GitHub does not answer, such as a 5xx, a transport failure or a timeout, is not, and takes
 // the backoff below. One GitHub's limit refuses with nothing held is waited out as GitHub asks
-// (defaultBranchLimit); one GitHub does not answer (backfillUnanswered) is waited 1 s, doubling to
-// a minute. Each wait is one line naming the issue, the repository and the time it waits until,
-// and the read is made again, until GitHub answers or ctx ends. Any other failure — GitHub's
-// answer about the repository, such as a 404, or a mint refused — is returned and refuses the
-// boot, as before. No record's branch stands in for the read, since what the backfill reads GitHub
-// for is GitHub's spelling of the repository the record will carry.
+// (defaultBranchLimit), with at most the start's maximum and no end (backfillWait); one GitHub does
+// not answer (backfillUnanswered) is waited 1 s, doubling to a minute. Each wait is one line naming
+// the issue, the repository and the time it waits until, and the read is made again, until GitHub
+// answers or ctx ends. Any other failure — GitHub's answer about the repository, such as a 404, or
+// a mint refused — is returned and refuses the boot, as before. No record's branch stands in for
+// the read, since what the backfill reads GitHub for is GitHub's spelling of the repository the
+// record will carry.
 func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (ghbranch.Repository, error) {
 	backoff := time.Second
 	for {
@@ -299,6 +474,7 @@ func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repos
 		answer, wait, limited := defaultBranchLimit(err)
 		switch {
 		case limited:
+			wait = backfillWait(wait)
 			attributes = append(attributes, limitAttributes(limitedRead{answer: answer, err: err, wait: wait})...)
 		case backfillUnanswered(err):
 			wait, backoff = backoff, min(2*backoff, time.Minute)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
+	"github.com/sjawhar/envoy/internal/tlsalert"
 )
 
 // mintResponseLimit caps what a minter reads of an upstream answer. GitHub's installation pages
@@ -339,9 +340,11 @@ func beforeConnection(err error) bool {
 }
 
 // transportFailure names the class of a failed call or body read, never its text: the request was
-// cancelled or ran out of time, the upstream's name did not resolve, it could not be reached, its
-// TLS handshake failed, or its answer ended early. Any other failure, such as a status line that is
-// not HTTP, "gave no usable HTTP answer".
+// cancelled or ran out of time, the upstream's name did not resolve, its TLS handshake failed, it
+// answered with a TLS alert or met one this side sent (tlsalert.In, which reads the *net.OpError
+// crypto/tls returns one as over TCP: its Op is no dial's), it could not be reached, or its answer
+// ended early. Any other failure, such as a status line that is not HTTP, "gave no usable HTTP
+// answer".
 func transportFailure(ctx context.Context, err error) string {
 	var dns *net.DNSError
 	var op *net.OpError
@@ -357,6 +360,8 @@ func transportFailure(ctx context.Context, err error) string {
 		return "could not be resolved"
 	case errors.As(err, &certificate) || errors.As(err, &record):
 		return "failed its TLS handshake"
+	case tlsalert.In(err):
+		return "answered, but the TLS exchange failed"
 	case errors.As(err, &op):
 		return "could not be reached"
 	case errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF):
