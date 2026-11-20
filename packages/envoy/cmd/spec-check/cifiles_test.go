@@ -616,13 +616,12 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 
 // limitPlaces is each text that states the limits of the guard's rule: the doc of
 // ciFilesThatCompare, the package doc, the doc of TestCIFilesThatCompareLeavesAFormOutsideTheClaim,
-// the guide and the changelog fragment of #4183. The release that folds the fragment into the
+// and the changelog fragment of #4183. The release that folds the fragment into the
 // changelog takes it off this list.
 var limitPlaces = []string{
 	"cifiles.go",
 	"main.go",
 	"cifiles_test.go",
-	filepath.Join("..", "..", "AGENTS.md"),
 	filepath.Join("..", "..", ".changes", "unreleased", "pr4183-Added-20261116-091606.yaml"),
 }
 

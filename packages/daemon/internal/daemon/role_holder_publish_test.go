@@ -119,7 +119,11 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return store.EnqueueRoleHolders(r.ctx, tx, issue, r.clock())
+		queued, err := store.EnqueueRoleHolders(r.ctx, tx, gatePublishProject, issue, r.clock())
+		if err == nil && !queued {
+			r.t.Errorf("the role-holder publication of %s was refused as another project's than %s", issue, gatePublishProject)
+		}
+		return err
 	}); err != nil {
 		r.t.Fatalf("enqueue the role-holder publication of %s: %v", issue, err)
 	}
@@ -302,6 +306,53 @@ func TestTheReadysQueueOfTheRolePublicationKeepsOneRowAnIssue(t *testing.T) {
 	}
 	if issues, rows := queuedRoleHolders(t, pool); rows != 1 || issues[0] != "LEGION-208" {
 		t.Fatalf("the outbox holds %d role-holder publications for %v, want the one of LEGION-208", rows, issues)
+	}
+}
+
+// The ready of a claim of another project's issue — the operator's spawn of it, which runs under
+// this daemon's token — queues no publication of that issue's role sessions (claim.KeyOfProject):
+// a row keyed by the issue is run only by the other project's daemon, against that daemon's own
+// claims. So the route leaves the row that daemon holds of the issue as it stands, its lease and
+// its due time unchanged, while the ready of this project's claim beside it queues its own. Every
+// ready of such a spawn takes this path, so it is an ordinary one and logs no warning.
+func TestTheReadyOfAClaimOfAnotherProjectsIssueQueuesNoRolePublication(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	var logs syncBuffer
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), dispatchProject: gatePublishProject, log: jsonLogger(&logs)}
+	const theirs = "OTHERPROJECT-9"
+	// The other project's daemon is sending its issue's publication: it holds the row's lease.
+	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+		values ($1, $2, jsonb_build_object('issue', $2::text), 0, now() + interval '1 minute', '', 'otherproject-lease', now() + interval '5 minutes')`,
+		string(record.OutboxKindRoleHoldersPublish), theirs); err != nil {
+		t.Fatalf("queue the other project's daemon's publication of %s: %v", theirs, err)
+	}
+	held := func() string {
+		t.Helper()
+		var row string
+		if err := pool.QueryRow(ctx, `select string_agg(concat_ws(' ', id, next_at, attempts, lease_token, lease_until), '; ')
+			from outbox where kind = $1 and issue = $2`, string(record.OutboxKindRoleHoldersPublish), theirs).Scan(&row); err != nil {
+			t.Fatalf("read the publication rows of %s: %v", theirs, err)
+		}
+		return row
+	}
+	before := held()
+	spawn := supervise.Claim{Token: "legion-legion-otherproject-9-architect", Project: "legion", Tree: theirs, Issue: theirs, Role: claim.RoleArchitect}
+	if err := w.roleHoldersChanged(ctx, spawn); err != nil {
+		t.Fatalf("the ready of the spawn of %s: %v", theirs, err)
+	}
+	if after := held(); after != before {
+		t.Errorf("after the ready of the spawn of %s its publication rows are %q, want the other project's daemon's row as it stood, %q", theirs, after, before)
+	}
+	if strings.Contains(logs.String(), `"level":"WARN"`) {
+		t.Errorf("the ready of the spawn of %s logged a warning, want none on this ordinary path; the log:\n%s", theirs, logs.String())
+	}
+	tester := supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester}
+	if err := w.roleHoldersChanged(ctx, tester); err != nil {
+		t.Fatalf("the ready of the tester of LEGION-208: %v", err)
+	}
+	if issues, _ := queuedRoleHolders(t, pool); !slices.Equal(issues, []string{"LEGION-208", theirs}) {
+		t.Fatalf("the outbox holds the role-holder publications of %v, want LEGION-208's, which the tester's ready queued, and the other project's daemon's", issues)
 	}
 }
 

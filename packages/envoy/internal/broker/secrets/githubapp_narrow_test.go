@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -27,10 +28,12 @@ type tokenRequest struct {
 }
 
 // narrowingGitHub is a stub GitHub with the App installed on Acme-Org (1), ada (2) and outsider
-// (3). It records every request it receives and every token request's body, and answers a token
-// request with answer, asGitHubAnswers unless a test sets another before its first request, and
-// with headers. It records the bearer of every DELETE /installation/token and answers it
-// revokeStatus, 204 unless a test sets another.
+// (3). It lists each installation with what it holds, everyGrant unless a test sets another
+// (setHeld), and answers a token request naming a permission its installation does not hold
+// HTTP 422, minting nothing, as GitHub does. It records every request it receives and every token
+// request's body, and answers every other token request with answer, asGitHubAnswers unless a
+// test sets another before its first request, and with headers. It records the bearer of every
+// DELETE /installation/token and answers it revokeStatus, 204 unless a test sets another.
 type narrowingGitHub struct {
 	server *httptest.Server
 
@@ -41,6 +44,23 @@ type narrowingGitHub struct {
 	answer       func(installation string, body []byte) (int, any)
 	headers      http.Header
 	revokeStatus int
+	held         map[string]map[string]string
+}
+
+// everyGrant is what each installation of the stub holds unless a test sets another: every
+// permission a read-only narrowing can ask for, most of them at write, as a Legion App's
+// installation holds them, so a read-only token asks for each at read.
+var everyGrant = map[string]string{
+	"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "write",
+}
+
+// heldWithout is everyGrant less permissions.
+func heldWithout(permissions ...string) map[string]string {
+	held := maps.Clone(everyGrant)
+	for _, permission := range permissions {
+		delete(held, permission)
+	}
+	return held
 }
 
 func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
@@ -49,14 +69,20 @@ func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
 	g.server = githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.requests++
-		answer, headers, revokeStatus := g.answer, g.headers, g.revokeStatus
+		answer, headers, revokeStatus, held := g.answer, g.headers, g.revokeStatus, g.held
 		g.mu.Unlock()
+		holds := func(installation string) map[string]string {
+			if grant, set := held[installation]; set {
+				return grant
+			}
+			return everyGrant
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "account": map[string]string{"login": "Acme-Org"}},
-				{"id": 2, "account": map[string]string{"login": "ada"}},
-				{"id": 3, "account": map[string]string{"login": "outsider"}},
+				{"id": 1, "account": map[string]string{"login": "Acme-Org"}, "permissions": holds("1")},
+				{"id": 2, "account": map[string]string{"login": "ada"}, "permissions": holds("2")},
+				{"id": 3, "account": map[string]string{"login": "outsider"}, "permissions": holds("3")},
 			})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			body, err := io.ReadAll(r.Body)
@@ -67,7 +93,14 @@ func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
 			g.mu.Lock()
 			g.tokens = append(g.tokens, tokenRequest{installation: id, body: string(body), contentType: r.Header.Get("Content-Type")})
 			g.mu.Unlock()
-			status, reply := answer(id, body)
+			var asked struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			_ = json.Unmarshal(body, &asked)
+			status, reply := http.StatusUnprocessableEntity, any(map[string]string{"message": "The permissions requested are not granted to this installation."})
+			if heldAll(holds(id), asked.Permissions) {
+				status, reply = answer(id, body)
+			}
 			for name, values := range headers {
 				w.Header()[name] = values
 			}
@@ -83,6 +116,27 @@ func newNarrowingGitHub(t *testing.T) *narrowingGitHub {
 		}
 	}})
 	return g
+}
+
+// heldAll reports whether an installation holding held holds every permission asked names.
+func heldAll(held, asked map[string]string) bool {
+	for permission := range asked {
+		if _, holds := held[permission]; !holds {
+			return false
+		}
+	}
+	return true
+}
+
+// setHeld makes the stub list installation as holding held, and refuse every later token request
+// for it that names a permission held does not.
+func (g *narrowingGitHub) setHeld(installation string, held map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.held == nil {
+		g.held = map[string]map[string]string{}
+	}
+	g.held[installation] = held
 }
 
 // setAnswer makes the stub answer every later token request with answer.
@@ -153,12 +207,16 @@ func (g *narrowingGitHub) take() (int, []tokenRequest) {
 	return requests, tokens
 }
 
+// readOnlyBody is the permissions a read-only narrowing asks GitHub for of an installation that
+// holds every one of them, as the token request's body decodes.
+var readOnlyBody = map[string]any{"actions": "read", "checks": "read", "contents": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"}
+
 // TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody: a narrowed release asks GitHub for one
 // token, for the installation of the narrowing's owner alone, with GitHub's access_tokens body
-// naming the repositories and, for read-only, contents: read, metadata: read, pull_requests: read
-// and actions: read; every other listed owner gets no token request. A release with no narrowing
-// is today's: every listed owner's token,
-// each asked for with no body.
+// naming the repositories and, for read-only, contents, metadata, pull_requests, actions, checks
+// and statuses, each at read, though the installation holds most of them at write; every other
+// listed owner gets no token request. A release with no narrowing is today's: every listed
+// owner's token, each asked for with no body.
 func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -182,7 +240,7 @@ func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 			minted:    []string{"1"},
 			body: map[string]any{
 				"repositories": []any{"proofs", "widgets"},
-				"permissions":  map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"},
+				"permissions":  readOnlyBody,
 			},
 		},
 		{
@@ -197,7 +255,7 @@ func TestGitHubAppMintSendsTheNarrowingAsTheAccessTokensBody(t *testing.T) {
 			narrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true},
 			owners:    []string{"ada"},
 			minted:    []string{"2"},
-			body:      map[string]any{"permissions": map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}},
+			body:      map[string]any{"permissions": readOnlyBody},
 		},
 		{
 			name:      "the owner alone",
@@ -377,7 +435,7 @@ func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 
 // TestGitHubAppMintRefusesATokenWiderThanTheNarrowing: Mint releases a narrowed token only when
 // GitHub's own answer describes no more than the narrowing asked: for read-only, no permission
-// past contents: read, metadata: read, pull_requests: read and actions: read and not none named;
+// past contents, metadata, pull_requests, actions, checks and statuses at read and not none named;
 // for repositories, a selection of
 // those alone, named. Anything else (a body something between dropped or widened) is refused as
 // GitHub's fault (class upstream), and the token GitHub minted is revoked at GitHub with
@@ -413,7 +471,7 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 		{"write contents", readOnly, func(a map[string]any) { a["permissions"] = map[string]string{"contents": "write", "metadata": "read"} }, "more than read access"},
 		{"another permission", readOnly, func(a map[string]any) {
 			a["permissions"] = map[string]string{"administration": "write", "contents": "read", "metadata": "read"}
-		}, "a permission past contents, metadata, pull requests and actions"},
+		}, "a permission past contents, metadata, pull requests, actions, checks and statuses"},
 		{"no permissions named", readOnly, func(a map[string]any) { delete(a, "permissions") }, "names no permissions"},
 		{"every repository", proofs, func(a map[string]any) { a["repository_selection"] = "all"; delete(a, "repositories") }, "repository selection"},
 		{"another repository", proofs, func(a map[string]any) {
@@ -451,17 +509,18 @@ func TestGitHubAppMintRefusesATokenWiderThanTheNarrowing(t *testing.T) {
 	}
 }
 
-// TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem: an App is granted Actions
-// only once each installation's account approves it, and GitHub answers 422 to a token request
-// naming a permission the installation does not hold, minting nothing. A read-only narrowing it
-// refuses is asked for again without actions, so the release carries the other three reads
-// rather than failing, and the broker logs at WARN what that token cannot read, naming no token.
-// The broker's narrowing check (MintRequest.Check) makes the same two token requests and revokes
-// the token it gets, but it releases nothing, so it does not log that line, whose words say a
-// token was released for the installation: one check mints once for each repository it probes,
-// and each would write that line for a release that never happened. A 422 that survives the
-// second request is still the caller's narrowing.
-func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing.T) {
+// TestGitHubAppMintAsksForTheOptionalReadsTheInstallationHolds: an App holds actions, checks and
+// statuses only where it declares them and each installation's account approved that grant, and
+// GitHub answers 422 to a token request naming a permission the installation does not hold,
+// minting nothing. A read-only narrowing asks, in its one token request, for the ones the
+// installation's listing says it holds alone, so the release carries every read the installation
+// holds rather than failing, and the broker logs at WARN which reads that token is without, naming
+// no token. The broker's narrowing check (MintRequest.Check) makes the same token request and
+// revokes the token it gets, but it releases nothing, so it does not log that line, whose words say
+// a token was released for the installation: one check mints once for each repository it probes,
+// and each would write that line for a release that never happened. A 422 to that request is still
+// the caller's narrowing.
+func TestGitHubAppMintAsksForTheOptionalReadsTheInstallationHolds(t *testing.T) {
 	var logged bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	key, err := testAppKey()
@@ -469,71 +528,84 @@ func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing
 		t.Fatal(err)
 	}
 	github := newNarrowingGitHub(t)
-	github.setAnswer(func(installation string, body []byte) (int, any) {
-		if strings.Contains(string(body), `"actions"`) {
-			return http.StatusUnprocessableEntity, map[string]string{"message": "The permissions requested are not granted to this installation."}
-		}
-		return asGitHubAnswers(installation, body)
-	})
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 	value := githubAppValue(t, "123456", key)
-	// missingActions is the release's WARN, read by the same words where the release must write
-	// it and where the check must not, so a rewording fails the release's reading first rather
-	// than passing the check's.
-	const missingActions = "does not hold actions"
+	readOnly := &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}
+	// missingReads is the release's WARN, read by the same words where the release must write it
+	// and where the check must not, so a rewording fails the release's reading first rather than
+	// passing the check's.
+	const missingReads = "does not hold every read a read-only token asks for"
 
-	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
-		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
-	if err != nil || !strings.Contains(release.Value, "token-2") {
-		t.Fatalf("Mint for an installation that holds no actions = %q, %v; want ada's token", release.Value, err)
-	}
-	_, tokens := github.take()
-	asked := []tokenRequest{
-		{installation: "2", body: `{"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"}}`, contentType: "application/json"},
-		{installation: "2", body: `{"permissions":{"contents":"read","metadata":"read","pull_requests":"read"}}`, contentType: "application/json"},
-	}
-	if !reflect.DeepEqual(tokens, asked) {
-		t.Fatalf("token requests = %+v, want %+v", tokens, asked)
-	}
-	if !strings.Contains(logged.String(), missingActions) || !strings.Contains(logged.String(), "Actions: Read") ||
-		!strings.Contains(logged.String(), "app=123456") || !strings.Contains(logged.String(), "installation=2") {
-		t.Fatalf("log = %q, want one WARN naming the App and the installation", logged.String())
-	}
-	if strings.Contains(logged.String(), "token-") {
-		t.Fatalf("log = %q holds the token", logged.String())
-	}
-	if revoked := github.takeRevoked(); len(revoked) != 0 {
-		t.Fatalf("revokes of the released token = %q, want none", revoked)
+	for _, tc := range []struct {
+		name    string
+		held    map[string]string // what ada's installation holds
+		body    string            // the release's one token request
+		missing string            // the WARN's missing=, "" where it logs none
+	}{
+		{"every read", everyGrant, `{"permissions":{"actions":"read","checks":"read","contents":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`, ""},
+		{"no actions", heldWithout("actions"), `{"permissions":{"checks":"read","contents":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`, "actions"},
+		{"no checks", heldWithout("checks"), `{"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`, "checks"},
+		{"no statuses", heldWithout("statuses"), `{"permissions":{"actions":"read","checks":"read","contents":"read","metadata":"read","pull_requests":"read"}}`, "statuses"},
+		{"none of the three", heldWithout("actions", "checks", "statuses"), `{"permissions":{"contents":"read","metadata":"read","pull_requests":"read"}}`, "actions,checks,statuses"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logged.Reset()
+			github.setHeld("2", tc.held)
+			github.take()
+			release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: readOnly})
+			if err != nil || !strings.Contains(release.Value, "token-2") {
+				t.Fatalf("Mint for an installation holding %v = %q, %v; want ada's token", tc.held, release.Value, err)
+			}
+			asked := []tokenRequest{{installation: "2", body: tc.body, contentType: "application/json"}}
+			if _, tokens := github.take(); !reflect.DeepEqual(tokens, asked) {
+				t.Fatalf("token requests = %+v, want %+v", tokens, asked)
+			}
+			line := logged.String()
+			if tc.missing == "" {
+				if strings.Contains(line, missingReads) {
+					t.Fatalf("log = %q; want no line about a missing read for an installation holding every one", line)
+				}
+			} else if !strings.Contains(line, missingReads) || !strings.Contains(line, "level=WARN") || !strings.Contains(line, "app=123456") ||
+				!strings.Contains(line, "installation=2") || !strings.Contains(line, "missing="+tc.missing+"\n") {
+				t.Fatalf("log = %q, want one WARN naming the App, the installation and missing=%s", line, tc.missing)
+			}
+			if strings.Contains(line, "token-") {
+				t.Fatalf("log = %q holds the token", line)
+			}
+			if revoked := github.takeRevoked(); len(revoked) != 0 {
+				t.Fatalf("revokes of the released token = %q, want none", revoked)
+			}
+
+			logged.Reset()
+			checked, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: readOnly, Check: true})
+			if err != nil || checked.Value != "" {
+				t.Fatalf("a check of a read-only narrowing of an installation holding %v = %q, %v; want it passed with nothing released", tc.held, checked.Value, err)
+			}
+			if _, tokens := github.take(); !reflect.DeepEqual(tokens, asked) {
+				t.Fatalf("the check's token requests = %+v, want the release's own, %+v", tokens, asked)
+			}
+			if revoked := github.takeRevoked(); len(revoked) != 1 {
+				t.Fatalf("the check's revokes = %q, want the one token the check minted given back", revoked)
+			}
+			if strings.Contains(logged.String(), missingReads) {
+				t.Fatalf("log = %q; want no line about a token released without a read, since a check releases none", logged.String())
+			}
+		})
 	}
 
-	logged.Reset()
-	checked, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
-		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}, Check: true})
-	if err != nil || checked.Value != "" {
-		t.Fatalf("a check of a read-only narrowing of an installation holding no actions = %q, %v; want it passed with nothing released", checked.Value, err)
-	}
-	if _, tokens := github.take(); !reflect.DeepEqual(tokens, asked) {
-		t.Fatalf("the check's token requests = %+v, want the release's own, %+v: the read set with actions and the one again without", tokens, asked)
-	}
-	if revoked := github.takeRevoked(); len(revoked) != 1 {
-		t.Fatalf("the check's revokes = %q, want the one token the check minted given back", revoked)
-	}
-	if strings.Contains(logged.String(), missingActions) {
-		t.Fatalf("log = %q; want no line about a token released without actions, since a check releases none", logged.String())
-	}
-
-	// A 422 the second request gets too is the narrowing's, and the error names the three
-	// permissions that are left rather than the grant that was dropped.
+	// A 422 to the reads the installation holds is the narrowing's, and the error names the three
+	// permissions every read-only token asks for rather than a grant it left out.
+	github.setHeld("2", heldWithout("actions"))
 	github.setAnswer(func(string, []byte) (int, any) {
 		return http.StatusUnprocessableEntity, map[string]string{"message": "The permissions requested are not granted to this installation."}
 	})
-	release, err = app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"},
-		GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
+	github.take()
+	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: readOnly})
 	if release.Value != "" || secrets.MintErrorClass(err) != "narrowing" || !strings.Contains(err.Error(), "contents: read") {
-		t.Fatalf("Mint refused twice = %q, %v (class %s); want nothing released and class narrowing naming the read access", release.Value, err, secrets.MintErrorClass(err))
+		t.Fatalf("Mint refused = %q, %v (class %s); want nothing released and class narrowing naming the read access", release.Value, err, secrets.MintErrorClass(err))
 	}
-	if _, tokens := github.take(); len(tokens) != 2 {
-		t.Fatalf("%d token requests for a refusal that stands, want the asked-for set and one more without actions", len(tokens))
+	if _, tokens := github.take(); len(tokens) != 1 {
+		t.Fatalf("%d token requests for a refused read-only narrowing, want the one", len(tokens))
 	}
 }
 

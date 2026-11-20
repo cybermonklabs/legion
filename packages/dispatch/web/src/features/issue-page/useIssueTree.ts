@@ -41,16 +41,35 @@ export interface IssueTreeView {
    *  missing from `root` because it has not arrived rather than because its document holds
    *  none. A view that draws from the blocks it holds reads `blocksHeld` instead. */
   readonly blocksRead: boolean;
-  /** Whether a read of the tree's names - the batched one, or the one more that names what a
-   *  typed block's words cite (`useIssueTree`) - stands in error: its newest attempt failed,
-   *  under a new set of addresses or as a refetch of the set it had answered. It is what a view
-   *  reads to draw the page's line that the names failed. The names in hand stand meanwhile -
-   *  the tree and what the page publishes are built from the last answer each read gave - so a
-   *  view keeps every row's words and every chip's name beside that line; a first read that
-   *  fails holds no names, and turns it true all the same. It is false while a read is out that
-   *  has not failed yet, and once both reads have answered with success. */
-  readonly namesFailed: boolean;
+  /** The names reads that stand failed (`standsFailed`) - the batched one, or the one more that
+   *  names what a typed block's words cite (`useIssueTree`) - and none while neither does: what
+   *  a view reads to draw the page's line that the names failed. The names in hand still stand
+   *  meanwhile - the tree and what the page publishes are built from the last answer each read
+   *  gave - so a view keeps every row's words and every chip's name beside that line. A first
+   *  read that fails holds none; a read under a new set of addresses that fails stands failed
+   *  while the tree keeps the last names. A read that runs again after it failed goes on
+   *  standing failed until it answers. */
+  readonly namesFailure: NamesFailure | undefined;
+  /** Whether the names the tree is built from are held: the batched names read has answered, or
+   *  the tree holds no address for it to name, and the one more read, of what a typed block's
+   *  words cite, has answered wherever it is asked (`useIssueTree`). A plan task's or a
+   *  callout's words come from those names alone, so until then such a node has none, and a view
+   *  that reads the nodes' words - a words filter's count, or its line that nothing holds the
+   *  words - waits on it. A read's last answer stands while its read of a new set of addresses
+   *  is out or has failed (`namesFailure`), so the names stay held then; a first read that fails
+   *  holds none, and this is false until a read answers. */
+  readonly namesHeld: boolean;
   readonly root: TreeNode;
+}
+
+/** The tree's names reads that stand failed (`IssueTreeView.namesFailure`). */
+export interface NamesFailure {
+  /** How many times those reads have failed, summed (TanStack Query's `errorUpdateCount`). */
+  readonly failure: number;
+  /** Asks each of those reads again (its own `refetch`), and no other read. */
+  readonly retry: () => void;
+  /** Whether one of those reads runs again (TanStack Query's `isFetching`). */
+  readonly retrying: boolean;
 }
 
 /**
@@ -129,6 +148,27 @@ function useLastAnswer<T>(answer: T | undefined): T | undefined {
   return last.current;
 }
 
+/**
+ * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
+ * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
+ * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
+ * failure it counts came after the read last held an answer.
+ *
+ * The read's status is not the rule, for two reasons. A read that holds an answer and whose
+ * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
+ * failed, and draws no line, which would stand over rows that are all drawn and take the page's
+ * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
+ * the moment it fetches again: a failed read goes on standing failed while it runs again - its
+ * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
+ * answers.
+ */
+export function standsFailed(state: {
+  readonly data: unknown;
+  readonly errorUpdateCount: number;
+}): boolean {
+  return state.data === undefined && state.errorUpdateCount > 0;
+}
+
 /** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
  *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
  *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
@@ -144,7 +184,10 @@ export const issueAsksQuery = (key: string) =>
  * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
  * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
  * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
- * tree's reads again, though nothing they hold has changed.
+ * tree's reads again, though nothing they hold has changed. Staleness is per observer, so the
+ * page's writer (`outline-writer.tsx`), which observes the asks, the comments and the messages
+ * under the tree's keys, takes it too: under the app's defaults a window focus more than 30 s
+ * after the load would read all three again for the writer alone.
  * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
  * them, `["comments", key]` on a comment event and on a document's upload or new version;
  * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
@@ -156,15 +199,15 @@ export const issueAsksQuery = (key: string) =>
  * rename, removal or review, and an ask or comment in it; and a names read
  * (`["reference-targets", …]`) on an event that changes the words or the name under an address
  * its key holds, on the issue or project document that address is of: a comment's edit, an
- * ask's edit, a document's new version, rename or removal, and an issue's write that changes its
- * title (`referenceNameTargets`). A names read's key is the set of addresses it names, so a tree
- * that comes to hold another set reads again under a key of its own, and only a change under an
- * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
- * login does not change while the page is open. A gap in the feed refreshes every read the app
- * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
+ * ask's edit, a document's creation, new version, rename or removal, and an issue's write that
+ * changes its title (`referenceNameTargets`). A names read's key is the set of addresses it names,
+ * so a tree that comes to hold another set reads again under a key of its own, and only a change
+ * under an address the tree already names needs a rule. No rule there names `["whoami"]`: the
+ * reader's login does not change while the page is open. A gap in the feed refreshes every read the
+ * app holds (`refreshQueries`), these among them, and window focus fetches again only a read in
  * error (`refetchFailedOnFocus`).
  */
-const EVENT_FRESH = {
+export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
@@ -197,7 +240,7 @@ const EVENT_FRESH = {
  * read holds, so the second's answer changes no node's words. Until the names answer the tree
  * draws, with a chip naming its target's address and a block of a document carrying no words
  * yet; on every read after the first the names already in hand stand while the new set loads,
- * and after its read fails (`IssueTreeView.namesFailed`).
+ * and after its read fails (`IssueTreeView.namesFailure`).
  */
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
@@ -298,8 +341,8 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // than this does: the new read names every address the tree now holds, so the only names it
   // lacks are the ones the previous answer carries, which is what is kept here. A name that
   // moved is a stale word until a read under the new key succeeds, where a dropped one is the
-  // whole page's words at once; while that read stands failed - until window focus or an event
-  // reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailed`).
+  // whole page's words at once; while that read stands failed - until its Retry, window focus or
+  // an event reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailure`).
   const targets = useQuery({
     ...referenceTargetsQuery(treeRead ? refs : []),
     ...EVENT_FRESH,
@@ -347,9 +390,36 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ];
     return [...new Map(ordered.map((target) => [target.ref, target])).values()];
   }, [extra, first, moreAnswer]);
-  // A failure of either read, which the names in hand stand through (above). The second read
+  // Whether the names the tree is built from are held (`IssueTreeView.namesHeld`): the first
+  // read holds an answer, or the tree holds no address for it to name, and the one more read
+  // holds an answer of its own where it is asked - not none, and not the empty answer that stood
+  // while nothing was left for it to name (`NO_MORE_TARGETS`), which it keeps until it answers.
+  const namesHeld =
+    (first !== undefined || (treeRead && refs.length === 0)) &&
+    (extra.length === 0 || (moreAnswer !== undefined && moreAnswer !== NO_MORE_TARGETS));
+  // The reads that stand failed, which the names in hand stand through (above). The second read
   // fails only where something is left for it to name: where nothing is, its query is disabled.
-  const namesFailed = targets.isError || more.isError;
+  const targetsFailed = standsFailed(targets);
+  const moreFailed = standsFailed(more);
+  const failure =
+    (targetsFailed ? targets.errorUpdateCount : 0) + (moreFailed ? more.errorUpdateCount : 0);
+  const retrying = (targetsFailed && targets.isFetching) || (moreFailed && more.isFetching);
+  const { refetch: refetchTargets } = targets;
+  const { refetch: refetchMore } = more;
+  const namesFailure = useMemo(
+    (): NamesFailure | undefined =>
+      targetsFailed || moreFailed
+        ? {
+            failure,
+            retry: () => {
+              if (targetsFailed) void refetchTargets();
+              if (moreFailed) void refetchMore();
+            },
+            retrying,
+          }
+        : undefined,
+    [failure, moreFailed, refetchMore, refetchTargets, retrying, targetsFailed]
+  );
   // The same answer every link of this page would otherwise read one pointer at a time, which a
   // link in a document, in a decision's card or in a comment's preview shows, and a row's
   // in-place chip too (`reference-names.tsx`, R20). Every one of those draws the name it is
@@ -380,7 +450,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [first, firstTree, named, reads]
   );
   return useMemo(
-    () => ({ blocksHeld: documents.held, blocksRead: documents.read, namesFailed, root }),
-    [documents.held, documents.read, namesFailed, root]
+    () => ({
+      blocksHeld: documents.held,
+      blocksRead: documents.read,
+      namesFailure,
+      namesHeld,
+      root,
+    }),
+    [documents.held, documents.read, namesFailure, namesHeld, root]
   );
 }

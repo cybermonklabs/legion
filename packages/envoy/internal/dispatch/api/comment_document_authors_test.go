@@ -55,7 +55,7 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 	// its id; a second upload of the same name is a new version crediting its uploader.
 	upload := func(t *testing.T, target, name, content string, actor any) string {
 		t.Helper()
-		body := map[string]any{"name": name, "content": content}
+		body := map[string]any{"name": name, "content": content, "precondition": uploadBaseNamed(t, handler, target, name)}
 		var response *httptest.ResponseRecorder
 		if login, person := actor.(string); person {
 			response = dispatchRequest(t, handler, http.MethodPost, target, body, login)

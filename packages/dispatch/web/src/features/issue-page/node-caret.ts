@@ -268,9 +268,14 @@ const TAB_STOPS = [
 ].join(", ");
 
 /** The class of the action bar the editor draws for its selection (`@legion/proof-editor`'s
- *  `dispatch-action-bar.ts`): one element, put beside the editable, inside the editor's box, and
- *  hidden with an inline `display: none` while the selection holds no text. */
-const ACTION_BAR = ".dispatch-action-bar";
+ *  `dispatch-action-bar.ts`): one element, hidden with an inline `display: none` while the
+ *  selection holds no text, and put in the element that holds the editable as the editor makes
+ *  it - on this page, inside the editor's box (`EditorBox`). ProseMirror puts the editable in the
+ *  element the page gives the editor (`ProofDocument.tsx`'s root) before it makes any plugin's
+ *  view, and Milkdown moves it into a box of its own inside that element, and back, as it makes
+ *  its plugins' views and drops them again, so the editable stands in that element whenever the
+ *  bar is made. */
+export const ACTION_BAR = ".dispatch-action-bar";
 
 /** The mark of the button a document draws for each block with comments or asks on it, which
  *  names that block's id (`doc/ProofDocument.tsx`'s "Block references"): the buttons stand in an

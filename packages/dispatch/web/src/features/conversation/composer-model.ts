@@ -68,10 +68,65 @@ export interface ReplyTarget {
   readonly to?: string;
 }
 
+/**
+ * Which replies a composer's host lists now (`MentionComposer`'s `listed`), so that a draft the
+ * composer keeps for a reply it does not show (`useKeptDrafts`' `keptAway`) is said to be kept
+ * with the way back its line names - that comment's or message's Reply - only while that Reply is
+ * there. A draft kept for a reply the host no longer lists is drawn itself, with its own presses
+ * (`KeptDraftOffers`).
+ *
+ * A host that can lose a reply its composer's drafts answer passes the ids of every comment and
+ * message its reads hold, whatever its filter, a fold or a Clear shows of them, since the host's
+ * own controls reach the Reply of each (`listedReplies`). Every other host passes none, and every
+ * kept reply is said to be kept as before: one whose composer answers no reply, one whose reads
+ * have not answered yet, and one whose composer answers only the reply drawn with it - a thread
+ * card's own reply - which leaves the page with the composer, so no line of the composer's can
+ * outlive it.
+ */
+export type ListedReplies = ReadonlySet<string>;
+
 /** One accepted mention: the target, and the span of the body that names it. */
 export interface AcceptedMention {
   readonly end: number;
   readonly start: number;
   readonly target: string;
   readonly text: string;
+}
+
+/** A composer's field as its host reaches it with another composer's control, or with a control
+ *  the host draws for this composer's draft out of its sight (`MentionComposer`'s `intake`). The
+ *  draft and the address are a send's own shapes (`send-request.ts`'s `SentDraft` and
+ *  `CarriedAddress`), spelled here from this module's types, since that module reads its types
+ *  from this one. */
+export interface DraftIntake {
+  /** Drops what the composer holds - the field's draft and a send of its own held there - and
+   *  ends it, as its own Discard does: the Conversation's Discard my draft for a phone thread
+   *  reply put away for a comment the list no longer holds (`usePhoneThread`'s `dropParked`),
+   *  whose composer is out of sight. */
+  readonly drop: () => void;
+  /** Puts `draft`, which the reader carried to `to`, in the field, and says whether it did: a
+   *  composer takes it only while it shows `to`, and only while it holds nothing of its own - a
+   *  draft typed, or a send out or refused - which it never writes over. */
+  readonly take: (
+    draft: {
+      readonly body: string;
+      readonly mentions: readonly AcceptedMention[];
+      readonly replacement: string;
+    },
+    to: { readonly owner: ComposerOwner; readonly replyTo: ReplyTarget | null }
+  ) => boolean;
+}
+
+/** Whether a draft holds anything the reader wrote: its text, a suggestion's replacement, or an
+ *  ask option's label or description. */
+export function hasUnsavedInput(
+  body: string,
+  replacement: string,
+  options: readonly { readonly description: string; readonly label: string }[] = []
+): boolean {
+  return (
+    body.trim().length > 0 ||
+    replacement.trim().length > 0 ||
+    options.some((option) => option.label.trim().length > 0 || option.description.trim().length > 0)
+  );
 }

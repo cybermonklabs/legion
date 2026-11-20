@@ -16,9 +16,10 @@ import (
 )
 
 // The secrets the brokers below serve: two of one person's, the human-tier one any session needs
-// that person to approve and the agent-tier one a pod (a session of no person) needs that person
-// to approve; the launcher service's own, which its pods get at once; and a shared agent-tier
-// one, which every session gets at once. The owner is an example address that names no one.
+// that person to approve and the agent-tier one a service's pod (a session of no person) needs that
+// person to approve; the launcher service's own, which its pods get at once; and a shared
+// agent-tier one, which every session gets at once. The owner is an example address that names no
+// one.
 const (
 	signInOffOwner         = "owner@example.com"
 	signInOffHumanSecret   = "OWNER_DEPLOY_KEY"

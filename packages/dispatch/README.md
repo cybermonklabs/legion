@@ -24,6 +24,13 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
+It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
+That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
+Every attempt of one press sends that one token, because the idempotency key covers the whole request body.
+A first upload of a name replaces no version and names no token, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+Any other failure of that read ends the upload and says so, rather than uploading with no token: the page does not know what it would be replacing.
+
 ## Development
 
 Run commands from this package:
@@ -101,8 +108,7 @@ no run shares a port with another and
 none empties the database behind a server it did not start. Set, a port is
 used as given, and an occupied one fails with `address already in use`.
 `DISPATCH_E2E_REUSE_SERVERS=1` says the ports name a harness you started
-yourself, and the hook then starts nothing. `AGENTS.md`'s end-to-end section
-states that
+yourself, and the hook then starts nothing. `e2e/harness-ports.ts` states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
@@ -114,7 +120,8 @@ Dispatch records the attempt `queued`), and say what a send answers it was with
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
 `DISPATCH_E2E_AGENT_SECRETS_URL` runs the suite with no broker instead, as a
-deployment that configures none (`AGENTS.md` has the switch). It also starts
+deployment that configures none (`e2e/run-server.sh` and `e2e/harness-broker.ts` have the
+switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
@@ -272,7 +279,7 @@ the rule reaches no job of this repository and only a run by hand.
 Every other mode runs on the default one worker, and so one stack: the deployed
 run, two-process mode,
 a run against servers you started (`DISPATCH_E2E_REUSE_SERVERS=1`) and
-`bun run dispatch:local`. `AGENTS.md`'s end-to-end section has the whole model.
+`bun run dispatch:local`. `e2e/harness-pool.ts` and `e2e/harness-ports.ts` hold the whole model.
 
 `e2e/run-server.sh` on its own is the server for a shell caller: with
 `DATABASE_URL`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT` and the broker switch's
@@ -325,7 +332,8 @@ pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a
 context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
 and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
 other), and reads which process served what from the proxy's `/_proxy/requests` and
-`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`/_proxy/sockets`; `e2e/harness-processes.ts` and `e2e/round-robin-proxy.ts` hold the whole
+contract. Any
 `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
 
 To run one build's page against another build's server, give B a previous release, as CI's
@@ -358,6 +366,18 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
 or unset is refused.
+
+Three rules the code does not show:
+
+- In an Inbox test, move focus and the pointer off a row before you expect it to leave the list:
+  the Inbox keeps the row under the reader's hand drawn (`ViewportAnchor`, `heldRow`), and
+  `.check()` and `.click()` leave the pointer on it.
+- In the windowed Agents list, role queries skip a hidden row where CSS locators, `getByText` and
+  counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
+  when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
+- Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
+  (`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
+  every recording no row writes any more.
 
 ## Local instance
 
@@ -536,6 +556,27 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   bash packages/dispatch/e2e/acceptance/verification.sh
 ```
 
+`e2e/acceptance/write-guards.sh` drives the three guards on a write the same way, through the
+real CLI and the HTTP API beside it. A person approves an issue's specification and the question
+`dispatch ask` opens on that issue names the review: who gave it, when, that they approved, their
+reason, and the line asking the sender to say what changed since it. An agent uploads a document
+holding a question, the person answers it, and the agent uploads the body it composed again,
+writing the same question with no `#id`: the uploaded block takes the live block's id, so the
+issue still holds that one answered ask and the settlement writes the answer onto the block
+again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
+whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
+non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
+taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
+server, under no setting, so that check runs against the one server the rest of the script
+drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
+required here because the review and the answer are a person's writes. It writes three issues in
+`PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/write-guards.sh
+```
+
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
 proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
@@ -701,6 +742,17 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
   the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
   the end refuses the run.
 
+Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
+`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
+`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a whole number of seconds from 2 to
+999999, in digits; any other value refuses the run, naming the setting. A curl built with the
+synchronous resolver (neither threaded nor c-ares) gives up before it resolves a name, 127.0.0.1
+included, with under 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed;
+curl reads 0 as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+bits. They do not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules
+count on. The script's tests set both to twice their longest row's timeout, so a fake Dispatch that
+a loaded host keeps off the CPU makes a read late, never a verdict wrong.
+
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
   bash outside-path-reach.sh
@@ -810,8 +862,9 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
-"The stubbed layer", which the last two projects of the list run).
+three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+stubbed layer's own (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two
+projects of the list run).
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
 what it

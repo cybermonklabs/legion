@@ -41,6 +41,8 @@ import {
   identityBand,
   issueDecisions,
   issueHeader,
+  LABELS_READING,
+  type LabelsAgainstTheCount,
   LONGEST_LABEL,
   labelFillingTheRoom,
   labelsAgainstTheCount,
@@ -169,6 +171,9 @@ async function pressOutOfTheEdit(
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
 // dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
+// SLOW(>=2s): 15,176 ms on chromium and 7,070 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): twelve loads of the issue on chromium and five on iphone, and at each of its widths
+// every part of the header read whole and Details opened and closed three times.
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -597,6 +602,9 @@ test("the header holds its list and its limits at every width @phone", async ({ 
 
 // Row (2): a gated root's approval entries stay in the header, and each reads the document its
 // step approves.
+// SLOW(>=2s): 7,145 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two more projects and
+// eight more issues written with their documents and reviews, seven loads and two moves within
+// the app, and three approvals pressed in the header, each polled until Dispatch holds it.
 test("the approval entries stay in the header and read the document each step approves", async ({
   browser,
 }) => {
@@ -796,6 +804,9 @@ test("the approval entries stay in the header and read the document each step ap
 // in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
+// SLOW(>=2s): 14,270 ms on chromium and 13,365 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): thirteen loads of the issue in two signed-in contexts, each waiting for the
+// typeface to load or fail, and the header's limits measured at twelve of them.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -888,6 +899,9 @@ test("the header holds its limits when the typeface does not load @phone", async
 // of the count is a tap of the touch screen, a touch claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for, and each opens what the mouse's click opens on
 // `chromium`.
+// SLOW(>=2s): 4,370 ms on chromium and 3,416 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): three more issues written with their requests and documents, five loads on
+// chromium and four on iphone, and the count pressed twice and Back pressed at each width.
 test("the count of what waits is a control that opens the Decisions address @phone", async ({
   browser,
 }) => {
@@ -1033,6 +1047,10 @@ test("the count of what waits is a control that opens the Decisions address @pho
 
 // Row (5): the count of what waits holds only what waits on the reader. A question waits on the
 // person the server resolves it to - whoever it was handed to, else the issue's assignee.
+// SLOW(>=2s): 5,175 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): a second person signed in
+// beside alice, six loads of the issue between the two, and four writes, two before the first
+// load and two between loads - two of its assignee and two questions - three of them read back
+// through the API.
 test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (alice) => {
@@ -1089,6 +1107,9 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 });
 
 // Row (6): a press on the status straight out of the title's editor lands on the status.
+// SLOW(>=2s): 2,814 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): three typed edits of the
+// title and two picks of the status, each saved through Dispatch and four of them polled there,
+// a pick made behind a title write a route holds, and 500 ms watched for a second write of it.
 test("a press on the status straight out of the title's editor lands on the status", async ({
   browser,
 }) => {
@@ -1199,6 +1220,10 @@ test("a press on the status straight out of the title's editor lands on the stat
 // `packages/dispatch/AGENTS.md` tags `@phone` for. A tap's mouse events come after its touch
 // events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
 // delivered, at 390 px.
+// SLOW(>=2s): 10,227 ms on chromium and 4,970 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): at each width, for a title of two lines and of three, three loads of the issue and
+// a title built a word at a time, each word measured in the page: twelve loads on chromium and
+// six on iphone.
 test("the press that ends a title edit reaches the control under it @phone", async ({
   browser,
 }) => {
@@ -1284,6 +1309,9 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 // a key ends finds the press under way, and a title of three lines stays drawn whole at 1440 px
 // instead of clamped to two. A drag of selected words is a press of the mouse, so the row runs at
 // the desktop width and on no phone.
+// SLOW(>=2s): 2,221 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two loads, a three-line
+// title built a word at a time with a measurement in the page per word, and a drag of the
+// selected words in eight steps, polled until its dragend and the title's clamp.
 test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
   browser,
 }) => {
@@ -1349,6 +1377,9 @@ test("the title is clamped again after a key ends an edit whose words the reader
 
 // Row (8): the header's keys and the palette's rows reach the header's controls: the header's
 // steps of the rows of `e2e/keyboard-issue.e2e.ts` and `e2e/keyboard-palette.e2e.ts`.
+// SLOW(>=2s): 3,910 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): three loads, seven writes
+// of the issue and its pin - two refused by a route and one held by one - read back through the
+// API, title edits, Details, and the palette opened four times.
 test("the header's keys and the palette reach their controls", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -1585,6 +1616,9 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the title's 20 px type and its 362 px words
 // with no clamp, and the whole header scrolling off the screen with the page, where the band
 // stays from 761 px up.
+// SLOW(>=2s): 3,328 ms on chromium and 1,642 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): a load into a short window at each of four widths on chromium, each page scrolled
+// 320 px and polled until the band reads its stuck state.
 test("the band stays when the page scrolls, and on a phone the header goes @phone", async ({
   browser,
 }) => {
@@ -1704,6 +1738,9 @@ function drawnWords(control: Locator): Promise<string> {
 // and the count of what waits drew "Waiting on you ( 2 )" (its flex gap opens between the
 // brackets and the number), while every row's `toHaveText` read the right words in the text
 // content. On the phone it reads the same at 390 px.
+// SLOW(>=2s): 2,078 ms on chromium and 1,391 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): a load of the issue with twenty labels at 1440 px and at 390 px, and at each both
+// counts read twice, once as text and once glyph by glyph off the screen.
 test("the header draws the words of its two counts as a reader reads them @phone", async ({
   browser,
 }) => {
@@ -1746,6 +1783,9 @@ const LONG_LOGIN = "dana@example.dev";
 // 390 px. Row (1)'s seed is a child with one chip and 3 children, so no row read this issue's
 // shape. This row seeds that shape and reads the header's limits with no request waiting and
 // with one; on the phone it reads 390 px.
+// SLOW(>=2s): 3,938 ms on chromium and 2,597 ms on iphone (one worker, Job e2e-rows-rdf2g at
+// 43949bc0): a root written with 24 children, a second context signed in as the long login, and
+// four loads on chromium and two on iphone, the header's limits measured after each.
 test("the header holds its limits on a large gated root @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(
@@ -1824,6 +1864,10 @@ function framesDrawn(page: Page, frames: number): Promise<void> {
 // passed it: with the count's held width taken out, row (1) still passed.
 // This row narrows the line pixel by pixel and reads, at each width, that the chips drawn whole
 // and the count's number add up to every label, and that no chip is drawn cut.
+// SLOW(>=2s): 2,088 frames - four at each of 261 widths of the line, at two viewport widths -
+// after two loads of the issue: 36,518 to 37,382 ms on one worker with the walk in the page (three
+// runs, Job e2e-rows-5q7j2 at 13d67d68 with this walk), and 47,383 ms as three round trips a step
+// (one worker, Job e2e-rows-rdf2g at 43949bc0).
 test("the labels' count names every label the line leaves out, at every width of the line", async ({
   browser,
 }) => {
@@ -1836,25 +1880,37 @@ test("the labels' count names every label the line leaves out, at every width of
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(labelsLeft(page)).toBeVisible();
-      const line = propertiesLine(page);
-      const full = await line.evaluate((element) => element.getBoundingClientRect().width);
-      const wrong: string[] = [];
-      for (let by = 0; by <= 260; by += 1) {
-        await line.evaluate((element, at) => {
-          element.style.maxWidth = `${at}px`;
-        }, full - by);
-        await framesDrawn(page, 4);
-        // Four frames were drawn since the line's width changed, so it is laid out at that width.
-        const { cut, left, whole } = await labelsAgainstTheCount(page);
-        if (whole + left !== TWENTY_LABELS.length || cut.length > 0) {
-          wrong.push(
-            `${(full - by).toFixed(0)} px: ${whole} drawn whole, ${cut.length} cut, the count names ${left}, of ${TWENTY_LABELS.length}`
-          );
-        }
-      }
-      await line.evaluate((element) => {
-        element.style.maxWidth = "";
-      });
+      // The whole walk is one page function, so a step costs its four frames and no round trip of
+      // the row's: each width is set, drawn and read in the page, with the reading
+      // `labelsAgainstTheCount` makes (`LABELS_READING`), and only what is wrong comes back.
+      const wrong = await propertiesLine(page).evaluate(
+        async (line, { labels, reading }) => {
+          const read = new Function(`return ${reading}`)() as (
+            line: Element
+          ) => LabelsAgainstTheCount;
+          const full = line.getBoundingClientRect().width;
+          const wrong: string[] = [];
+          for (let by = 0; by <= 260; by += 1) {
+            line.style.maxWidth = `${full - by}px`;
+            for (let frames = 0; frames < 4; frames += 1) {
+              const drawn = Promise.withResolvers<void>();
+              requestAnimationFrame(() => drawn.resolve());
+              await drawn.promise;
+            }
+            // Four animation frames have begun since the width changed (the read runs in the
+            // fourth's callback), so the labels were read again at that width.
+            const { cut, left, whole } = read(line);
+            if (whole + left !== labels || cut.length > 0) {
+              wrong.push(
+                `${(full - by).toFixed(0)} px: ${whole} drawn whole, ${cut.length} cut, the count names ${left}, of ${labels}`
+              );
+            }
+          }
+          line.style.maxWidth = "";
+          return wrong;
+        },
+        { labels: TWENTY_LABELS.length, reading: LABELS_READING }
+      );
       expect
         .soft(wrong, `the labels' count does not name the labels left out at ${width} px`)
         .toEqual([]);
@@ -1871,6 +1927,9 @@ test("the labels' count names every label the line leaves out, at every width of
 // The row therefore holds the box at one width across the swap, as a line whose other items keep
 // their whole-pixel widths holds it, so the chips are all the swap changes; and that width is the
 // one the chips drawn in the fallback fill, so a chip any wider no longer fits.
+// SLOW(>=2s): 3,146 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): a second context signed in
+// whose requests for the typeface's file a route holds, a load in each context, the font set
+// polled until the face waits and again until it loads, and the labels read after each.
 test("the labels' count names every label the line does not draw whole after the typeface loads", async ({
   browser,
 }) => {
@@ -1985,6 +2044,9 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
 // was not taken. Each focus is read once, after the pick is drawn, because a retrying read
 // passes in the frame before the pick disables the select. The status's writes are held open
 // with a route, so the save stays in flight while the row reads it.
+// SLOW(>=2s): 2,085 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,573 and
+// 1,748 ms in the others): one load, the status's writes held open by a route, and keyboard picks
+// each followed by two frames and a read of the focus.
 test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
   browser,
 }) => {
@@ -2122,6 +2184,10 @@ function tabWalk(part: Locator, focusNext = false): Promise<TabWalk> {
 // the view row's height: Shift+Tab from below onto the header's last control, while that control
 // lies 10 px below the top of the window, does not move the page, and each control of the header
 // takes minus the padding. On the phone it reads 390 px.
+// SLOW(>=2s): 3,657 ms on chromium and 2,183 ms on iphone with four workers (CI run
+// 44646643988), 1,959 ms on chromium on one worker (Job e2e-rows-rdf2g at 43949bc0): a load into
+// a short window at each width, and at 1440 px a Shift+Tab back through each control of the
+// band, each followed by two frames and a walk of every element of the page.
 test("a focus that enters the header from below moves no page @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -2213,6 +2279,9 @@ test("a focus that enters the header from below moves no page @phone", async ({ 
 // menu has closed and two frames are drawn, so a focus that only passes through the control is
 // not taken for one that stays there. It reads 1440 px and 390 px, where the menu is drawn as a
 // panel of its own.
+// SLOW(>=2s): 2,831 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): a load at 1440 px and at
+// 390 px, the menu opened from the keyboard seven times, a pin and an unpin at each width waited
+// on until Dispatch answers them, and two frames drawn before each read of the focus.
 test("the header's menu gives the focus back to its control on Escape and after an action", async ({
   browser,
 }) => {
@@ -2429,6 +2498,9 @@ async function escapeDetails(page: Page): Promise<void> {
 // first of which is "Issue actions" (decision 237). The focus is read once, after Details has
 // closed and two frames are drawn, so a focus that only passes through a control is not taken
 // for one that stays there.
+// SLOW(>=2s): 2,053 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): a load with twenty labels,
+// Details opened by Enter, a write of the labels through the API that the open page takes in,
+// and Details closed with two frames drawn after.
 test("Details closed after a write removed the labels' count leaves the focus in the header", async ({
   browser,
 }) => {
@@ -2755,6 +2827,10 @@ test("an approval entry's a approves that entry's document and no other", async 
 // The key card lists the two keys with their lines, applying while the focus is on the chip
 // whose request waits and greyed with it anywhere else; the palette offers the two as rows on
 // that same focus alone, and its Request changes row opens the dialog the key does.
+// SLOW(>=2s): 2,082 and 2,058 ms in two of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319
+// (1,901 ms in the third): one load after an approval request, the key card opened twice with both
+// its lines read each time, the palette opened twice, and Request changes opened from its row and
+// closed.
 test("the key card and the palette offer the approval chip's two keys while the focus is on it", async ({
   browser,
 }) => {
@@ -2853,6 +2929,9 @@ function focusNow(page: Page): Promise<{ inHeader: boolean; onBody: boolean; wha
 // closes the issue, and the close then refuses input on that control. A keyboard reader who ran
 // it keeps a focus in the header rather than on the page's body, from which the next Tab starts
 // again at the top of the page.
+// SLOW(>=2s): 3,434 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): three loads, one for each
+// control, each after the issue is set back in progress through the API, and the palette's
+// Close issue run from each and polled until Dispatch holds the close.
 test("the palette's Close issue, run from a header control, leaves the focus in the header", async ({
   browser,
 }) => {
@@ -2897,6 +2976,9 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
 // A change request sent from the header - from its Request changes by Enter, or by Shift+R from
 // its Approve - answers the request, so the header draws neither action any more, and the dialog
 // gives the focus back to a button the header then removes. The focus stays in the header.
+// SLOW(>=2s): 3,078 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two approval requests,
+// each followed by a load, a change request typed and sent from the header, and a poll until
+// Dispatch records it.
 test("a change request sent from the header leaves the focus in the header", async ({
   browser,
 }) => {
@@ -3008,6 +3090,10 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
 // A change request sent by Enter from the header's Request changes answers the request, so the
 // header draws neither action any more, and the dialog gives the focus back to Request changes,
 // which the header then removes. The focus goes to the chip of the document the reader reviewed.
+// SLOW(>=2s): 2,048 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,602 and
+// 1,657 ms in the others): one load after an approval request, the dialog opened by Enter and typed
+// in, the change request sent and polled until Dispatch records it, and two frames before the focus
+// is read.
 test("a change request sent from the header's Request changes leaves the focus on its chip", async ({
   browser,
 }) => {
@@ -3052,6 +3138,9 @@ test("a change request sent from the header's Request changes leaves the focus o
 // Request changes, which reads "Submitting…" while the change request is written. The focus goes
 // to the chip of the document the reader reviewed. Bob answers the request through the API while
 // the dialog is open; Dispatch then takes the change request as a review with no request open.
+// SLOW(>=2s): 2,002 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): one load, the dialog
+// opened and typed in, bob's approval written through the API and taken in by the open page, and
+// the change request sent and polled until Dispatch records it.
 test("a change request sent after the header's actions went leaves the focus on its chip", async ({
   browser,
 }) => {
@@ -3180,6 +3269,9 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
 // focus on the dialog's own button while its write is out, and the dialog's one hand-over of the
 // focus waits for the new read. Once the reads go on, the dialog is shut, the header draws
 // neither action, and the focus is in the header.
+// SLOW(>=2s): 2,256 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): one load, the dialog
+// opened and typed in, the change request sent while a route holds the page's reads, the focus
+// read three times after two frames each, and the redraw waited on once the reads go on.
 test("Request changes in its dialog pressed again by Enter before the change request is drawn sends no second review", async ({
   browser,
 }) => {
@@ -3268,6 +3360,9 @@ test("Request changes in its dialog pressed again by Enter before the change req
 // write before it has ended, and "Copied" is what the button read back from it. The clipboard is
 // replaced, before the page loads, by one that counts its writes and holds each until the row
 // lets it land. Nothing disables the button, so the focus stays on it throughout.
+// SLOW(>=2s): 2,005 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,475 and
+// 1,765 ms in the others): one load with a clipboard that holds its writes, three presses by Enter
+// each followed by two frames or a poll of the clipboard, and the held write let land in between.
 test("Copy issue key pressed again by Enter while its write is out makes no second write", async ({
   browser,
 }) => {
@@ -3337,6 +3432,9 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
 // menu, and the issue's, from the title. Retry by Enter keeps the focus on that Retry while the
 // write runs again, so a disabled Retry whose focus a fallback took is a failure here too; once
 // the write lands and the line goes, the focus is still in the header.
+// SLOW(>=2s): 3,035 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two loads, each with a
+// write a route refuses and then holds - the pin's from the menu, the title's from its editor -
+// and the focus read after two frames while Retry's write runs and again once it lands.
 test("a keyboard Retry of a refused write keeps the focus in the header", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -3430,6 +3528,9 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
 // `Shift+P` presses the pin while the menu is shut, so it opens nothing and closes nothing: the
 // focus stays where the reader had it, on the page's body or on the title's heading, and never
 // jumps to the menu's control.
+// SLOW(>=2s): 2,489 ms with four workers (CI run 44646643988), 1,572 ms on one worker (Job
+// e2e-rows-rdf2g at 43949bc0): one load, then a pin and an unpin by Shift+P, each read back on
+// the pin and followed by two frames before the focus is read.
 test("Shift+P pins and unpins and leaves the focus where it was", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {

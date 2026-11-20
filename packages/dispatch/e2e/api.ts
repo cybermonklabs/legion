@@ -869,6 +869,20 @@ export function getArtifactText(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
 }
 
+/** The base an upload replacing the document names: the token its live read answers, in the shape
+ *  `CreateArtifactInput.precondition` takes. An upload over a document the owner already holds
+ *  says which text it replaces, and the server checks it under the write's own lock. */
+export async function documentBase(
+  id: string,
+  options: ApiOptions = {}
+): Promise<{ readonly document: string }> {
+  const { token } = await getArtifactText(id, options);
+  if (token === undefined) {
+    throw new Error(`document ${id} answers no document token`);
+  }
+  return { document: token };
+}
+
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
@@ -1142,6 +1156,12 @@ export function putAgentState(
 /** The signed-in human's own conversation state with every session, unread counts included. */
 export function getAgentStates(options: ApiOptions = {}) {
   return get("/api/v1/me/agents/state", {}, options);
+}
+
+/** `PUT /api/v1/me/documents/{id}/read`: records `version` as the caller's last read version of the
+ *  document, the write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return put("/api/v1/me/documents/{id}/read", { body: { version }, params: { id } }, options);
 }
 
 export function putIssueState(

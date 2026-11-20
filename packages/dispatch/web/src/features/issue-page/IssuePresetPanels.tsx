@@ -96,7 +96,6 @@ export function IssuePresetPanels({
       onEditorHandle={onEditor}
       onToolbarChange={onToolbarSink(editedDocument.id)}
       onVersionChange={(version) => onVersionChange(editedDocument, version)}
-      resting={false}
       showDiff={false}
     />
   );

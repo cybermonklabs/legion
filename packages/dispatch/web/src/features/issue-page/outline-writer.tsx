@@ -10,6 +10,7 @@ import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversa
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
+import { EVENT_FRESH, issueAsksQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -155,19 +156,19 @@ export function OutlineWriterProvider({
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
   const agentText = useAgentText();
-  // The reads the outline is drawn from, under the keys it reads them by (`useIssueTree.ts`), so
-  // a reply's target costs no request of its own.
-  const asks = useQuery({
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-  });
+  // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
+  // keeps them (`useIssueTree.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
+  // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
+  const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
+    ...EVENT_FRESH,
   });
   const messages = useQuery({
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+    ...EVENT_FRESH,
   });
   const focus = useCallback(() => {
     // The field that is drawn: the line keeps its write field mounted, hidden, while it answers

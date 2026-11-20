@@ -295,9 +295,9 @@ const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
 
-/** Whether `element` scrolls its own content on either axis. Chromium makes such an element a tab
- *  stop of its own while no control inside it is in the tab order: a wide code block's `pre`, a
- *  table's scrolling wrapper. */
+/** Whether `element`'s overflow lets it scroll its own content, on either axis. Chromium makes
+ *  such an element a tab stop of its own once its content runs past its box, while no control
+ *  inside it is in the tab order: a wide code block's `pre`, a table's scrolling wrapper. */
 function scrolls(element: Element): boolean {
   const { overflowX, overflowY } = getComputedStyle(element);
   return [overflowX, overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
@@ -308,7 +308,9 @@ function scrolls(element: Element): boolean {
 const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
 
 /** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
- *  can tell a kept scroller from the row's other controls. */
+ *  can tell a kept scroller from the row's other controls. Its reader is part I's tree keys,
+ *  which leave a key pressed on a kept scroller, or inside one, to the browser (decision 322);
+ *  nothing in part G reads it. */
 const KEPT_SCROLLER = "data-kept-scroller";
 
 /** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block; a
@@ -331,11 +333,17 @@ function scrollerName(scroller: HTMLElement): string {
  * row's controls (R9); a view that no tree's keys reach passes `out` false and leaves them where
  * they are.
  *
- * `keepScrollers` keeps every scroller in the tab order, named by what it scrolls
- * (`scrollerName`), so a reader on the keyboard can scroll it sideways: the focused row's
- * (decision 317). A scroller other than a table takes a name only with a role (`region`); a table
- * has its own. When it turns off, each scroller leaves the tab order again, and the name and role
- * it was given go back to what they were.
+ * `keepScrollers` keeps in the tab order every scroller whose content runs past its box, named
+ * by what it scrolls (`scrollerName`), so a reader on the keyboard can scroll it sideways: the
+ * focused row's (decision 317). A scroller whose content fits its box - a one-line code block, a
+ * narrow table - has nowhere to scroll and Chromium gives it no tab stop, so it takes none here
+ * either: it leaves the tab order, as every scroller does without `keepScrollers`. Whether a
+ * scroller overflows is judged again whenever a scroller's size or the box's width changes (one
+ * `ResizeObserver`), which changes no child of the box, so a block that starts to overflow when
+ * the window narrows gains its tab stop, and one that stops loses it. A scroller other than a
+ * table takes a name only with a role (`region`); a table has its own. When it leaves the tab
+ * order again - its content fits, or `keepScrollers` turns off - the name and role it was given
+ * go back to what they were.
  * While it keeps its tab stop, a scroller carries `data-kept-scroller` (`KEPT_SCROLLER`); it
  * loses the mark whenever it leaves the tab order or the hook lets it go.
  */
@@ -349,12 +357,41 @@ export function useOutOfTabOrder(
     if (!out || element === null) return;
     // Each scroller this run named, with its own name and role as they stood before.
     const named = new Map<HTMLElement, { label: string | null; role: string | null }>();
+    // Takes the mark off a scroller, and gives one this run named its own name and role back.
+    const giveBack = (scroller: HTMLElement): void => {
+      scroller.removeAttribute(KEPT_SCROLLER);
+      const before = named.get(scroller);
+      if (before === undefined) return;
+      named.delete(scroller);
+      for (const [attribute, value] of [
+        ["aria-label", before.label],
+        ["role", before.role],
+      ] as const) {
+        if (value === null) scroller.removeAttribute(attribute);
+        else scroller.setAttribute(attribute, value);
+      }
+    };
+    // With `keepScrollers` a scroller's tab stop rests on whether its content runs past its box,
+    // which a change of its size, or of the box's width, can turn either way with no change to the
+    // box's children: the pass runs again on either.
+    const sized = new Set<HTMLElement>();
+    const sizes =
+      keepScrollers && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => untab())
+        : undefined;
     const untab = (): void => {
-      // Every style is read before any tab index is written, so the reads cost one style pass.
+      // Every style and every size is read before any tab index is written, so the reads cost
+      // one style pass and one layout.
       const scrollers = [...element.querySelectorAll<HTMLElement>("*")].filter(scrolls);
       const kept = new Map<HTMLElement, string>(
         keepScrollers
-          ? scrollers.map((scroller) => [scroller, scrollerName(scroller)] as const)
+          ? scrollers
+              .filter(
+                (scroller) =>
+                  scroller.scrollWidth > scroller.clientWidth ||
+                  scroller.scrollHeight > scroller.clientHeight
+              )
+              .map((scroller) => [scroller, scrollerName(scroller)] as const)
           : []
       );
       for (const control of element.querySelectorAll<HTMLElement>(FOCUSABLE)) {
@@ -366,7 +403,7 @@ export function useOutOfTabOrder(
         const name = kept.get(scroller);
         if (name === undefined) {
           if (scroller.getAttribute("tabindex") !== "-1") scroller.tabIndex = -1;
-          scroller.removeAttribute(KEPT_SCROLLER);
+          giveBack(scroller);
           continue;
         }
         if (!named.has(scroller)) {
@@ -382,22 +419,28 @@ export function useOutOfTabOrder(
           scroller.setAttribute("role", "region");
         }
       }
+      // Watches each scroller of the box once, since watching one again reports it again, and
+      // lets go of one that has left the box.
+      if (sizes === undefined) return;
+      for (const scroller of sized) {
+        if (element.contains(scroller)) continue;
+        sizes.unobserve(scroller);
+        sized.delete(scroller);
+      }
+      for (const scroller of scrollers) {
+        if (sized.has(scroller)) continue;
+        sizes.observe(scroller);
+        sized.add(scroller);
+      }
     };
+    sizes?.observe(element);
     untab();
     const watching = new MutationObserver(untab);
     watching.observe(element, { childList: true, subtree: true });
     return () => {
       watching.disconnect();
-      for (const [scroller, before] of named) {
-        scroller.removeAttribute(KEPT_SCROLLER);
-        for (const [attribute, value] of [
-          ["aria-label", before.label],
-          ["role", before.role],
-        ] as const) {
-          if (value === null) scroller.removeAttribute(attribute);
-          else scroller.setAttribute(attribute, value);
-        }
-      }
+      sizes?.disconnect();
+      for (const scroller of named.keys()) giveBack(scroller);
     };
   }, [box, keepScrollers, out]);
 }

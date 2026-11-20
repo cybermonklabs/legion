@@ -6,7 +6,7 @@ import type { Artifact } from "../../api/types";
 import type { EditorHandle } from "../doc/editor";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { useReportAdmission } from "./document-admission";
-import { DocumentStage, STAGE_IN_PANEL, useDocumentStage } from "./document-stage";
+import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 
 /**
@@ -17,9 +17,6 @@ import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
  * editor onto its own stage rather than opening a second connection to the room, and holds it
  * there in a box no taller than the window (`EditorBox`). It is not what opens a document at
  * its own address.
- *
- * `resting` says whether the document's stage rests here while no row of the tree holds it.
- * The editor for an edited row rests nowhere, because that row is holding the stage itself.
  *
  * It draws the document's `ProofDocument` itself, as `ArtifactDocument` does for an address that
  * names no comment and no ask - the reader's read, then the document - since no address lands
@@ -48,7 +45,6 @@ export function StagedDocument({
   onEditorHandle,
   onToolbarChange,
   onVersionChange,
-  resting = true,
   showDiff,
 }: {
   artifact: Artifact;
@@ -58,10 +54,8 @@ export function StagedDocument({
   onEditorHandle?: (handle: EditorHandle | undefined) => void;
   onToolbarChange: (toolbar: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
-  resting?: boolean;
   showDiff: boolean;
 }): ReactNode {
-  const stage = useDocumentStage(artifact.id, STAGE_IN_PANEL);
   const user = useQuery(whoAmIQuery());
   const reportAdmission = useReportAdmission();
   const box = useRef<HTMLDivElement>(null);
@@ -96,31 +90,28 @@ export function StagedDocument({
     onEditorHandle?.(handle);
   };
   return (
-    <>
-      {resting ? <div className="flex min-w-0 flex-col" ref={stage} /> : null}
-      <DocumentStage artifactId={artifact.id}>
-        <EditorBox ref={box}>
-          {user.data === undefined ? (
-            <p>Loading document…</p>
-          ) : (
-            <ProofDocument
-              artifact={artifact}
-              highlight={undefined}
-              highlightTerm={undefined}
-              isClosed={isClosed}
-              key={artifact.id}
-              onEditorHandle={takeEditor}
-              onToolbarChange={onToolbarChange}
-              onVersionChange={onVersionChange}
-              owner={{ key: issueKey, kind: "issue" }}
-              showDiff={showDiff}
-              user={user.data}
-              version={undefined}
-            />
-          )}
-        </EditorBox>
-      </DocumentStage>
-    </>
+    <DocumentStage artifactId={artifact.id}>
+      <EditorBox ref={box}>
+        {user.data === undefined ? (
+          <p>Loading document…</p>
+        ) : (
+          <ProofDocument
+            artifact={artifact}
+            highlight={undefined}
+            highlightTerm={undefined}
+            isClosed={isClosed}
+            key={artifact.id}
+            onEditorHandle={takeEditor}
+            onToolbarChange={onToolbarChange}
+            onVersionChange={onVersionChange}
+            owner={{ key: issueKey, kind: "issue" }}
+            showDiff={showDiff}
+            user={user.data}
+            version={undefined}
+          />
+        )}
+      </EditorBox>
+    </DocumentStage>
   );
 }
 

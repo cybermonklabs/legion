@@ -6,6 +6,63 @@ import { useEffect, useMemo, useRef } from "react";
  *  key's move must never wait on a press that is over. */
 export const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
+/** A press as `trackPress` follows it. */
+export interface Press {
+  /** Whether a press is under way: from its start until the task after it ends. */
+  readonly pressing: boolean;
+  /** Starts a press: what each of its start events does, and what a caller whose press starts
+   *  some other way calls - from a React handler, or from a listener that notes what the press
+   *  went down on. */
+  readonly start: () => void;
+}
+
+/**
+ * Follows a press from its start until the task after it ends (`PRESS_ENDS`), after its click,
+ * and calls `onEnd` then. A press starts at each event of `starts`, read on the window in the
+ * capture phase, and at each call of `start`; one that starts while the press before it is
+ * still ending puts that end off to its own. Aborting `signal` stops the listening and drops an
+ * end not called yet.
+ *
+ * Each caller says what starts its press, since each reads a press for its own end: the outline's
+ * press on a row, from the tree's own `mousedown` (`usePressFocus`); a press anywhere on the
+ * page, from the `mousedown` whose default moves the focus (`IssueTree.tsx`'s
+ * `useReleaseFocus`); and the presses around a row being edited (`useNodeEditing.ts`).
+ */
+export function trackPress({
+  onEnd,
+  signal,
+  starts = [],
+}: {
+  readonly onEnd: () => void;
+  readonly signal: AbortSignal;
+  readonly starts?: readonly ("mousedown" | "pointerdown")[];
+}): Press {
+  let pressing = false;
+  let ending: number | undefined;
+  const start = () => {
+    window.clearTimeout(ending);
+    pressing = true;
+  };
+  const ended = () => {
+    if (!pressing) return;
+    window.clearTimeout(ending);
+    ending = window.setTimeout(() => {
+      pressing = false;
+      onEnd();
+    }, 0);
+  };
+  const options = { capture: true, signal };
+  for (const type of starts) window.addEventListener(type, start, options);
+  for (const type of PRESS_ENDS) window.addEventListener(type, ended, options);
+  signal.addEventListener("abort", () => window.clearTimeout(ending), { once: true });
+  return {
+    get pressing() {
+      return pressing;
+    },
+    start,
+  };
+}
+
 /** What `usePressFocus` answers: what a row calls as it takes the focus, and the `mousedown`
  *  handler of the element the rows are drawn in. */
 export interface PressFocus<T> {
@@ -43,45 +100,29 @@ export function usePressFocus<T>(
 ): PressFocus<T> {
   const latest = useRef({ holds, take });
   latest.current = { holds, take };
-  // Whether a press is under way, from its mousedown until the task after it ends, and the item
-  // whose row it focused, which takes the focus then.
-  const press = useRef<{ ending?: number; focus?: { readonly item: T }; held: boolean }>({
-    held: false,
-  });
+  // The press under way in the rows' element (`trackPress`), and the item whose row it focused,
+  // which takes the focus once that press has ended.
+  const press = useRef<Press | undefined>(undefined);
+  const pending = useRef<{ readonly item: T } | undefined>(undefined);
   useEffect(() => {
-    const held = press.current;
-    const end = () => {
-      held.held = false;
-      const pending = held.focus;
-      held.focus = undefined;
-      if (pending !== undefined && latest.current.holds(pending.item)) {
-        latest.current.take(pending.item);
-      }
-    };
-    const ended = () => {
-      if (!held.held) return;
-      window.clearTimeout(held.ending);
-      held.ending = window.setTimeout(end, 0);
-    };
     const listening = new AbortController();
-    for (const type of PRESS_ENDS) {
-      window.addEventListener(type, ended, { capture: true, signal: listening.signal });
-    }
-    return () => {
-      listening.abort();
-      window.clearTimeout(held.ending);
-    };
+    press.current = trackPress({
+      onEnd: () => {
+        const held = pending.current;
+        pending.current = undefined;
+        if (held !== undefined && latest.current.holds(held.item)) latest.current.take(held.item);
+      },
+      signal: listening.signal,
+    });
+    return () => listening.abort();
   }, []);
   return useMemo(
     () => ({
       focus: (item: T) => {
-        if (press.current.held) press.current.focus = { item };
+        if (press.current?.pressing === true) pending.current = { item };
         else latest.current.take(item);
       },
-      onMouseDown: () => {
-        window.clearTimeout(press.current.ending);
-        press.current.held = true;
-      },
+      onMouseDown: () => press.current?.start(),
     }),
     []
   );
