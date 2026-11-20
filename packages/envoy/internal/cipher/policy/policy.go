@@ -809,6 +809,28 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
+	// groups is the group reader of the Current that published the set (Loader.Groups), which
+	// every decision on the set asks who is a member of a group, and nil for a set no Current
+	// published. It is in neither Version nor any digest: who is a member changes with no change
+	// of the policy's tags.
+	groups record.Directory
+}
+
+// Groups answers the group reader the set's decisions ask (Loader.Groups), and nil for a set no
+// Current published, which admits nobody to a group.
+func (s *Set) Groups() record.Groups {
+	if s.groups == nil {
+		return nil
+	}
+	return s.groups
+}
+
+// NewSetWithGroups is NewSet carrying groups as its group reader, as a set Current publishes
+// carries the loader's: for a caller that decides on a set it built itself, a test among them.
+func NewSetWithGroups(secrets map[string]Secret, groups record.Directory) *Set {
+	set := NewSet(secrets)
+	set.groups = groups
+	return set
 }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s

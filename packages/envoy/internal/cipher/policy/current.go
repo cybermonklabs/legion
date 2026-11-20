@@ -628,6 +628,9 @@ func (c *Current) publish(next *Set, first bool) {
 			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "absent")
 		}
 	}
+	// Every set made live carries the loader's group reader, the reread's as much as the load's,
+	// so no decision reads another; publish names no group to it (reload does, for a full load).
+	next.groups = c.loader.Groups
 	c.set.Store(next)
 }
 

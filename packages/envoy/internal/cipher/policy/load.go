@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -220,6 +221,10 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// Groups is the broker's group reader (groups.Reader): Current stamps it on every set it
+	// makes live (Set.Groups), so each decision asks it who is a member of a group. A nil
+	// directory admits nobody to any group.
+	Groups record.Directory
 	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
 	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
 	now func() time.Time
