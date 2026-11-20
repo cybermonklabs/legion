@@ -485,7 +485,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		-- launchNow), and it clears the report. The report describes the process that made it,
 		-- and the launch replaces that process; a Claude Code worker reports only at its Stop
 		-- hook, so its dead process's report would otherwise stand, background work and all.
-		-- This is the one place the rule lives: no reader of the columns checks anything.
+		-- This is the one place the rule lives. Two readers check the generation as well, each
+		-- because it holds a launch apart from the row: ClaimActivity answers only the launch it
+		-- is asked of, and the update round (internal/daemon's roundGroup) takes a row's report
+		-- onto a machine's view only where the view is of the row's own generation, because a
+		-- view of another launch is a process the row's report does not describe.
 		activity_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_at end,
 		activity_background = case when claims.generation <> excluded.generation

@@ -70,9 +70,8 @@ const (
 	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing, which is what
 	// GitHub answers a body naming a permission the installation does not hold. The answer says
 	// nothing of a rate limit, so the minter reads it as the caller's narrowing and refuses the
-	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble. A
-	// read-only narrowing asks once more without actions, which this answers 422 as well, so that
-	// refusal reaches the caller too and no token is ever released.
+	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble, and no token
+	// is ever released.
 	GitHubTokensRefused GitHubTokenAnswer = "refuse"
 	// GitHubTokensRefusedRepository answers that same 422 to a token request whose repositories
 	// name the answer's Repository, and answers every other token request ordinarily. So a
@@ -81,10 +80,9 @@ const (
 	// asking GitHub again with less of the narrowing makes to find which part was refused.
 	GitHubTokensRefusedRepository GitHubTokenAnswer = "refuse-repository"
 	// GitHubTokensRefusedPermissions answers that 422 to a token request whose body names any
-	// permissions — the request a read-only narrowing makes, and the second one it makes without
-	// actions — and answers every other token request ordinarily. So the read-only half of a
-	// narrowing is refused while the repositories it names are minted, which is the other part a
-	// caller looking for the refused one reads.
+	// permissions — the request a read-only narrowing makes — and answers every other token
+	// request ordinarily. So the read-only half of a narrowing is refused while the repositories
+	// it names are minted, which is the other part a caller looking for the refused one reads.
 	GitHubTokensRefusedPermissions GitHubTokenAnswer = "refuse-permissions"
 	// GitHubTokensWider answers each token request a token wider than its body asked for: every
 	// repository of the account rather than the ones the body named, and a grant past the read
@@ -119,16 +117,21 @@ func (a GitHubAnswer) refuses(asked githubAccessTokens) bool {
 	}
 }
 
-// standInGitHubPermissions is what a token holds when its request named none: the permissions
-// this stand-in says every installation of the App was granted. GitHub answers such a request a
-// token holding all of the installation's, and the minter checks the permissions of a read-only
-// narrowing alone, which always names them, so nothing but a caller reading what it got reads
-// these.
-var standInGitHubPermissions = map[string]string{"contents": "write", "metadata": "read", "pull_requests": "write"}
+// standInGitHubPermissions is what this stand-in says every installation of the App was granted:
+// what the installations listing names, and what a token holds when its request named none. It
+// holds each read a read-only narrowing asks for, so such a narrowing asks for all of them, as
+// it does of an installation that holds them (secrets' heldReadOnlyPermissions). GitHub answers a
+// request naming no permissions a token holding all of the installation's, and the minter checks
+// the permissions of a read-only narrowing alone, which always names them, so nothing but a
+// caller reading what it got reads these on a token.
+var standInGitHubPermissions = map[string]string{
+	"actions": "read", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "read",
+}
 
 // widerPermission is the grant a widened answer holds past what its body asked for. No narrowing
 // asks for it, and the minter refuses a read-only token holding a permission outside contents,
-// metadata, pull requests and actions, so it is the permission half of a token wider than asked.
+// metadata, pull requests, actions, checks and statuses, so it is the permission half of a token
+// wider than asked.
 const widerPermission, widerPermissionLevel = "administration", "write"
 
 // GitHubStand is the four routes a narrowed github-app release is made, spent and given back
@@ -268,8 +271,9 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 		installations := []map[string]any{}
 		for _, owner := range g.owners() {
 			installations = append(installations, map[string]any{
-				"id":      g.options.Installations[owner],
-				"account": map[string]string{"login": owner},
+				"id":          g.options.Installations[owner],
+				"account":     map[string]string{"login": owner},
+				"permissions": standInGitHubPermissions,
 			})
 		}
 		_ = json.NewEncoder(w).Encode(installations)
