@@ -975,7 +975,10 @@ test(
     const referencesTimeout = createApiClient(
       stubFetch(() =>
         Response.json(
-          { error: "the issue's reference closure ran past its 2s bound", code: "REFERENCES_TIMEOUT" },
+          {
+            error: "the issue's reference closure ran past its 2s bound",
+            code: "REFERENCES_TIMEOUT",
+          },
           { status: 503 }
         )
       ).fetch
