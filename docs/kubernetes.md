@@ -1155,7 +1155,7 @@ So turn `writer_audience` off on this release first, and roll back below it only
 2. When no pod's launcher command carries `--session-writer-audience`, roll back the daemon and the worker image together, with the file that no longer names the member.
    This prints nothing then:
    `kubectl -n <namespace> get pods -l legion.dev/project=<project> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[*].command}{"\n"}{end}' | grep -- --session-writer-audience`.
-   `<namespace>` is `runtime.kubernetes.namespace`, and `<project>` is the project's key, the value of the label every pod of the project carries.
+   `<namespace>` is `runtime.kubernetes.namespace`, and `<project>` is `legion.yaml`'s `project` lowercased with every non-alphanumeric removed (`claim.ProjectToken`), the value of every pod's `legion.dev/project` label: `ACME` reads `acme`.
 
 A rollback that skips step 1 stops the controller and holds the issues whose pods carry the member.
 A daemon before this release reads no fifth flag, so it sees no moved session store.
