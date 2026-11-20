@@ -528,7 +528,7 @@ if [ -z "$peer_problem" ] && [ "$peer_kind" = omp ]; then
   peer_dir=$(cd "$peer_dir" && pwd -P)
   say "starting the peer, omp in tmux (tmux -S $peer_tmux attach -t outside-e2e-peer)"
   env -u ENVOY_NATS_URL -u ENVOY_TOKEN -u ENVOY_TOKEN_FILE -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE \
-    PATH="$tools:$PATH" \
+    PATH="$tools:$PATH" OMP_SKIP_SETUP=1 \
     ENVOY_URL="$OUTSIDE_LISTENER_URL" ENVOY_INBOUND=listener AGENT_SECRETS_PROJECTS="$project" \
     tmux -S "$peer_tmux" new-session -d -s outside-e2e-peer -x 220 -y 50 -c "$peer_dir" \
     omp --no-extensions --plugin-dir "$plugin_dir" --no-skills --no-rules --no-context-files \

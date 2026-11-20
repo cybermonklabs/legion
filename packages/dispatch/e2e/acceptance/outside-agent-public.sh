@@ -487,15 +487,18 @@ else
     esac
     sleep 2
   done
+  # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
+  # Oh My Pi session's registration is left as it is. The session opens its socket before it
+  # registers (pi-envoy's envoy.ts, `ENVOY_INBOUND=listener`), so with no socket it never registers,
+  # and its registration is not waited for.
+  served=$(json_field granted "$(probe relay-sub "notifications.envoy.deliver.$probe_session")")
   for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$served" = true ] || break
     session_id=$(json_field at_dir "$(probe sessions "$session_dir")")
     [ -z "$session_id" ] || [ "$session_id" = null ] || break
     session_id=''
     sleep 3
   done
-  # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
-  # Oh My Pi session's registration is left as it is.
-  served=$(json_field granted "$(probe relay-sub "notifications.envoy.deliver.$probe_session")")
   pong_lag=''
   hello_lag=''
   done_lag=''
@@ -522,14 +525,14 @@ else
   marks="nonce=$nonce ping_at=${ping_at:-none} reply_at=${reply_at:-none}"
   if [ -z "$ready" ]; then
     row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s" UNKNOWN
+  elif [ "$served" = false ]; then
+    row P4 "$want4" "the relay socket refused the probe's session its own relay subject" FAIL
+  elif [ "$served" != true ]; then
+    row P4 "$want4" "$listener serves no relay socket, which the Oh My Pi session opens before it registers" UNKNOWN
   elif [ -z "$session_id" ]; then
     shown=$(pane | tr -s ' \n' '  ')
     [ "${#shown}" -le 300 ] || shown=${shown:$((${#shown} - 300))}
     row P4 "$want4" "the Oh My Pi session is not on $listener's session list (GET /v1/sessions by its directory); its pane ends: $shown" UNKNOWN
-  elif [ "$served" = false ]; then
-    row P4 "$want4" "session $session_id: the relay socket refused a session its own relay subject" FAIL
-  elif [ "$served" != true ]; then
-    row P4 "$want4" "session $session_id registered; $listener serves no relay socket" UNKNOWN
   elif [ -z "$ping_sent" ]; then
     row P4 "$want4" "session $session_id registered; $send_problem; $marks" "$send_verdict"
   elif [ -z "$pong_lag" ]; then

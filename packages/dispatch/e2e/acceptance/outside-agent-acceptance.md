@@ -132,7 +132,10 @@ included. It uploads one row per revoke, `revoke-<credential id>`, as artifact
 
 Every process the leg starts runs with `env -i`, a HOME of its own, and these settings alone:
 `ENVOY_URL`, `ENVOY_INBOUND=listener`, `DISPATCH_URL`, `DISPATCH_TOKEN_BROKER=1`,
-`AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=device-login` and `AGENT_SECRETS_PROJECTS`.
+`AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=device-login` and `AGENT_SECRETS_PROJECTS`,
+beside `OMP_SKIP_SETUP=1`, Oh My Pi's own switch that keeps its first-run setup wizard shut in a
+fresh HOME. The leg links the real `bun`, `omp` and `tmux` for them, because a version manager's
+shim finds its program through the caller's HOME.
 
 | Row | It passes when |
 | --- | --- |
