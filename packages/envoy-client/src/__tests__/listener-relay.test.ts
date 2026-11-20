@@ -356,25 +356,44 @@ describe("a relay socket", () => {
     expect(server.minted.map((one) => one.session)).toEqual(["ses_a", "ses_b"]);
   });
 
-  test("the stand-in serves a test's own listener routes on the socket's origin", async () => {
-    // A driver registers and sends at the same listener whose socket it opens, so the routes a
-    // test serves answer on the one origin; a route none of them answers is still 404, and the
-    // trade and the relay path are never handed to them.
+  test("the stand-in asks a test's own routes first, and the trade and 404 take what they leave", async () => {
+    // A driver registers and sends at the listener whose socket it opens, and serves its device
+    // login's grants at the broker that trades its session's token, so its routes answer on the
+    // one origin, the token endpoint included. Each is handed a copy of the request: one it reads
+    // and leaves still reaches the trade whole. The relay upgrade is never handed to them.
     const asked: string[] = [];
+    // Random, as a broker's token is: the client holds every token it is handed.
+    const deviceToken = fixtureSecret("device");
     const server = startRelaySocketStandIn({
-      routes: (request) => {
+      routes: async (request) => {
         const { pathname } = new URL(request.url);
-        asked.push(`${request.method} ${pathname}`);
-        return pathname === "/v1/subscribe" ? Response.json({ registered: true }) : undefined;
+        const grant = new URLSearchParams(await request.text()).get("grant_type") ?? "";
+        asked.push(`${request.method} ${pathname}${grant === "" ? "" : ` ${grant}`}`);
+        if (pathname === "/v1/subscribe") return Response.json({ registered: true });
+        if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
+          return Response.json({ access_token: deviceToken });
+        }
+        return undefined;
       },
     });
     started.push(() => server.stop());
     const registered = await fetch(`${server.url}/v1/subscribe`, { method: "POST" });
-    expect(registered.status).toBe(200);
     expect(await registered.json()).toEqual({ registered: true });
+    const device = await fetch(`${server.url}/v1/oauth/token`, {
+      method: "POST",
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+    });
+    expect(await device.json()).toEqual({ access_token: deviceToken });
     expect((await fetch(`${server.url}/v1/messages/send`, { method: "POST" })).status).toBe(404);
+    // The session's own trade goes through the routes and on to the stand-in's trade.
     await opened(server, "ses_a");
-    expect(asked).toEqual(["POST /v1/subscribe", "POST /v1/messages/send"]);
+    expect(asked).toEqual([
+      "POST /v1/subscribe",
+      "POST /v1/oauth/token urn:ietf:params:oauth:grant-type:device_code",
+      "POST /v1/messages/send",
+      "POST /v1/oauth/token urn:ietf:params:oauth:grant-type:token-exchange",
+    ]);
+    expect(server.minted.map((token) => token.session)).toEqual(["ses_a"]);
     expect(opens(server).map((upgrade) => upgrade.session)).toEqual(["ses_a"]);
   });
 });
