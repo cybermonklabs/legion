@@ -11,7 +11,7 @@ import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
-import { useTreeReads } from "../outline-reads";
+import { useOutlineReads } from "../outline-reads";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
@@ -21,7 +21,7 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
  * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
  * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
- * is built from holds its answer (`useTreeReads`'s `readsHeld`) and the reader's login has
+ * is built from holds its answer (`useOutlineReads`'s `readsHeld`) and the reader's login has
  * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
  * read still out or failed, or Conversation counts no thread as the reader's, and a count read
  * then - a `0`, or a number short of the real one - would read as the real count, so the
@@ -40,7 +40,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { namesHeld, readsHeld, root } = useTreeReads(issue);
+  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   // Who the reader is, which Conversation's count is read for: a thread is counted where the
   // reader began it.
   const viewer = useQuery(whoAmIQuery()).data?.login;

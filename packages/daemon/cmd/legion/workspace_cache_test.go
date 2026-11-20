@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // cmdCacheToken is the bearer token the cache command's tests hand the cache, and the fetch's
@@ -167,6 +168,36 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 	}
 }
 
+// `cache` exits 1 for every failure, a failure from GitHub too: the fetch's exit 3 for a cause
+// outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
+// answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
+func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "main")
+	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
+	v.setenv(t)
+	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr lockedBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+	}()
+
+	select {
+	case code := <-exited:
+		if says := "The requested URL returned error: 403"; code != 1 || !strings.Contains(stderr.String(), says) {
+			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
+		}
+	case <-time.After(winitWait):
+		t.Fatalf("cache did not end after GitHub refused its first clone: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+	if got := cloneAttempts(t, attempts); got != 1 {
+		t.Fatalf("git cloned %d times, want 1", got)
+	}
+}
+
 // `cache` serves the repository's cache until its context ends: it says where it listens, clones
 // the repository onto its root with the provisioning token handed to git as a one-shot credential
 // under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no token,
@@ -187,21 +218,18 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 
 	address := ""
 	deadline := time.Now().Add(winitWait)
-	for address == "" {
+	if !testwait.Holds(winitWait, 10*time.Millisecond, func() bool {
 		for _, line := range strings.Split(stdout.String(), "\n") {
 			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
 				address = found
 			}
 		}
-		if address == "" {
-			if time.Now().After(deadline) {
-				t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		return address != ""
+	}) {
+		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	for !health.Ready {
+	if !testwait.Holds(time.Until(deadline), 20*time.Millisecond, func() bool {
 		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -215,10 +243,9 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+		return health.Ready
+	}) {
+		t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
 	}
 	if want := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main"); health.Head != want || health.Repo != winitRepo {
 		t.Fatalf("/healthz = %+v, want acme/widgets at the remote's main %s", health, want)

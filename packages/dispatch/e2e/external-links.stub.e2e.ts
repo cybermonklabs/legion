@@ -1,6 +1,6 @@
 /** An unsafe stored external link, drawn inert. The row reads only what the page makes of one
  *  stored body, so it runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). */
+ *  (packages/dispatch/README.md, "The stubbed layer"). */
 import { expect } from "@playwright/test";
 
 import { createIssue, createProject } from "./api";

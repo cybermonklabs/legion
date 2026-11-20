@@ -661,9 +661,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

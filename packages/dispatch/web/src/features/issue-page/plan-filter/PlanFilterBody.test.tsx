@@ -262,7 +262,7 @@ function renderBody(
             <FocusedNodeProvider>
               <IssueScope />
               <Place />
-              <ViewStage view="plan">
+              <ViewStage>
                 <PlanFilterBody
                   artifacts={artifacts}
                   context={new Set()}
@@ -702,7 +702,7 @@ function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
           <MarginProvider>
             <ProvidersSlot issue={issue} route={route}>
               <IssueScope />
-              <ViewStage view="plan">
+              <ViewStage>
                 <ViewPlanSlot issue={issue} route={route} />
               </ViewStage>
             </ProvidersSlot>

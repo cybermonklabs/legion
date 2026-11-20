@@ -30,7 +30,8 @@ const (
 	// daemon's current one.
 	IdleHoldPluginContract
 	// IdleHoldUpdateRound: an update round of the pod is open on a live claim of it, so the pod
-	// is already being replaced and the replacement is waiting for its workers to push.
+	// is already being replaced and the replacement is waiting for its workers to do the steps of
+	// the update message (supervise.UpdateTask).
 	IdleHoldUpdateRound
 	// IdleHoldInTurn: a claim of the pod has a process in a turn, starting or stopping, or one
 	// whose launch is not yet known.
@@ -98,7 +99,9 @@ const (
 	// that any claim of it ever ran in.
 	IdleHoldUnownedNoClaim
 	// IdleHoldUnownedSandboxGone: the cluster holds no Sandbox for the issue, so the pod this
-	// rule would release is already gone and nothing of it is reserved.
+	// rule would release is already gone and nothing of it is reserved. The hold also means a
+	// Sandbox that owns the issue's kept volume, kept Suspended by an earlier release, that runs
+	// no pod: its volume waits for the issue's next pod, and there is no pod to release.
 	IdleHoldUnownedSandboxGone
 	// IdleHoldUnownedClaimProcess: a stopped claim of the pod still records a process in it
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
@@ -232,7 +235,8 @@ type IdleDecision struct {
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
 //     is): such a pod is already being replaced, and the replacement waits until every role in
-//     it has answered the update message, or until the round's bound. A release that deleted the
+//     it has answered the update message, no turn runs and no claim's activity report holds it
+//     (internal/daemon's roundEnd.holding), or until the round's bound. A release that deleted the
 //     pod under that wait would leave the round to read its own pod as one that went, and to
 //     tell the issue that the workers which had not answered lost what they had not pushed. A
 //     claim's own plugin round is not this condition's: that claim speaks a contract other than
@@ -315,10 +319,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		if !c.Live() {
 			continue
 		}
-		if !c.Reported() {
+		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnAt, c.ActivityBackground) {
+		case claim.WorkUnreported:
 			return IdleDecision{Hold: IdleHoldUnreported}
-		}
-		if c.ActivityBackground {
+		case claim.WorkRunning:
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}

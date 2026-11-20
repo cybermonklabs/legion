@@ -157,8 +157,8 @@ type Service struct {
 	// the goroutines, which are what it holds.
 	waiting, refusing atomic.Int64
 	// delivered is closed once the subscription's delivery goroutine has returned from its last
-	// callback and ended (Subscription.SetClosedHandler, which nats.go runs on that goroutine as
-	// it ends, nats.go:3778-3784), after which deliver adds nothing more to wait.
+	// callback and ended (Subscription.SetClosedHandler, which waitForMsgs invokes at nats.go
+	// v1.55.0 :3796-3889), after which deliver adds nothing more to wait.
 	delivered chan struct{}
 	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds; done ends the
 	// heartbeat and the counter at Close, and beaten and counted are closed once each has ended,
@@ -306,14 +306,14 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	}
 	s.sub.SetClosedHandler(func(string) { close(s.delivered) })
 	// nats.go holds the requests its callback has not taken yet in a list of its own, of 500,000
-	// messages or 64 MiB unless told otherwise (nats.go:5765-5767), and past its bound drops each
-	// new one and reports a slow consumer, which the bus logs. The callback takes a request in
-	// microseconds, so the list grows only while the callback cannot run at all, and once it runs
-	// again it places no more of what the list holds than maxWaiting to wait and maxRefusing to be
-	// refused, and drops the rest itself. So the list holds those and the one being delivered,
-	// which nats.go counts until its callback returns (nats.go:3707-3709); a request past them,
-	// which the callback would drop all the same a moment later, is dropped on arrival without
-	// holding its memory meanwhile.
+	// messages or 64 MiB unless told otherwise (nats.go v1.55.0 defaults, :5944-5948; assignment,
+	// :5222-5224), and past its bound drops each new one and reports a slow consumer, which the bus logs. The
+	// callback takes a request in microseconds, so the list grows only while the callback cannot
+	// run at all, and once it runs again it places no more of what the list holds than maxWaiting
+	// to wait and maxRefusing to be refused, and drops the rest itself. So the list holds those and
+	// the one being delivered, which nats.go counts until its callback returns (:3798-3815); a
+	// request past them, which the callback would drop all the same a moment later, is dropped on
+	// arrival without holding its memory meanwhile.
 	if err := s.sub.SetPendingLimits(s.settings.maxWaiting+s.settings.maxRefusing+1, pendingBytes); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("natscallout: bound the requests held for %s: %w", authSubject, err)
@@ -325,7 +325,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 }
 
 // deliver is the subscription's callback, which nats.go runs for each request in turn on the one
-// goroutine it delivers the subscription's messages on (nats.go:3696-3765, waitForMsgs). So it
+// goroutine it delivers the subscription's messages on (nats.go v1.55.0 waitForMsgs, :3796-3889). So it
 // never blocks, on any branch: it counts the request against a bound, starts a goroutine for it or
 // drops it, and returns, and the request is opened, settled and answered on its own goroutine.
 // Anything slower here would hold back the delivery of every request behind it, each unseen in
@@ -386,12 +386,12 @@ func (s *Service) deliver(msg *nats.Msg) {
 // whole authorization timeout.
 //
 // Reconnecting, it unsubscribes instead. A drain then would leave the subscription among the
-// connection's own, which nats.go sends again on the reconnect (nats.go:5997-6033,
-// resendSubscriptions, which does not check draining), putting this closing replica back in the
-// queue group; the drain's end then removes it on the client's side only (nats.go:5366-5370,
-// checkDrained), and every request the hub routes here after that has no subscriber. An
-// unsubscribe removes it from the connection (nats.go:5444, removeSub), so the reconnect never
-// sends it, and while the connection is down the hub can route nothing here.
+// connection's own, which nats.go sends again on the reconnect (nats.go v1.55.0
+// resendSubscriptions, :6179-6230), putting this closing replica back in the queue group; the
+// drain's end then removes it on the client's side only (checkDrained, :5504-5554), and every
+// request the hub routes here after that has no subscriber. An unsubscribe removes it from the
+// connection, so the reconnect never sends it, and while the connection is down the hub can route
+// nothing here.
 //
 // A drain can meet that reconnect all the same: the connection drops while the drain still has
 // requests to deliver and comes back before the drain ends. So Close counts the connection's
@@ -399,9 +399,9 @@ func (s *Service) deliver(msg *nats.Msg) {
 // decisions, which takes the replica out of the group at once. The answers of the decisions it
 // cuts short are lost, and their clients are refused at the hub's timeout; left open, the
 // connection would have the hub route requests to no subscriber for as long as those decisions
-// run. A reconnect cannot send the subscription once the drain's end or the unsubscribe has removed
-// it, and both take the connection's lock, as the reconnect's count and its resend do in one hold
-// of it (nats.go:3458-3504), so a reconnect that sent it is counted by then.
+// run. A reconnect cannot send the subscription once the drain's end or the unsubscribe has
+// removed it, and both take the connection's lock, as the reconnect's count and its resend do in
+// one hold of it (nats.go:3562-3600), so a reconnect that sent it is counted by then.
 //
 // Either way it then waits for the subscription's delivery goroutine to end, which may still be
 // delivering a request when an unsubscribe ends the subscription, and then for every request that
@@ -419,7 +419,7 @@ func (s *Service) close() {
 	// nats.go's count of the requests it dropped past the pending limits is read while the
 	// subscription still answers it, so what it dropped since the counter's last tick reaches the
 	// metric. What it drops during the drain itself is not counted: once the drain has ended the
-	// subscription answers Dropped with ErrBadSubscription (nats.go v1.53.1, nats.go:5832-5833).
+	// subscription answers Dropped with ErrBadSubscription (nats.go v1.55.0, nats.go:6008-6018).
 	// The hub logs each such client's authorization timeout.
 	s.countDrops()
 	if s.conn.IsConnected() {

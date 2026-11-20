@@ -4,10 +4,11 @@
 #
 # Who runs it, and why it is a script: the "Browser-test dispatch dashboard" step of
 # .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its alone
-# job. The two jobs repeat their step lists for the reason that file's head gives - a composite
-# action carries neither `timeout-minutes` nor `services:` - but that reason is a composite
-# action's and not a script's: a step that calls a script keeps its own `timeout-minutes`. So
-# this body is written once, both steps call it, and a fix here is a fix for both jobs.
+# job. The two jobs repeat their step lists for the reason .github/ci-notes/dispatch-browser.md
+# gives - a composite action carries neither `timeout-minutes` nor `services:` - but that reason
+# is a composite action's and not a script's: a step that calls a script keeps its own
+# `timeout-minutes`. So this body is written once, the scripts of both steps call it, and a fix
+# here is a fix for both jobs.
 #
 # Two modes, the two halves of one reading:
 #
@@ -109,7 +110,8 @@ case "$mode" in
     # command section at the next `::`, splits the properties on `,` and each pair on its first
     # `=`, then unescapes each value (actions/runner, src/Runner.Common/ActionCommand.cs: the
     # property table is `\r` %0D, `\n` %0A, `:` %3A, `,` %2C, `%` %25). So a `,` is what would cut
-    # a title short - an alone leg's title is its project name (dispatch-browser.yaml:708), and
+    # a title short - an alone leg's title is its project name (the `$project` that
+    # dispatch-browser-alone-suite.sh passes to `report`), and
     # `a,b-alone` would be read as a title of `a` and a second property - while a single `:` ends
     # nothing, and is encoded because the table holds it. `%` is replaced first, matching the
     # runner's unescape, which takes `%25` last; the other way round would double-encode. `\r` and

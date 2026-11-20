@@ -61,7 +61,7 @@ test("a failed read's Retry reads busy and stays enabled while its read runs aga
   const fixup = blurWhenDisabled();
   let asks = 0;
   const view = render(
-    <ViewStage view="spec">
+    <ViewStage>
       <RunningAgainView
         asked={() => {
           asks += 1;
@@ -99,7 +99,7 @@ test("each failed read's line says its own words, and its Retry asks that read a
   const user = userEvent.setup();
   const asked: string[] = [];
   const view = render(
-    <ViewStage view="verification">
+    <ViewStage>
       <FailedReadLine
         message="Couldn't read the statements."
         onRetry={() => asked.push("statements")}
@@ -132,7 +132,7 @@ test("each failed read's line says its own words, and its Retry asks that read a
  *  (`errorUpdateCount`), where the view names it. */
 function KeptLineView({ failure, retrying }: { failure?: number; retrying: boolean }): ReactNode {
   return (
-    <ViewStage view="spec">
+    <ViewStage>
       <FailedReadLine
         {...(failure === undefined ? {} : { failure })}
         message="Couldn't read the statements."
@@ -237,7 +237,7 @@ function TwoReadsView({ results, statements }: { results: Stands; statements: St
 
 test("a failed read's line that leaves with the focus in it gives the focus to what replaces it: the next failed read's Retry, or the view's first row", async () => {
   const drawn = (statements: Stands, results: Stands) => (
-    <ViewStage view="spec">
+    <ViewStage>
       <TwoReadsView results={results} statements={statements} />
     </ViewStage>
   );
@@ -296,7 +296,7 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
  *  failed, the first of them while `first`. */
 function RowsUnderLinesView({ first }: { first: boolean }): ReactNode {
   return (
-    <ViewStage view="spec">
+    <ViewStage>
       {first ? (
         <FailedReadLine
           message="Couldn't read the statements."
@@ -347,7 +347,7 @@ function FocusingView({ answered }: { answered: boolean }): ReactNode {
     if (answered) control.current?.focus();
   }, [answered]);
   return (
-    <ViewStage view="spec">
+    <ViewStage>
       {answered ? (
         <button ref={control} type="button">
           A control the view focuses
@@ -425,7 +425,7 @@ function ChordPage({ late }: { late: boolean }): ReactNode {
     <>
       <button type="button">Elsewhere</button>
       {pathname === presetPath(ISSUE, "verification") ? (
-        <ViewStage view="verification">
+        <ViewStage>
           <RefusedTreeView late={late} />
         </ViewStage>
       ) : null}
@@ -505,7 +505,7 @@ function RefusedViewPage({ drawn, late }: { drawn: boolean; late: boolean }): Re
     <>
       <button type="button">Elsewhere</button>
       {drawn ? (
-        <ViewStage view="verification">
+        <ViewStage>
           <RefusedTreeView late={late} />
         </ViewStage>
       ) : null}
@@ -619,7 +619,7 @@ test("a focus on a view's tree that draws rows stays on the tree, from outside t
   const page = render(
     <>
       <button type="button">Elsewhere</button>
-      <ViewStage view="spec">
+      <ViewStage>
         <TwoReadsView results="answered" statements="answered" />
       </ViewStage>
     </>
@@ -687,7 +687,7 @@ test("a view that draws its failed read's Retry in the commit its page mounts in
   (document.activeElement as HTMLElement | null)?.blur();
   const page = render(
     <PageChangeMain>
-      <ViewStage view="verification">
+      <ViewStage>
         <RefusedTreeView late={false} />
       </ViewStage>
     </PageChangeMain>
@@ -712,7 +712,7 @@ test("a view that draws its rows in the commit its page mounts in takes back the
   (document.activeElement as HTMLElement | null)?.blur();
   const page = render(
     <PageChangeMain>
-      <ViewStage view="spec">
+      <ViewStage>
         <TwoReadsView results="answered" statements="answered" />
       </ViewStage>
     </PageChangeMain>

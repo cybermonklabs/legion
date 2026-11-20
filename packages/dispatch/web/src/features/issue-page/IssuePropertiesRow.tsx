@@ -35,7 +35,6 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
-import { refetchFailedOnFocus } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
@@ -46,22 +45,8 @@ import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { EVENT_FRESH } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
-
-/**
- * How the count's five reads are kept fresh: the tree's `EVENT_FRESH` (`useIssueTree.ts`), which
- * that file keeps to itself, so the header holds this copy. They are refreshed by events, never
- * by age (decision 180): the feed's rules read the decisions, the coverage, the comments and the
- * blocks again when an event can change them, the reader's login does not change while the page
- * is open, and a window focus fetches again only a read in error (`refetchFailedOnFocus`).
- * TanStack judges staleness per observer, so a read here under the app's 30 s (`main.tsx`) would
- * read its key again on each window focus, and on each mount of the header 30 s after the last
- * read, although the tree beside it holds that key fresh.
- */
-const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -106,9 +91,11 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
   // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh as the outline keeps them (`EVENT_FRESH`), so it costs no request
-  // of its own (`waiting.ts`). Until those blocks answer the count reads the Changes by their
-  // quotes, as `decision-review.ts` does with no blocks read.
+  // belongs to - and kept fresh by the outline's own rule (`useIssueTree.ts`'s `EVENT_FRESH`):
+  // events refresh them, never their age (decision 180). Staleness is per observer, so each read
+  // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
+  // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
+  // with no blocks read.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });

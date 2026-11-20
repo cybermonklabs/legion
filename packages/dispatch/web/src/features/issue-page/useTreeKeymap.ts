@@ -50,8 +50,8 @@ import { inputMethodKey } from "./useNodeEditing";
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
-  /** Whether a row of the tree is being edited: the row Enter took the caret from is held only
-   *  until the editing ends, however it ends (`tree-leave-caret`). */
+  /** Whether a row of the tree is being edited, which Escape in its editor leaves
+   *  (`tree-leave-caret`). */
   readonly editing: boolean;
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
@@ -63,7 +63,8 @@ export interface TreeKeyboard {
   readonly onCycle: () => void;
   /** Puts the caret in one node's own text, in the row the key was pressed on. */
   readonly onEdit: (row: string, node: TreeNode) => void;
-  /** Says the caret has left a node's text, so the row gives the document back. */
+  /** Says the caret has left a node's text, so the row gives the document back and takes the
+   *  focus back. */
   readonly onEditEnd: () => void;
   /** Opens or closes one branch. */
   readonly onFold: (id: string, open: boolean) => void;
@@ -196,15 +197,6 @@ export function moveToRow(target: HTMLElement, options?: FocusOptions): void {
 }
 
 export function useTreeKeymap(tree: TreeKeyboard): void {
-  // The row the caret was taken from, so Escape puts the reader back on it rather than on
-  // whichever row the tree would otherwise offer. It is let go of as the editing ends, however it
-  // ends: the row's own listener takes Escape before this keymap and cancels it
-  // (`useNodeEditing.ts`), so the binding's `run` does not run for it, and Tab out of the row's
-  // editor and a press elsewhere end the editing too.
-  const caretFrom = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (!tree.editing) caretFrom.current = null;
-  }, [tree.editing]);
   // The key being pressed, noted as it sets out for its target: the keymap asks a binding's
   // `when` with no key in hand, and a binding of two keys - `j` and Down - leaves the one that
   // scrolls a block to the browser while the other still moves the reader.
@@ -654,7 +646,6 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
-        caretFrom.current = elements[on] ?? null;
         tree.onEdit(rowKeyOf(row), row.node);
       },
       when: () => onRowItself(drawn().elements) !== -1,
@@ -665,8 +656,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // answers for a focused select and never for these two. The Escape that ends an input
       // method's composition is the input method's and leaves nothing (`inputMethodKey`): the
       // keymap passes over one marked `isComposing`, and Safari's comes unmarked. It is offered
-      // from an editable inside the tree alone: an editor elsewhere on the page has keys of its
-      // own, and no row's caret to leave.
+      // from an editable inside the tree alone, while a row is edited: an editor elsewhere on the
+      // page has keys of its own, and no row's caret to leave.
       id: "tree-leave-caret",
       inEditable: true,
       keys: "Escape",
@@ -674,18 +665,14 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       palette: false,
       run: (event) => {
         if (inputMethodKey(event)) return;
-        const row = caretFrom.current;
-        caretFrom.current = null;
         (document.activeElement as HTMLElement | null)?.blur();
+        // The editing's end gives the row the caret came from the focus back (`useNodeEditing`).
         tree.onEditEnd();
-        row?.focus();
       },
       when: () => {
         const editable = document.activeElement?.closest('[contenteditable="true"]');
         return (
-          caretFrom.current !== null &&
-          editable != null &&
-          tree.container.current?.contains(editable) === true
+          tree.editing && editable != null && tree.container.current?.contains(editable) === true
         );
       },
     },

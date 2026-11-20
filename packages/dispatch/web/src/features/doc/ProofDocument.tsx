@@ -19,6 +19,7 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -436,7 +437,9 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      // Over any read of the document still out: asked before the version was made, it would
+      // take the version back off the list (`replaceQueryData`).
+      replaceQueryData<Artifact>(queryClient, ["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,

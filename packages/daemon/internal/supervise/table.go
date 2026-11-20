@@ -250,9 +250,9 @@ type StallBackstop struct {
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
-// about to be replaced, and the role is asked to push its work and answer ready_for_update
-// first. Round is the round's identity and kind in one string (Claim.UpdateRound), and Reasons
-// the drift the daemon read of the pod it runs in.
+// about to be replaced, and the role is asked first to do the steps of its update message
+// (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
+// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
 // so the action is idempotent: the first post of a round records the round, its reasons and its
@@ -281,13 +281,28 @@ type PodUpdateOpen struct {
 // a later round has already replaced it names the round it read, and is refused rather than
 // counted for the round it never saw (podUpdateSignalled).
 //
-// An answer only brings the round's end forward. No answer, and no turn, holds the pod past
-// endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
-// its background jobs, each commit and each file the role did not push, the pod's test database
-// and its caches. The step to answer is the one step a role can be unable to do: the op list its
-// `legion` tool holds is a closed enum compiled into its plugin, and a plugin below
-// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same,
-// because its round ends at endsAt whatever it does.
+// An answer from every role brings the round's end forward only while no role reports background
+// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
+// and no role with a process in the round's pod has an activity report that names a subagent or a
+// background job that runs, or no report since its last turn started. internal/daemon's
+// roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
+// holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
+// turn in progress, each subagent, each background job and each named service that still runs,
+// each commit and each file the role did not push, the pod's test database and its caches. A
+// named service is in no activity report, so it holds nothing and goes with the pod.
+//
+// So the text gives five steps, in this order (dispatch://INFRA-4203 R2): push, let each subagent
+// and each background job the role started finish or stop it and push what it made, put a scratch
+// file needed as evidence on Dispatch, answer, and end the turn. The push comes first, so a job
+// that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
+// work, so a role that follows the steps answers with nothing of its own running. A role whose
+// work finishes after its answer pushes what that work made and answers again with the same
+// round, which podUpdateSignalled records in place of the first answer.
+//
+// The step to answer is the one step a role can be unable to do: the op list its `legion` tool
+// holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
+// ready_for_update in it. Such a role is told to do the first three steps all the same, because
+// its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
 // goes, so the text says that work not pushed before the pod goes is lost.
@@ -307,28 +322,33 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
 
-The round is %s. The round ends at %s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
+The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
+If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
 
-This message can arrive while you are in a turn. Do these four steps now:
+This message can arrive while you are in a turn. Do these five steps, in this order:
 
 1. Push every commit that you want to keep to this issue's branch.
-2. If you need a scratch file as evidence, put it on Dispatch.
-3. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
-4. End your turn.
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
+3. If you need a scratch file as evidence, put it on Dispatch.
+4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
+5. End your turn.
 
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 2 now. Then end your turn. The round ends at %s whatever you do.
+If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
+
+A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
+
+If your `+"`legion`"+` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn. The round ends at %[2]s whatever you do.
 
 These things go with the pod when the round ends:
 
 - The turn that is in progress.
-- The background jobs of that turn.
+- Each subagent, each background job and each named service that still runs.
 - Each commit and each file that you did not push.
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, ends, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -1511,8 +1531,8 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
-// Every failure here, charged or not, is recorded on the pending delivery before the split is
-// read: how many sends of this task have failed, when this one failed and the error it failed
+// Every failure here, charged or not, is recorded on the pending delivery before the split acts:
+// how many sends of this task have failed, when this one failed and the error it failed
 // with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
 // second budget, and the uncharged failures are exactly the ones it exists for: a transport loss
 // costs nothing and is retried for ever, so without it the only trace of a claim waiting days on
@@ -1525,13 +1545,16 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // Two things keep that record from deciding anything about the charge, because the charge is
 // what bounds the re-sends and the record is only a diagnosis.
 //
-// The text is the far side's own, so it is scrubbed and bounded before it is stored
-// (scrubSendError): a refused adoption carries the wedged command's whole stderr and a refused
-// prompt Oh My Pi's decoded `error`, neither of which the store is obliged to take. The log
-// lines below carry the whole text as it arrived.
+// The text is the far side's own — a refused adoption carries the wedged command's whole stderr
+// and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
+// store, as the daemon keeps any far side's error text, a text the store takes whatever the far
+// side wrote: the text the split's line carries, which logFarSideError writes and returns, so the
+// line, the record and the charge's own line carry one text. That is why the split chooses its
+// line before the record is written. The whole text follows the line under a message of its own
+// (logFarSideError).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
-// carried past rather than returned, so the split below is always read. A return there would
+// carried past rather than returned, so what the split decided is always done. A return there would
 // charge a refused adoption nothing and re-send it with no bound, which is the stall this split
 // exists to end. Nothing of the delivery is lost by carrying on: the failed write left it
 // unsaved (saved), and settle writes the claim and the delivery together before the next
@@ -1552,9 +1575,28 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")
 	}
+	// The split: the line that names this failure, and for a charged one the words its charge
+	// puts before the far side's text ("" for a failure charged nothing).
+	promptRefused := errors.Is(r.Err, runtime.ErrPromptRefused)
+	busy := promptRefused && agentBusy(runtime.RefusalReason(r.Err))
+	level, msg, charge := slog.LevelWarn, "supervise: the prompt was lost to the transport; the delivery waits", ""
+	args := []any{"delivery", r.DeliveryID}
+	switch {
+	case busy && m.awaitsResult():
+		level, msg = slog.LevelInfo, "supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task"
+		args = append(args, "outstanding", m.outstanding)
+	case busy:
+		msg = "supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again"
+	case promptRefused:
+		msg, charge = "supervise: the agent refused the prompt", "refused: "
+	case errors.Is(r.Err, runtime.ErrAdoptRefused):
+		msg, charge = "supervise: the shim refused to adopt the working copy; the prompt was never sent", "the working copy was not adopted: "
+	case errors.Is(r.Err, runtime.ErrIdentityUnavailable):
+		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
+	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = scrubSendError(r.Err.Error())
+	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
 	var err error
 	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
@@ -1565,32 +1607,12 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
 			"delivery", r.DeliveryID, "error", err)
 	}
-	if errors.Is(r.Err, runtime.ErrPromptRefused) {
-		if agentBusy(runtime.RefusalReason(r.Err)) {
-			if m.awaitsResult() {
-				m.log.Info("supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
-					"delivery", r.DeliveryID, "outstanding", m.outstanding, "error", r.Err)
-			} else {
-				m.log.Warn("supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
-					"delivery", r.DeliveryID, "error", r.Err)
-			}
-			return m.recordBusyTurn(ctx)
-		}
-		m.log.Warn("supervise: the agent refused the prompt", "delivery", r.DeliveryID, "error", r.Err)
-		return m.chargePrompt(ctx, "refused: "+r.Err.Error())
-	}
-	if errors.Is(r.Err, runtime.ErrAdoptRefused) {
-		m.log.Warn("supervise: the shim refused to adopt the working copy; the prompt was never sent",
-			"delivery", r.DeliveryID, "error", r.Err)
-		return m.chargePrompt(ctx, "the working copy was not adopted: "+r.Err.Error())
-	}
-	if errors.Is(r.Err, runtime.ErrIdentityUnavailable) {
-		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits",
-			"delivery", r.DeliveryID, "error", r.Err)
-	} else {
-		m.log.Warn("supervise: the prompt was lost to the transport; the delivery waits", "delivery", r.DeliveryID, "error", r.Err)
-	}
-	if resend {
+	switch {
+	case busy:
+		return m.recordBusyTurn(ctx)
+	case charge != "":
+		return m.chargePrompt(ctx, charge+p.LastSendError)
+	case resend:
 		return m.sendPending(ctx)
 	}
 	return nil
@@ -2393,7 +2415,12 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
-		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
+		// The line names the claim (the machine's logger carries it), what its agent never did, and
+		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
+		// so a controller whose role claim waits out its registration deadline shows in the daemon's
+		// log as that, attempt by attempt.
+		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
+			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
 		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
@@ -2415,12 +2442,15 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 
 // register records the session the agent became, once every name of it is held to this claim
 // (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
-// before anything of the registration is recorded or enrolled. The boot intervals end with the
+// before anything of the registration is recorded or enrolled. The session id and the file arrive
+// as the store keeps them, as every event's text does (Handle), so the hold, the claim in memory
+// and the stored claim name the same session, and a restart reads back what was held: a session
+// id or a file holding a NUL is held as it is stored. The boot intervals end with the
 // registration, but not the deadline: it is armed again at its base bound, and only the agent's
 // ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
 // ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
-// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration): the
-// agent that just registered is not the one that relaunch starts.
+// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration):
+// the agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2717,7 +2747,7 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // listener no longer names it as the claim's role holder (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
-	if request.Session != m.claim.Session {
+	if !m.claim.HoldsSession(request.Session) {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
@@ -2880,12 +2910,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the
 // event at every tick while the round runs, so the action is idempotent.
 //
-// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the reasons the
-// post carries, and clears what an earlier round left: the ask it published, the signal it got,
-// the head that signal reported, and the notice it wrote. The same round again changes nothing,
-// its reasons included: the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so
-// the ask the sweep publishes and the record an operator reads name the same reasons for one
-// round id, however the drift the sweep reads moves while the round runs.
+// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the round's id
+// and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
+// reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
+// the reasons the store holds), and clears what an earlier round left: the ask it published, the
+// signal it got, the head that signal reported, and the notice it wrote. The same round again
+// changes nothing, its reasons included: the round's terms are fixed when it opens
+// (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
+// the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
@@ -2915,7 +2947,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.UpdateRound == open.Round {
 		return nil
 	}
-	m.log.Info("supervise: an update round is open on this claim; the sweep asks its role to push its work and answer",
+	m.log.Info("supervise: an update round is open on this claim; the sweep asks its role to do the steps of the update message (UpdateTask) and answer",
 		"round", open.Round, "reasons", open.Reasons)
 	if err := m.dropUpdateTask(ctx); err != nil {
 		return err
@@ -3143,7 +3175,15 @@ func (m *Machine) clearUpdate() {
 // podUpdateSignalled records the worker's answer to the round's ask — its work is pushed, and the
 // process holding this claim may now be replaced — and the head it reported, which nothing
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
-// process, once every claim the round asks has answered and no turn runs, or at the round's bound.
+// process, at the round's bound, or before it once every claim the round asks has answered, no
+// turn runs and no claim with a process in the round's pod reports background work that runs or
+// has sent no report since its last turn started (internal/daemon's roundEnd.holding, the one
+// statement of that rule). So an answer brings the round's end forward only while no role reports
+// background work.
+//
+// A second answer for the same round records again, the newer head in place of the first: the
+// ask tells a role whose subagent or background job finishes after its answer to push what that
+// work made and to answer again with the same round (UpdateTask).
 //
 // The answer counts for one round only: the one whose update message the worker read, which that
 // message named and which the answer carries back (UpdateTask). An answer for any other round is
@@ -3164,6 +3204,8 @@ func (m *Machine) clearUpdate() {
 // The line it logs is the one durable record of the head: the claim's UpdateHead goes with the
 // round that ends (clearUpdate), and the answer is what an operator reads the replacement back
 // against — `git ls-remote` of each head a worker reported says whether the work survived the pod.
+// The head is the worker's word, and the claim holds it as the store keeps it, as it holds every
+// event's text (Handle), so the operator's answers read the head the store holds.
 func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	signal := ev.(PodUpdateSignalled)
 	if signal.Round != m.claim.UpdateRound {

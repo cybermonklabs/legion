@@ -3,18 +3,13 @@
 package brokertest
 
 import (
-	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -53,7 +48,7 @@ func TestTheRigsRegistryServesThePolicysMetrics(t *testing.T) {
 	}
 	reread := func(name string, served bool) {
 		t.Helper()
-		status, body := rig.Req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil)
+		status, body := rig.Reread(t, name)
 		var answer struct {
 			Served bool `json:"served"`
 		}
@@ -96,7 +91,7 @@ func TestTheRigsRegistryServesThePolicysMetrics(t *testing.T) {
 // request at once).
 func TestDecideApprovesAndDeniesOnTheBrokersPage(t *testing.T) {
 	rig := NewRig(t)
-	enrollmentID, key := sessionOf(t, rig, rig.Operator)
+	enrollmentID, key := rig.NewSession(t, rig.Operator)
 	for _, approve := range []bool{false, true} {
 		requestID, recordID := pendingRequest(t, rig, enrollmentID, key)
 		rig.Decide(t, recordID, approve)
@@ -112,30 +107,6 @@ func TestDecideApprovesAndDeniesOnTheBrokersPage(t *testing.T) {
 			t.Fatalf("request after Decide(approve=%t) = %d %s, want %s", approve, status, body, want)
 		}
 	}
-}
-
-// sessionOf inserts a live session enrollment of operator's, under a launcher credential of its
-// own, and answers it with its key.
-func sessionOf(t *testing.T, rig *Rig, operator string) (string, *ecdsa.PrivateKey) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, credentialID, id := context.Background(), uuid.New(), uuid.NewString()
-	if _, err := rig.Store.Pool.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
-		values ($1,$2,'test-host',$3,'{}'::jsonb, now() + interval '30 days')`, credentialID, operator, thumbprint); err != nil {
-		t.Fatalf("insert launcher_credentials: %v", err)
-	}
-	if _, err := rig.Store.Pool.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
-		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, id, "session-"+id, operator, thumbprint, credentialID); err != nil {
-		t.Fatalf("insert enrollments: %v", err)
-	}
-	return id, key
 }
 
 // pendingRequest asks for TEST_SECRET as the session and answers the pending request and its

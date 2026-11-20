@@ -36,7 +36,7 @@ function StandInView(): ReactNode {
 test("a view's address puts the focus on its tree's tab-stop row", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
   const view = render(
-    <ViewStage view="spec">
+    <ViewStage>
       <StandInView />
     </ViewStage>
   );
@@ -57,7 +57,7 @@ test("a view leaves the focus where a control already holds it", async () => {
   document.body.append(control);
   await act(async () => control.focus());
   const view = render(
-    <ViewStage view="decisions">
+    <ViewStage>
       <StandInView />
     </ViewStage>
   );
@@ -89,7 +89,7 @@ function RefusedView(): ReactNode {
 test("a view whose read is refused puts the focus on its Retry", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
   const view = render(
-    <ViewStage view="spec">
+    <ViewStage>
       <RefusedView />
     </ViewStage>
   );

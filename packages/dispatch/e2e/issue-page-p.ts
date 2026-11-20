@@ -630,15 +630,18 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 }
 
 /**
- * The header's height limit at `width`: 3 lines and 130 px at 1440 px; at 390 px, on the
- * 20-label seed and the measured title, 8 lines and 250 px while no approval request waits on
- * the reader and 9 lines and 280 px while one does. No other width has a limit.
+ * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
+ * where the issue's project gates two or three steps, since the header then draws one approval
+ * entry for each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
+ * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
+ * one does. No other width has a limit.
  */
 function headerLimit(
   width: number,
-  requestWaiting: boolean
+  requestWaiting: boolean,
+  gatedSteps: number
 ): { readonly height: number; readonly lines: number } | undefined {
-  if (width === DESKTOP.width) return { height: 130, lines: 3 };
+  if (width === DESKTOP.width) return { height: 130, lines: gatedSteps >= 2 ? 4 : 3 };
   if (width !== IPHONE_13.width) return undefined;
   return requestWaiting ? { height: 280, lines: 9 } : { height: 250, lines: 8 };
 }
@@ -646,18 +649,21 @@ function headerLimit(
 /**
  * The header read against its limit at `width`, softly so one run reports every width and seed,
  * with the page at its top; at 390 px the title is drawn whole. `drawnIn` names the typeface the
- * page is drawn in, for the message. The header is read alone: no row of the outline is waited
- * for.
+ * page is drawn in, for the message, and `gatedSteps` how many steps the issue's project gates
+ * (one, or none, unless a caller says otherwise). The header is read alone: no row of the
+ * outline is waited for.
  */
 export async function expectHeaderWithinItsLimit(
   page: Page,
   width: number,
   requestWaiting: boolean,
-  drawnIn: string
+  drawnIn: string,
+  gatedSteps = 1
 ): Promise<void> {
-  const limit = headerLimit(width, requestWaiting);
+  const limit = headerLimit(width, requestWaiting, gatedSteps);
   if (limit === undefined) return;
-  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
+  const gated = gatedSteps >= 2 ? ` on a project that gates ${gatedSteps} steps` : "";
+  const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting${gated}`;
   await expect(filterRow(page), `the page draws no view row ${where}`).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
   // The view row was waited visible just above, and every caller waits for the header drawn
