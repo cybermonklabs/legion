@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,6 +201,116 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 			if _, _, _, err := awsClients(context.Background(), "us-east-1"); err != nil {
 				t.Fatalf("awsClients refused a profile the files hold: %v", err)
 			}
+		})
+	}
+}
+
+// awsSignInOnly leaves t with no AWS source but static keys and no address setting, and one
+// attempt per call: each row of TestTheAWSSDKsSignInFailurePrintsNoSetting sets what it tests.
+func awsSignInOnly(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"AWS_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
+		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS",
+		"AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+	} {
+		t.Setenv(name, "")
+	}
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_MAX_ATTEMPTS", "1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA"+"EXAMPLEKEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "not-a-"+"secret")
+}
+
+// TestTheAWSSDKsSignInFailurePrintsNoSetting: the AWS SDK's failure to load or to read the
+// sign-in quotes what it was configured with - the path of a file an AWS setting names, an
+// address setting's URL with its user, password and query, a setting's value it cannot read, and
+// STS's own message - and the forms print none of it. Each row puts a made-up secret where a
+// person or a server could put one, and the form names the setting, the file call's reason, the
+// request's class or AWS's error code. The STS row is the control: AWS's code, which the server
+// wrote beside the echoed secret, still prints, so the check sees what AWS answered.
+func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
+	secret := "hunter2pw-" + "awssignin-" + "5c2e"
+	user := "tokuser" + "7d2a"
+	closing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(closing.Close)
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>AccessDenied</Code><Message>echo: ` + secret + `</Message></Error><RequestId>r1</RequestId></ErrorResponse>`))
+	}))
+	t.Cleanup(refusing.Close)
+	directory := func(t *testing.T) string {
+		dir := filepath.Join(t.TempDir(), secret)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	// unparseable is an address with a user and a password that url.Parse refuses (its path holds
+	// the escape %zz), built with url.UserPassword so no line of this file spells a credentialed
+	// URL.
+	unparseable := func(host string) string {
+		return (&url.URL{Scheme: "http", User: url.UserPassword(user, secret), Host: host}).String() + "/%zz"
+	}
+	for _, row := range []struct {
+		name string
+		set  func(t *testing.T)
+		want string
+	}{
+		{"AWS_SHARED_CREDENTIALS_FILE names a directory", func(t *testing.T) { t.Setenv("AWS_SHARED_CREDENTIALS_FILE", directory(t)) },
+			"load your AWS sign-in: read the file AWS_SHARED_CREDENTIALS_FILE names: read: is a directory"},
+		{"AWS_CONFIG_FILE names a directory", func(t *testing.T) { t.Setenv("AWS_CONFIG_FILE", directory(t)) },
+			"load your AWS sign-in: read the file AWS_CONFIG_FILE names: read: is a directory"},
+		{"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names no file", func(t *testing.T) {
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://127.0.0.1:1/creds")
+			t.Setenv("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", filepath.Join(t.TempDir(), secret))
+		}, "read the file AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names: open: no such file or directory"},
+		{"AWS_CONTAINER_CREDENTIALS_FULL_URI with a token in its query", func(t *testing.T) {
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", closing.URL+"/creds?token="+secret)
+		}, "read your AWS sign-in: a request the AWS SDK made failed: the request failed (the address is not printed; AWS_CONTAINER_CREDENTIALS_FULL_URI is set)"},
+		{"AWS_CONTAINER_CREDENTIALS_FULL_URI that does not parse", func(t *testing.T) {
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", unparseable("127.0.0.1"))
+		}, "your AWS sign-in: "},
+		{"AWS_ENDPOINT_URL_STS that does not parse", func(t *testing.T) {
+			t.Setenv("AWS_ENDPOINT_URL_STS", unparseable("127.0.0.1:1"))
+		}, "read your AWS sign-in: "},
+		{"AWS_ENDPOINT_URL with a secret in its path", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL", closing.URL+"/"+secret) },
+			"read your AWS sign-in: a request the AWS SDK made failed: the request failed (the address is not printed; AWS_ENDPOINT_URL is set)"},
+		{"AWS_MAX_ATTEMPTS that is no number", func(t *testing.T) { t.Setenv("AWS_MAX_ATTEMPTS", secret) },
+			"load your AWS sign-in: the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value)"},
+		{"STS refuses with its own message: its code prints, never the message", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusing.URL) },
+			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			awsSignInOnly(t)
+			row.set(t)
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, secret, user)
 		})
 	}
 }

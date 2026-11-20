@@ -10,7 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -85,7 +89,7 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, [
 		return nil, nil, nil, missingAWSProfile("AWS_PROFILE")
 	}
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
+		return nil, nil, nil, awsSignInFailure("load your AWS sign-in", err)
 	}
 	if named := os.Getenv("AWS_DEFAULT_PROFILE"); named != "" && os.Getenv("AWS_PROFILE") == "" && !loadedProfile(cfg) {
 		return nil, nil, nil, missingAWSProfile("AWS_DEFAULT_PROFILE")
@@ -155,7 +159,7 @@ var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AW
 func requireAccount(ctx context.Context, st stsAPI, settings Settings, another string) (arn string, err error) {
 	id, err := st.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
-		return "", fmt.Errorf("read your AWS sign-in: %w", err)
+		return "", awsSignInFailure("read your AWS sign-in", err)
 	}
 	arn, account := aws.ToString(id.Arn), aws.ToString(id.Account)
 	if account != settings.AWSAccountID {
@@ -163,6 +167,109 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings, another s
 			arn, account, settings.AWSAccountID, settings.AWSAccountID, another)
 	}
 	return arn, nil
+}
+
+// awsSignInFailure is err, the AWS SDK's failure to load or to read the sign-in this command's
+// environment gives it, as what failed and the SDK's failure in words of this client's own
+// (awsSDKWords). It unwraps to err, so errors.As still finds the SDK's own error.
+func awsSignInFailure(what string, err error) error {
+	return fmt.Errorf("%s: %w", what, redact.Masked(err, awsSDKWords(err)))
+}
+
+// awsCode is the shape of an error code AWS registers (AccessDenied, ExpiredToken,
+// InvalidClientTokenId): a word of letters and digits, at most 64 long.
+var awsCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._]{0,63}$`)
+
+// awsSDKWords is err, the AWS SDK's failure to sign in, as a message prints it. The SDK's own
+// error text quotes what it was configured with: the path of a shared config or credentials file
+// twice ("failed to load shared config file, <path>, read all: read <path>: ..."), the path
+// AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names, an endpoint's or a container's credentials URL
+// whole, with its user, password and query (net/http's *url.Error, and the SDK's own "Failed to
+// parse uri" where it does not parse), the value of a setting it cannot read (AWS_MAX_ATTEMPTS),
+// and a service's own message, which the service writes what it likes in. So it prints:
+//   - an AWS API error by its code alone, where the code has the shape of one AWS registers;
+//   - an IAM Identity Center session that has expired as the SDK's own fixed words;
+//   - a file call by the setting that names the file, and the call's operation and the system's
+//     reason (redact.File): the SDK formats a file's error with %v, which drops the file call's
+//     own error from the chain, so the file it names (SharedConfigLoadError.Filename), or the
+//     file an AWS file setting names that cannot be read, is read again here for the reason;
+//   - a request that failed by its class (redact.Class), naming the AWS address settings that are
+//     set, never their values;
+//   - anything else in fixed words that say where to look.
+func awsSDKWords(err error) string {
+	var api smithy.APIError
+	var invalid *ssocreds.InvalidTokenError
+	var load config.SharedConfigLoadError
+	var path *fs.PathError
+	var request *url.Error
+	switch {
+	case errors.As(err, &api):
+		if code := api.ErrorCode(); awsCode.MatchString(code) {
+			return "AWS refused it: " + code + " (AWS's message is not printed)"
+		}
+		return "AWS refused it (its code and message are not printed)"
+	case errors.As(err, &invalid):
+		return "the IAM Identity Center (SSO) session has expired or is invalid: run `aws sso login` again"
+	case errors.As(err, &load):
+		return "read " + awsFileName(load.Filename) + ": " + awsFileReason(load.Filename)
+	case errors.As(err, &path):
+		return "read " + awsFileName(path.Path) + ": " + redact.File(err).Error()
+	case errors.As(err, &request):
+		return "a request the AWS SDK made failed: " + redact.Class(err).Error() + awsAddressesSet()
+	}
+	if setting := os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"); setting != "" {
+		if _, err := os.ReadFile(setting); err != nil {
+			return "read the file AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names: " + redact.File(err).Error()
+		}
+	}
+	return "the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check the AWS_* variables and ~/.aws/config"
+}
+
+// awsFileReason is why the AWS SDK could not load the shared config or credentials file at path:
+// the file call's operation and the system's reason where reading it fails (redact.File), and
+// that it does not parse where it reads.
+func awsFileReason(path string) string {
+	if _, err := os.ReadFile(path); err != nil {
+		return redact.File(err).Error()
+	}
+	return "it does not parse as an AWS config or credentials file (the SDK's message is not printed: it can quote the file's lines)"
+}
+
+// awsFileName is the file at path, which the AWS SDK failed to read, as a message names it: by the
+// setting that names it, or by where the SDK looks with none set, never by the path itself, which
+// is a setting's value.
+func awsFileName(path string) string {
+	for _, setting := range []string{"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"} {
+		if value := os.Getenv(setting); value != "" && value == path {
+			return "the file " + setting + " names"
+		}
+	}
+	if cached, err := ssocreds.StandardCachedTokenFilepath("x"); err == nil && filepath.Dir(path) == filepath.Dir(cached) {
+		return "the IAM Identity Center sign-in's cached token (run `aws sso login` to make it)"
+	}
+	if path == config.DefaultSharedConfigFilename() {
+		return "~/.aws/config"
+	}
+	if path == config.DefaultSharedCredentialsFilename() {
+		return "~/.aws/credentials"
+	}
+	return "a file the AWS SDK reads"
+}
+
+// awsAddressesSet names the AWS address settings that are set, for a request that failed: one of
+// them may name the wrong address. It names the settings alone, never their values, which can
+// carry a user, a password or a token in their query.
+func awsAddressesSet() string {
+	var set []string
+	for _, setting := range []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"} {
+		if os.Getenv(setting) != "" {
+			set = append(set, setting)
+		}
+	}
+	if len(set) == 0 {
+		return ""
+	}
+	return " (the address is not printed; " + strings.Join(set, ", ") + " is set)"
 }
 
 // checkSettingsKeyARN refuses, before any AWS call, settings whose aws_account_id or aws_region does
