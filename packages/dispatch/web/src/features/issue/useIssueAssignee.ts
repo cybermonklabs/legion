@@ -1,7 +1,8 @@
 import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /** The assignee's write: `error` is the server's reason after a refused pick (an unlisted
- *  login), and `submit` takes a login, or null to unassign. */
+ *  login), or what a pick the reader stopped may have done (`stopped`), and `submit` takes a
+ *  login, or null to unassign. */
 export type IssueAssigneeWrite = IssueFieldWrite<string | null>;
 
 /**

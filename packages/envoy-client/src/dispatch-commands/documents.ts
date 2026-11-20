@@ -5,15 +5,10 @@ import type {
   AskWithTrees,
   EditOp,
   EditPrecondition,
+  UploadPrecondition,
 } from "@legion/contracts";
-import {
-  ARTIFACT_NAME_EXISTS_RULE,
-  PATH_KEEPS_BYTES,
-  pathKeepsBytesOf,
-  typedBlockIdAttribute,
-} from "@legion/contracts";
+import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
-import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -31,7 +26,6 @@ import {
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
-import { messageFor } from "../errors";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
@@ -41,12 +35,12 @@ import {
   numberArg,
   optionalBoolean,
   optionalNumber,
+  optionalPrecondition,
   optionalString,
   type ResolvedArtifact,
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
-import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -57,6 +51,12 @@ import {
   writeResultDetails,
 } from "./results";
 import { attributesReordered, storedTextProblem, withoutFinalLineFeed } from "./stored-spelling";
+import {
+  artifactNameExistsProblem,
+  artifactUnderName,
+  roundTripRouteAbsent,
+  storedTextCheckFailed,
+} from "./upload-checks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -383,8 +383,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const resolved = await resolveDocument(documentOwner(), optionalString(args, "artifact"));
   const ops = args.ops as EditOp[];
   const summary = optionalString(args, "summary");
-  const { precondition: rawPrecondition } = args;
-  const precondition = rawPrecondition as EditPrecondition | undefined;
+  const precondition = optionalPrecondition<EditPrecondition>(args);
   await refuseRemovingOpenDecisionBlocks(client, input.tool, resolved, ops);
   const edited = await client.docEdit(resolved.artifact.id, {
     ops,
@@ -680,70 +679,6 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
   };
 }
 
-/** The document an upload under `name` would write the next version of: the owner's artifact
- *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
- *  the slug first). Undefined where the owner holds no such document. */
-function artifactUnderName(artifacts: readonly Artifact[], name: string): Artifact | undefined {
-  const written = name.trim();
-  return (
-    artifacts.find((held) => held.slug === written) ??
-    artifacts.find((held) => held.name === written)
-  );
-}
-
-/** The refusal of an upload under a name its owner already holds: the document found, its kind,
- *  its newest version and who wrote that version, then the rule that names --force. */
-function artifactNameExistsProblem(held: Artifact, owner: string): string {
-  const versions = held.versions ?? [];
-  const newest = versions[versions.length - 1];
-  if (newest === undefined) {
-    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
-  }
-  const authors = (newest.authors ?? []).map(actorText);
-  const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
-  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
-}
-
-/**
- * The refusal of an upload whose stored-text check could not run. The check is the one thing that
- * says whether the store would write this text under another spelling, so a failure that is not
- * the route's absence leaves that question open, and an upload sent anyway would store the
- * changed text this check exists to stop.
- *
- * A body Dispatch itself refused as too large is the one such failure a repeat can never get
- * through, so that refusal names what to do instead of saying to send the upload again: the
- * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
- * which stores the file and asks this route nothing.
- */
-function storedTextCheckFailed(error: unknown, name: string): string {
-  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
-  if (!dispatchAnswered(error, 413)) {
-    return `${failure} Send the upload again once that call is answered.`;
-  }
-  // Only a body past markdownRoundTripLimit reaches here, and that is always text past the
-  // megabyte a markdown document may hold, so every remedy this names has to be one that
-  // takes the text out of one document: a document of its own is no remedy at all, since the
-  // upload refused is already one and a second would be refused the same way.
-  const asBytes = pathKeepsBytesOf(name)
-    ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
-    : "";
-  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.${asBytes}`;
-}
-
-/**
- * Whether the round trip failed because Dispatch itself holds no such route: the 404 or 405 a
- * Dispatch older than POST /api/v1/markdown/round-trip answers, as its own JSON. Such a server
- * cannot say what it would store, and refused the upload itself before this check existed, so
- * the upload goes on and that server makes its own answer.
- *
- * A 404 or 405 page from an ingress, a proxy or a load balancer is `DispatchGatewayError`,
- * which says nothing about the route, so `dispatchAnswered` is what this asks: reading such a
- * page as an absent route would skip the check and store the respelled text it exists to stop.
- */
-function roundTripRouteAbsent(error: unknown): boolean {
-  return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
-}
-
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, documentOwner, issue } = context;
@@ -751,8 +686,20 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   const name = stringArg(args, "name");
   const content = optionalString(args, "content");
   const path = optionalString(args, "path");
+  // The base an upload over a document that already exists replaces: the document token
+  // alone, which is all the server takes from an upload. It rides every shape below, a create
+  // that stores nothing included, because the server is what decides a token that names
+  // nothing it can replace: it refuses a token on a first upload, and a blank write over a
+  // held name whatever well-formed token it names, ahead of every check of the token against
+  // the document; a token that is not well formed it answers as malformed first.
+  const precondition = optionalPrecondition<UploadPrecondition>(args);
   // What every create carries, whatever it stores under the name.
-  const options = { name, ...(summary === undefined ? {} : { summary }), actor };
+  const options = {
+    name,
+    ...(summary === undefined ? {} : { summary }),
+    ...(precondition === undefined ? {} : { precondition }),
+    actor,
+  };
   const artifactOwner = documentOwner();
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in

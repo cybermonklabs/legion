@@ -1180,8 +1180,12 @@ gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
 gate_artifact=${gate_artifacts[$root3]}
 spec_now=$(dispatch_get "artifacts/$gate_artifact/text" | jq -er .markdown)
 spec_note=$'\n\n## Proof note\n\nThe human added this section while the merger stood in merging. It asks for no change to the pull request.\n'
+# The upload replaces the spec whole, so it names the token of the version it replaces: the document
+# token the live read answers, which Dispatch checks under the write's own lock.
+spec_base=$(dispatch_get "artifacts/$gate_artifact/text" | jq -er '.token') ||
+  fail "the spec of $root3 answers no document token for the upload to name as its base"
 dispatch_human POST "issues/$root3/artifacts" \
-  "$(jq -cn --arg name spec.md --arg content "$spec_now$spec_note" '{name:$name,content:$content,summary:"4b.13b gate re-close"}')" >/dev/null
+  "$(jq -cn --arg name spec.md --arg content "$spec_now$spec_note" --arg base "$spec_base" '{name:$name,content:$content,summary:"4b.13b gate re-close",precondition:{document:$base}}')" >/dev/null
 until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
 reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')

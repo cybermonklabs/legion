@@ -764,6 +764,45 @@ echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
     },
     slow
   );
+  // A host with no /proc (macOS) answers proc_parent, proc_group and proc_start through ps, which
+  // exits 1 for a pid that names no process. Each must still print nothing and succeed there, as it
+  // does on /proc: a caller under `set -e` assigns the answer bare (replace-blocks.sh reads the group
+  // of an instance that may have exited already), and a failure ends that caller with no word of
+  // why. The row makes the helper's own test of /proc/self read false, and the host's ps answers
+  // through a wrapper that counts its calls, so the row shows the fallback was the path taken.
+  test.skipIf(hostTool("ps") === null)(
+    "proc_parent, proc_group and proc_start answer through ps where there is no /proc: nothing, and success, for a process that is gone, and a live one's own",
+    () => {
+      const r = run(`mkdir -p "$scratch/bin"
+printf '#!/bin/sh\\necho "$*" >>%s/calls\\nexec %s "$@"\\n' "$scratch" "$(command -v ps)" >"$scratch/bin/ps"
+chmod +x "$scratch/bin/ps"
+PATH="$scratch/bin:$PATH"
+[() {
+  case "$*" in
+    "-d /proc/self ]") return 1 ;;
+    "! -d /proc/self ]") return 0 ;;
+  esac
+  builtin [ "$@"
+}
+gone=$(ended_pid)
+g=$(proc_group "$gone")
+p=$(proc_parent "$gone")
+s=$(proc_start "$gone")
+echo "gone: [$g$p$s]"
+read -r stat </proc/$$/stat
+read -r -a fields <<<"\${stat##*) }"
+echo "live: $(proc_parent $$) $(proc_group $$) / \${fields[1]} \${fields[2]}"
+echo "ps calls: $(wc -l <"$scratch/calls")"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toStartWith("gone: []\n");
+      const live = /^live: (\d+) (\d+) \/ (\d+) (\d+)$/m.exec(r.out);
+      expect([live?.[1], live?.[2]]).toEqual([live?.[3], live?.[4]]);
+      // proc_group, proc_parent and proc_start's two reads of the gone pid, then the two live reads.
+      expect(r.out).toEndWith("ps calls: 6\n");
+    },
+    slow
+  );
   test(
     "each environment reader answers 2 for an empty environment, and 1 or the value for one it reads",
     () => {
