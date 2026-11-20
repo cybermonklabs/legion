@@ -157,10 +157,22 @@ func debugLog() (*syncBuffer, *slog.Logger) {
 // recordLaneWakes has w's wakes of issue's lifecycle lane land on a lane the test holds, and
 // answers how many have landed: the lane's channel holds one entry per wake, up to its size.
 func recordLaneWakes(w *workflowRuntime, issue string) func() int {
-	key := record.LaneKey{Issue: issue, Lane: record.LaneOf(record.OutboxKindSupervise)}
-	lane := &outboxLane{key: key, wake: make(chan struct{}, 16)}
-	w.outboxWake.Store(&outbox{running: true, lanes: map[record.LaneKey]*outboxLane{key: lane}})
-	return func() int { return len(lane.wake) }
+	return recordWakes(w, record.LaneKey{Issue: issue, Lane: record.LaneOf(record.OutboxKindSupervise)})[0]
+}
+
+// recordWakes has w's wakes of each lane of keys land on a lane the test holds, and answers how
+// many have landed on each, in keys' order. A wake of any other lane would start a lane of the
+// recording outbox, which runs nothing, so a test records every lane its owner wakes.
+func recordWakes(w *workflowRuntime, keys ...record.LaneKey) []func() int {
+	lanes := make(map[record.LaneKey]*outboxLane, len(keys))
+	landed := make([]func() int, len(keys))
+	for i, key := range keys {
+		lane := &outboxLane{key: key, wake: make(chan struct{}, 16)}
+		lanes[key] = lane
+		landed[i] = func() int { return len(lane.wake) }
+	}
+	w.outboxWake.Store(&outbox{running: true, lanes: lanes})
+	return landed
 }
 
 // backfillOwner is the backfill's fill or name of one record's repository, the owner the boot
@@ -735,13 +747,17 @@ func TestAnUnownedPassCountsOnlyTheReleasesItsTransactionsAnswered(t *testing.T)
 // pauseStopRig is the pause rig's architect stopped once its pause has ended, which owes the role
 // a launch: the stop transaction takes a held wake of the pause with its start row and logs that
 // row as released (TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch). The transaction's
-// store is swapped to faulted, and the issue's lifecycle lane, which the start row's wake reaches,
-// is recorded.
+// store is swapped to faulted, with the role-holder publication on and the daemon's own wake of it
+// (workflowRuntime.wakeRoleHolders), as a daemon with a workflow turns it on: the stop writes the
+// architect's claim out of a state that holds its role, so the claim's write queues its issue's
+// publication. The issue's lifecycle lane, which the start row's wake reaches, and its board lane,
+// which the publication's wake reaches, are recorded.
 type pauseStopRig struct {
 	*pauseRig
-	fault *testdb.CommitFault
-	held  store.Pause
-	wakes func() int
+	fault     *testdb.CommitFault
+	held      store.Pause
+	wakes     func() int
+	published func() int
 }
 
 func newPauseStopRig(t *testing.T) *pauseStopRig {
@@ -750,8 +766,12 @@ func newPauseStopRig(t *testing.T) *pauseStopRig {
 	held := r.pauseLegion()
 	r.resume()
 	faulted, fault := faultedStoreOf(t, r.st)
+	faulted.PublishRoleHolders(r.pauses.workflow.wakeRoleHolders)
 	r.pauses.store = faulted
-	return &pauseStopRig{pauseRig: r, fault: fault, held: held, wakes: recordLaneWakes(r.pauses.workflow, pauseIssue)}
+	landed := recordWakes(r.pauses.workflow,
+		record.LaneKey{Issue: pauseIssue, Lane: record.LaneOf(record.OutboxKindSupervise)},
+		record.LaneKey{Issue: pauseIssue, Lane: record.LaneOf(record.OutboxKindRoleHoldersPublish)})
+	return &pauseStopRig{pauseRig: r, fault: fault, held: held, wakes: landed[0], published: landed[1]}
 }
 
 // stop runs the stop transaction as the architect's machine does when it writes its suspension
@@ -767,7 +787,8 @@ func (r *pauseStopRig) recorded() bool {
 }
 
 func (r *pauseStopRig) work() map[string]int {
-	return map[string]int{"released-row lines": len(r.releasedLines()), "lifecycle lane wakes": r.wakes()}
+	return map[string]int{"released-row lines": len(r.releasedLines()), "lifecycle lane wakes": r.wakes(),
+		"role-holder publication wakes": r.published()}
 }
 
 func (r *pauseStopRig) wantWork(t *testing.T, want int, when string) {
@@ -783,11 +804,13 @@ func (r *pauseStopRig) wantWork(t *testing.T, want int, when string) {
 const pauseStopMatch = "update project_pause_stops"
 
 // A stop transaction whose commit's reply is lost keeps what its commit owes: the store says it
-// committed, so the released row's line and the wake of its start row's lane come once, and the
-// stop the machine makes again, which writes no second start row, does neither again. A stop whose
-// commit never landed does neither, and the stop made again does. A stop whose outcome the store
-// cannot say fails, so the machine owes it; its line and wake follow the store's answer, and the
-// stop made again then adds nothing.
+// committed, so the released row's line, the wake of its start row's lane and the wake of the
+// role-holder publication its claim's write queued come once each, as they do for a stop whose
+// reply came back, and the stop the machine makes again, which writes no second start row and
+// changes no holder, does none of them again. A stop whose commit never landed does none of them,
+// and the stop made again does. A stop whose outcome the store cannot say fails, so the machine
+// owes it; its line and wakes follow the store's answer, and the stop made again then adds
+// nothing.
 func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 	replyLost := func(t *testing.T, r *pauseStopRig) {
 		t.Helper()
@@ -802,6 +825,16 @@ func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 		}
 		r.wantWork(t, 1, "committed with its reply lost, but")
 	}
+	t.Run("committed", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop with no fault = %v, want nil", err)
+		}
+		if !r.recorded() {
+			t.Fatal("the stop with no fault is not on record")
+		}
+		r.wantWork(t, 1, "committed with its reply, but")
+	})
 	t.Run("reply_lost", func(t *testing.T) {
 		replyLost(t, newPauseStopRig(t))
 	})
@@ -850,8 +883,8 @@ func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 		r.wantWork(t, 0, "before the store answers")
 		r.fault.Refuse(false)
 		testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
-			"the stop's line and wake once the store says it committed", func() bool {
-				return len(r.releasedLines()) == 1 && r.wakes() == 1
+			"the stop's line and wakes once the store says it committed", func() bool {
+				return len(r.releasedLines()) == 1 && r.wakes() == 1 && r.published() >= 1
 			})
 		if err := r.stop(); err != nil {
 			t.Fatalf("the stop the machine makes again = %v, want nil", err)

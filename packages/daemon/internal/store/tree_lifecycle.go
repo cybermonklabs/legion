@@ -71,16 +71,14 @@ func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Cl
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch = 0
-			_, err := s.putClaim(ctx, tx, c)
-			return err
+			return s.putClaim(ctx, tx, c)
 		}
 		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
 		if err != nil {
 			return err
 		}
 		c.TreeEpoch = epoch
-		_, err = s.putClaim(ctx, tx, c)
-		return err
+		return s.putClaim(ctx, tx, c)
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)

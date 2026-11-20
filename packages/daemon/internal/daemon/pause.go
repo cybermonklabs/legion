@@ -162,12 +162,13 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // backstop, and the role's open resume — the first run's held wake — is left open, so the held
 // wake taken again conflicts with it (one open resume per role) and queues no second start. A
 // second resume by rule of a claim the first already launched finds it running and does nothing.
-// What the first run's commit owes once it lands — the claim's write told to the store, the lanes
-// of the rows it queued or made due woken, the released row's line and the owed spawn's resume
-// (stopCommitted) — is that commit's hook, so a stop whose commit's answer was lost and that the
-// store says committed still does it, and the run made again, which writes none of those rows,
-// does it no second time. It writes no log line of the stop itself: the machine writes
-// supervise.PauseRoleStoppedMessage once it lands.
+// What the first run's commit owes once it lands — the lanes of the rows it queued or made due
+// woken, the released row's line and the owed spawn's resume (stopCommitted) — is that commit's
+// hook, and so is the wake of the role-holder publication the claim's write queued, which the
+// store's claim write registers itself (store.PutClaimTx): a stop whose commit's answer was lost
+// and that the store says committed still does each once, and the run made again, which writes
+// none of those rows and changes no holder, does none of them a second time. It writes no log line
+// of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	if err := store.Transact(ctx, p.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -187,7 +188,6 @@ func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supe
 // stating what committed, or a resume the machine paces and the pause's gate holds while a later
 // pause stands, so it is right however late it runs.
 func (p *projectPause) stopCommitted(c supervise.Claim, stop supervise.PauseStop, made pauseStopMade) {
-	p.store.CommittedClaim(c, made.holders)
 	if made.started {
 		p.workflow.wakeOutbox(c.Issue, record.OutboxKindSupervise)
 	}
@@ -205,17 +205,14 @@ func (p *projectPause) stopCommitted(c supervise.Claim, stop supervise.PauseStop
 
 // pauseStopMade is what one stop transaction wrote that its caller acts on once it commits: a
 // start row queued (started), the start row's id where it is a released held row (released), the
-// keys of the claim's `pause_stop` rows it made due (expedited), whose lanes are woken, whether the
-// claim is an operator's spawn owed a launch now that its pause has ended, which no start row can
-// carry (resume), and whether the claim's write queued the publication of its issue's role
-// sessions (holders), which the store is told of once the transaction commits
-// (store.Store.CommittedClaim).
+// keys of the claim's `pause_stop` rows it made due (expedited), whose lanes are woken, and whether
+// the claim is an operator's spawn owed a launch now that its pause has ended, which no start row
+// can carry (resume).
 type pauseStopMade struct {
 	started   bool
 	released  int64
 	expedited []string
 	resume    bool
-	holders   bool
 }
 
 // stopTx is stopped's transaction.
@@ -235,9 +232,9 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		}
 	}
 	if c.Pending != nil {
-		made.holders, err = p.store.PutClaimAndDeliveryTx(ctx, tx, supervise.StoredClaim(c), *c.Pending)
+		err = p.store.PutClaimAndDeliveryTx(ctx, tx, supervise.StoredClaim(c), *c.Pending)
 	} else {
-		made.holders, err = p.store.PutClaimTx(ctx, tx, c)
+		err = p.store.PutClaimTx(ctx, tx, c)
 	}
 	if err != nil {
 		return made, err

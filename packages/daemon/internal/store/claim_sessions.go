@@ -135,8 +135,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 		if freed, err = pgx.CollectRows(rows, scanHold); err != nil {
 			return err
 		}
-		_, err = s.putClaim(ctx, tx, c)
-		return err
+		return s.putClaim(ctx, tx, c)
 	}); err != nil {
 		return nil, fmt.Errorf("release the names of %s: %w", c.Token, err)
 	}

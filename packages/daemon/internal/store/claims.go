@@ -67,7 +67,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	var wrote error
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, wrote = s.putClaim(ctx, tx, c)
+		wrote = s.putClaim(ctx, tx, c)
 		return wrote
 	}); err != nil {
 		if wrote == nil {
@@ -82,9 +82,9 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // the claim with the pause's records in one transaction (decision 6 of dispatch://INFRA-3759,
 // supervise.Deps.PauseStopped), so a stopped claim never stands without them. Like every claim
 // write it goes through putClaim, so the publication of the issue's role sessions it queues is in
-// the same transaction; it answers whether it queued one, and the caller tells CommittedClaim once
-// its transaction has committed.
-func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+// the same transaction, and so is the wake of that publication, which runs once the caller's
+// transaction commits.
+func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	return s.putClaim(ctx, tx, c)
 }
 
@@ -293,34 +293,34 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // state that holds it — retired, failed, suspended, or launching again. A write that changes no
 // holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
 // a write of a claim of another project's issue, whose row only that project's daemon runs.
-// It answers whether it queued, so that the caller can wake the lane once tx commits
-// (CommittedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
-// RetireDelivery, AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx —
-// so whichever decision makes a write, the store holds the change
-// and its publication together, or neither; PutClaim alone writes on the pool when it can queue
-// none, since then nothing goes with the write.
-func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+// A write that queued the publication wakes it once tx commits (wakeRoleHolders), as the hook of
+// tx's commit: no caller wakes it. Every claim write goes through here — PutClaim,
+// PutClaimAndDelivery, RetireDelivery, ReleaseHolds, AdmitClaim, and the pause's stop through
+// PutClaimTx and PutClaimAndDeliveryTx — so whichever decision makes a write, the store holds the
+// change and its publication together, or neither, and the publication is woken once for the
+// commit that queued it.
+func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
-		return false, upsertClaim(ctx, tx, c)
+		return upsertClaim(ctx, tx, c)
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
 	if err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if err := upsertClaim(ctx, tx, c); err != nil {
-		return false, err
+		return err
 	}
 	if roleHolder(c.State, c.Session) == stored {
-		return false, nil
+		return nil
 	}
 	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
 	if err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if queued {
-		OnCommit(ctx, func() { s.CommittedClaim(c, true) })
+		OnCommit(ctx, func() { s.wakeRoleHolders(c.Issue) })
 	}
-	return queued, nil
+	return nil
 }
 
 // upsertClaim writes the row of claim c inside tx, putClaim's transaction.
@@ -766,21 +766,19 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 // its delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
 	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := s.PutClaimAndDeliveryTx(ctx, tx, c, d)
-		return err
+		return s.PutClaimAndDeliveryTx(ctx, tx, c, d)
 	})
 }
 
 // PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
-// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
-// the claim's write queued the publication of its issue's role sessions, for the caller's
-// CommittedClaim once its transaction has committed.
-func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
-	queued, err := s.putClaim(ctx, tx, c)
-	if err != nil {
-		return false, err
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx). The publication of
+// the issue's role sessions the claim's write queues is woken once the caller's transaction
+// commits, as every claim write's is (putClaim).
+func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) error {
+	if err := s.putClaim(ctx, tx, c); err != nil {
+		return err
 	}
-	return queued, putDelivery(ctx, tx, c.Token, d)
+	return putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -804,7 +802,7 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 // found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
 	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := s.putClaim(ctx, tx, c); err != nil {
+		if err := s.putClaim(ctx, tx, c); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx,

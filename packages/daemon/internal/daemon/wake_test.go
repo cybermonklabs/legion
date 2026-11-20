@@ -14,9 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -179,6 +182,61 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	restarted.fireDueBackstops(ctx, time.Now().UTC())
 	if applied.facts != 1 {
 		t.Fatalf("facts applied by a second pass = %d, want the backstop fired once", applied.facts)
+	}
+}
+
+// A backstop that comes due wakes its pod's lifecycle lane once, whether its fact's commit reply
+// came back or was lost and the store said it committed: the fact's wake queues the role's start
+// row through the project's records, which wake that row's lane once the fact commits
+// (projectRecords.wakeOnCommit), so the pass wakes nothing beside it.
+func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cut  bool
+	}{{name: "committed"}, {name: "reply_lost", cut: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, pool, _ := wakeRuntime(t)
+			ctx := context.Background()
+			faulted, fault := faultedPoolOf(t, pool)
+			w.pool = faulted
+			putOutboxIssue(t, pool, record.NewStore(), record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main",
+				GitHubRepo: "acme/widgets", Project: "LEGION", Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing,
+				Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5})
+			if err := w.idleStore.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, pauseIssue, claim.RoleImplementer),
+				Project: "legion", Tree: pauseIssue, Issue: pauseIssue, Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1,
+				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer"}); err != nil {
+				t.Fatalf("store the released implementer: %v", err)
+			}
+			if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: pauseIssue,
+				Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+				t.Fatalf("arm the backstop: %v", err)
+			}
+			podRecords, err := w.idleStore.PodRecordsOf("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := projectRecords{Store: record.NewStore(), project: "LEGION", wake: w.wakeOutbox, log: quietLogger()}
+			w.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Pods: podRecords, Linger: time.Hour}, quietLogger())}
+			wakes := recordLaneWakes(w, pauseIssue)
+			if tc.cut {
+				fired := fault.Cut(faultMatch, testdb.CutAfterCommit)
+				w.fireDueBackstops(ctx, time.Now().UTC())
+				testdb.Met(t, fired)
+			} else {
+				w.fireDueBackstops(ctx, time.Now().UTC())
+			}
+			var starts int
+			if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = 'supervise' and issue = $1
+				and payload->>'op' = 'start' and payload->>'wakeKind' = $2`, pauseIssue, pods.WakeBackstop).Scan(&starts); err != nil {
+				t.Fatalf("count the backstop's start rows: %v", err)
+			}
+			if starts != 1 {
+				t.Fatalf("start rows of the backstop's wake = %d, want 1: with no start queued, the lane has nothing to be woken for", starts)
+			}
+			if got := wakes(); got != 1 {
+				t.Errorf("wakes of %s's lifecycle lane = %d, want 1: the start row's own wake", pauseIssue, got)
+			}
+		})
 	}
 }
 

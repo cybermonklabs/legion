@@ -415,7 +415,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
 		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
 		// on before supervision restores a claim, so no claim write of this boot is left out.
-		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
+		st.PublishRoleHolders(workflow.wakeRoleHolders)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its

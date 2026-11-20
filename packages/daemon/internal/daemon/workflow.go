@@ -690,7 +690,7 @@ func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, iss
 	if _, err := store.EnqueueRoleHolders(ctx, tx, w.dispatchProject, issue, nextAt); err != nil {
 		return err
 	}
-	store.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
+	store.OnCommit(ctx, func() { w.wakeRoleHolders(issue) })
 	return nil
 }
 
@@ -700,6 +700,13 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// wakeRoleHolders wakes the board lane of issue, which runs the issue's role-holder publication:
+// the wake the store calls once a claim write that queued the publication commits
+// (store.Store.PublishRoleHolders), and the one the boot pass and the ready route register.
+func (w *workflowRuntime) wakeRoleHolders(issue string) {
+	w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish)
 }
 
 // stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
