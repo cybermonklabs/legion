@@ -402,49 +402,64 @@ func workflowRows(t *testing.T, database *store.Store) int {
 }
 
 // A credential scoped to one project writes no plan and no rating of another project's issue,
-// though it proves the session of that issue's daemon and the body names that session: an issue of
-// a project the credential does not list is one it cannot see, so the write answers as a write of
-// a key no issue holds, 404 ISSUE_NOT_FOUND, with nothing written. The same writes over a
-// credential scoped to the issue's project land, which is the control.
+// though it proves the session of that issue's daemon and the body names that session. While no
+// project is private the project check alone stands between them: 403 PROJECT_SCOPE with nothing
+// written, as before projects could be private (R9). Once a project is private, an issue of a
+// project the credential does not list is one it cannot see, so the write answers as a write of a
+// key no issue holds, 404 ISSUE_NOT_FOUND, with nothing written. The same writes over a credential
+// scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
-	rig := newBrokerTokenRig(t)
-	caller := newBrokerCaller(t)
-	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
-		t.Fatalf("create project OTH: status=%d body=%s", created.Code, created.Body.String())
-	}
-	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTH", "title": "Plans of OTH"})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create an issue in OTH: status=%d body=%s", created.Code, created.Body.String())
-	}
-	issue := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
-	const elsewhere, own = "a-daemon-token-scoped-to-another-project", "a-daemon-token-scoped-to-the-issues-project"
-	for token, projects := range map[string][]string{elsewhere: {brokerTestProject}, own: {"OTH"}} {
-		answer := liveNamedToken(caller.jkt)
-		answer.Session, answer.Projects = legionDaemonSessionPrefix+"OTH", projects
-		rig.broker.Says(token, answer)
-	}
-	daemon := daemonSessionOf("OTH")
+	for _, private := range []bool{false, true} {
+		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			caller := newBrokerCaller(t)
+			if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
+				t.Fatalf("create project OTH: status=%d body=%s", created.Code, created.Body.String())
+			}
+			if private {
+				seedProject(t, rig, "HIDE", "Hidden")
+				makePrivate(t, rig.database, "HIDE")
+			}
+			created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTH", "title": "Plans of OTH"})
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create an issue in OTH: status=%d body=%s", created.Code, created.Body.String())
+			}
+			issue := decodeBody[struct {
+				Key string `json:"key"`
+			}](t, created).Key
+			const elsewhere, own = "a-daemon-token-scoped-to-another-project", "a-daemon-token-scoped-to-the-issues-project"
+			for token, projects := range map[string][]string{elsewhere: {brokerTestProject}, own: {"OTH"}} {
+				answer := liveNamedToken(caller.jkt)
+				answer.Session, answer.Projects = legionDaemonSessionPrefix+"OTH", projects
+				rig.broker.Says(token, answer)
+			}
+			daemon := daemonSessionOf("OTH")
 
-	for _, write := range []struct {
-		name, path string
-		body       map[string]any
-	}{
-		{"plan", "/api/v1/issues/" + issue + "/plans/" + uuid.NewString(), defaultPlanBody(daemon, 1)},
-		{"rating", "/api/v1/issues/" + issue + "/steps/" + uuid.NewString() + "/rating",
-			withFields(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
-	} {
-		before := workflowRows(t, rig.database)
-		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
-		expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusNotFound,
-			"ISSUE_NOT_FOUND", issue)
-		if after := workflowRows(t, rig.database); after != before {
-			t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
-		}
-		if answered := rig.serve(caller.presenting(t, http.MethodPut, write.path, own, write.body)); answered.Code != http.StatusOK {
-			t.Fatalf("the same %s over a credential of OTH: status=%d body=%s, want 200", write.name, answered.Code, answered.Body.String())
-		}
+			for _, write := range []struct {
+				name, path string
+				body       map[string]any
+			}{
+				{"plan", "/api/v1/issues/" + issue + "/plans/" + uuid.NewString(), defaultPlanBody(daemon, 1)},
+				{"rating", "/api/v1/issues/" + issue + "/steps/" + uuid.NewString() + "/rating",
+					withFields(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
+			} {
+				before := workflowRows(t, rig.database)
+				refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
+				if private {
+					expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusNotFound,
+						"ISSUE_NOT_FOUND", issue)
+				} else {
+					expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
+						codeProjectScope, brokerTestProject, "OTH")
+				}
+				if after := workflowRows(t, rig.database); after != before {
+					t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
+				}
+				if answered := rig.serve(caller.presenting(t, http.MethodPut, write.path, own, write.body)); answered.Code != http.StatusOK {
+					t.Fatalf("the same %s over a credential of OTH: status=%d body=%s, want 200", write.name, answered.Code, answered.Body.String())
+				}
+			}
+		})
 	}
 }
 
