@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -399,6 +400,13 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
+	// LeakCheckSetting is the deployment's shared public leak check (leakguard.Setting): the
+	// repository it is read from and the sha256 of its checker. Configured, every role is told the
+	// pod's install as PUBLIC_LEAK_CHECK and the checker as leakguard.CheckerVar
+	// (mainEnvironment), and the check is pushed to each pod's launcher (LeakCheck). The zero
+	// Setting is a deployment that runs none: the runtime pushes nothing to a launcher whatever
+	// tag its hello names, tells its roles neither variable, and so starts each role without one.
+	LeakCheckSetting leakguard.Setting
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
 	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming
@@ -410,8 +418,9 @@ type Options struct {
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
 	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
-	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
-	// every role whose launcher names a tag and starts a launcher that names none as it is.
+	// (*leakguard.Source) where LeakCheckSetting is configured; nil under a configured setting is a
+	// daemon that runs with no GitHub App, which refuses the start of every role whose launcher
+	// names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time

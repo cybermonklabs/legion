@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -418,6 +419,39 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	}
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Fatalf("boots after a start that never served = %d, want 0", count)
+	}
+}
+
+// The boot itself says once which shared leak check the deployment runs: run logs it
+// (logLeakCheck) before it takes its port, so a boot that then fails on its port has logged it all
+// the same — the not-configured line under no setting, and the configured line, which names the
+// setting's repository and checker, under the deployment's.
+func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		setting                   leakguard.Setting
+		notConfigured, configured int
+	}{
+		{name: "no shared leak check", notConfigured: 1},
+		{name: "the deployment's check", setting: leakCheckSetting, configured: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.LeakCheck = tc.setting
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.listen = nil
+			var logged strings.Builder
+			if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+				t.Fatal("run returned no error although another listener held its port")
+			}
+			named := `"repository":"` + tc.setting.Repository.String() + `","manifest_sha256":"` + tc.setting.ManifestSHA256 + `"`
+			if got := strings.Count(logged.String(), leakCheckNotConfigured); got != tc.notConfigured {
+				t.Fatalf("the boot logged the not-configured line %d times, want %d; log:\n%s", got, tc.notConfigured, logged.String())
+			}
+			if got := strings.Count(logged.String(), leakCheckConfigured+`",`+named); got != tc.configured {
+				t.Fatalf("the boot logged the configured line naming %s %d times, want %d; log:\n%s", named, got, tc.configured, logged.String())
+			}
+		})
 	}
 }
 
