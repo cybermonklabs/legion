@@ -502,12 +502,18 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 // than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
+	seedWorkflowTreeIn(t, st, project, root, claims...)
+}
+
+// seedWorkflowTreeIn is seedWorkflowTree through st, a store the test already holds open.
+func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root record.Issue, claims ...supervise.Claim) {
+	t.Helper()
+	ctx := context.Background()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
