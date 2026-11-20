@@ -104,10 +104,14 @@ agent-secrets secret show: using the gcloud configuration ada (CLOUDSDK_ACTIVE_C
 ```
 
 On GCP the source is one of `the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
-`the credentials file GOOGLE_APPLICATION_CREDENTIALS names (PATH)`,
+`the credentials file GOOGLE_APPLICATION_CREDENTIALS names`,
 `the gcloud configuration NAME (CLOUDSDK_ACTIVE_CONFIG_NAME)`,
-`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`, `the well-known credentials file PATH`,
-`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. The account
+`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`,
+`the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)`
+(or `in $HOME/.config/gcloud` where `CLOUDSDK_CONFIG` is unset),
+`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. No source is
+named by a path: a credentials file's path is where a person who pasted the credential itself
+puts it. The account
 follows, with ` impersonating SA` where gcloud impersonates one, or `principal unknown` where the
 credential does not say whose it is: a lent token, an `authorized_user` file, and a gcloud login
 whose token comes from an access token file or a credential file override. The CLI asks for no

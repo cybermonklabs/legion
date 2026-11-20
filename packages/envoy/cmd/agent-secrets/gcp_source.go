@@ -48,10 +48,7 @@ func (s gcpSource) name() string {
 	case sourceChosenGcloud:
 		return "CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT"
 	case sourceWellKnownFile:
-		if path := wellKnownCredentialsFile(); path != "" {
-			return "the well-known credentials file " + path
-		}
-		return "the well-known credentials file"
+		return wellKnownCredentialsName()
 	case sourceActiveGcloud:
 		return "the active gcloud account"
 	case sourceMetadata:
@@ -89,6 +86,23 @@ func wellKnownCredentialsFile() string {
 		return ""
 	}
 	return filepath.Join(dir, "application_default_credentials.json")
+}
+
+// wellKnownCredentialsName is the well-known credentials file as a message names it: by the
+// setting or default its directory comes from, never by its path. The file holds a credential,
+// and CLOUDSDK_CONFIG, the setting that names its directory, is where a person who pasted the
+// credential itself puts it: a value that is no directory (too long a name, or a file) is not
+// absent, so the file is read, and its refusal would otherwise print the value.
+func wellKnownCredentialsName() string {
+	const file = "the well-known credentials file (application_default_credentials.json in "
+	switch {
+	case os.Getenv("CLOUDSDK_CONFIG") != "":
+		return file + "the directory CLOUDSDK_CONFIG names)"
+	case runtime.GOOS == "windows":
+		return file + `%APPDATA%\gcloud)`
+	default:
+		return file + "$HOME/.config/gcloud)"
+	}
 }
 
 // gcloudConfigurations is the name of every gcloud configuration gcloudConfigDir holds

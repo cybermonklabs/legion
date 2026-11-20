@@ -554,3 +554,50 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 		})
 	}
 }
+
+// TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath: CLOUDSDK_CONFIG names the
+// directory of the well-known credentials file, and is where a person who pasted a credential in
+// the wrong place puts it. A value that is no directory is not absent - a name too long for the
+// file system (ENAMETOOLONG), or a file (ENOTDIR) - so the file is read and refused, naming the
+// setting and the system's reason, never the path. A directory that holds a key file still signs
+// in, and the line naming the sign-in names the setting, not the path (the control).
+func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	secret := "hunter2pw-" + "wellknown-" + strings.Repeat("a1b2c3d4", 40)
+	const named = "the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)"
+	for _, row := range []struct {
+		name string
+		dir  func(t *testing.T) string
+		code int
+		want string
+	}{
+		{"a long credential in CLOUDSDK_CONFIG", func(*testing.T) string { return secret }, 1,
+			"read " + named + ": open: file name too long"},
+		{"CLOUDSDK_CONFIG names a file", func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), secret[:40])
+			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, 1, "read " + named + ": open: not a directory"},
+		{"control: CLOUDSDK_CONFIG names a directory that holds a key file", func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), secret[:40])
+			writeServiceAccountFile(t, filepath.Join(dir, "application_default_credentials.json"), "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
+			return dir
+		}, 0, "using " + named + ": gac@example.iam.gserviceaccount.com"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			holdScratchTest(fake)
+			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+			useGcloudConfigurations(t, "box", orderConfigurations)
+			t.Setenv("CLOUDSDK_CONFIG", row.dir(t))
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			_, stderr, code := runSecret("show", "SCRATCH_TEST")
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, "hunter2pw-")
+		})
+	}
+}

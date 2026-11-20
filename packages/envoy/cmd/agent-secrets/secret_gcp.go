@@ -670,9 +670,9 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	} else {
 		creds, err := gcpCredentialsFile(ctx, path)
 		if err != nil {
-			return credentialsFileRefusal("the well-known credentials file "+path, err)
+			return credentialsFileRefusal(wellKnownCredentialsName(), err)
 		}
-		b.source, b.sourcePhrase, b.principal, b.creds = sourceWellKnownFile, "the well-known credentials file "+path, credentialsFilePrincipal(creds), creds
+		b.source, b.sourcePhrase, b.principal, b.creds = sourceWellKnownFile, wellKnownCredentialsName(), credentialsFilePrincipal(creds), creds
 		return nil
 	}
 

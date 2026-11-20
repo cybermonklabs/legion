@@ -305,7 +305,8 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // TestGCPSecretNoSourceListsEverySource: with no source present - no gcloud on PATH, no
 // credentials file, no variable, and nothing answering at the metadata server's address - the
 // command stops within 2 s, before any Secret Manager call, with one refusal that names each of
-// the six sources (the third by both its variables).
+// the six sources (the third by both its variables, the well-known file by the setting that
+// names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -324,11 +325,14 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	for _, source := range []string{
 		"CLOUDSDK_AUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
 		"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT",
-		filepath.Join(dir, "application_default_credentials.json"), "gcloud", "metadata server",
+		"the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)", "gcloud", "metadata server",
 	} {
 		if !strings.Contains(stderr, source) {
 			t.Fatalf("stderr %q does not name %s", stderr, source)
 		}
+	}
+	if strings.Contains(stderr, dir) {
+		t.Fatalf("stderr %q names the gcloud configuration directory %s", stderr, dir)
 	}
 	if _, calls := fake.calledUnder(); calls != 0 {
 		t.Fatalf("Secret Manager saw %d calls, want none", calls)
