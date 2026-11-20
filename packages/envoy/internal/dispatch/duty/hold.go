@@ -132,7 +132,7 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 			name, opts.TTL, opts.Renew, opts.Margin)
 	}
 	sent := time.Now()
-	tag, err := db.Exec(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds())
+	tag, err := db.Exec(context.WithValue(ctx, sentKey{}, sent), takeHold, name, holder, opts.Token, opts.TTL.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("take hold %q: %w", name, err)
 	}
@@ -169,6 +169,20 @@ func (h *Hold) Deadline() time.Time {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.deadline
+}
+
+// sentKey is the context key under which a hold's take and each of its renewals carry the clock
+// reading the hold took just before it sent them (SentAt).
+type sentKey struct{}
+
+// SentAt reports the clock reading a hold took just before it sent the statement that runs under
+// ctx - its take (TryHold) or a renewal (renew) - and false under any other context. A take or a
+// renewal that affects the row sets the loss deadline to exactly that reading plus TTL - Margin,
+// so a tracer of the hold's pool that reads it ties each deadline to the statement that set it,
+// with no second clock reading between them.
+func SentAt(ctx context.Context) (time.Time, bool) {
+	sent, ok := ctx.Value(sentKey{}).(time.Time)
+	return sent, ok
 }
 
 // SetToken records token as the hold's token, guarded on the row naming this holder. A row that no
@@ -263,7 +277,7 @@ func (h *Hold) renew(ctx context.Context) {
 		}
 		sent := time.Now()
 		bounded, cancel := context.WithTimeout(ctx, h.opts.Renew)
-		tag, err := h.db.Exec(bounded, renewHold, h.name, h.holder, h.opts.TTL.Seconds())
+		tag, err := h.db.Exec(context.WithValue(bounded, sentKey{}, sent), renewHold, h.name, h.holder, h.opts.TTL.Seconds())
 		cancel()
 		switch {
 		case err != nil:

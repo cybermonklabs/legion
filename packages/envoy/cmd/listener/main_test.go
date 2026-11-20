@@ -20,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -517,11 +518,11 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 	}
 }
 
-// A topic the binary's stream captures, whose binding the deployed stream has lost, still bounds its
-// JetStream publish by the acknowledgement deadline: the publish waits for an acknowledgement that
-// the core subscriber holding the subject never sends.
+// A JetStream publish the stream takes and never acknowledges is still bounded by the
+// acknowledgement deadline: the stream captures the topic and acknowledges nothing it stores, so
+// the publish waits for an acknowledgement that never comes.
 func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
-	const topic = "notifications.github.acme.unbound"
+	const topic = "notifications.github.acme.unacknowledged"
 	clock := &listenerAcknowledgementClock{}
 	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock))
 	info, err := client.JS().StreamInfo(bus.Stream)
@@ -529,14 +530,20 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 		t.Fatalf("stream info: %v", err)
 	}
 	originalConfig := info.Config
-	unboundConfig := originalConfig
-	unboundConfig.Subjects = []string{"notifications.bound.>"}
-	if _, err := client.JS().UpdateStream(&unboundConfig); err != nil {
-		t.Fatalf("remove publish subject binding: %v", err)
+	// The stream acknowledges nothing, in a change that fails the test unless it took and that no
+	// owner of the stream undoes (bustest.ChangeStream). It still captures the topic, so the
+	// client, which reads the deployed subjects again at each reconnect and every 60 s, keeps
+	// sending it through JetStream, where a narrowing would turn it to core NATS
+	// (bustest.NarrowStream).
+	if changed := bustest.ChangeStream(t, client.JS(), originalConfig, func(config *natsgo.StreamConfig) {
+		config.NoAck = true
+	}); !changed.NoAck || client.UsesCoreTransport(topic) {
+		t.Fatalf("after the change the stream acknowledges what it stores: %t; the client sends %s over core NATS: %t; want neither",
+			!changed.NoAck, topic, client.UsesCoreTransport(topic))
 	}
 	t.Cleanup(func() {
 		if _, err := client.JS().UpdateStream(&originalConfig); err != nil {
-			t.Errorf("restore stream subject bindings: %v", err)
+			t.Errorf("restore the stream's acknowledgements: %v", err)
 		}
 	})
 

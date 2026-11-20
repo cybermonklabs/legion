@@ -50,6 +50,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -2390,30 +2391,27 @@ func requireCommentsPublished(t *testing.T, pair *dispatchPair, holder *testSess
 // every agent subject, and lets it capture them all again when the returned func is called or
 // the test ends. A forward to any other session is then stored nowhere, so nothing acknowledges
 // it and the batch that sent it waits out its window, which is the shape a forward goes
-// unanswered in; the session's own core subscription is handed it all the same. The processes'
-// keepers leave the narrowed list alone: a keeper puts back only a subject of this binary's that
-// no subject the stream holds overlaps (bus.keptSubjects), and a holder's agent subject overlaps
-// notifications.agent.>.
+// unanswered in; the session's own core subscription is handed it all the same. No process
+// undoes the narrowing while it holds, at a reconnect or in its keeper (bustest.NarrowStream).
 func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...string) func() {
 	t.Helper()
 	info, err := js.StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the notification stream: %v", err)
 	}
-	capturing, narrowed := info.Config, info.Config
-	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
-		return subject == contracts.AgentTopicPrefix+">"
-	})
+	capturing := info.Config
+	holderSubjects := make([]string, 0, len(holders))
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
+		holderSubjects = append(holderSubjects, contracts.LegacyAgentSubject(holder))
 	}
-	update := func(config *natsgo.StreamConfig, what string) {
-		if _, err := js.UpdateStream(config); err != nil {
-			t.Fatalf("%s the stream's agent subjects: %v", what, err)
+	bustest.NarrowStream(t, js, capturing, func(subject string) bool {
+		return subject == contracts.AgentTopicPrefix+">"
+	}, holderSubjects...)
+	restore := sync.OnceFunc(func() {
+		if _, err := js.UpdateStream(&capturing); err != nil {
+			t.Fatalf("restore the stream's agent subjects: %v", err)
 		}
-	}
-	update(&narrowed, "narrow")
-	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	})
 	t.Cleanup(restore)
 	return restore
 }
