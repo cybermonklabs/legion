@@ -84,39 +84,47 @@ test("the link's page names the address, makes the passkey with Dispatch's optio
 
 test("a link Dispatch refuses says why, and offers nothing to press", async () => {
   const browser = installFakePasskeys();
-  for (const [code, status, words] of [
-    [
-      "INVITATION_USED",
-      410,
-      "This link has been used already. Ask the project's owner for a new one.",
-    ],
-    ["INVITATION_EXPIRED", 410, "This link has expired. Ask the project's owner for a new one."],
-    [
-      "INVITATION_UNKNOWN",
-      404,
-      "Dispatch does not hold this link: the project's owner made a newer one, reset the address, or took it off the access list. Ask the project's owner for a new one.",
-    ],
-    [
-      "INVITATION_NOT_LISTED",
-      403,
-      "The project's access list no longer names this address, so this link cannot enroll a passkey. Ask the project's owner.",
-    ],
-  ] as const) {
-    const begin = spyOn(api, "passkeyEnrollmentOptions").mockRejectedValue(
-      new ApiError(status, { code, error: code.toLowerCase() })
-    );
-    const app = renderApp(`/enroll#${token}`);
-    try {
-      expect(await screen.findByRole("alert")).toHaveTextContent(words);
-      expect(screen.getByRole("heading", { name: "Enroll a passkey" })).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    } finally {
-      app.restore();
-      begin.mockRestore();
+  try {
+    for (const [code, status, words] of [
+      [
+        "INVITATION_USED",
+        410,
+        "This link has been used already. Ask the project's owner for a new one.",
+      ],
+      ["INVITATION_EXPIRED", 410, "This link has expired. Ask the project's owner for a new one."],
+      [
+        "INVITATION_UNKNOWN",
+        404,
+        "Dispatch does not hold this link: the project's owner made a newer one, reset the address, or took it off the access list. Ask the project's owner for a new one.",
+      ],
+      [
+        "INVITATION_NOT_LISTED",
+        403,
+        "The project's access list no longer names this address, so this link cannot enroll a passkey. Ask the project's owner.",
+      ],
+      [
+        "FULL_MEMBER",
+        409,
+        "This address belongs to a member of the company's Google Workspace, who signs in with Google and never with a passkey.",
+      ],
+    ] as const) {
+      const begin = spyOn(api, "passkeyEnrollmentOptions").mockRejectedValue(
+        new ApiError(status, { code, error: code.toLowerCase() })
+      );
+      const app = renderApp(`/enroll#${token}`);
+      try {
+        expect(await screen.findByRole("alert")).toHaveTextContent(words);
+        expect(screen.getByRole("heading", { name: "Enroll a passkey" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      } finally {
+        app.restore();
+        begin.mockRestore();
+      }
     }
+  } finally {
+    browser.restore();
   }
-  browser.restore();
 });
 
 test("a link with no code after its # asks Dispatch nothing", async () => {
@@ -190,6 +198,34 @@ test("a link used in another tab between the check and the press says so, and ta
     );
     expect(screen.queryByRole("button", { name: "Create a passkey" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("address")).toHaveTextContent(`/enroll#${token}`);
+  } finally {
+    app.restore();
+    browser.restore();
+    begin.mockRestore();
+    finish.mockRestore();
+  }
+});
+
+// Another enrollment of the same address finished first, or the finish was replayed: each begin's
+// challenge is single-use, so Dispatch answers CEREMONY_EXPIRED, and a second press begins anew.
+test("an enrollment another one raced says so, and the next press starts over from the link's check", async () => {
+  const user = userEvent.setup();
+  const browser = installFakePasskeys();
+  const begin = spyOn(api, "passkeyEnrollmentOptions").mockResolvedValue(enrollmentOptions(ana));
+  const finish = spyOn(api, "passkeyEnroll")
+    .mockRejectedValueOnce(new ApiError(400, { code: "CEREMONY_EXPIRED", error: "expired" }))
+    .mockResolvedValueOnce({ login: ana });
+  const app = renderApp(`/enroll#${token}`);
+  try {
+    await user.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This request ran out, or another one finished first. Press the button to try again."
+    );
+    const begun = begin.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent(/^\/$/));
+    expect(begin.mock.calls.length).toBe(begun + 1);
+    expect(finish).toHaveBeenCalledTimes(2);
   } finally {
     app.restore();
     browser.restore();
