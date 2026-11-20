@@ -208,3 +208,29 @@ func TestARestoredBundleDeleteWhoseReplyIsLostDeletesIt(t *testing.T) {
 		t.Fatalf("the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 }
+
+// The drop of a bundle a pod's kept volume holds answers, in the same hop, whether the take still
+// runs, and a drop that committed leaves nothing for a second run to find. So a drop whose
+// outcome was unknown waits for the store's answer, and answers the run that committed.
+func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.T) {
+	st := bundleStore(t)
+	saved := savedWorkspaceBundle()
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	faulted, fault := faultedBundleStore(t, st)
+	fired := fault.Cut("delete from workspace_bundles", testdb.CutAfterCommitRefusing)
+	met := releaseAfter(fault, fired)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	held, dropped, err := faulted.DropHeldWorkspaceBundle(ctx, testProject, testTree, "pod-of-the-kept-volume", saved.At.Add(-time.Minute))
+	if err != nil || !dropped || held.Release != saved.Release {
+		t.Fatalf("the drop whose outcome was unknown = release %d, dropped %t, %v; want release %d dropped", held.Release, dropped, err, saved.Release)
+	}
+	if !met.Load() {
+		t.Fatal("the armed fault met no COMMIT of the drop")
+	}
+	if _, kept, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || kept {
+		t.Fatalf("the store holds the bundle = %t (%v), want it dropped", kept, err)
+	}
+}
