@@ -86,13 +86,18 @@ harness as `127.0.0.1:<port>`, never `localhost`: under that flag the router
 refuses any other `Host`. The server process has no caller Home or XDG
 directory and receives no inherited `DISPATCH_*`, `ENVOY_*` or `NATS_*`
 variable, so neither a shell setting nor `~/.config/legion/envoy.json` /
-`~/.local/share/dispatch` can redirect it. The one way in from outside is the
-broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
+`~/.local/share/dispatch` can redirect it. There are two ways in from outside.
+One is the broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
 of a ServiceAccount that broker lists in
 `DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, points the server's credential
 requests at a broker the caller runs, as the secrets broker's docs rig
 (`docs/site/media/broker/rig.sh`) does with the token its local issuer
-(`packages/envoy/cmd/dev-oidc-issuer`) keeps.
+(`packages/envoy/cmd/dev-oidc-issuer`) keeps. The other is
+`DISPATCH_E2E_NATS_URLS`: a NATS address there reaches the server as its
+`NATS_URLS` in place of `DISPATCH_NATS_DISABLED=1`, which turns the events
+publisher on for a driver that proves what a delivery writes. It is the rig's
+own variable because a shell's `NATS_URLS` is the Envoy listener's, and a server
+that took it would publish test notifications where real sessions receive them.
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
@@ -654,6 +659,59 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
+`e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
+each person authored, what reached each session, a comment that reached nobody, a failed attempt,
+an attempt the listener queued for a session that is not running, and the role, the session and
+the page a delivery writes. It takes the first three inputs,
+`DATABASE_URL` (the database that server serves, on this machine, which it reads the tuples no
+route answers through) and `FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it
+adds role-less sessions, one of them stopped, and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
+optional. Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS
+off, and without `DISPATCH_E2E_NATS_URLS` (which `e2e/run-server.sh` hands the server as its
+`NATS_URLS`) the publisher writes no `delivered_to` tuple and those checks wait out their 30 s
+poll. Start a JetStream NATS of your own (`nats-server -js`) and name it when you start the
+instance, `DISPATCH_E2E_NATS_URLS=nats://127.0.0.1:<port> bun run dispatch:local`; then, against
+it:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
+  DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
+```
+
+`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
+removes bytes: the refusal until it has listed what it would remove, the erase itself, the
+version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
+the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
+`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
+`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
+`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/graph-erase.sh
+```
+
+`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
+by kind, every table this branch's migrations touch, where the two store tables reach in a year,
+two runs printing one report, and the block-index backlog, with the reconciliation's own drain
+timed beside a request that indexes the same document itself, a reading that gates nothing. It
+takes the first three inputs, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`, and two
+required inputs of the production reading: `PRODUCTION_PROJECT`, the Google Cloud project whose
+Cloud Monitoring holds production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL instance
+whose disk use it reads, through this pod's own Google identity. This repository is public and
+names neither, so the driver refuses to start without them (exit 2). `PRODUCTION_WINDOW_DAYS` is
+optional (21 unset, refused below 14). It writes a corpus under an issue of its own and removes
+it on exit, since a corpus left behind is read by the next run as growth:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE PRODUCTION_PROJECT=<gcp-project> \
+  PRODUCTION_DATABASE_ID=<gcp-project>:<cloud-sql-instance> \
+  bash packages/dispatch/e2e/acceptance/graph-sizing.sh
+```
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -684,6 +742,7 @@ createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
 DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
   bash packages/dispatch/e2e/acceptance/replace-blocks.sh
 ```
+
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -721,9 +780,11 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
+All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+share: it refuses an unset input or a missing command with exit 2, reads the bearer from
+`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
+script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
+`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
 (dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they

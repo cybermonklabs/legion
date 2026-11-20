@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -40,20 +42,26 @@ var subcommands = []subcommand{
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
+		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
 	}},
-	{"census", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
-		return census(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	{"census", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return census(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
 		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
+	}},
+	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
@@ -186,9 +194,11 @@ func committedOpenAPIPath() (string, error) {
 	}
 }
 
-// openMigrated opens the database a DB subcommand works on and brings it to the current
-// schema, reporting each failure on out under the subcommand's label. The caller closes the
-// returned store's pool.
+// openMigrated opens the database a DB subcommand works on, brings it to the current schema and
+// installs the block schema the store's type nodes build (schemanodes.InstallFromStore), as the
+// server's boot does beside its own migration run, so a subcommand that parses, renders or writes
+// a document holds it to the store's types rather than to the file this binary embeds. It reports
+// each failure on out under the subcommand's label. The caller closes the returned store's pool.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
@@ -201,6 +211,11 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	}
 	if err := database.Migrate(ctx); err != nil {
 		fmt.Fprintf(out, "%s: migrate database: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
 		database.Pool.Close()
 		return nil, false
 	}
@@ -227,6 +242,36 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 		}
 	}
 	return exitCode
+}
+
+// backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
+// tuples of every comment, document block and block reference written before the node and
+// tuple store existed, in batches, one transaction each (graphcensus.Backfill). It appends no
+// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
+// as its cause. It is safe to run again: a row that already names its node is left alone, so a
+// run interrupted anywhere carries on from where it stopped.
+//
+// A block's parent is left to the block index: the run marks each document it touched owed
+// one, and `census --store` reads a difference on every backfilled block until that
+// reconciliation has drained the mark, since the reconciliation is the one writer of
+// document_blocks.parent_block_id.
+func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) int {
+	database, ok := openMigrated(ctx, "backfill-graph-store", databaseURL, out)
+	if !ok {
+		return 1
+	}
+	defer database.Pool.Close()
+	report, err := graphcensus.Backfill(ctx, database, out)
+	if err != nil {
+		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
+		return 1
+	}
+	for _, kind := range report.Kinds {
+		if kind.Skipped > 0 || kind.Remaining > 0 {
+			return 1
+		}
+	}
+	return 0
 }
 
 func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {

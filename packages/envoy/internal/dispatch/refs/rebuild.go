@@ -50,14 +50,21 @@ type Rebuild struct {
 // payload, but StoredExcerpts hides it until the row has a current excerpt_version.
 //
 // A document's blocks and the mentions they hold are cut from its tree too, so the rebuild marks
-// every document owed a block index (document_block_versions.version null), which the block-index
-// reconciliation (docs.Service.RunBlockIndexReconciliation) indexes. It marks every comment and
-// message, direct messages included, and every ask owed a block index of its own blocks too
-// (owed_at, a missing state row inserted owed), and owed its embedding windows with it
-// (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each item's blocks,
-// an ask's parts included, and the mentions each holds with this build's parser and grammar,
-// and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it has
-// just re-read every comment, ask and issue message with this build's grammar itself.
+// every document owed a block index, which the block-index reconciliation
+// (docs.Service.RunBlockIndexReconciliation) indexes. It sets both marks such a debt of this build
+// carries, as docs' oweDocumentIndex does for one document: document_block_versions.version null,
+// which every release drains, and store_owed_at, this build's own (migration 20261116221539),
+// which the release before this one neither reads nor clears. A pod of that release may drain the
+// null version first and write each document's new rows with no node, and the second mark brings
+// this build's pass to the document after it (IndexBlocks). A mark a document already holds keeps
+// its time.
+//
+// It marks every comment and message, direct messages included, and every ask owed a block index
+// of its own blocks too (owed_at, a missing state row inserted owed), and owed its embedding
+// windows with it (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each
+// item's blocks, an ask's parts included, and the mentions each holds with this build's parser and
+// grammar, and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it
+// has just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
 // own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
@@ -118,8 +125,9 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	}
 	report.Orphans = int(orphans.RowsAffected())
 	owed, err := pool.Exec(ctx, `
-		insert into document_block_versions (artifact_id) select id from artifacts where kind = 'doc'
-		on conflict (artifact_id) do update set version = null
+		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where kind = 'doc'
+		on conflict (artifact_id) do update set version = null,
+			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
 	`)
 	if err != nil {
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)

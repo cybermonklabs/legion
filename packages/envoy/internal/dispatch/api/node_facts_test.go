@@ -372,7 +372,10 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	if len(followers) != 1 || followers[0].Node.Kind != "session" || followers[0].Node.ID != sessionID {
 		t.Fatalf("the ask's followers = %#v, want session %s", followers, sessionID)
 	}
-	requireFacts(t, "the session following the ask", followers[0].Node, nodeFacts{MadeBy: nobody, ChangedBy: nobody})
+	// The asking session is a node of the store from the ask it opened, which follows it
+	// (asks.Follow): made by itself at the ask's own time.
+	requireFacts(t, "the session following the ask", followers[0].Node,
+		unchanged(session, ask.CreatedAt, nil, nil))
 }
 
 // A11: the other end of an edge, a document read's block at an edge, and every node of a

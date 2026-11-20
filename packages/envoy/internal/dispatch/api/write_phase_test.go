@@ -54,8 +54,9 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
-	// Creating the issue starts the project's term-statistics refresh, which commits its rows
-	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
+	// The issue's create starts the related-item check's term-statistics refresh, which commits
+	// search_term_stats and search_term_totals at its own time; the fingerprint is taken once it
+	// has, so it compares only what the ask wrote.
 	awaitBackgroundWrites(t, served)
 	before := databaseFingerprint(t, database)
 
@@ -428,7 +429,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a refused guard", func(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			gate = &firstReplaceGate{
@@ -441,6 +442,9 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		release := func() { released.Do(func() { close(gate.releaseFirst) }) }
 		defer release()
 		_, artifactID, commentID := suggest(t, handler)
+		// The issue's create starts the term-statistics refresh; it has committed before the
+		// accept starts, so the fingerprint below holds none of its writes.
+		awaitBackgroundWrites(t, served)
 
 		responses := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
@@ -478,7 +482,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// written in the transaction.
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -492,6 +496,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		`, issueKey); err != nil {
 			t.Fatalf("take the issue's next sequence number: %v", err)
 		}
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
@@ -528,9 +533,6 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
-		// Creating the issue starts the project's term-statistics refresh, which drains
-		// search_term_queue and commits search_term_stats and search_term_totals whenever it
-		// finishes: waited out here, it cannot read as a write of the refused comment.
 		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
@@ -556,7 +558,6 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
-		// The same refresh the comment's row above waits out.
 		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 

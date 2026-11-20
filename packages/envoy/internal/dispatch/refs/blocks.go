@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -30,63 +31,199 @@ type Pointer struct {
 	Targets                []string
 }
 
-// BlockIndex is what a document's block index holds: the sha256 of each block's text, by block
-// id, and the links its blocks hold, each with the block types it points at.
+// BlockNodeKind is what the node and tuple store calls one block of a document, and
+// BlockSupertag the supertag every one of them carries. A block's own type - paragraph,
+// decision, check - is the `type` column of its row and a supertag of the block schema
+// (migration 20261109051232); what makes the row a block is `block`, the supertag of the closed
+// list that names one.
+const (
+	BlockNodeKind = "block"
+	BlockSupertag = "block"
+)
+
+// TupleInDocument carries a block's membership of its document: the fact `graph_edges` reads
+// off a document_blocks row, dated that row's own created_at. Beside it graphstore.TuplePartOf
+// carries the block of the same document that holds this one, which document_blocks's
+// parent_block_id projects and which is the document's own artifact address for a block no
+// block holds.
+const TupleInDocument = "in_document"
+
+// BlockIndex is what a document's block index holds: each block's row - the sha256 of its text,
+// when the row was written and whether it names the block's node - by block id; the links its
+// blocks hold, each with the block types it points at, when its row was written, the source
+// event it stands at and whether it names its block's node; and the version the document's
+// blocks stand at (blockStand), which the revision fence is decided on. placed is, for the Held
+// of an indexing the transaction has queued and not written, the far end that indexing gave each
+// block's part_of, by block id, which the store holds only once the write phase has run; it is
+// nil for an index read from the tables, whose placements the plan reads from the store.
 type BlockIndex struct {
-	sums  map[string]string
-	pairs []blockPair
+	blocks map[string]storedBlock
+	links  []indexedLink
+	stand  blockStand
+	placed map[string]blockFarEnd
 }
 
-// ReadBlockIndex reads what q's block index holds for artifactID, its links read with the predicate
-// the reconciling delete visits them by, each with the block types it points at, so a plan can
-// tell a link whose attribute now names other types.
+// blockStand is the row of document_block_versions that says what a document's blocks stand at,
+// with the latest version any release indexed (document_indexed_versions): held says the row is
+// there, version is its version (nil while the document is owed an index), storeVersion the
+// version whose blocks the store states (migration 20261116221539, which no other release names),
+// owed this build's own mark that the document is owed such a pass (store_owed_at), and latest the
+// newest version of document_indexed_versions, nil for a document no release indexed.
+type blockStand struct {
+	held          bool
+	version       *int
+	storeVersion  *int
+	owed          bool
+	latestIndexed *int
+}
+
+// admits is the revision fence (queueStand's `where`) over the row as it stands: the row is not
+// there, it stands at no version or an older one, or it stands at this one and holds this build's
+// mark, which makes this pass the one that states that version's blocks in the store.
+func (s blockStand) admits(version int) bool {
+	return !s.held || s.version == nil || *s.version < version || *s.version == version && s.owed
+}
+
+// stale says the store's statement of the document's blocks is another release's to correct: the
+// store last stated them at a version other than the latest one any release indexed, so the rows
+// a pass reads are that release's and no longer say what the store holds. A document no release
+// has indexed holds nil on both sides and is not stale.
+func (s blockStand) stale() bool {
+	if s.storeVersion == nil || s.latestIndexed == nil {
+		return s.storeVersion != nil || s.latestIndexed != nil
+	}
+	return *s.storeVersion != *s.latestIndexed
+}
+
+// indexedAt is the row once a pass at version has won the fence: standing at that version on both
+// columns, its mark cleared, and version among those indexed.
+func (s blockStand) indexedAt(version int) blockStand {
+	latest := version
+	if s.latestIndexed != nil && *s.latestIndexed > latest {
+		latest = *s.latestIndexed
+	}
+	return blockStand{held: true, version: &version, storeVersion: &version, latestIndexed: &latest}
+}
+
+// indexedLink is one block_refs row the index holds: its pair, when the row was written, the
+// source event it stands at, and whether it names its block's node.
+type indexedLink struct {
+	blockPair
+	createdAt time.Time
+	sourceSeq *int64
+	named     bool
+}
+
+// ReadBlockIndex reads what q's block index holds for artifactID: its blocks, its links read with
+// the predicate the reconciling delete visits them by, each with the block types it points at, so
+// a plan can tell a link whose attribute now names other types, and the version its blocks stand
+// at, all in the read phase of the write that plans the indexing (PlanBlocks).
 func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockIndex, error) {
-	sums, err := storedBlockSums(ctx, q, artifactID)
+	blocks, err := storedBlocks(ctx, q, artifactID)
 	if err != nil {
 		return BlockIndex{}, err
 	}
-	rows, err := q.Query(ctx, `select block_id, kind, to_kind, to_id, to_types from block_refs where artifact_id = $1`, artifactID)
+	rows, err := q.Query(ctx, `
+		select block_id, kind, to_kind, to_id, to_types, created_at, source_seq,
+		       node_kind is not null and node_address is not null
+		from block_refs where artifact_id = $1
+	`, artifactID)
 	if err != nil {
 		return BlockIndex{}, fmt.Errorf("read the block mentions of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	var pairs []blockPair
+	var links []indexedLink
 	for rows.Next() {
-		var pair blockPair
-		if err := rows.Scan(&pair.blockID, &pair.kind, &pair.target.Kind, &pair.target.ID, &pair.toTypes); err != nil {
+		var link indexedLink
+		if err := rows.Scan(&link.blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.toTypes,
+			&link.createdAt, &link.sourceSeq, &link.named); err != nil {
 			return BlockIndex{}, fmt.Errorf("scan a block mention of %s: %w", artifactID, err)
 		}
-		pairs = append(pairs, pair)
+		links = append(links, link)
 	}
 	if err := rows.Err(); err != nil {
 		return BlockIndex{}, fmt.Errorf("read the block mentions of %s: %w", artifactID, err)
 	}
-	return BlockIndex{sums: sums, pairs: pairs}, nil
+	stand, err := readBlockStand(ctx, q, artifactID)
+	if err != nil {
+		return BlockIndex{}, err
+	}
+	return BlockIndex{blocks: blocks, links: links, stand: stand}, nil
+}
+
+// readBlockStand reads the row the revision fence is decided on, and the latest version any
+// release indexed (blockStand). The read is the write's own, in its read phase, under the
+// document's owner lock, which every writer of a document's blocks takes before it reads them, so
+// nothing moves the row between this read and the fence's statement in the write phase.
+func readBlockStand(ctx context.Context, q Queryer, artifactID string) (blockStand, error) {
+	var stand blockStand
+	if err := q.QueryRow(ctx, `
+		select v.artifact_id is not null, v.version, v.store_version, v.store_owed_at is not null,
+		       (select max(i.version) from document_indexed_versions i where i.artifact_id = d.id)
+		from (select $1::uuid as id) d
+		left join document_block_versions v on v.artifact_id = d.id
+	`, artifactID).Scan(&stand.held, &stand.version, &stand.storeVersion, &stand.owed, &stand.latestIndexed); err != nil {
+		return blockStand{}, fmt.Errorf("read the version the blocks of %s stand at: %w", artifactID, err)
+	}
+	return stand, nil
+}
+
+// IndexedVersion is what a version's own row says of its block index: the document's ref_key,
+// which every block's address starts with, and the actor the row records as the version's writer,
+// which every node and tuple the index writes carries. A version no row records - a caller
+// indexing blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly
+// as a node of the store written on a credential that names nobody carries. A writer whose
+// version row is only queued hands it over from what that row will hold (docs' planBlockIndex),
+// since no read of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
+type IndexedVersion struct {
+	RefKey string
+	Writer model.Actor
 }
 
 // BlockIndexing is one version's block index, planned against what the index holds
-// (PlanBlocks), so the targets it moves are known before anything is written, and written by
-// Queue, which puts its statements on a write phase's batch and does nothing else.
+// (PlanBlocks), so the targets it moves and the facts it states in the node and tuple store are
+// known before anything is written, and written by Queue, which puts its statements on a write
+// phase's batch and does nothing else. An indexing that lost the revision fence (Won) writes
+// nothing at all - no projection row and no tuple - since what it would state is what the winning
+// version already stated.
 type BlockIndexing struct {
 	artifactID    string
+	refKey        string
 	version       int
 	versionAt     time.Time
 	firstIndexing bool
+	won           bool
+	// namesSurvivingRows says the pass names the node of every surviving block_refs row of the
+	// document that names none, stating the link that row projects (queueBlockRefs), because
+	// such a row may be another release's: on the drain of this build's mark (blockStand.owed)
+	// and where the pass reads the store's statement of the document as stale (blockStand.stale).
+	namesSurvivingRows bool
 	// deleted are the blocks the version no longer holds; ids, types, sums and excerpts the
 	// blocks whose text it changed (new, changed or restored); textIDs and texts the block texts
 	// it records, nil for a deleted block.
 	deleted, ids, types, sums, excerpts, textIDs []string
 	texts                                        []*string
 	pairs                                        []blockPair
-	moved                                        []Target
-	held                                         BlockIndex
+	// placedIDs and placedParents are the blocks the pass places, in document order, and the
+	// block each sits in, nil for one the document holds: what the parents' projection writes.
+	placedIDs     []string
+	placedParents []*string
+	moved         []Target
+	held          BlockIndex
+	// stated is what the pass states in the node and tuple store, held for the event that causes
+	// the write (graphstore.Uncaused).
+	stated graphstore.Uncaused
 }
 
 // PlanBlocks plans version's block index of artifactID against index, what the document's block
 // index holds: one ReadBlockIndex read, or the Held of the caller's own earlier indexing of the
 // document that is not written yet. It does the indexing's whole work - each block's text sum, its
-// excerpt, the links its mentions and its pointers write - and reads nothing. A version writer
-// plans the indexing in its read phase and queues it in its write phase (docs.indexDocument).
+// excerpt, the links its mentions and its pointers write, and what the node and tuple store is
+// told of them - and reads, through q, only what the store itself holds of the document where the
+// plan compares the render against it: each block's parent, the document's own references on its
+// first indexing, and the store's statement of the document where that is stale. A version writer
+// plans the indexing in its read phase and queues it in its write phase (docs.indexDocument). now
+// is the transaction's now(), which a row the indexing inserts takes from its column's default.
 //
 // The plan makes the version's blocks graph nodes, and each mention written inside a block an edge
 // out of the innermost block holding its start. blocks are the version's rendered blocks in
@@ -101,9 +238,12 @@ type BlockIndexing struct {
 // A block whose text (markdown[From:To]) is unchanged keeps the version its text last changed in;
 // a new, changed or restored block takes this version, dated versionAt, and its excerpt is its
 // text cut to BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
-// A block the version no longer holds is deleted. The windows the version's blocks are embedded
-// in are not planned here and not written by this index: the row it records marks the document
-// owed them, and the block-index tick's window arm writes them (Queue, DocumentsOwedWindows).
+// A block the version no longer holds is deleted, its node's state stated gone, and the edges at
+// it stop resolving until a version holds its id again. A block the version holds keeps the state
+// and the visibility its node has, unless it was gone, when it comes back live (blockNode
+// restates every node it writes). The windows the version's blocks are embedded in are not
+// planned here and not written by this index: the row it records marks the document owed them,
+// and the block-index tick's window arm writes them (Queue, DocumentsOwedWindows).
 //
 // pointers are the version's `block[]` values (pmdoc.BlockPointers, which lists none of a typed
 // block repeating the id of a typed block before it): each whose block is a node is an edge of its
@@ -112,77 +252,418 @@ type BlockIndexing struct {
 // its typed block's opening line, so the extraction also finds it as a mention held by that block:
 // the block's mention of a target is kept only while the block itself holds more references to it
 // than its pointers do (a string attribute citing it too, say).
+//
+// What the pass states in the node and tuple store (Stated) is held for the event that caused the
+// write (graphstore.Uncaused): the block nodes it writes, and the tuples the projection rows
+// beside them are the projection of. The nodes are written by the pass itself, first among its
+// statements after the fence, because the foreign key on (node_kind, node_address) is checked
+// inside each statement that writes a projection row and there is no node to name otherwise; the
+// tuples are not, because on the request path no event exists while the pass runs. The caller
+// appends them once it has queued that event, in the same transaction, right after it, where
+// refs.QueueStamp runs. The base attributes of the nodes the pass wrote ride with them, so a block
+// stated gone by a version carries the event that deleted it, and a block_refs row the pass
+// inserts outside a first indexing takes that event as its tuple's legacy_source_seq
+// (graphstore.UncausedTuple). A pass that lost the revision fence states nothing and answers the
+// zero write, for which graphstore.QueueCaused writes nothing.
+//
+// A block of the document whose row names no node - a row a build before this release wrote,
+// which the backfill has not reached - takes its node and its membership of the document here,
+// whether this version touched its text or not, because the row learns the address of that node
+// in this same pass (the parents' projection) and the foreign key on it is checked inside the
+// statement that writes it.
+//
+// A pass over a document that holds this build's mark (store_owed_at, blockStand.owed) is the
+// drain of that mark, and it names the node of every block_refs row of the document that names
+// none as well, stating the link that row projects (queueBlockRefs). The mark is set where this
+// build leaves the document's blocks to a later pass - the backfill, a deferred version, a
+// re-index owed - and the release before this one can index the document before that pass runs,
+// which writes its rows with no node. A row of a pair that survives is what that release leaves,
+// and a pass that named a row's node only when it inserted the row would leave it naming none
+// until someone ran the backfill again. The drain is not the only pass that meets such a row: a
+// pass that reads the store's statement as stale names it too (below).
+//
+// Where another release indexed the document after the store last stated its blocks
+// (blockStand.stale), the rows the pass compares the render with are that release's, and they no
+// longer name everything the store holds: the release before this one deletes the rows of the
+// blocks and the links its version drops, inserts the rows of those it adds naming no node, and
+// states no node gone, retracts no tuple and asserts none. The pass then also reads the store's
+// own statement of the document (heldDocumentBlocks) and states, from the render, what a version
+// dropping those rows would have stated: each block the store holds in any state but gone that
+// the version does not hold, gone (goneSinceStated), and each link the store asserts out of a
+// block of the document that no pair of the version writes, retracted (unheldLinks). That is no
+// repair: what decides each statement is the version's render, and the store is read only for
+// what it would go on asserting against it, as planBlockParents reads it for the parents. Such a
+// pass also names the node of every block_refs row that survives naming none, stating the link
+// that row projects, as the drain does, whether or not the document holds the mark: a version
+// this build writes before any tick of this build reads the event of that release's version is
+// such a pass, and it moves store_version to its own version, after which no tick marks the
+// document (docs' markVersionedDocuments) and no drain reaches the row. A pass over a document
+// only this release indexed reads none of it.
 func PlanBlocks(
+	ctx context.Context,
+	q Queryer,
 	index BlockIndex,
 	artifactID string,
+	record IndexedVersion,
 	version int,
-	versionAt time.Time,
+	versionAt, now time.Time,
 	markdown string,
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
 ) (BlockIndexing, error) {
-	stored := maps.Clone(index.sums)
-	indexing := BlockIndexing{artifactID: artifactID, version: version, versionAt: versionAt, firstIndexing: len(stored) == 0}
+	indexing := BlockIndexing{artifactID: artifactID, refKey: record.RefKey, version: version, versionAt: versionAt, held: index}
+	// The fence decides first, so a pass that loses it plans nothing and writes nothing.
+	if !index.stand.admits(version) {
+		return indexing, nil
+	}
+	stale := index.stand.stale()
+	indexing.won, indexing.namesSurvivingRows = true, index.stand.owed || stale
+	refKey, writer := record.RefKey, record.Writer
+	stored := maps.Clone(index.blocks)
+	indexing.firstIndexing = len(stored) == 0
 	nodes, long, longest := uniqueBlocks(blocks)
 	if long > 0 {
 		slog.Warn("dispatch: block ids past the bound are not graph nodes; a mention inside one of their blocks starts at the block holding it",
 			"artifact", artifactID, "version", version, "blocks", long, "longest_bytes", longest, "bound_bytes", text.MaxBlockIDBytes)
 	}
+	fits, unaddressable := blockFits(refKey, nodes)
+	if unaddressable > 0 {
+		slog.Warn("dispatch: block addresses past the bound are no nodes of the store; their rows carry no node address and the pass states no fact about them",
+			"artifact", artifactID, "version", version, "blocks", unaddressable, "ref_key_bytes", len(refKey), "bound_bytes", MaxBlockNodeBytes)
+	}
 
-	// The blocks whose text this version changed (new, changed or restored), and those it deleted.
-	held := make(map[string]string, len(nodes))
-	for _, block := range nodes {
+	// The blocks whose text this version changed (new, changed or restored), and those it
+	// deleted. held is each block's row as the indexing leaves it, which a later indexing of the
+	// document in this transaction plans against (Held): a row the pass writes names its node
+	// wherever its address fits, since the parents' projection names it on every placed row.
+	held := make(map[string]storedBlock, len(nodes))
+	// The blocks of this version whose row names no node, each with the time that row was
+	// written: a pre-store row, which the pass below gives its node and its membership.
+	var nodeless []nodelessBlock
+	// The blocks whose row the pass inserts, which join the document here and state their
+	// membership of it, dated as the insert dates the row: by its column's default, now.
+	inserted := make(map[string]struct{})
+	// A block whose text no version moved needs no string of its sum: the comparison against
+	// the sum the index holds reads the hex out of one buffer this loop keeps, and only a
+	// block this version writes a row for takes a string of its own.
+	var sum blockSumHex
+	for position, block := range nodes {
 		body := markdown[block.From:block.To]
-		hexSum := BlockTextSum(body)
-		held[block.ID] = hexSum
+		blockTextSum(&sum, body)
 		previous, kept := stored[block.ID]
 		delete(stored, block.ID)
-		if kept && previous == hexSum {
+		if kept && !previous.named {
+			nodeless = append(nodeless, nodelessBlock{id: block.ID, joined: previous.joined})
+		}
+		if kept && previous.sum == string(sum[:]) {
+			held[block.ID] = storedBlock{sum: previous.sum, joined: previous.joined, named: fits[position]}
 			continue
 		}
+		hexSum := string(sum[:])
+		joined := now
+		if kept {
+			joined = previous.joined
+		} else {
+			inserted[block.ID] = struct{}{}
+		}
+		held[block.ID] = storedBlock{sum: hexSum, joined: joined, named: fits[position]}
 		indexing.ids, indexing.types, indexing.sums = append(indexing.ids, block.ID), append(indexing.types, block.Type), append(indexing.sums, hexSum)
 		indexing.excerpts = append(indexing.excerpts, text.HeadRunes(body, BlockExcerptRunes))
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
-	indexing.deleted = make([]string, 0, len(stored))
-	for id := range stored {
-		indexing.deleted = append(indexing.deleted, id)
+	// In id order, so the rows this pass writes and the facts it states come in an order a
+	// reader of the log can predict, which a map's iteration would not give.
+	indexing.deleted = slices.Sorted(maps.Keys(stored))
+	for _, id := range indexing.deleted {
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, id), append(indexing.texts, nil)
 	}
+
+	// The nodes this pass states are the blocks whose document_blocks row it writes - the new,
+	// the changed and the restored - the ids the version dropped, and the blocks whose row
+	// names no node, and no other. The first two are exactly the set R16's foreign key needs a
+	// node for where every row of the document already names one, and that is what makes the
+	// write cost what the edit changed rather than what the document holds: a version that
+	// moves one word of a two-thousand-block document states two node rows, not four thousand.
+	// A block whose text this version left alone already has its node from the version that
+	// first indexed it, and its placement, which may still have moved, is a tuple
+	// planBlockParents states against that node.
+	changed := make(map[string]struct{}, len(indexing.ids))
+	for _, id := range indexing.ids {
+		changed[id] = struct{}{}
+	}
+	// Every node the pass writes restates its block (blockNode): a block this version holds is
+	// written live and keeps a state another write marked it with, so a version that changes a
+	// proposed requirement's words leaves it proposed, and comes back live only from gone.
+	blockNodes := make([]graphstore.Node, 0, len(indexing.ids)+len(indexing.deleted)+len(nodeless))
+	for _, id := range indexing.ids {
+		if !blockIDFits(refKey, id) {
+			continue
+		}
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateLive))
+	}
+	// A block the version no longer holds has its node stated gone, whatever state it held: a
+	// restating write that says gone is written gone, and keeps only the visibility. The tuple
+	// that says so is not built here: the node write states a base attribute it moved, with this
+	// write's own time and writer, so a block restored by a later version is stated live by the
+	// same rule and no writer of this store states a base attribute of its own.
+	for _, id := range indexing.deleted {
+		if !blockIDFits(refKey, id) {
+			continue
+		}
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
+	}
+	// Where the store's statement of the document is stale, a block another release's version
+	// dropped has no row left for deleted to name, and its node stands: the store's own
+	// statement of the document names it (goneSinceStated), and it is stated gone by the rule
+	// above. Every address the store holds is inside the bound, since a block past it is no node.
+	var statement map[string][]heldLink
+	if stale {
+		var err error
+		if statement, err = heldDocumentBlocks(ctx, q, refKey); err != nil {
+			return BlockIndexing{}, err
+		}
+		for _, id := range goneSinceStated(statement, nodes, indexing.deleted) {
+			blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
+		}
+	}
+	// A row written before this release names no node: migration 20261109022248 added the
+	// columns and filled none of them, and the backfill has not reached the document or has
+	// not been run at all. The parents' projection names this block's node on every row of the
+	// document whose columns differ, and document_blocks_node is checked inside that statement,
+	// so each of those rows takes its node here or that update is refused. The membership goes
+	// with it: the insert states one only for a row it truly inserts, so a pre-store block whose
+	// text this version changed would otherwise keep its row, state no in_document, and be
+	// skipped by the backfill for naming a node by then.
+	//
+	// Each membership is dated from its row's own created_at, as a row the insert writes afresh
+	// is, so the tuple arm of graph_edges answers what the document_blocks arm answered for it. A
+	// block past the address bound is no node of the store: it takes neither, and its row keeps
+	// its null columns, which is what keeps the old arm answering it.
+	var memberships []graphstore.UncausedTuple
+	for _, block := range nodeless {
+		if !blockIDFits(refKey, block.id) {
+			continue
+		}
+		address := blockNodeAddress(refKey, block.id)
+		if _, stated := changed[block.id]; !stated {
+			blockNodes = append(blockNodes, blockNode(address, writer, versionAt, graphstore.StateLive))
+		}
+		memberships = append(memberships, membership(address, refKey, block.joined, writer))
+	}
+	// The nodes go in before any projection row that names one: the foreign key is checked
+	// inside the statement writing that row, so a node written afterwards would be too late.
+	// The base attributes that write states are appended with the pass's own tuples under the
+	// caller's event (graphstore.Uncaused), as the first of them. They carry no
+	// legacy_source_seq: no legacy row states a node's visibility or its state.
+	indexing.stated = graphstore.PlanUncaused(blockNodes, nil)
+	indexing.stated.Tuples = append(indexing.stated.Tuples, memberships...)
+	// A block whose row the insert writes afresh joins the document there; one whose row was
+	// already there - a block whose text alone changed - keeps that row and the membership it
+	// already states.
+	for _, id := range indexing.ids {
+		if _, fresh := inserted[id]; !fresh || !blockIDFits(refKey, id) {
+			continue
+		}
+		indexing.stated.Tuples = append(indexing.stated.Tuples, membership(blockNodeAddress(refKey, id), refKey, now, writer))
+	}
+	parents, placed, err := indexing.planBlockParents(ctx, q, index, nodes, fits, writer)
+	if err != nil {
+		return BlockIndexing{}, err
+	}
+	indexing.stated.Tuples = append(indexing.stated.Tuples, parents...)
 
 	// The links the version drops, in the order the index listed them, then those it adds and
 	// those whose block types it changes, in the order the insert writes them: the targets the
 	// two statements stand for. Then the target of every link the version writes in a block whose
 	// text it changed, whose excerpt moved.
 	indexing.pairs = blockPairs(nodes, located, pointers)
-	written := make(map[blockPairKey]struct{}, len(indexing.pairs))
+	links, heldLinks, err := indexing.planBlockRefs(ctx, q, index, writer)
+	if err != nil {
+		return BlockIndexing{}, err
+	}
+	indexing.stated.Tuples = append(indexing.stated.Tuples, links...)
+	// Where the store's statement is stale, the links another release's version dropped have
+	// no row left for the delete to drop, and the store still asserts them (unheldLinks). They
+	// move no count and no panel, and neither do the blocks goneSinceStated names: what a reader
+	// is shown of a block and its links is read through their rows (graph_edges answers a
+	// block's tuple only while its document_blocks or block_refs row stands), and that release
+	// deleted those rows, and moved what they showed, when it wrote its version.
+	indexing.stated.Tuples = append(indexing.stated.Tuples, unheldLinks(statement, refKey, indexing.pairs, links, versionAt, writer)...)
+	// A pair held by a block whose text this version moved is a link whose excerpt moved with
+	// it, which is the same set of blocks the nodes above were stated for.
 	for _, pair := range indexing.pairs {
+		if _, wrote := changed[pair.blockID]; wrote {
+			indexing.moved = append(indexing.moved, pair.target)
+		}
+	}
+	indexing.held = BlockIndex{blocks: held, links: heldLinks, stand: index.stand.indexedAt(version), placed: placed}
+	return indexing, nil
+}
+
+// membership is the in_document tuple a block's document_blocks row projects: the block a member
+// of the document refKey names, dated joined, the row's created_at, and stated by the version's
+// writer.
+func membership(address, refKey string, joined time.Time, writer model.Actor) graphstore.UncausedTuple {
+	return graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+		FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
+		ToKind: "artifact", ToID: refKey,
+		At: joined, Who: writer, Asserted: true,
+	}}
+}
+
+// planBlockRefs plans the reconciliation of the document's block_refs with the indexing's pairs,
+// against the links index holds, and answers what it states in the store, with the links the
+// index holds once it is written. It adds to the indexing's moved targets the targets of the
+// links it drops and inserts and of those whose block types it changes.
+//
+// Beside them it states what each row it inserts or drops is the projection of: one tuple out of
+// the block, under that pair's own kind - a pointer attribute's name, or `mentions` for a block's
+// mention - asserted for each pair the insert inserts and retracted for each pair the delete
+// drops, so the tuple and the row arrive and leave together. A surviving pair earns none: it
+// keeps its dates and its source event and takes this version's to_types, and a tuple appended
+// for it would carry this version's time and win the current read over the one that matches the
+// row.
+//
+// The insert writes a row's node columns only where it inserts the row. A surviving row that
+// names no node - a pair a build before the store wrote, or one the release before this one
+// inserted after this build's mark was set or after the store last stated the document - takes
+// its node in a statement of its own wherever such a row may be another release's
+// (BlockIndexing.namesSurvivingRows): on the drain of this build's mark, and where the pass reads
+// the store's statement of the document as stale. It takes the one tuple out of the block that
+// row projects, dated, written and caused as the tuple of a pair the insert inserts. That
+// statement names only rows that name no node, so a surviving pair whose row names its node still
+// earns no tuple. Any other pass leaves such a row its nulls, which the old block_refs arm
+// answers, until the backfill names it and marks the document.
+func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index BlockIndex, writer model.Actor) ([]graphstore.UncausedTuple, []indexedLink, error) {
+	written := make(map[blockPairKey]struct{}, len(b.pairs))
+	for _, pair := range b.pairs {
 		written[pair.key()] = struct{}{}
 	}
-	indexed := make(map[blockPairKey][]string, len(index.pairs))
-	for _, pair := range index.pairs {
-		indexed[pair.key()] = pair.toTypes
-		if _, still := written[pair.key()]; !still {
-			indexing.moved = append(indexing.moved, pair.target)
+	indexed := make(map[blockPairKey]indexedLink, len(index.links))
+	var tuples []graphstore.UncausedTuple
+	for _, link := range index.links {
+		indexed[link.key()] = link
+		if _, still := written[link.key()]; still {
+			continue
+		}
+		b.moved = append(b.moved, link.target)
+		address := blockNodeAddress(b.refKey, link.blockID)
+		// A mention's or a pointer's far end is a reference target, which the block's row holds
+		// up to text.MaxTargetBytes but the store keys whole beside the block's own address: a
+		// tuple whose far end is past graphstore.MaxAddressBytes was never written, so its
+		// retraction is not written either, and the row kept its null node columns (the insert
+		// below), which the old block_refs arm answers.
+		if !graphstore.AddressFits(address) || !graphstore.AddressFits(link.target.ID) {
+			continue
+		}
+		// The row is gone, so no source_seq is ever written for it and the retraction carries
+		// none: its time is this version's, the moment the pair stopped being held.
+		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: address, Kind: link.kind,
+			ToKind: link.target.Kind, ToID: link.target.ID,
+			At: b.versionAt, Who: writer, Asserted: false,
+		}})
+	}
+	// On the document's first indexing a new pair dates from the document's own refs row for its
+	// target, when one exists, as the insert dates its row: the read is of the rows that insert
+	// joins, which no statement of this write changes before it.
+	var cited map[Target]citedRef
+	if b.firstIndexing && len(b.pairs) > 0 {
+		var err error
+		if cited, err = documentRefs(ctx, q, b.artifactID); err != nil {
+			return nil, nil, err
 		}
 	}
-	for _, pair := range indexing.pairs {
-		if toTypes, already := indexed[pair.key()]; !already || !slices.Equal(toTypes, pair.toTypes) {
-			indexing.moved = append(indexing.moved, pair.target)
+	links := make([]indexedLink, 0, len(b.pairs))
+	for _, pair := range b.pairs {
+		link, already := indexed[pair.key()]
+		if already && slices.Equal(link.toTypes, pair.toTypes) {
+			links = append(links, link)
+			continue
+		}
+		b.moved = append(b.moved, pair.target)
+		if already {
+			link.toTypes = pair.toTypes
+			links = append(links, link)
+			continue
+		}
+		fits := blockIDFits(b.refKey, pair.blockID) && graphstore.AddressFits(pair.target.ID)
+		link = indexedLink{blockPair: pair, createdAt: b.versionAt, named: fits}
+		if ref, found := cited[pair.target]; found {
+			link.createdAt, link.sourceSeq = ref.createdAt, ref.sourceSeq
+		}
+		links = append(links, link)
+		if fits {
+			tuples = append(tuples, assertedLink(b.refKey, link, writer))
 		}
 	}
-	changedBlocks := make(map[string]struct{}, len(indexing.ids))
-	for _, id := range indexing.ids {
-		changedBlocks[id] = struct{}{}
+	if !b.namesSurvivingRows {
+		return tuples, links, nil
 	}
-	for _, pair := range indexing.pairs {
-		if _, changed := changedBlocks[pair.blockID]; changed {
-			indexing.moved = append(indexing.moved, pair.target)
+	// The pairs whose row survived naming no node. Every block a pair is held by is a block of
+	// the version whose node this pass wrote or found named on its document_blocks row, so the
+	// foreign key on the columns finds that node; a block or a far end past the address bound is
+	// no node of the store, and its row keeps its nulls, as the insert leaves them. Naming the
+	// row moves no count: the old arm answered the row, and the tuple arm answers the same link
+	// once the row names its node.
+	for position, link := range links {
+		if _, survives := indexed[link.key()]; !survives || link.named {
+			continue
 		}
+		if !blockIDFits(b.refKey, link.blockID) || !graphstore.AddressFits(link.target.ID) {
+			continue
+		}
+		links[position].named = true
+		tuples = append(tuples, assertedLink(b.refKey, link, writer))
 	}
-	indexing.held = BlockIndex{sums: held, pairs: indexing.pairs}
-	return indexing, nil
+	return tuples, links, nil
+}
+
+// citedRef is when the document's own refs row for a target was written and the source event
+// it stands at, which a new pair of the document's first indexing takes.
+type citedRef struct {
+	createdAt time.Time
+	sourceSeq *int64
+}
+
+// documentRefs reads the document's own refs rows, by target, as the insert of a first
+// indexing's pairs joins them.
+func documentRefs(ctx context.Context, q Queryer, artifactID string) (map[Target]citedRef, error) {
+	rows, err := q.Query(ctx, `
+		select to_kind, to_id, created_at, source_seq from refs
+		where from_kind = 'artifact' and from_id = $1::uuid::text
+	`, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the references of %s: %w", artifactID, err)
+	}
+	defer rows.Close()
+	cited := map[Target]citedRef{}
+	for rows.Next() {
+		var target Target
+		var ref citedRef
+		if err := rows.Scan(&target.Kind, &target.ID, &ref.createdAt, &ref.sourceSeq); err != nil {
+			return nil, fmt.Errorf("scan a reference of %s: %w", artifactID, err)
+		}
+		cited[target] = ref
+	}
+	return cited, rows.Err()
+}
+
+// assertedLink is the tuple a block_refs row the pass writes or names is the projection of: the
+// link out of the row's block under the pair's own kind, dated from the row's created_at and
+// stated by the version's writer. Its legacy_source_seq is the row's source_seq, and a row that
+// holds none takes the cause's (LegacyFromCause): outside a first indexing the insert leaves
+// source_seq null and the version's event fills it in this same transaction.
+func assertedLink(refKey string, link indexedLink, writer model.Actor) graphstore.UncausedTuple {
+	return graphstore.UncausedTuple{
+		Tuple: graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, link.blockID), Kind: link.kind,
+			ToKind: link.target.Kind, ToID: link.target.ID,
+			At: link.createdAt, Who: writer, LegacySourceSeq: link.sourceSeq, Asserted: true,
+		},
+		LegacyFromCause: true,
+	}
 }
 
 // Moved is the targets of the links the indexing inserts or deletes, and of those whose block
@@ -191,6 +672,19 @@ func PlanBlocks(
 // being the text of the block holding it.
 func (b BlockIndexing) Moved() []Target {
 	return b.moved
+}
+
+// Won says the indexing won the revision fence: a pass that lost it - one holding the same
+// version as the document's blocks stand at, or a lower one - writes nothing.
+func (b BlockIndexing) Won() bool {
+	return b.won
+}
+
+// Stated is what the indexing states in the node and tuple store, held for the event that causes
+// its write: the caller hands it to graphstore.QueueCaused right after that event, in the same
+// write phase. It is the zero write for a pass that lost the fence.
+func (b BlockIndexing) Stated() graphstore.Uncaused {
+	return b.stated
 }
 
 // Cited is, of the blocks the indexing changes, restores or deletes (textIDs), each that a source
@@ -208,21 +702,28 @@ func (b BlockIndexing) Held() BlockIndex {
 }
 
 // Queue queues the indexing's writes on a write phase's batch, which its caller runs in the
-// transaction holding the document's owner lock: the blocks the version deleted, which
-// document_blocks loses, and the blocks it changed, with their excerpts; the text each of those
-// blocks has at this version, recorded in document_block_texts, a deleted block's as no text,
-// after which the edges at it stop resolving until a version holds its id again; the links its
-// blocks hold; the version recorded as indexed (document_indexed_versions) and as the version
-// the document's blocks stand at (document_block_versions), which is also what marks the
-// document owed the windows of those blocks, for the block-index tick's window arm to write
-// (DocumentsOwedWindows). It queues no window of its own.
+// transaction holding the document's owner lock: the revision fence first (queueStand), then the
+// nodes of the blocks it states (graphstore.QueueNodes), then the blocks the version deleted,
+// which document_blocks loses, and the blocks it changed, with their excerpts and their node
+// columns; the text each of those blocks has at this version, recorded in document_block_texts, a
+// deleted block's as no text, after which the edges at it stop resolving until a version holds
+// its id again; the parent of each block it places, with its node columns; the links its blocks
+// hold; and the version recorded as indexed (document_indexed_versions). It queues no window of
+// its own. A pass that lost the fence queues nothing.
 //
 // A pair (block, target) that survives keeps its created version, time and source event. A new
-// pair takes this version and versionAt, and the source event Stamp gives it. On the document's
-// first indexing (no block rows yet), a new pair dates instead from the document's own refs row
-// for that target, when one exists.
-func (b BlockIndexing) Queue(batch *store.WriteBatch) {
+// pair takes this version and versionAt, and the source event QueueStamp gives it. On the
+// document's first indexing (no block rows yet), a new pair dates instead from the document's own
+// refs row for that target, when one exists.
+func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
+	if !b.won {
+		return nil
+	}
 	artifactID, version := b.artifactID, b.version
+	b.queueStand(batch)
+	if err := graphstore.QueueNodes(batch, b.stated); err != nil {
+		return fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
+	}
 	if len(b.deleted) > 0 {
 		batch.Queue(fmt.Sprintf("delete the blocks version %d of %s no longer holds", version, artifactID), `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)
@@ -230,8 +731,11 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 	}
 	if len(b.ids) > 0 {
 		batch.Queue(fmt.Sprintf("record the blocks version %d of %s changed", version, artifactID), `
-			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
-			select $1::uuid, b.id, a.ref_key || '#' || b.id, b.type, b.sum, b.excerpt, $2, $3
+			insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt, changed_version, changed_at)
+			select $1::uuid, b.id, a.ref_key || '#' || b.id,
+			       case when octet_length(a.ref_key || '#' || b.id) <= $9 then $8 end,
+			       case when octet_length(a.ref_key || '#' || b.id) <= $9 then a.ref_key || '#' || b.id end,
+			       b.type, b.sum, b.excerpt, $2, $3
 			from unnest($4::text[], $5::text[], $6::text[], $7::text[]) as b (id, type, sum, excerpt)
 			cross join (select ref_key from artifacts where id = $1::uuid) a
 			on conflict (artifact_id, block_id) do update set
@@ -240,7 +744,7 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 				excerpt = excluded.excerpt,
 				changed_version = excluded.changed_version,
 				changed_at = excluded.changed_at
-		`, artifactID, version, b.versionAt, b.ids, b.types, b.sums, b.excerpts)
+		`, artifactID, version, b.versionAt, b.ids, b.types, b.sums, b.excerpts, BlockNodeKind, MaxBlockNodeBytes)
 	}
 	if len(b.textIDs) > 0 {
 		batch.Queue(fmt.Sprintf("record the block texts of version %d of %s", version, artifactID), `
@@ -249,42 +753,163 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
 		`, artifactID, version, b.textIDs, b.texts)
 	}
+	b.queueBlockParents(batch)
 	b.queueBlockRefs(batch)
 	batch.Queue(fmt.Sprintf("record version %d of %s indexed", version, artifactID), `
 		insert into document_indexed_versions (artifact_id, version) values ($1, $2)
 		on conflict (artifact_id, version) do nothing
 	`, artifactID, version)
-	// Migration 0122's trigger marked the document owed when this version's row was inserted;
-	// this transaction's own index settles it. The row written below is also what owes this
-	// document its windows: windows_owed_at marks it owed them here, in the transaction that
-	// wrote the blocks those windows will cover, as the item path marks its item
-	// (queueRecordIndexed). The windows of these blocks are not written here. The window arm
-	// reads this marker through its partial index (DocumentsOwedWindows, migration
-	// 20261108070000), and only the statement that writes the windows clears it
-	// (WriteDocumentWindows). The marker keeps the time it already carries, so a document owed
-	// since an earlier write stays owed from then, and a crash after this statement leaves the
-	// document owed its windows rather than silently windowless.
-	//
-	// A version holding no block is marked like any other, and the arm lists it: an issue
-	// created with no spec carries a spec.md whose markdown is empty, and a document whose
-	// last block an edit removed still holds the windows of the text it had. Writing a
-	// document's windows is what deletes the window rows its blocks no longer stand for
-	// (writeWindows' `dropped`), so leaving such a version unmarked here would leave
-	// those rows standing for text the document no longer holds; the arm finds it by the
-	// version recorded below rather than by a row of document_blocks it has none of
-	// (documentsOwedWindowsQuery, INFRA-988).
-	//
-	// What a reader meets for it: a document's windows, and so its hits in meaning search,
-	// appear one reconciliation tick after the write rather than within it, as a comment's do
-	// (ItemIndexing.Queue). The write holds the document's owner for its own rows alone: this
-	// window write was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on
-	// the load-test deployment, and the writers queued behind it were waiting on that row
-	// (INFRA-988).
-	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", artifactID, version), `
-		insert into document_block_versions (artifact_id, version, windows_owed_at) values ($1, $2, now())
-		on conflict (artifact_id) do update set version = excluded.version,
+	return nil
+}
+
+// queueStand queues the revision fence: it settles the mark migration 0122's trigger left on the
+// document when this version's row was inserted, and records the version the document's blocks
+// now stand at. The mark only ever moves forward: two passes can be indexing one document, and
+// the slower one, reading version 9 while the other already wrote 10, would otherwise set the row
+// back to 9 and claim 10's work as its own. The plan decided the fence in its read phase, under
+// the document's owner lock, which every writer of a document's blocks takes before it reads them
+// (blockStand.admits), so a pass reaches this statement only once it has won; the `where` is that
+// same rule, so the row cannot move backward whatever wrote it meanwhile. A second pass of this
+// release at the same version loses too, which is what keeps a re-index from stating a parent
+// twice, since no code may update or delete a tuple row. It is the pass's first write, so a pass
+// that waits for the row waits at that one row rather than at a projection row further in.
+//
+// The row also carries two columns no other release names (migration 20261116221539), which the
+// winning pass writes beside version: store_version, the version whose blocks the store now
+// states, which it sets to this version; and store_owed_at, this build's own mark that the
+// document is owed such a pass, which it clears, since this pass states every block's node,
+// part_of and parent_block_id (PlanBlocks, planBlockParents). The backfill sets that mark, and so
+// does every place this build leaves a version's blocks to a later pass, beside the null version
+// every release reads (docs' oweDocumentIndex, refs.RebuildAll). A pass at the version the row
+// already stands at wins only where the document holds that mark: the release before this one
+// may have indexed that version since and stated nothing in the store, so this pass is the one
+// that states its blocks there. That is the re-index the reconciliation owes a marked document
+// (docs' owedDocuments), and the first pass of this release at that version clears the mark, so a
+// second one loses as before.
+//
+// indexOwedDocument's own early return is a short cut, not this fence: it spares the work of a
+// pass whose version is already settled, and it reads before the write rather than deciding it.
+//
+// The row this writes is also what owes the document its windows: windows_owed_at marks it owed
+// them here, in the transaction that writes the blocks those windows will cover, as the item path
+// marks its item (queueRecordIndexed). The windows of these blocks are not written here. The
+// window arm reads this marker through its partial index (DocumentsOwedWindows, migration
+// 20261108070000), and only the statement that writes the windows clears it
+// (WriteDocumentWindows). The marker keeps the time it already carries, so a document owed since
+// an earlier write stays owed from then, and a crash after this statement leaves the document
+// owed its windows rather than silently windowless. A pass that loses the fence marks nothing,
+// because the pass that won it marked the document already.
+//
+// A version holding no block is marked like any other, and the arm lists it: an issue created
+// with no spec carries a spec.md whose markdown is empty, and a document whose last block an edit
+// removed still holds the windows of the text it had. Writing a document's windows is what
+// deletes the window rows its blocks no longer stand for (writeWindows' `dropped`), so leaving
+// such a version unmarked here would leave those rows standing for text the document no longer
+// holds; the arm finds it by the version recorded here rather than by a row of document_blocks it
+// has none of (documentsOwedWindowsQuery).
+//
+// What a reader meets for it: a document's windows, and so its hits in meaning search, appear one
+// reconciliation tick after the write rather than within it, as a comment's do
+// (ItemIndexing.Queue). The write holds the document's owner for its own rows alone: this window
+// write was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the load-test
+// deployment, and the writers queued behind it were waiting on that row.
+func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
+	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", b.artifactID, b.version), `
+		insert into document_block_versions (artifact_id, version, store_version, windows_owed_at) values ($1, $2, $2, now())
+		on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
+			store_owed_at = null,
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
-	`, artifactID, version)
+		where document_block_versions.version is null or document_block_versions.version < excluded.version
+		   or document_block_versions.version = excluded.version and document_block_versions.store_owed_at is not null
+	`, b.artifactID, b.version)
+}
+
+// IndexBlocks indexes version's blocks of artifactID in tx at once: the document's index read
+// (ReadBlockIndex) with what the version's own row says of it (ReadIndexedVersion), the plan
+// (PlanBlocks) and the blocks it cites (Cited), and its statements run as a batch of their own
+// (Queue, store.RunWrite). It is the whole index for a writer with no write phase to queue it on:
+// the seed, and a test that indexes a version itself. It answers the targets the indexing moves,
+// the cited blocks among them, whether it won the revision fence, and what it states in the node
+// and tuple store, for the caller to append under its cause (graphstore.Caused).
+func IndexBlocks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	version int,
+	versionAt time.Time,
+	markdown string,
+	blocks []model.ArtifactBlock,
+	located []text.Located,
+	pointers []Pointer,
+) ([]Target, bool, graphstore.Uncaused, error) {
+	index, err := ReadBlockIndex(ctx, tx, artifactID)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	record, err := ReadIndexedVersion(ctx, tx, artifactID, version)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	var now time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+		return nil, false, graphstore.Uncaused{}, fmt.Errorf("read the transaction's time: %w", err)
+	}
+	indexing, err := PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	cited, err := indexing.Cited(ctx, tx)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	if err := store.RunWrite(ctx, tx, indexing.Queue); err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	return slices.Concat(indexing.Moved(), cited), indexing.Won(), indexing.Stated(), nil
+}
+
+// OwedBlockIndexDebts is one row per document owed a block index - its version null, or this
+// build's own mark on it (store_owed_at, blockStand.owed) - each dated by the write that owed it:
+// the created_at of the latest markdown version the document holds, which is the version a tick
+// would index, or the document's own created_at where it holds no markdown version at all.
+//
+// Nothing dates a null version - document_block_versions records no time it was set back to null
+// (migration 0121) - so the date is derived, and this build's mark is dated the same way, which
+// reads older than the mark, the safe direction for a backlog. The two readers of the backlog
+// derive it from this one text: the tick's own logged figure (docs.ReconcileBlockIndex) and the
+// one `envoy-dispatch census --store --sizing` prints for somebody holding the database and not
+// the log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate.
+const OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
+		where b.version is null or b.store_owed_at is not null`
+
+// OwedBlockIndexDebtsBeforeTheMark is OwedBlockIndexDebts over a database migration
+// 20261116221539 has not reached yet, which holds no store_owed_at column and so no mark of the
+// backfill's: only a null version is owed there. `census --store --sizing` takes its readings on
+// such a database, before this branch's migrations run (R4), and reads this one there; the tick
+// only ever runs on a migrated database and reads the full text.
+const OwedBlockIndexDebtsBeforeTheMark = owedBlockIndexDebtsFrom + `
+		where b.version is null`
+
+// owedBlockIndexDebtsFrom is the select both owed-debt texts share, so the two date a debt alike.
+const owedBlockIndexDebtsFrom = `
+		select coalesce(
+		         (select v.created_at from artifact_versions v
+		          where v.artifact_id = b.artifact_id and v.markdown is not null
+		          order by v.number desc limit 1),
+		         a.created_at) as owed_at
+		from document_block_versions b
+		left join artifacts a on a.id = b.artifact_id`
+
+// OwedTimeText writes a time the block-index backlog is dated by as both of its readers print
+// it - the tick's log line (docs.ReconcileBlockIndex) and the sizing's backlog lines
+// (graphcensus) - so the two say one time in one spelling: UTC to the nanosecond, so two runs over
+// one unchanged database print one byte sequence, and `none` where there is no such time, which a
+// zero value would otherwise print as a date in the year 1.
+func OwedTimeText(at time.Time) string {
+	if at.IsZero() {
+		return "none"
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 // DocumentWindowKind is the embeddings kind of a window of a document's blocks, as
@@ -598,27 +1223,66 @@ func citedBlocks(ctx context.Context, q Queryer, artifactID string, ids []string
 	return cited, nil
 }
 
+// blockSumHex is a block text's sha256 as document_blocks stores it: the hex of the 32 bytes,
+// held in an array so the pass over a document's blocks can hash each one into a buffer of its
+// own and compare it against the stored sum with no string made (string(sum[:]) == stored
+// allocates nothing).
+type blockSumHex [2 * sha256.Size]byte
+
+// blockTextSum writes the sha256 (hex) of a block's text (markdown[From:To]) into sum.
+func blockTextSum(sum *blockSumHex, body string) {
+	hashed := sha256.Sum256([]byte(body))
+	hex.Encode(sum[:], hashed[:])
+}
+
 // BlockTextSum is the sha256 (hex) of a block's text (markdown[From:To]), as document_blocks
 // stores it in text_sha256.
 func BlockTextSum(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])
+	var sum blockSumHex
+	blockTextSum(&sum, body)
+	return string(sum[:])
 }
 
-// storedBlockSums is each block the document's index holds, by id, with its text's sha256.
-func storedBlockSums(ctx context.Context, q Queryer, artifactID string) (map[string]string, error) {
-	rows, err := q.Query(ctx, `select block_id, text_sha256 from document_blocks where artifact_id = $1`, artifactID)
+// storedBlock is what the document's index already holds of one block: the sha256 of its text,
+// when its document_blocks row was written, which is the time a membership of the document is
+// dated from (TupleInDocument), and whether that row names the block's node.
+type storedBlock struct {
+	sum    string
+	joined time.Time
+	named  bool
+}
+
+// nodelessBlock is one block of the version whose document_blocks row names no node: its id
+// and the time that row was written, which the membership PlanBlocks states for it is dated
+// from.
+type nodelessBlock struct {
+	id     string
+	joined time.Time
+}
+
+// storedBlocks is each block the document's index holds, by id.
+//
+// It reads the node columns and the row's created_at beside the digest, in the one read of the
+// document's rows the plan takes, because the pass writes a node and a membership for every row
+// that names none (PlanBlocks) and a second read of the same rows would cost a scan of the
+// document for every version.
+func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string]storedBlock, error) {
+	rows, err := q.Query(ctx, `
+		select block_id, text_sha256, created_at, node_kind is not null and node_address is not null
+		from document_blocks where artifact_id = $1
+	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	stored := make(map[string]string)
+	stored := make(map[string]storedBlock)
 	for rows.Next() {
-		var id, sum string
-		if err := rows.Scan(&id, &sum); err != nil {
+		var id string
+		var held storedBlock
+		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named); err != nil {
 			return nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
 		}
-		stored[id] = sum
+		stored[id] = held
 	}
 	return stored, rows.Err()
 }
@@ -736,7 +1400,11 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 }
 
 // queueBlockRefs queues the reconciliation of the document's block_refs with the indexing's pairs,
-// matching on the five columns of its key.
+// matching on the five columns of its key (planBlockRefs planned what it states): the delete of
+// the pairs the version drops, the insert of those it adds, which names a row's node only where
+// it inserts the row, and, where the rows may be another release's (namesSurvivingRows: on the
+// drain of this build's mark and where the store's statement is stale), the naming of each
+// surviving row that names none.
 func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 	pairs := b.pairs
 	blockIDs := make([]string, len(pairs))
@@ -763,10 +1431,16 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		return
 	}
 	// A surviving pair takes this version's to_types, so a change of an attribute's targets
-	// reaches it here; PlanBlocks named the targets it moves.
+	// reaches it here; PlanBlocks named the targets it moves. Adding the node columns to the
+	// conflict update would rewrite a surviving row no version changed, so a surviving row that
+	// names no node learns its node in the statement after this one, and only where the pass names
+	// surviving rows (namesSurvivingRows).
 	batch.Queue(fmt.Sprintf("record the block mentions of version %d of %s", b.version, b.artifactID), `
-		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, to_types, created_version, created_at, source_seq)
-		select $1::uuid, p.block_id, a.ref_key || '#' || p.block_id, p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), $6,
+		insert into block_refs (artifact_id, block_id, from_node, node_kind, node_address, to_kind, to_id, kind, to_types, created_version, created_at, source_seq)
+		select $1::uuid, p.block_id, a.ref_key || '#' || p.block_id,
+		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then $10 end,
+		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then a.ref_key || '#' || p.block_id end,
+		       p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), $6,
 		       coalesce(case when $8 then r.created_at end, $7), case when $8 then r.source_seq end
 		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[]) as p (block_id, kind, to_kind, to_id, to_types)
 		cross join (select ref_key from artifacts where id = $1::uuid) a
@@ -774,7 +1448,18 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		                and r.to_kind = p.to_kind and r.to_id = p.to_id
 		on conflict (artifact_id, block_id, to_kind, to_id, kind) do update set to_types = excluded.to_types
 		where block_refs.to_types is distinct from excluded.to_types
-	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, b.version, b.versionAt, b.firstIndexing, toTypes)
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, b.version, b.versionAt, b.firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes)
+	if !b.namesSurvivingRows {
+		return
+	}
+	batch.Queue(fmt.Sprintf("name the nodes of the block mentions of %s that name none at version %d", b.artifactID, b.version), `
+		update block_refs r
+		set node_kind = $6, node_address = $7 || '#' || r.block_id
+		from unnest($2::text[], $3::text[], $4::text[], $5::text[]) as p (block_id, kind, to_kind, to_id)
+		where r.artifact_id = $1 and r.block_id = p.block_id and r.kind = p.kind
+		  and r.to_kind = p.to_kind and r.to_id = p.to_id and r.node_kind is null
+		  and octet_length($7 || '#' || r.block_id) <= $8 and octet_length(r.to_id) <= $8
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, BlockNodeKind, b.refKey, MaxBlockNodeBytes)
 }
 
 // BlockLinks lists each link from a block of document fromArtifact to a block of document
@@ -782,14 +1467,16 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 // block's node id, then by the target's. A link counts only while both of its blocks are current
 // blocks of their documents: a deleted block's links drop out, and its stored mentions bring them
 // back when a version holds its id again. A pointer's link counts only while its target has a
-// type the pointer allows (block_ref_listed).
-func BlockLinks(ctx context.Context, q Queryer, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
+// type the pointer allows, tested as the arm of graph_edges that answers the row tests it
+// (blockRefListed). A link either of whose blocks who may not see drops out the same way, since
+// neither end resolves to a node.
+func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
 		select r.kind, r.from_node, r.to_id, r.created_at, r.created_version
 		from block_refs r
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
 		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
+		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r")+`
 		order by r.created_at desc, r.from_node, r.to_id`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
@@ -814,7 +1501,7 @@ func BlockLinks(ctx context.Context, q Queryer, fromArtifact, toArtifact string)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
 	}
-	nodes, err := resolveNodes(ctx, q, true, ends)
+	nodes, err := resolveNodes(ctx, q, who, true, ends)
 	if err != nil {
 		return nil, err
 	}

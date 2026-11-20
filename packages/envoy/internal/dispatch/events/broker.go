@@ -307,10 +307,10 @@ func eventOwnerKey(e model.Event) (string, error) {
 		return "", fmt.Errorf("event requires at most one owner")
 	}
 	if e.IssueKey != nil {
-		return "issue:" + *e.IssueKey, nil
+		return issueOwnerPrefix + *e.IssueKey, nil
 	}
 	if e.ArtifactID != nil {
-		return "artifact:" + *e.ArtifactID, nil
+		return artifactOwnerPrefix + *e.ArtifactID, nil
 	}
 	return "project:" + *e.ProjectKey, nil
 }
@@ -491,7 +491,7 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/publisher.go, scanPendingEvents). quietAskEdit and namedVersion read
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
 // their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {
