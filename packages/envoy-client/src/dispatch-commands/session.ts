@@ -282,6 +282,19 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
   return undefined;
 }
 
+/** A side read refused with 403 DEPLOYMENT_READ_REFUSED, settled as the null a Dispatch with no
+ *  secrets broker answers: the caller's credential may not read the whole deployment's rows, so
+ *  it has none of them to list. Any other failure is left for `sideRead` to warn on. */
+function withoutDeploymentRefusal<T>(
+  settled: SettledSideRead<T | null>
+): SettledSideRead<T | null> {
+  return "error" in settled &&
+    dispatchAnswered(settled.error, 403) &&
+    settled.error.code === "DEPLOYMENT_READ_REFUSED"
+    ? { answer: null }
+    : settled;
+}
+
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The rows within a
@@ -356,9 +369,13 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
-  // no credential requests, so it lists and counts none.
+  // no credential requests, so it lists and counts none. The list is a read of the whole
+  // deployment, which Dispatch refuses a restricted member and a credential that lists projects
+  // with 403 DEPLOYMENT_READ_REFUSED: such a caller has no credential list to read, as the web
+  // Inbox never asks them for it, so it is listed and counted as none and warns nothing.
   const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
+    sideRead(withoutDeploymentRefusal(await pending), "credential requests", warnings)?.pending ??
+    [];
   const threads: readonly MyReplyRow[] =
     sideRead(await unread, "unread threads", warnings)?.rows ?? [];
   return {

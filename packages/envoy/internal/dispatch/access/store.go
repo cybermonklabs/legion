@@ -49,7 +49,9 @@ const (
 // project's owner, visibility or access list, a group - notifies inside its own transaction, so
 // every Dispatch process hears it once the write commits and none hears a write that did not. It
 // carries no payload: a listener reads what it needs afresh. The document service closes on it each
-// socket whose person no longer reads its room (docs: Service.recheckAccess).
+// socket whose person no longer reads its room (docs: Service.recheckAccess). A change made without
+// it, by SQL alone, is found on the document sockets' heartbeat instead (docs:
+// Service.RunAccessRecheck).
 const ChangedChannel = "dispatch_access_changed"
 
 // announceChange notifies ChangedChannel in tx, which Postgres delivers if tx commits.

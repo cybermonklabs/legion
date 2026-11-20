@@ -72,22 +72,26 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 // none), $2 whether the credential is a broker token, whose person reads as a full member when no
 // people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
 // an agent credential rather than a browser, $4 its list of projects (null or empty for none), and
-// $5 whether that list holds it only while some project is private (model.ListHold): with $5 and
-// no private project, the caller sees what a credential listing none sees.
+// $5 whether that list holds it only while some project is private or its person is a restricted
+// member (model.ListHold): with $5, no private project and a person who is not restricted, the
+// caller sees what a credential listing none sees.
 func VisibleProjectsSQL() string {
 	return fragment("VisibleProjectsSQL", `
 		with deployment as (
 			select exists (select 1 from projects where visibility = 'private') as private
-		), viewer as (
+		), person as (
 			select $1::text as person,
 				case when $1::text is null then null
 					else coalesce(
 						(select member_kind from people where email = $1::text),
 						case when $2::boolean then 'full' end)
-				end as member_kind,
-				coalesce(cardinality($4::text[]), 0) > 0 and (not $5::boolean or deployment.private) as listed,
+				end as member_kind
+		), viewer as (
+			select person.person, person.member_kind,
+				coalesce(cardinality($4::text[]), 0) > 0
+					and (not $5::boolean or deployment.private or coalesce(person.member_kind = 'restricted', false)) as listed,
 				deployment.private
-			from deployment
+			from deployment, person
 		)
 		select
 			coalesce(jsonb_agg(p.key order by p.key collate "C") filter (where
@@ -223,15 +227,34 @@ func roleProjectSQL(roleExpr string) string {
 	return `translate(substring((` + roleExpr + `) from '^legion-([a-z][a-z0-9]{1,9})-.'), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')`
 }
 
+// RoleProjectClause passes the project key keyExpr gives - the project a Legion role's name works
+// for (contracts.RoleProject; roleProjectSQL reads it off a role's name) - unless it is a private
+// project the viewer does not see (ProjectClause). A null key, a key no project holds and a public
+// project's key pass, and a deployment that holds no private project reads no project: the
+// viewer's "private" flag is false there, so the clause is true before it reads a row (R9).
+//
+// It is the one spelling of the half of a role's rule that reads the role's name. RoleClause
+// splices it beside the role's held_by holders; the api's reads splice it where a role's holder
+// comes from the Envoy listener's answer instead of a tuple (a route's reach, a delivery's
+// resolve), each keeping its own holder lookup.
+func RoleProjectClause(keyExpr, viewerParam string) string {
+	return clause("RoleProjectClause", fmt.Sprintf(`(not (%[2]s and exists (
+		select 1 from projects hidden
+		where hidden.key = (%[1]s) and hidden.visibility = 'private'
+			and not %[3]s
+		offset 0)))`,
+		keyExpr, ViewerFlag(viewerParam, "private"), ProjectClause("hidden.key", viewerParam)))
+}
+
 // RoleClause passes a role, by name, to no viewer but the server's when it works for a private
-// project the viewer does not see (contracts.RoleProject: legion-<token>-…), whether or not a
-// session holds it. Any other role it passes to a viewer when a session that holds it now (its
-// held_by tuple not retracted since) passes SessionClause for that viewer, and to an open viewer as
-// well when no session that holds it now fails SessionClause, a role nobody holds included. So a
-// role held only by sessions of a private project the viewer does not see reaches no viewer that
-// may not read one of them, and a role one of whose holders the viewer may read reaches it, the
-// hidden holder staying hidden wherever holders are listed. A deployment that holds no private
-// project skips the read of the role's project and the open viewer's read of the holders:
+// project the viewer does not see (RoleProjectClause over contracts.RoleProject: legion-<token>-…),
+// whether or not a session holds it. Any other role it passes to a viewer when a session that holds
+// it now (its held_by tuple not retracted since) passes SessionClause for that viewer, and to an
+// open viewer as well when no session that holds it now fails SessionClause, a role nobody holds
+// included. So a role held only by sessions of a private project the viewer does not see reaches no
+// viewer that may not read one of them, and a role one of whose holders the viewer may read reaches
+// it, the hidden holder staying hidden wherever holders are listed. A deployment that holds no
+// private project skips the read of the role's project and the open viewer's read of the holders:
 // SessionClause then passes every session to it (R9).
 func RoleClause(roleExpr, viewerParam string) string {
 	session := SessionClause("holder.to_id", viewerParam)
@@ -250,14 +273,10 @@ func RoleClause(roleExpr, viewerParam string) string {
 			offset 0)`, roleExpr, condition)
 	}
 	return clause("RoleClause", fmt.Sprintf(`(%[1]s
-		or (not (%[3]s and exists (
-				select 1 from projects hidden
-				where hidden.key = %[6]s and hidden.visibility = 'private'
-					and not ((%[7]s::jsonb->'sees') ? hidden.key)
-				offset 0))
+		or (%[6]s
 			and ((%[2]s and (not %[3]s or not %[4]s)) or %[5]s)))`,
 		ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private"),
-		holder("not "+session), holder(session), roleProjectSQL(roleExpr), viewerParam))
+		holder("not "+session), holder(session), RoleProjectClause(roleProjectSQL(roleExpr), viewerParam)))
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
@@ -291,11 +310,13 @@ func PartyClause(partiesExpr, viewerParam string) string {
 //
 // A list holds what its credential reads unless the credential's ListHoldsWhileNoPrivate says it
 // holds no read while the deployment holds no private project (a broker token's list, which
-// existed before projects could be private and limited no read then): such a credential reads as
-// one that lists none until a project is private, open and with no Lists, exactly as it read
-// before (R9), and once one is it is held to its list (R3). What its writes are held to while it
-// reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one project
-// made before projects could be private within that project.
+// existed before projects could be private and limited no read then): such a credential of a full
+// member, or of no person, reads as one that lists none until a project is private, open and with
+// no Lists, exactly as it read before (R9). Once a project is private, and for a restricted member
+// whatever the deployment holds, it is held to its list (R3): a restricted member's credential sees
+// exactly the projects its list and its person both see. What a full member's broker token writes
+// while it reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one
+// project made before projects could be private within that project.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor

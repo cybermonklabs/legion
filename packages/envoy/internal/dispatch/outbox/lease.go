@@ -799,21 +799,23 @@ func (l *lanes) statement(fn func() error) error {
 // database's clock, and false when neither waits on one. Both are read, because the one timer
 // arms the one wake the holder's scan and its fallback pass run on. A scan that failed, or a read
 // of it that does, is retried retry.BaseDelay later.
+//
+// While the private-delivery hold is on (Deps.holdsPrivate) it reads nextRetryHeldSQL instead:
+// the back-offs of what the hold keeps are left out, since the scan they would wake reads none of
+// them, and while any event or fallback copy of a private project waits unpublished the timer is
+// armed privateHoldDelay out at the latest, a bounded re-poll, since PrivateHubsReady signals
+// nothing when it turns true and the scan that timer starts asks it anew. With a nil func, or one
+// that answers true, it reads nextRetrySQL as before (R9).
 func (o *Outbox) nextRetry(ctx context.Context, failed bool) (time.Duration, bool) {
 	if failed {
 		return retry.BaseDelay, true
 	}
 	var micros *int64
-	if err := o.deps.Store.Pool.QueryRow(ctx, `
-		select (extract(epoch from least(
-			(select min(next_attempt_at) from events
-			 where published_at is null
-			   and next_attempt_at is not null
-			   and (payload ->> 'pending') is distinct from 'true'),
-			(select min(next_attempt_at) from comment_fallback_copies
-			 where settled_at is null and next_attempt_at is not null)
-		) - now()) * 1000000)::bigint
-	`).Scan(&micros); err != nil {
+	statement, args := nextRetrySQL, []any(nil)
+	if o.deps.holdsPrivate() {
+		statement, args = nextRetryHeldSQL, []any{o.deps.privateHoldDelay().Seconds()}
+	}
+	if err := o.deps.Store.Pool.QueryRow(ctx, statement, args...).Scan(&micros); err != nil {
 		if ctx.Err() == nil {
 			slog.Error("dispatch outbox: read the next retry", "instance", o.instance, "error", err)
 		}
@@ -824,3 +826,42 @@ func (o *Outbox) nextRetry(ctx context.Context, failed bool) (time.Duration, boo
 	}
 	return max(time.Duration(*micros)*time.Microsecond, 0), true
 }
+
+// nextRetrySQL is nextRetry's read: the earliest back-off of an unpublished event or an unsettled
+// fallback copy, as microseconds from now, null when neither has one.
+const nextRetrySQL = `
+	select (extract(epoch from least(
+		(select min(next_attempt_at) from events
+		 where published_at is null
+		   and next_attempt_at is not null
+		   and (payload ->> 'pending') is distinct from 'true'),
+		(select min(next_attempt_at) from comment_fallback_copies
+		 where settled_at is null and next_attempt_at is not null)
+	) - now()) * 1000000)::bigint
+`
+
+// nextRetryHeldSQL is nextRetrySQL while the private-delivery hold is on: the two back-offs of
+// what the hold leaves to the scan, and, while any unpublished event or unsettled fallback copy
+// of a private project's owner waits (privateOwnerSQL), $1 seconds from now.
+var nextRetryHeldSQL = `
+	select (extract(epoch from least(
+		(select min(next_attempt_at) from events
+		 where published_at is null
+		   and next_attempt_at is not null
+		   and (payload ->> 'pending') is distinct from 'true'
+		   and not ` + privateOwnerSQL("events") + `),
+		(select min(waiting.next_attempt_at) from comment_fallback_copies waiting
+		 where waiting.settled_at is null and waiting.next_attempt_at is not null
+		   and not exists (select 1 from events e where e.id = waiting.event_id and ` + privateOwnerSQL("e") + `)),
+		(select now() + make_interval(secs => $1::float8)
+		 where exists (
+		     select 1 from events
+		     where published_at is null
+		       and (payload ->> 'pending') is distinct from 'true'
+		       and ` + privateOwnerSQL("events") + `)
+		    or exists (
+		     select 1 from comment_fallback_copies waiting
+		     join events e on e.id = waiting.event_id
+		     where waiting.settled_at is null and ` + privateOwnerSQL("e") + `))
+	) - now()) * 1000000)::bigint
+`

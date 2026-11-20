@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -694,6 +695,42 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	}
 	if body := response.Body.String(); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="denied"} 1`) {
 		t.Fatalf("GET /metrics body = %q, want the outbox's publish failures in it", body)
+	}
+}
+
+// A mount's read class names the check that decides what a caller may read of it
+// (readclass.Class), and the probes dispatchHandler mounts above the router hold no such check:
+// each answers whoever reaches Dispatch's HTTP port, with no credential. So each is classed as a
+// read of no row a caller's access decides (readclass.None). /metrics is one of them: it answers the
+// deployment's counters, which name no project, issue, person or session (readclass's
+// TestMetricsNameNoProject), to a caller that sends nothing, so readclass.Deployment, which a
+// restricted member and a credential that lists projects are refused, is not what it reads.
+func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *testing.T) {
+	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
+	})
+	mux, ok := dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).(*http.ServeMux)
+	if !ok {
+		t.Fatal("dispatchHandler answered no ServeMux, so the mounts it made cannot be read")
+	}
+	probes := slices.DeleteFunc(readclass.Patterns(mux), func(pattern string) bool { return pattern == "/" })
+	if !slices.Equal(probes, []string{"GET /healthz", "GET /livez", "GET /metrics"}) {
+		t.Fatalf("dispatchHandler mounts %q above the router, want the three probes", probes)
+	}
+	// Both probes a request with no dependency reaches are answered with no credential; /healthz
+	// reads the database, which this handler holds none of, and is classed as the other two are.
+	for _, path := range []string{"/livez", "/metrics"} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK && response.Code != http.StatusNoContent {
+			t.Fatalf("GET %s with no credential answered %d, want the probe's answer", path, response.Code)
+		}
+	}
+	for _, pattern := range probes {
+		if classes := readclass.ClassesOf(mux, pattern); !slices.Equal(classes, []readclass.Class{readclass.None}) {
+			t.Errorf("%s is mounted as a read of %q, want %q: it answers every caller, with no credential, and refuses none",
+				pattern, classes, readclass.None)
+		}
 	}
 }
 

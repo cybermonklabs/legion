@@ -473,12 +473,15 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
 		t.Fatalf("mark acme/hidden#2 unfetchable: %v", err)
 	}
+	// An open viewer that does not see HID is one of a deployment where HID is private: with no
+	// private project an open viewer sees every project (seesEveryObject), so the caller's sight can
+	// move only while some project is private.
 	var lost atomic.Bool
 	resolve := func(context.Context) (model.Actor, error) {
 		if lost.Load() {
-			return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{}}}, nil
+			return model.Actor{Viewer: &model.Viewer{Open: true, AnyPrivate: true, Sees: []string{}}}, nil
 		}
-		return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{"HID"}}}, nil
+		return model.Actor{Viewer: &model.Viewer{Open: true, AnyPrivate: true, Sees: []string{"HID"}}}, nil
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "p", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})

@@ -43,6 +43,16 @@ type FetchedPullRequest struct {
 	Body           string // for issue attribution
 	HeadRef        string // the head branch's name, for issue attribution; empty on a search result
 	FirstCommitAt  *time.Time
+	// Repository is the pull request's own repository as GitHub answered it, its base repository:
+	// the id GitHub gives it, which a rename or a move to another owner keeps, and the name it has
+	// now. Zero on a search result; the intake records it (refs.RecordRepositoryID).
+	Repository PullRequestRepository
+}
+
+// PullRequestRepository is a pull request's base repository as GitHub answers it.
+type PullRequestRepository struct {
+	ID       int64
+	FullName string
 }
 
 type githubLabel struct {
@@ -85,6 +95,11 @@ type pullRequestPayload struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		// Repo is the repository the pull request is in, whose id the intake records.
+		Repo *struct {
+			ID       int64  `json:"id"`
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 }
 
@@ -155,7 +170,17 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 		Body:           payload.Body,
 		HeadRef:        payload.Head.Ref,
 		FirstCommitAt:  &firstCommitAt,
+		Repository:     payload.baseRepository(),
 	}, nil
+}
+
+// baseRepository is the pull request's base repository as GitHub answered it, zero where the
+// answer names none.
+func (p pullRequestPayload) baseRepository() PullRequestRepository {
+	if p.Base.Repo == nil {
+		return PullRequestRepository{}
+	}
+	return PullRequestRepository{ID: p.Base.Repo.ID, FullName: p.Base.Repo.FullName}
 }
 
 // fetchPullRequestPayload is GET /repos/{owner}/{repo}/pulls/{number} under token, through

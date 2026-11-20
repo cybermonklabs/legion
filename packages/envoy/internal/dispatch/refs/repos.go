@@ -25,9 +25,11 @@ import (
 // One step is enough: the settings route refuses a pair pointing at a repository that is itself
 // renamed, and refuses renaming a repository another row already points at, so no chain and no
 // cycle exists to walk (api/repo_projects.go, putRepoProject; migration
-// 20261105075455_repo_projects_renamed_to). Dispatch never asks GitHub to resolve a name — for a
-// repository renamed away, GitHub answers 404 for its installation, so the old name cannot be
-// read at all and the pair is declared, never discovered.
+// 20261105075455_repo_projects_renamed_to). This rule never asks GitHub to resolve a name — for
+// a repository renamed away, GitHub may answer 404 for its installation, so the old name cannot
+// be relied on to be read at all — and the pair is declared, never discovered. The rule that hides
+// a repository reads none of it: it holds a repository to its GitHub id instead
+// (repository.go, RepositoryClause and LearnRepositoryIDs).
 
 // CanonicalRepoSQL is that rule as a SQL expression over repo, itself an expression naming a
 // repository: null where repo is null, so a comparison against it stays null rather than

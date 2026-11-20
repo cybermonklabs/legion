@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
@@ -13,7 +13,9 @@ import {
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -677,6 +679,173 @@ test("RepoControl draws what Dispatch stored once its host is told, when the pic
   } finally {
     notifications?.tell();
     unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+/** The control alone, signed in as `who`: the shell holds `/auth/whoami`'s answer before any page
+ *  draws (`AuthGate`), so it is seeded here as the shell holds it, and held fresh, so the control
+ *  asks it nothing. `inRow` draws it as the value of a row of the new issue page's Details, inside
+ *  `NoTooltips` as that page draws it. */
+function renderSignedIn(
+  who: { login: string; member_kind?: "restricted" },
+  own: { repo: string | null; resolvedRepo: string | null },
+  { inRow = false }: { inRow?: boolean } = {}
+) {
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", ...who });
+  const control = (
+    <RepoControl
+      inRow={inRow}
+      issueKey="CORE-1"
+      project="CORE"
+      repo={own.repo}
+      resolvedRepo={own.resolvedRepo}
+    />
+  );
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      {inRow ? <NoTooltips>{control}</NoTooltips> : control}
+    </QueryClientProvider>
+  );
+  return {
+    container: view.container,
+    listRepoProjects,
+    q: within(view.container),
+    queryClient,
+    unmount: () => {
+      view.unmount();
+      listRepoProjects.mockRestore();
+    },
+  };
+}
+
+// Dispatch refuses a restricted member every write that names an issue's repository (403
+// RESTRICTED_MEMBER), so their control draws the repository the issue resolves to as text, in the
+// words the box's description says, and offers no box, no clear control and no suggestions: no
+// read of the mappings is made, even for an issue nothing resolves for. In a row of the new issue
+// page's Details the same text is the row's value, "None" while none resolves, and no button
+// opens a box in its place.
+test("a restricted member's RepoControl draws the repository as text, with no box and no clear control", async () => {
+  const patchIssue = answerIssuePatches();
+  try {
+    for (const [own, drawn] of [
+      [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets"],
+      [
+        { repo: null, resolvedRepo: "acme/widgets" },
+        "acme/widgets, inherited or the project's default",
+      ],
+      [{ repo: null, resolvedRepo: null }, "No repository"],
+    ] as const) {
+      const { listRepoProjects, q, unmount } = renderSignedIn(
+        { login: "bob@outside.example", member_kind: "restricted" },
+        own
+      );
+      try {
+        expect(q.queryByRole("combobox", { name: "Repository of CORE-1" })).toBeNull();
+        expect(q.queryByRole("textbox")).toBeNull();
+        expect(q.queryByRole("button")).toBeNull();
+        expect(q.getByText("Repository:").parentElement?.textContent).toBe(`Repository:${drawn}`);
+        if (own.resolvedRepo !== null) {
+          // The repository in the box's font, the words around it in the line's.
+          expect(q.getByText(own.resolvedRepo)).toHaveClass("font-mono");
+        }
+        expect(listRepoProjects).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+      }
+    }
+    for (const [own, drawn] of [
+      [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets"],
+      [
+        { repo: null, resolvedRepo: "acme/widgets" },
+        "acme/widgets, inherited or the project's default",
+      ],
+      [{ repo: null, resolvedRepo: null }, "None"],
+    ] as const) {
+      const { container, listRepoProjects, q, unmount } = renderSignedIn(
+        { login: "bob@outside.example", member_kind: "restricted" },
+        own,
+        { inRow: true }
+      );
+      try {
+        expect(q.queryByRole("combobox")).toBeNull();
+        expect(q.queryByRole("button")).toBeNull();
+        expect(container.textContent).toBe(drawn);
+        expect(listRepoProjects).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+      }
+    }
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    patchIssue.mockRestore();
+  }
+});
+
+// A full member's control is the one it always was (R9): the box holds the issue's own
+// repository, or names the inherited one as its placeholder and its description, a focus reads the
+// project's mappings for its suggestions, and the clear control writes null.
+test("a full member's RepoControl still draws the box, its suggestions and its clear control", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: null,
+    resolved_repo: "acme/widgets",
+    last_seq: 2,
+  });
+  try {
+    const inherited = renderSignedIn(
+      { login: "alice" },
+      { repo: null, resolvedRepo: "acme/widgets" }
+    );
+    try {
+      const field = inherited.q.getByRole("combobox", { name: "Repository of CORE-1" });
+      expect((field as HTMLInputElement).value).toBe("");
+      expect((field as HTMLInputElement).placeholder).toBe("acme/widgets");
+      expect(field).toHaveAccessibleDescription("acme/widgets, inherited or the project's default");
+      expect(
+        inherited.q.queryByRole("button", { name: "Clear the repository of CORE-1" })
+      ).toBeNull();
+      expect(inherited.listRepoProjects).not.toHaveBeenCalled();
+      // A focus with no press before it: user-event has no form for a bare focus.
+      fireEvent.focus(field);
+      await waitFor(() => expect(inherited.listRepoProjects).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(
+          Array.from(
+            document.getElementById(field.getAttribute("list") ?? "")?.querySelectorAll("option") ??
+              []
+          ).map((option) => option.value)
+        ).toEqual(["acme/gadgets", "acme/widgets"])
+      );
+    } finally {
+      inherited.unmount();
+    }
+
+    const user = userEvent.setup();
+    const own = renderSignedIn(
+      { login: "alice" },
+      { repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }
+    );
+    try {
+      const field = own.q.getByRole("combobox", { name: "Repository of CORE-1" });
+      expect((field as HTMLInputElement).value).toBe("acme/gadgets");
+      expect(field).toHaveAccessibleDescription("acme/gadgets");
+      await user.click(own.q.getByRole("button", { name: "Clear the repository of CORE-1" }));
+      await waitFor(() =>
+        expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+      );
+      await waitFor(() => expect(own.queryClient.isMutating()).toBe(0));
+    } finally {
+      own.unmount();
+    }
+  } finally {
     patchIssue.mockRestore();
   }
 });

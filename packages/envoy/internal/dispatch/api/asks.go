@@ -963,7 +963,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, ask.ID)
+	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, ask.ID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

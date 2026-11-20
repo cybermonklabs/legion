@@ -4,26 +4,24 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled: GET /api/v1/github/app-installation
-// answers a repository its caller may not see (repositoriesHidden) exactly as one the App is not
-// installed on, as the GitHub proxy does, and asks GitHub nothing about it. acme/priv, which the App
-// is installed on, is the repository PRIV's issue names: bob, carol and carol's token that lists
-// PRIV see PRIV and read it installed; alice, alice's token that lists PRIV, carol's token that
-// lists no project and the shared token do not, and each reads, in status and bytes, what
-// acme/elsewhere, which the App is not installed on, answers, with no request to GitHub. Under a
-// rate limit already met on the App's scope the two answer alike too: the held limit, which the
-// uninstalled repository's lookup meets without asking GitHub.
-func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
+// TestAppInstallationAnswersEveryCallerAlike: GET /api/v1/github/app-installation has the read
+// class none, as every Legion daemon asks it for each repository it serves whatever its token
+// lists: whether Dispatch's App is installed on a repository is no project's content. acme/priv,
+// which the App is installed on, is the repository PRIV's issue names: every caller, the ones that
+// see PRIV and the ones that do not, reads it installed, each asking GitHub's installation lookup,
+// and reads acme/elsewhere, which the App is not installed on, as not installed.
+//
+// Control: give the route back a gate holding the repository to refs.RepositoryClause, and alice,
+// who does not see PRIV, reads acme/priv as not installed; the test fails naming her.
+func TestAppInstallationAnswersEveryCallerAlike(t *testing.T) {
 	const installed, uninstalled = "acme/priv", "acme/elsewhere"
 	var mu sync.Mutex
 	var asked []string
@@ -52,35 +50,18 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 	}
 	answer := func(caller privateCaller, repository string) string {
 		response := seed.request(t, caller, http.MethodGet, "/api/v1/github/app-installation/"+repository, nil)
-		return strings.ReplaceAll(fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String())), repository, "<repo>")
+		return fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String()))
 	}
-	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken} {
-		if got := answer(caller, installed); got != `200 {"installed":true}` {
-			t.Errorf("%s, who sees PRIV, reads whether the App is installed on %s as %s, want 200 installed", caller, installed, got)
+	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken, callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken} {
+		before := len(requests())
+		if got := answer(caller, installed); got != `200 {"installed":true}` || !slices.Contains(requests()[before:], "GET /repos/"+installed+"/installation") {
+			t.Errorf("%s reads whether the App is installed on %s as %s with GitHub asked %q, want 200 installed from GitHub's lookup",
+				caller, installed, got, requests()[before:])
+		}
+		if got := answer(caller, uninstalled); got != `200 {"installed":false}` {
+			t.Errorf("%s reads whether the App is installed on %s as %s, want 200 not installed", caller, uninstalled, got)
 		}
 	}
-	// read compares each caller that may not see acme/priv against acme/elsewhere, whose answer
-	// must start with uninstalledAnswer, or the comparison would prove nothing.
-	read := func(state, uninstalledAnswer string) {
-		for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken} {
-			missing := answer(caller, uninstalled)
-			if !strings.HasPrefix(missing, uninstalledAnswer) {
-				t.Fatalf("%s %s reads %s, which the App is not installed on, as %s, want %s…: the comparison proves nothing",
-					caller, state, uninstalled, missing, uninstalledAnswer)
-			}
-			before := len(requests())
-			got := answer(caller, installed)
-			if newly := requests()[before:]; got != missing || len(newly) != 0 {
-				t.Errorf("%s %s reads whether the App is installed on %s, which it may not see, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
-					caller, state, installed, got, newly, uninstalled, missing)
-			}
-		}
-	}
-	read("with no rate limit", `200 {"installed":false}`)
-	if err := ratelimit.New(seed.database.Pool).Record(context.Background(), githubapp.AppScope, time.Hour); err != nil {
-		t.Fatalf("record a rate limit on the App's scope: %v", err)
-	}
-	read("under a met App rate limit", `502 {"code":"GITHUB_UNREADABLE","error":"read the GitHub App's installation on <repo>: GitHub rate limit on app`)
 }
 
 // appInstallationServer is Dispatch holding an App key, its GitHub answering the installation

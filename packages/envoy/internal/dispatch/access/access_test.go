@@ -258,6 +258,7 @@ func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 		"PersonClause":         PersonClause("u.email", "$1"),
 		"SessionClause":        SessionClause("s.id", "$1"),
 		"RoleClause":           RoleClause("r.id", "$1"),
+		"RoleProjectClause":    RoleProjectClause("p.key", "$1"),
 		"PartyClause":          PartyClause("n.parties", "$1"),
 	} {
 		if !strings.HasPrefix(fragment, Marker+name+" */") {

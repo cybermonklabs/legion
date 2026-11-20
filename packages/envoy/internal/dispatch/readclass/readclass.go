@@ -51,8 +51,8 @@ const (
 var Classes = []Class{None, Caller, Project, Graph, People, Agents, Deployment, AccessAccount, TestHook}
 
 // Handle mounts h on mux at pattern, as mux.Handle does, and records the pattern as one mux
-// serves. classes is what the read reads: at least one, each one of Classes, or Handle panics
-// before it mounts anything, as mux.Handle panics on a pattern it cannot serve.
+// serves, with its classes. classes is what the read reads: at least one, each one of Classes, or
+// Handle panics before it mounts anything, as mux.Handle panics on a pattern it cannot serve.
 func Handle(mux *http.ServeMux, classes []Class, pattern string, h http.Handler) {
 	if len(classes) == 0 {
 		panic(fmt.Sprintf("readclass.Handle: %s is mounted with no read class", pattern))
@@ -63,7 +63,13 @@ func Handle(mux *http.ServeMux, classes []Class, pattern string, h http.Handler)
 		}
 	}
 	mux.Handle(pattern, h)
-	record(mux, pattern)
+	record(mux, mount{pattern: pattern, classes: slices.Clone(classes)})
+}
+
+// mount is one pattern Handle mounted and the classes it was mounted with.
+type mount struct {
+	pattern string
+	classes []Class
 }
 
 // mounted is every pattern Handle mounted, by the mux it mounted it on. The key is a weak
@@ -71,18 +77,18 @@ func Handle(mux *http.ServeMux, classes []Class, pattern string, h http.Handler)
 // the mux is collected, and the many short-lived muxes of a test run leave nothing behind.
 var (
 	mountedMu sync.Mutex
-	mounted   = map[weak.Pointer[http.ServeMux]][]string{}
+	mounted   = map[weak.Pointer[http.ServeMux]][]mount{}
 )
 
-func record(mux *http.ServeMux, pattern string) {
+func record(mux *http.ServeMux, m mount) {
 	key := weak.Make(mux)
 	mountedMu.Lock()
 	defer mountedMu.Unlock()
-	patterns, known := mounted[key]
+	mounts, known := mounted[key]
 	if !known {
 		runtime.AddCleanup(mux, forget, key)
 	}
-	mounted[key] = append(patterns, pattern)
+	mounted[key] = append(mounts, m)
 }
 
 func forget(key weak.Pointer[http.ServeMux]) {
@@ -95,10 +101,23 @@ func forget(key weak.Pointer[http.ServeMux]) {
 // nothing on.
 func Patterns(mux *http.ServeMux) []string {
 	mountedMu.Lock()
-	patterns := slices.Clone(mounted[weak.Make(mux)])
+	patterns := patternsOf(mounted[weak.Make(mux)])
 	mountedMu.Unlock()
 	slices.Sort(patterns)
 	return patterns
+}
+
+// ClassesOf answers the classes Handle mounted pattern with on mux, and none for a pattern it did
+// not mount there.
+func ClassesOf(mux *http.ServeMux, pattern string) []Class {
+	mountedMu.Lock()
+	defer mountedMu.Unlock()
+	for _, m := range mounted[weak.Make(mux)] {
+		if m.pattern == pattern {
+			return slices.Clone(m.classes)
+		}
+	}
+	return nil
 }
 
 // AllPatterns answers every pattern Handle mounted on any mux of this process, each once, sorted:
@@ -107,12 +126,21 @@ func Patterns(mux *http.ServeMux) []string {
 func AllPatterns() []string {
 	mountedMu.Lock()
 	var patterns []string
-	for _, mux := range mounted {
-		patterns = append(patterns, mux...)
+	for _, mounts := range mounted {
+		patterns = append(patterns, patternsOf(mounts)...)
 	}
 	mountedMu.Unlock()
 	slices.Sort(patterns)
 	return slices.Compact(patterns)
+}
+
+// patternsOf is the pattern of each of mounts, in their order.
+func patternsOf(mounts []mount) []string {
+	patterns := make([]string, len(mounts))
+	for i, m := range mounts {
+		patterns[i] = m.pattern
+	}
+	return patterns
 }
 
 // recordedMuxes is how many muxes the record holds patterns of.

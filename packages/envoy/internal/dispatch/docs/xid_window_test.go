@@ -140,55 +140,71 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 // A write phase that is one batch can hold its xid for less than the poller's interval, which on a
 // loaded two-core box reaches tens of milliseconds, so the poller can miss the transaction
 // altogether. Such a transaction is still judged, from the window its own statements derive - the
-// first one whose result shows it wrote - and never reported as a rig problem; a sleep after that
-// write is caught there as it is under a poller that saw the xid.
+// first one whose result shows it wrote, or an earlier one whose result cannot say: a select whose
+// common table expression inserts, which Postgres answers with the select's own tag, as the
+// block-index tick's window write does (refs.writeWindows) - and never reported as a rig problem;
+// a sleep after that write is caught there as it is under a poller that saw the xid.
 func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
-	for _, probe := range []struct {
-		name string
-		gap  time.Duration
+	for _, write := range []struct {
+		name, sql string
 	}{
-		{name: "back to back", gap: 0},
-		{name: fmt.Sprintf("a %s sleep after the write", rigInjectedGap), gap: rigInjectedGap},
+		{name: "an insert", sql: rigInsert},
+		{name: "a select whose common table expression inserts", sql: rigInsertUnderSelect},
 	} {
-		t.Run(probe.name, func(t *testing.T) {
-			if probe.gap > 0 {
-				skipWhereNoGapIsJudged(t)
-			}
-			_, database, tracer := xidService(t)
-			// Blind for longer than the whole operation: no poll is sent while the transaction is
-			// open, so nothing but its own statements says it held an xid.
-			tracer.BlindPoller(time.Minute)
-			report := tracer.Measure(t, database.Pool, func() {
-				runRigTransaction(t, database, probe.gap)
+		for _, probe := range []struct {
+			name string
+			gap  time.Duration
+		}{
+			{name: "back to back", gap: 0},
+			{name: fmt.Sprintf("a %s sleep after the write", rigInjectedGap), gap: rigInjectedGap},
+		} {
+			t.Run(write.name+", "+probe.name, func(t *testing.T) {
+				if probe.gap > 0 {
+					skipWhereNoGapIsJudged(t)
+				}
+				_, database, tracer := xidService(t)
+				// Blind for longer than the whole operation: no poll is sent while the transaction
+				// is open, so nothing but its own statements says it held an xid.
+				tracer.BlindPoller(time.Minute)
+				report := tracer.Measure(t, database.Pool, func() {
+					runRigTransactionWriting(t, database, write.sql, func() { time.Sleep(probe.gap) })
+				})
+				if len(report.Problems) > 0 {
+					t.Fatalf("the rig reported a problem about a transaction no poll saw: %v", report.Problems)
+				}
+				if len(report.Windows) != 1 {
+					t.Fatalf("windows = %d, unsighted = %d, want the one transaction judged",
+						len(report.Windows), len(report.Unsighted))
+				}
+				window := report.Windows[0]
+				if !window.Transaction.Sighted.IsZero() {
+					t.Fatalf("a poll saw the xid at %s, so this run did not test an unsighted transaction",
+						window.Transaction.Sighted)
+				}
+				if window.Statements[0].SQL != write.sql {
+					t.Fatalf("the window starts at %q, want the write that gave the transaction its xid:\n%s",
+						window.Statements[0].SQL, window.Detail())
+				}
+				err := report.Err()
+				switch {
+				case probe.gap == 0 && err != nil:
+					t.Fatalf("a back-to-back transaction the poller never saw broke D6: %v", err)
+				case probe.gap > 0 && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+					!strings.Contains(err.Error(), "follows statement 0: "+write.sql[:30])):
+					t.Fatalf("a %s gap after the write: verdict %v, want a D6 violation after the write", probe.gap, err)
+				}
+				t.Logf("%s\n%s", window.Summary(), window.Detail())
 			})
-			if len(report.Problems) > 0 {
-				t.Fatalf("the rig reported a problem about a transaction no poll saw: %v", report.Problems)
-			}
-			if len(report.Windows) != 1 {
-				t.Fatalf("windows = %d, unsighted = %d, want the one transaction judged",
-					len(report.Windows), len(report.Unsighted))
-			}
-			window := report.Windows[0]
-			if !window.Transaction.Sighted.IsZero() {
-				t.Fatalf("a poll saw the xid at %s, so this run did not test an unsighted transaction",
-					window.Transaction.Sighted)
-			}
-			if !strings.Contains(window.Statements[0].SQL, "insert into projects") {
-				t.Fatalf("the window starts at %q, want the insert that gave the transaction its xid:\n%s",
-					window.Statements[0].SQL, window.Detail())
-			}
-			err := report.Err()
-			switch {
-			case probe.gap == 0 && err != nil:
-				t.Fatalf("a back-to-back transaction the poller never saw broke D6: %v", err)
-			case probe.gap > 0 && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
-				!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
-				t.Fatalf("a %s gap after the write: verdict %v, want a D6 violation after the insert", probe.gap, err)
-			}
-			t.Logf("%s\n%s", window.Summary(), window.Detail())
-		})
+		}
 	}
 }
+
+// rigInsert is the rig transaction's write: an insert, whose command tag counts the row it wrote.
+const rigInsert = `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`
+
+// rigInsertUnderSelect writes the same row from a common table expression under a select, whose
+// command tag Postgres answers as the select's own (SELECT 1), naming no write.
+const rigInsertUnderSelect = `with written as (insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice') returning key) select key from written`
 
 // runRigTransaction runs, under a marked context, a transaction that reads, spends 20 ms in Go
 // before its first write, writes, waits gap, reads twice more and commits.
@@ -201,6 +217,12 @@ func runRigTransaction(t *testing.T, database *store.Store, gap time.Duration) {
 // sleep: what the transaction does in Go while it holds its transaction id.
 func runRigTransactionDoing(t *testing.T, database *store.Store, between func()) {
 	t.Helper()
+	runRigTransactionWriting(t, database, rigInsert, between)
+}
+
+// runRigTransactionWriting is runRigTransactionDoing with write as the transaction's write.
+func runRigTransactionWriting(t *testing.T, database *store.Store, write string, between func()) {
+	t.Helper()
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -212,7 +234,7 @@ func runRigTransactionDoing(t *testing.T, database *store.Store, between func())
 		t.Fatalf("read before the write: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
+	if _, err := tx.Exec(ctx, write); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	between()

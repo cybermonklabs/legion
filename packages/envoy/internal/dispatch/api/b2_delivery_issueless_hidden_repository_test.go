@@ -11,23 +11,21 @@ import (
 // TestADeliveryReadHidesAnIssuelessPullRequestOfAHiddenRepository: a pull request that names no
 // issue is shown to an open viewer only when its repository is not hidden from that viewer
 // (refs.RepositoryClause), so alice, who does not see PRIV, is not shown acme/privrepo#12, which
-// names no issue and is in a repository PRIV maps. Over seedDeliveryReads' whole seed, with PRIV
-// mapping acme/privrepo, alice's timeline, measures and Pipeline page equal, field for field with
-// computed_at and the freshness masked, those of the same seed without #12, and so does her count
-// of pull requests that can no longer be fetched, which #12 is one of. She is still shown
-// acme/other#3, which names no issue and is in a repository no project holds; carol, who sees PRIV,
-// is shown #12.
+// names no issue and is in the repository PRIV's issue names. Over seedDeliveryReads' whole seed,
+// with PRIV-1 naming acme/privrepo and each repository's GitHub id recorded as the intake records
+// it, alice's timeline, measures and Pipeline page equal, field for field with computed_at and the
+// freshness masked, those of the same seed without #12, and so does her count of pull requests that
+// can no longer be fetched, which #12 is one of. She is still shown acme/other#3, which names no
+// issue and is in a repository no project owns; carol, who sees PRIV, is shown #12.
 func TestADeliveryReadHidesAnIssuelessPullRequestOfAHiddenRepository(t *testing.T) {
 	const hiddenPR = "acme/privrepo#12"
 	seeded := func(withPR bool) privateSeed {
 		seed := seedDeliveryReads(t, true, true)
 		ctx, pool := t.Context(), seed.database.Pool
-		if _, err := pool.Exec(ctx, `
-			insert into repo_projects (repo, project, is_default, renamed_to, created_by)
-			values ('acme/privrepo', 'PRIV', false, null, '{"kind":"user","id":"carol@example.com"}')
-		`); err != nil {
-			t.Fatalf("map acme/privrepo to PRIV: %v", err)
+		if _, err := pool.Exec(ctx, `update issues set repo = 'acme/privrepo' where key = $1`, seed.issue[seedPrivate]); err != nil {
+			t.Fatalf("name acme/privrepo on PRIV's issue: %v", err)
 		}
+		recordDeliveryRepositoryIDs(t, seed, "acme/privrepo", "acme/other", "acme/widgets")
 		if withPR {
 			merged := time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC)
 			opened := merged.Add(-2 * time.Hour)

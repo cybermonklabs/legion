@@ -173,8 +173,10 @@ type Deps struct {
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves, how often the document
+	// service re-checks its sockets' access (docs.Service.RunAccessRecheck) and the live socket and
+	// the delivery hub their readers (accessRecheckEvery), and how often a live socket pings its page
+	// and sends it a heartbeat frame.
 	StreamHeartbeat time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
@@ -878,6 +880,14 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
 			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(s.signInStillResolves, false,
 				trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+		// An access change made by SQL alone announces nothing the document service hears, so it
+		// re-checks its sockets' access on their heartbeat too, as the live socket and the
+		// Delivery views re-check their readers (accessRecheckEvery), until lifetime ends.
+		if recheck, ok := deps.Docs.(interface {
+			RunAccessRecheck(context.Context, time.Duration)
+		}); ok {
+			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
+		}
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))
@@ -1069,7 +1079,7 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) (model.Ac
 			admitted, _, _ = s.optionalActor(served)
 		}
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			heartbeat := time.NewTicker(s.accessRecheckEvery())
 			defer heartbeat.Stop()
 			for {
 				select {

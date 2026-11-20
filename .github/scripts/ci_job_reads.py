@@ -3393,6 +3393,7 @@ GATES = [
     ], reads=reads(
         ("packages/dispatch/e2e/acceptance/project-access-blob.sh", at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)),
         (PROJECT_ACCESS_DRIVER, f"{at(PROJECT_ACCESS, PROJECT_ACCESS_STEP)} and {at(PROJECT_ACCESS, PROJECT_ACCESS_PRIVATE_STEP)}"),
+        ("packages/dispatch/e2e/acceptance/project-access-walk.sh", f"{PROJECT_ACCESS_DRIVER} sources it"),
         ("packages/dispatch/e2e/fake-github.ts", f"{PROJECT_ACCESS_DRIVER}'s services section runs it with bun"),
         ("packages/dispatch/e2e/acceptance/socket-access.ts",
          f"{PROJECT_ACCESS_DRIVER}'s and packages/dispatch/e2e/acceptance/project-access-blob.sh's sockets sections run it with bun"),

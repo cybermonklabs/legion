@@ -59,6 +59,12 @@ const (
 	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
 	// claim it took. It is one statement too, so it is given the bound its pass's write is given.
 	claimTimeout = recordTimeout
+	// privateHoldRecheck is how often the outbox looks again while the private-delivery hold keeps
+	// an event or a fallback copy of a private project unpublished (Deps.holdsPrivate,
+	// Outbox.nextRetry): PrivateHubsReady is a func, which signals nothing when it turns true, so
+	// the retry timer is armed to this, and the scan it starts asks the func anew. It is the most a
+	// private project's event waits, past the moment every hub is proven, for its publish.
+	privateHoldRecheck = 5 * time.Second
 )
 
 // Publisher is the NATS client the outbox publishes through (bus.Client).
@@ -121,6 +127,20 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
+	// subjects, the proof a private event waits on before it is published (the private-delivery
+	// hold, holdsPrivate): while it answers false, the batch's read leaves out every owner whose
+	// project the database holds private (readBatchSQL, privateOwnerSQL), the fallback pass claims
+	// no copy of such an owner's event (claimFallbackCopies), and the retry timer looks again every
+	// privateHoldWait while one waits (Outbox.nextRetry); once it answers true, the next scan reads
+	// and publishes them. A public project's events publish as before. Each batch, pass and timer
+	// read asks it once, and the batches of one scan ask side by side. A nil func holds nothing,
+	// which is safe while no project can be private; cmd/dispatch sets it once a hub can prove it.
+	PrivateHubsReady func() bool
+	// privateHoldWait is how long the retry timer waits, while the hold keeps something, before it
+	// starts a scan that asks PrivateHubsReady again, and zero is privateHoldRecheck, which is what
+	// cmd/dispatch runs. A test shortens it; it is unexported, so no importer can.
+	privateHoldWait time.Duration
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry
@@ -147,6 +167,21 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// privateHoldDelay is how long the retry timer waits while the private-delivery hold keeps
+// something (Outbox.nextRetry), from privateHoldWait.
+func (d Deps) privateHoldDelay() time.Duration {
+	if d.privateHoldWait > 0 {
+		return d.privateHoldWait
+	}
+	return privateHoldRecheck
+}
+
+// holdsPrivate reports whether the private-delivery hold is on now: PrivateHubsReady is set and
+// answers false. A nil func is no hold.
+func (d Deps) holdsPrivate() bool {
+	return d.PrivateHubsReady != nil && !d.PrivateHubsReady()
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

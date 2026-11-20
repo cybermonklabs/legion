@@ -847,8 +847,9 @@ test("a refresh owed to a list removed mid-load is not paid by its replacement, 
 });
 
 // A resume Dispatch replays in full (`replay_complete`: the resume is at or below its head) missed
-// nothing, so the start refreshes nothing; each replayed event refreshes what it changed. A start
-// whose replay does not cover the gap refreshes everything, as before.
+// nothing an event carries, so the start refreshes nothing of the whole cache; each replayed event
+// refreshes what it changed. A start whose replay does not cover the gap refreshes everything, as
+// before.
 test("a resume whose replay Dispatch says is complete refreshes nothing, and one that is not refreshes everything", async () => {
   jest.useFakeTimers();
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
@@ -880,6 +881,39 @@ test("a resume whose replay Dispatch says is complete refreshes nothing, and one
     act(() => third.open());
     receive(third, { type: "events_start", sub, since: "2", replay_complete: false });
     await waitFor(() => expect(wholeCache.count()).toBe(1));
+  } finally {
+    hook.unmount();
+    wholeCache.restore();
+    realClock();
+  }
+});
+
+// An access change written by SQL alone appends no event: Dispatch's heartbeat finds it and ends
+// the feed, and the resume replays in full, since no event of the change is in the gap. So the
+// project list, which says which projects the caller sees, is read again at every start after a
+// gap however complete its replay; the first start, after the page's own reads, reads nothing.
+test("every start after a gap reads the project list again, and the first start does not", async () => {
+  jest.useFakeTimers();
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  const projects = ["projects"] as const;
+  queryClient.setQueryData(projects, [{ key: "CORE" }]);
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const hook = renderHook(() => useEventFeed({ wholeCacheRefreshMs: 100 }), {
+    wrapper: wrapperFor(queryClient),
+  });
+  try {
+    const { socket, sub } = openFeed("4");
+    await advance(400);
+    expect(queryClient.getQueryState(projects)?.isInvalidated).toBe(false);
+
+    act(() => socket.restart());
+    await waitFor(() => expect(sockets.latest()).not.toBe(socket));
+    const again = sockets.latest();
+    act(() => again.open());
+    receive(again, { type: "events_start", sub, since: "4", replay_complete: true });
+    await waitFor(() => expect(queryClient.getQueryState(projects)?.isInvalidated).toBe(true));
+    // The list alone: a complete replay still refreshes nothing else.
+    expect(wholeCache.count()).toBe(0);
   } finally {
     hook.unmount();
     wholeCache.restore();

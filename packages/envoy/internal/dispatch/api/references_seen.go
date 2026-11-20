@@ -27,10 +27,10 @@ import (
 // The rule has one form per kind of object, which every read binds: in a statement, the access
 // package's clause for the kind (access.IssueProjectClause for an issue by key,
 // access.DocumentClause for a document by id, access.SessionClause for a session,
-// access.PersonClause for a person by login, and roleProjectSeenSQL, access.RoleClause's half that
-// reads a Legion role's name, for the project a role works for); and over a decoded answer - a
-// stored event's payload - seenReferences, which asks those same clauses of every object the answer
-// names in one statement.
+// access.PersonClause for a person by login, and access.RoleProjectClause, the half of
+// access.RoleClause that reads a Legion role's name, for the project a role works for); and over a
+// decoded answer - a stored event's payload - seenReferences, which asks those same clauses of
+// every object the answer names in one statement.
 
 // referenceKind is a kind of object a read's answer names by its id.
 type referenceKind string
@@ -211,21 +211,7 @@ var seenReferencesSQL = `
 	where ` + access.PersonClause("named.id", "$6") + `
 	union all
 	select 'role_project', named.id from unnest($5::text[]) as named (id)
-	where ` + roleProjectSeenSQL("named.id", "$6")
-
-// roleProjectSeenSQL passes the project key keyExpr gives, the project a Legion role's name works
-// for, unless it is a private project the viewer bound at viewerParam does not see: the half of
-// access.RoleClause that reads a role's name, for a role whose holder is judged by the listener's
-// answer rather than by a held_by tuple (a route's reach, a delivery's resolve). A key no project
-// holds, a public project's and a null one pass, and a deployment that holds no private project
-// reads no project.
-func roleProjectSeenSQL(keyExpr, viewerParam string) string {
-	return `not (` + access.ViewerFlag(viewerParam, "private") + ` and exists (
-		select 1 from projects hidden
-		where hidden.key = (` + keyExpr + `) and hidden.visibility = 'private'
-			and not ` + access.ProjectClause("hidden.key", viewerParam) + `
-		offset 0))`
-}
+	where ` + access.RoleProjectClause("named.id", "$6")
 
 // seenReferences answers the objects of named that who sees, in one statement over q, whether or
 // not named holds anything: a read's cost never tells whether it named an object its reader does

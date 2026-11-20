@@ -96,13 +96,15 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // that a person is asking.
 //
 // hidden answers whether the person asking may not see the repository (its owner and name as the
-// path spells them), and an error from it is a 500. It is asked before GitHub is sent anything, and
-// after the one answer every repository shares, a deployment with no App key's. A hidden repository
-// sends GitHub no request and answers what one the App is not installed on answers when GitHub is
-// not asked either: the rate limit, while a limit is in force on the App's scope (where the
-// installation lookup of an uninstalled repository is held unsent), and otherwise that the App is
-// not installed on it. So a hidden repository is never answered as a deployment with no App key
-// answers every repository, nor as anything a visible one answers.
+// path spells them), and an error from it is a 500. It is asked before GitHub is sent anything for
+// the read, and after the one answer every repository shares, a deployment with no App key's. A
+// hidden repository answers what one the App is not installed on answers when GitHub is not asked
+// either: the rate limit, while a limit is in force on the App's scope (where the installation
+// lookup of an uninstalled repository is held unsent), and otherwise that the App is not installed
+// on it. hidden may itself ask GitHub for the repository's id where the person's answer turns on
+// it (routes' repositoryHidden, refs.RepositoryIDNeededClause); a repository hidden by its name
+// sends GitHub no request at all. So a hidden repository is never answered as a deployment with no
+// App key answers every repository, nor as anything a visible one answers.
 func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, hidden func(owner, repo string) (bool, error)) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

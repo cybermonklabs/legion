@@ -1710,6 +1710,18 @@ test.each([
   expect(refreshedReads(incoming)).toEqual(["projectAccess"]);
 });
 
+// A switch of the project's visibility moves its Access tab and its row of the project list, which
+// carries the visibility: a reader who sees the project either way holds it, and no other list,
+// issue or project's tab carries it.
+test("a project.access_changed of visibility refreshes that project's access and the project list", () => {
+  const incoming = accessWrite("visibility");
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: projectAccessQuery("CORE").queryKey },
+    { queryKey: projectsQuery().queryKey },
+  ]);
+  expect(refreshedReads(incoming).sort()).toEqual(["projectAccess", "projects"]);
+});
+
 // A group belongs to no project, so its make, write or delete names none: it moves the one list
 // of groups, which Settings and every Access tab's picker read. A delete also takes the group off
 // each list that named it, and the server appends a project.access_changed for each of those.

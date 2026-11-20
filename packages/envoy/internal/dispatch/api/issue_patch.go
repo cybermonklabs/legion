@@ -71,6 +71,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member sets, changes and clears no issue's repository
+	// (refuseRepoOfRestrictedMember): refused here, before the issue is read and before the
+	// settlement a close runs first, so nothing of the write is made.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error

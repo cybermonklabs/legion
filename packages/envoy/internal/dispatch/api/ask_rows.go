@@ -307,7 +307,7 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	partIDs := make([]refs.AskIDs, len(asks))
 	events.QueueOpenedEventIDs(b, askIDs, readableEvents(who), openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
-	refs.QueueAskPartIDs(b, asks, partIDs)
+	refs.QueueAskPartIDs(b, who, asks, partIDs)
 	seen := queueAskPersons(b, who, asks)
 	return func() error {
 		if countsErr != nil {
@@ -389,20 +389,20 @@ func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*mod
 }
 
 // attachAskPartIDs reads, in one query over `ask_blocks`, the part id of every listed ask's
-// options and answer and the ask's current part revision (`refs.AskPartIDs`), so every read
-// that shows an ask's options shows the reference of each: `dispatch://<key>/ask/<id>#b-<part
-// id>`, pinned to the ask's `revision` with `@v<N>`. It is read beside attachAskBacklinkCounts,
-// which every list and detail read of an ask already pays for, and never by a write, whose
-// answer carries no id. A list of asks reads the same ids in its own batch instead
-// (queueAskDetails, over refs.QueueAskPartIDs).
+// options and answer and the ask's current part revision (`refs.AskPartIDs`), as who may read the
+// ask, so every read that shows an ask's options shows the reference of each:
+// `dispatch://<key>/ask/<id>#b-<part id>`, pinned to the ask's `revision` with `@v<N>`. It is read
+// beside attachAskBacklinkCounts, which every list and detail read of an ask already pays for, and
+// never by a write, whose answer carries no id. A list of asks reads the same ids in its own batch
+// instead (queueAskDetails, over refs.QueueAskPartIDs).
 //
 // Which option or answer each stored part stands for, and what an ask the index has not reached
 // or an option no part stands for carries, is refs.AskPartIDs'.
-func attachAskPartIDs(ctx context.Context, q queryer, asks []*model.Ask) error {
+func attachAskPartIDs(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if len(asks) == 0 {
 		return nil
 	}
-	partIDs, err := refs.AskPartIDs(ctx, q, asks)
+	partIDs, err := refs.AskPartIDs(ctx, q, who, asks)
 	if err != nil {
 		return err
 	}
@@ -435,7 +435,7 @@ func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks [
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
-	if err := attachAskPartIDs(ctx, q, asks); err != nil {
+	if err := attachAskPartIDs(ctx, q, who, asks); err != nil {
 		return err
 	}
 	if seesEveryObject(who) {

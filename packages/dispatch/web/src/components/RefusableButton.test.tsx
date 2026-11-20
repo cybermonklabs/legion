@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { FormEvent } from "react";
 
-import { runFocusFixup } from "../__tests__/focus-fixup";
+import { emulateChromiumFocusFixup } from "../features/issue-page/chromium-focus-fixup";
 import { RefusableButton } from "./RefusableButton";
 
 // A keyboard reader who presses a button keeps their place while that press is in flight, so their
@@ -18,7 +18,7 @@ test("a keyboard press keeps the focus while it is in flight, and Enter presses 
     </RefusableButton>
   );
   const view = render(saveButton());
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     const save = screen.getByRole("button", { name: "Save" });
     act(() => save.focus());

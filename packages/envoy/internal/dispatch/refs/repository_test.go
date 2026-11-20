@@ -23,8 +23,10 @@ var clauseRepositories = []string{
 // names acme/privdone and is done; PRIV-3 names none and is a child of PRIV2-1, which names
 // acme/privparent; PRIV-4 names none and resolves to PRIV's default repository, acme/privdefault;
 // PUB-2 and PRIV-5 both name acme/both; and PRIV-6 names acme/oldname, which a mapping of PRIV
-// records as renamed to acme/newname. No issue names acme/none or acme/newname. The default and the
-// rename are stored as this build stores them, in repo_projects, in the one statement below.
+// records as renamed to acme/newname, a rename the clause does not read. No issue names acme/none
+// or acme/newname. The default and the rename are stored as this build stores them, in
+// repo_projects, in the one statement below. Every repository has a GitHub id of its own, as
+// LearnRepositoryIDs records it (learnRepositoryIDs), so each answer turns on the names alone.
 func seedRepositoryIssues(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -47,21 +49,40 @@ func seedRepositoryIssues(t *testing.T) *store.Store {
 	`); err != nil {
 		t.Fatalf("seed the repositories' issues: %v", err)
 	}
+	learnRepositoryIDs(t, database, clauseRepositories...)
 	return database
 }
 
-// TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt: a repository is hidden from a
-// viewer when a private project the viewer does not see owns it: an issue of that project resolves
-// to it, through the issue's own repository, its parent's or its project's default, whether the
-// issue is open or done, or the project maps it, under any name a rename gives it. Any other
-// repository passes for an open viewer, and for any other viewer only when a project it sees owns
-// it. alice, open and seeing PUB, reads acme/pub and the unnamed acme/none, and not acme/both,
-// which PRIV-5 names beside PUB-2, nor acme/newname, PRIV's acme/oldname under its new name; bob, a
-// restricted member seeing PRIV, reads every repository PRIV owns that no other private project
-// does: acme/newname among them, and acme/both, which public PUB shares, and not acme/privparent,
-// which private PRIV2's PRIV2-1 names; carol, seeing every project, and the server's own viewer
-// read all nine; the closed viewer reads none. Names are compared without case, and the clause is
-// never null.
+// learnRepositoryIDs records a GitHub id of its own for each of repositories, 1001 for the first
+// and one more for each after it, as LearnRepositoryIDs records what GitHub answers.
+func learnRepositoryIDs(t *testing.T, database *store.Store, repositories ...string) {
+	t.Helper()
+	var known int64
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from repository_ids`).Scan(&known); err != nil {
+		t.Fatalf("count the recorded ids: %v", err)
+	}
+	for index, repository := range repositories {
+		if err := RecordRepositoryID(context.Background(), database.Pool, repository, 1001+known+int64(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt (c-proxy-by-issue's rule): a
+// repository passes for a viewer when an issue of a project the viewer sees resolves to it, through
+// the issue's own repository, its parent's or its project's default, whether the issue is open or
+// done; and for an open viewer also when no project the viewer does not see owns it. A mapping's
+// rename is read by no part of it. alice, open and seeing PUB, reads acme/pub, acme/none,
+// acme/both, which PUB-2 names beside PRIV-5, and acme/newname, which no issue names; bob, a
+// restricted member seeing PRIV, reads every repository a PRIV issue resolves to: acme/privparent,
+// which PRIV-3 resolves to through PRIV2-1, among them, and acme/oldname but not acme/newname;
+// carol, seeing every project, and the server's own viewer read all nine; the closed viewer reads
+// none. Names are compared without case, and the clause is never null.
+//
+// The plan's four controls each fail this test, naming a repository: show every repository to an
+// open viewer (alice reads acme/priv); count open issues only (alice reads acme/privdone); resolve
+// an issue's own repository only (alice reads acme/privdefault, bob loses acme/privparent); compare
+// names through CanonicalRepoSQL (bob reads acme/newname, alice loses it).
 func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	for _, viewer := range []struct {
@@ -70,9 +91,9 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		reads []string
 	}{
 		{"alice", model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
-			[]string{"acme/pub", "acme/none"}},
+			[]string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
 		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}},
-			[]string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname", "acme/newname"}},
+			[]string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"}},
 		{"carol", model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}},
 			clauseRepositories},
 		{"the server's own viewer", model.Actor{Viewer: model.ServerViewer}, clauseRepositories},
@@ -89,29 +110,30 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		t.Errorf("RepositoryClause(ACME/Priv) for bob = false, want true: GitHub spells a name in any case")
 	}
 	var answered *bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "null", "$1"),
 		VisibilityArg(model.Actor{})).Scan(&answered); err != nil || answered == nil || *answered {
 		t.Errorf("RepositoryClause over no repository for the closed viewer = %v (%v), want false and never null", answered, err)
 	}
 }
 
-// repositoryPasses answers RepositoryClause for who over repository.
+// repositoryPasses answers RepositoryClause for who over repository, under the GitHub id
+// repository_ids records for it (RepositoryIDSQL).
 func repositoryPasses(t *testing.T, database *store.Store, who model.Actor, repository string) bool {
 	t.Helper()
 	var passes bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2::text", RepositoryIDSQL("$2::text"), "$1"),
 		VisibilityArg(who), repository).Scan(&passes); err != nil {
 		t.Fatalf("RepositoryClause(%s): %v", repository, err)
 	}
 	return passes
 }
 
-// seedHiddenRepositories adds to seedRepositoryIssues' rows one of each way a repository was shown
-// to a viewer who does not see a project that holds it: PUB-3, which names acme/privmapped, a
-// repository PRIV maps (an issue's own repository may be any owner/name, so any full member can
-// write it); acme/privonlymapped, which PRIV maps and no issue resolves to; PUB-5, which names
-// acme/pubwalk, and its child PRIV-8, which names none and so resolves to it; and acme/movedold,
-// which a PUB mapping records as renamed to acme/movednew, the repository PRIV-7 names.
+// seedHiddenRepositories adds to seedRepositoryIssues' rows one of each way a mapping or a rename
+// it records could stand for a project's ownership: PUB-3, which names acme/privmapped, a
+// repository PRIV maps; acme/privonlymapped, which PRIV maps and no issue resolves to; PUB-5, which
+// names acme/pubwalk, and its child PRIV-8, which names none and so resolves to it; and
+// acme/movedold, which a PUB mapping records as renamed to acme/movednew, the repository PRIV-7
+// names. Each new repository has a GitHub id of its own.
 func seedHiddenRepositories(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -127,46 +149,43 @@ func seedHiddenRepositories(t *testing.T, database *store.Store) {
 	`); err != nil {
 		t.Fatalf("seed the hidden repositories: %v", err)
 	}
+	learnRepositoryIDs(t, database, "acme/privmapped", "acme/privonlymapped", "acme/pubwalk", "acme/movedold", "acme/movednew")
 }
 
 // TestProjectRepositoriesSQLAnswersEveryProjectThatOwnsARepository: ProjectRepositoriesSQL, the rule
 // every repository check reads, answers for a repository each project that owns it, apart from any
 // viewer: a project owns each repository an issue of it resolves to, through the issue's own
-// repository, its parent's or its project's default, open or done, and each repository it maps,
-// under every name a rename gives it and in any case. Over seedRepositoryIssues' and
-// seedHiddenRepositories' rows: PRIV2-1 and its PRIV child PRIV-3 make acme/privparent both PRIV's
-// and PRIV2's; PUB-2 and PRIV-5 make acme/both both PUB's and PRIV's; PUB-3, naming the repository
-// PRIV maps, makes acme/privmapped PUB's too; PRIV-8 makes its parent PUB-5's acme/pubwalk PRIV's
-// too; a mapping of PRIV renames acme/oldname to acme/newname, and one of PUB acme/movedold to
-// acme/movednew, which PRIV-7 names, so each pair of names answers alike. acme/none, which nothing
-// names, has no owner and is not in the answer. With a filter, only the projects it passes answer:
-// PUB alone owns acme/both, acme/privmapped and acme/pubwalk among them, and no PRIV issue is walked.
+// repository, its parent's or its project's default, open or done, in any case, and nothing else.
+// Over seedRepositoryIssues' and seedHiddenRepositories' rows: PRIV2-1 and its PRIV child PRIV-3
+// make acme/privparent both PRIV's and PRIV2's; PUB-2 and PRIV-5 make acme/both both PUB's and
+// PRIV's; PRIV-8 makes its parent PUB-5's acme/pubwalk PRIV's too; PUB-3 makes acme/privmapped
+// PUB's alone, PRIV's mapping of it giving PRIV nothing; PRIV-6's acme/oldname and PRIV-7's
+// acme/movednew are PRIV's under the names the issues give, and no rename a mapping records adds a
+// name. acme/none, acme/newname, acme/privonlymapped and acme/movedold, which no issue resolves to,
+// have no owner and are not in the answer. With a filter, only the projects it passes answer: PUB
+// alone owns acme/both, acme/privmapped and acme/pubwalk among them, and no PRIV issue is walked.
 func TestProjectRepositoriesSQLAnswersEveryProjectThatOwnsARepository(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	seedHiddenRepositories(t, database)
 	want := map[string][]string{
-		"acme/pub":            {"PUB"},
-		"acme/priv":           {"PRIV"},
-		"acme/privdone":       {"PRIV"},
-		"acme/privparent":     {"PRIV", "PRIV2"},
-		"acme/privdefault":    {"PRIV"},
-		"acme/both":           {"PRIV", "PUB"},
-		"acme/oldname":        {"PRIV"},
-		"acme/newname":        {"PRIV"},
-		"ACME/NewName":        {"PRIV"},
-		"acme/privmapped":     {"PRIV", "PUB"},
-		"acme/privonlymapped": {"PRIV"},
-		"acme/pubwalk":        {"PRIV", "PUB"},
-		"acme/movedold":       {"PRIV", "PUB"},
-		"acme/movednew":       {"PRIV", "PUB"},
+		"acme/pub":         {"PUB"},
+		"acme/priv":        {"PRIV"},
+		"acme/privdone":    {"PRIV"},
+		"acme/privparent":  {"PRIV", "PRIV2"},
+		"acme/privdefault": {"PRIV"},
+		"acme/both":        {"PRIV", "PUB"},
+		"acme/oldname":     {"PRIV"},
+		"ACME/OldName":     {"PRIV"},
+		"acme/privmapped":  {"PUB"},
+		"acme/pubwalk":     {"PRIV", "PUB"},
+		"acme/movednew":    {"PRIV"},
 	}
-	asked := slices.Concat(slices.Sorted(maps.Keys(want)), []string{"acme/none"})
+	asked := slices.Concat(slices.Sorted(maps.Keys(want)), []string{"acme/none", "acme/newname", "acme/privonlymapped", "acme/movedold"})
 	if got := projectOwners(t, database, "true", asked); !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("ProjectRepositoriesSQL(true) over %q =\n\t%v\nwant\n\t%v", asked, got, want)
 	}
 	public := map[string][]string{
 		"acme/pub": {"PUB"}, "acme/both": {"PUB"}, "acme/privmapped": {"PUB"}, "acme/pubwalk": {"PUB"},
-		"acme/movedold": {"PUB"}, "acme/movednew": {"PUB"},
 	}
 	if got := projectOwners(t, database, "project_key = 'PUB'", asked); !maps.EqualFunc(got, public, slices.Equal) {
 		t.Errorf("ProjectRepositoriesSQL(project_key = 'PUB') over %q =\n\t%v\nwant\n\t%v", asked, got, public)
@@ -180,7 +199,7 @@ func projectOwners(t *testing.T, database *store.Store, projects string, reposit
 	rows, err := database.Pool.Query(context.Background(), `
 		select distinct asked.repo, owned.project
 		from unnest($1::text[]) as asked(repo)
-		join (`+ProjectRepositoriesSQL(projects)+`) owned on owned.repo = lower(`+CanonicalRepoSQL("asked.repo")+`)
+		join (`+ProjectRepositoriesSQL(projects)+`) owned on owned.repo = lower(asked.repo)
 		order by asked.repo, owned.project`, repositories)
 	if err != nil {
 		t.Fatalf("ProjectRepositoriesSQL(%s): %v", projects, err)
@@ -200,48 +219,48 @@ func projectOwners(t *testing.T, database *store.Store, projects string, reposit
 	return owners
 }
 
-// TestRepositoryClauseHidesARepositoryAProjectTheViewerCannotSeeHolds: a repository an issue of a
-// project alice does not see resolves to, or such a project maps, is hidden from her, whatever an
-// issue she sees names. Each row is one way seedHiddenRepositories' rows, or seedRepositoryIssues',
-// showed a repository to alice before; carol, who sees every project, reads every one of them.
-func TestRepositoryClauseHidesARepositoryAProjectTheViewerCannotSeeHolds(t *testing.T) {
+// TestRepositoryClauseHidesWhatAProjectTheViewerCannotSeeOwnsAndNothingElse: a repository an
+// issue of a private project alice does not see resolves to is hidden from her unless an issue she
+// sees resolves to it too, and neither a mapping nor the rename it records hides or shows anything.
+// alice reads acme/privmapped, which PUB-3 names and PRIV maps, in any case; acme/pubwalk, which
+// PUB-5 names and its PRIV child resolves to; acme/privonlymapped, which PRIV maps and no issue
+// resolves to; and acme/movedold, the old name a PUB mapping records for PRIV-7's acme/movednew;
+// she does not read acme/movednew. carol, who sees every project, reads every one of them.
+func TestRepositoryClauseHidesWhatAProjectTheViewerCannotSeeOwnsAndNothingElse(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	seedHiddenRepositories(t, database)
 	alice := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}
 	carol := model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}}
-	for _, row := range []struct{ name, repository string }{
-		{"a repository PRIV maps, which alice names on a PUB issue", "acme/privmapped"},
-		{"the same, spelled in another case", "ACME/PrivMapped"},
-		{"a repository PRIV-5 names, which PUB-2 names too", "acme/both"},
-		{"a repository PRIV maps and no issue resolves to", "acme/privonlymapped"},
-		{"PRIV's acme/oldname under the new name its mapping records", "acme/newname"},
-		{"acme/movednew, which PRIV-7 names, under the old name a mapping records", "acme/movedold"},
-		{"a repository PUB-5 names and its PRIV child resolves to", "acme/pubwalk"},
+	for _, row := range []struct {
+		name, repository string
+		alice            bool
+	}{
+		{"a repository PRIV maps, which alice names on a PUB issue", "acme/privmapped", true},
+		{"the same, spelled in another case", "ACME/PrivMapped", true},
+		{"a repository PUB-5 names and its PRIV child resolves to", "acme/pubwalk", true},
+		{"a repository PRIV maps and no issue resolves to", "acme/privonlymapped", true},
+		{"PRIV-7's acme/movednew under the old name a PUB mapping records", "acme/movedold", true},
+		{"the repository PRIV-7 names", "acme/movednew", false},
 	} {
-		if repositoryPasses(t, database, alice, row.repository) {
-			t.Errorf("%s: RepositoryClause(%s) for alice = true, want false", row.name, row.repository)
+		if got := repositoryPasses(t, database, alice, row.repository); got != row.alice {
+			t.Errorf("%s: RepositoryClause(%s) for alice = %t, want %t", row.name, row.repository, got, row.alice)
 		}
 		if !repositoryPasses(t, database, carol, row.repository) {
 			t.Errorf("%s: RepositoryClause(%s) for carol = false, want true: she sees every project", row.name, row.repository)
 		}
 	}
-	for _, repository := range []string{"acme/pub", "acme/none"} {
-		if !repositoryPasses(t, database, alice, repository) {
-			t.Errorf("RepositoryClause(%s) for alice = false, want true: no project she does not see holds it", repository)
-		}
-	}
 }
 
-// TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee: a repository a project the
-// viewer sees owns is hidden from that viewer when a private project the viewer does not see owns
-// it too, and passes when the only other owners are public projects. To seedRepositoryIssues' and
-// seedHiddenRepositories' rows it adds PRIV2-2, which names acme/privdefault, PRIV's default. For
-// bob (a restricted member seeing PRIV), carol's token listing PRIV and an open viewer seeing PRIV
-// and PUB alike: acme/privparent, which PRIV-3 resolves to and private PRIV2's PRIV2-1 names, and
-// acme/privdefault, which PRIV maps and PRIV2-2 names, are hidden; acme/both and acme/privmapped,
+// TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsIt: a repository a
+// project the viewer sees owns passes for that viewer, whatever other project owns it too. To
+// seedRepositoryIssues' and seedHiddenRepositories' rows it adds PRIV2-2, which names
+// acme/privdefault, PRIV's default. For bob (a restricted member seeing PRIV), carol's token listing
+// PRIV and an open viewer seeing PRIV and PUB alike: acme/privparent, which PRIV-3 resolves to and
+// private PRIV2's PRIV2-1 names, acme/privdefault, PRIV's default, which PRIV2-2 names, acme/both,
 // which PRIV shares with public PUB, and acme/pubwalk, which PUB-5 names and its PRIV child resolves
-// to, pass. carol, who sees PRIV2 as well, reads every one of them.
-func TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee(t *testing.T) {
+// to, pass. alice, who sees PUB alone, reads acme/both and acme/pubwalk and neither of the two that
+// only private projects own.
+func TestRepositoryClauseShowsASharedRepositoryToThePeopleOfEachProjectThatOwnsIt(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	seedHiddenRepositories(t, database)
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -250,8 +269,7 @@ func TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee(t *testing.T)
 	`); err != nil {
 		t.Fatalf("seed PRIV2-2: %v", err)
 	}
-	hidden := []string{"acme/privparent", "acme/privdefault"}
-	shown := []string{"acme/both", "acme/privmapped", "acme/pubwalk"}
+	shared := []string{"acme/privparent", "acme/privdefault", "acme/both", "acme/pubwalk"}
 	for _, viewer := range []struct {
 		name string
 		who  model.Actor
@@ -260,29 +278,24 @@ func TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee(t *testing.T)
 		{"carol's token listing PRIV", model.Actor{Viewer: &model.Viewer{Person: "carol", Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"}}}},
 		{"an open viewer seeing PRIV and PUB", model.Actor{Viewer: &model.Viewer{Person: "dave", Open: true, Sees: []string{"PRIV", "PUB"}, AnyPrivate: true}}},
 	} {
-		for _, repository := range hidden {
-			if repositoryPasses(t, database, viewer.who, repository) {
-				t.Errorf("RepositoryClause(%s) for %s = true, want false: private PRIV2, which %s does not see, owns it", repository, viewer.name, viewer.name)
-			}
-		}
-		for _, repository := range shown {
+		for _, repository := range shared {
 			if !repositoryPasses(t, database, viewer.who, repository) {
-				t.Errorf("RepositoryClause(%s) for %s = false, want true: PRIV owns it and no private project %s does not see does", repository, viewer.name, viewer.name)
+				t.Errorf("RepositoryClause(%s) for %s = false, want true: an issue of PRIV, which %s sees, resolves to it", repository, viewer.name, viewer.name)
 			}
 		}
 	}
-	carol := model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}}
-	for _, repository := range slices.Concat(hidden, shown) {
-		if !repositoryPasses(t, database, carol, repository) {
-			t.Errorf("RepositoryClause(%s) for carol = false, want true: she sees every project", repository)
+	alice := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}
+	for _, repository := range shared {
+		if got, want := repositoryPasses(t, database, alice, repository), repository == "acme/both" || repository == "acme/pubwalk"; got != want {
+			t.Errorf("RepositoryClause(%s) for alice = %t, want %t", repository, got, want)
 		}
 	}
 }
 
 // TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate (R9): for an open viewer of a deployment
-// with no private project, the clause passes every repository and reads no issue: no plan node that
-// scans issues runs. The same viewer, were a project private, walks the issues, which shows the
-// count can see the walk.
+// with no private project, the clause passes every repository, with or without an id, and reads no
+// issue: no plan node that scans issues runs. The same viewer, were a project private, walks the
+// issues, which shows the count can see the walk.
 func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	everyProject := []string{"PRIV", "PRIV2", "PUB"}
@@ -306,7 +319,7 @@ func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 func issueScanLoops(t *testing.T, database *store.Store, who model.Actor, repository string) int {
 	t.Helper()
 	var plan []map[string]any
-	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2::text", RepositoryIDSQL("$2::text"), "$1"),
 		VisibilityArg(who), repository).Scan(&plan); err != nil {
 		t.Fatalf("explain RepositoryClause(%s): %v", repository, err)
 	}

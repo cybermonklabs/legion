@@ -2,7 +2,7 @@ import { expect, mock, test } from "bun:test";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { runFocusFixup } from "../__tests__/focus-fixup";
+import { emulateChromiumFocusFixup } from "../features/issue-page/chromium-focus-fixup";
 import { QueryError } from "./QueryError";
 
 // A keyboard reader who presses Retry keeps their place while the retry is out, so their next key
@@ -15,7 +15,7 @@ test("a keyboard press of Retry keeps the focus while the retry is out, and Ente
     <QueryError message="Couldn't load." onRetry={onRetry} retrying={retrying} />
   );
   const view = render(failed(false));
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     const retry = screen.getByRole("button", { name: "Retry" });
     act(() => retry.focus());

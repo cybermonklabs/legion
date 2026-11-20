@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -540,6 +541,13 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 			return false, headErr
 		}
 	}
+	// Delivery shows a pull request that names no issue to an open viewer only where it can tell the
+	// repository from every private project's (refs.RepositoryClause), so the ids of the names
+	// private projects own are learned as envelopes arrive. A name it could not learn stays owed,
+	// which hides such pull requests while a project is private; the envelope goes on either way.
+	if err := refs.LearnRepositoryIDs(ctx, in.pool, in.github); err != nil {
+		slog.Warn("dispatch delivery: learn the GitHub ids of private projects' repositories", "error", err)
+	}
 	if payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil
 	}
@@ -619,6 +627,20 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})
+	// The repository's GitHub id, which its rows are held to when they name no issue
+	// (refs.RepositoryClause): recorded under the name the row is stored by, and the name GitHub
+	// gives the repository now. A record not written leaves the row's id unknown, which hides it
+	// from an open viewer while a project is private and is not a failure of the completion.
+	if fetched.Repository.ID != 0 {
+		for _, name := range []string{repoFull, fetched.Repository.FullName} {
+			if !strings.Contains(name, "/") {
+				continue
+			}
+			if err := refs.RecordRepositoryID(ctx, pool, name, fetched.Repository.ID); err != nil {
+				slog.Warn("dispatch delivery: record a pull request's repository id", "repo", name, "number", number, "error", err)
+			}
+		}
+	}
 	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
 	if err != nil {
 		return err

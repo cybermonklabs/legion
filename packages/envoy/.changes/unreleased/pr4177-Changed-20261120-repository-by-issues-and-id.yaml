@@ -1,0 +1,2 @@
+kind: Changed
+body: The GitHub proxy and Delivery take a repository's projects from the issues that resolve to it, and no longer from repository mappings or recorded renames; a private project's repository stays hidden under any name or owner GitHub moves it to, by its GitHub id, which Dispatch now records (`repository_ids`). `GET /api/v1/github/app-installation/{owner}/{repo}` answers every caller alike again.

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -188,12 +189,12 @@ func TestATextReadRefusesADocumentItsReaderMayNotRead(t *testing.T) {
 	}
 }
 
-// The statement a text read now makes first, for every document whether a room holds it or not
-// (storedVersionSQL: the stamp, the latest version, and whether the reader may read the
-// document), reaches every relation it reads by key. It is the one statement a read of a
-// document no room holds pays beyond what it paid before, and keyed is what keeps that cost a few
-// index probes whatever the document's history holds; the execution time a run measures is
-// logged beside the plan.
+// The statement a text read makes first (storedVersionSQL: the stamp, the latest version, and
+// whether the reader may read the document), for every document a room holds and, for a reader
+// that may not see every document, for one no room holds, reaches every relation it reads by key.
+// It is the one statement such a cold read pays beyond what it paid before, and keyed is what keeps
+// that cost a few index probes whatever the document's history holds; the execution time a run
+// measures is logged beside the plan.
 func TestTheStoredVersionReadIsKeyed(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedSettledDocument(t, service, artifactID, "Keyed text.\n")
@@ -214,4 +215,73 @@ func TestTheStoredVersionReadIsKeyed(t *testing.T) {
 		t.Fatalf("decode the analyzed plan (%v): %s", err, raw)
 	}
 	t.Logf("the stored version read executed in %.3f ms", analyzed[0].Executed)
+}
+
+// coldTextReadStatements is how many statements naming the document a text read of a document
+// no room of this process holds sends, as the base's read sent them: the first read of its stored
+// state folds the stored history (coldRead's stamp, then foldDocument's load) and keeps the
+// rendering under that stamp, and every later read of the same state reads the stamp alone and
+// answers from the cache. storedText sends none of them: it looks for the room before anything.
+var coldTextReadStatements = struct{ fold, cached int }{fold: 3, cached: 1}
+
+// A text read of a document no room of this process holds costs the statements the base's read
+// made (coldTextReadStatements) for a reader that sees every document: the server's own reader,
+// and an open viewer of a deployment that holds no private project, which is every viewer there
+// but a restricted member and a credential that lists projects. storedText weighs a version only
+// against a room, so with none it has nothing to read for such a reader. A reader that may not see
+// every document pays one statement more on each read, the rule of the document's own row, which
+// refuses a document it may not read cold as it does warm (pgx.ErrNoRows).
+func TestAColdTextReadCostsTheStatementsTheBaseMade(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	tracer := &statementTracer{}
+	traced := storetest.TracedStore(t, database, tracer)
+	artifactID := createDocument(t, database, "before")
+	const written = "# Heading\n\nThe stored text.\n"
+	seedServiceText(t, newReadCacheService(t, database, NewPgVersioned(database)), artifactID, written)
+	reader := newReadCacheService(t, traced, NewPgVersioned(traced))
+
+	read := func(name string, who model.Actor) (int, error) {
+		t.Helper()
+		if reader.srv.GetDoc(artifactID) != nil {
+			t.Fatalf("%s: a room of the reader holds the document, so the read would not be a cold one", name)
+		}
+		since := tracer.mark()
+		markdown, _, err := reader.TextWithToken(ctx, who, artifactID)
+		sent := tracer.statements(artifactID, "", since)
+		t.Logf("%s: a cold text read sent %d statements naming the document (%v)", name, sent, err)
+		if err == nil && markdown != written {
+			t.Fatalf("%s: the cold read answered %q, want %q", name, markdown, written)
+		}
+		return sent, err
+	}
+	everyDocument := []struct {
+		name string
+		who  model.Actor
+		want int
+	}{
+		{"the server's own reader, folding", serverReader, coldTextReadStatements.fold},
+		{"the server's own reader, from the cache", serverReader, coldTextReadStatements.cached},
+		{"an open viewer of a deployment with no private project", model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{"DOC"}}}, coldTextReadStatements.cached},
+	}
+	for _, reading := range everyDocument {
+		sent, err := read(reading.name, reading.who)
+		if err != nil {
+			t.Fatalf("%s: %v", reading.name, err)
+		}
+		if sent != reading.want {
+			t.Errorf("%s: a cold text read sent %d statements naming the document, want %d, the base's", reading.name, sent, reading.want)
+		}
+	}
+
+	// A credential that lists DOC sees it, and pays the rule's one statement to be told so.
+	listed := model.Actor{Viewer: &model.Viewer{Sees: []string{"DOC"}, Lists: []string{"DOC"}}}
+	if sent, err := read("a credential that lists DOC", listed); err != nil || sent != coldTextReadStatements.cached+1 {
+		t.Errorf("a credential that lists DOC: a cold text read sent %d statements (%v), want %d and the text", sent, err, coldTextReadStatements.cached+1)
+	}
+	// The closed viewer sees no project: the rule refuses the document before any version read.
+	closed := model.Actor{Viewer: &model.Viewer{Sees: []string{}, AnyPrivate: true}}
+	if sent, err := read("the closed viewer", closed); !errors.Is(err, pgx.ErrNoRows) || sent != 1 {
+		t.Errorf("the closed viewer: a cold text read sent %d statements and answered %v, want one and pgx.ErrNoRows", sent, err)
+	}
 }
