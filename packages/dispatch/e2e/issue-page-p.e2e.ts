@@ -2531,6 +2531,11 @@ test("Details closed after a write removed the labels' count leaves the focus in
 // focus went into the palette, so the count's removal and Details' close then left the focus on
 // the page's body. A focus in another layer now keeps the watch going, since that layer gives the
 // focus back, and the focus ends on "Issue actions" as in the row above.
+// SLOW(>=2s): 1,644 to 2,040 ms in nine one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319,
+// e2e-rows-9whgn at 4d06932a and e2e-rows-tnxt6 at 214ed1ee: one load with twenty labels, Details
+// opened from the labels' count by Enter, the search palette opened by Control+K and its focus
+// polled, a write of one label waited on until the count goes, and the palette and Details each
+// closed by Escape before the focus is read.
 test("Details closed after a write removed the labels' count while the palette was open leaves the focus in the header", async ({
   browser,
 }) => {
