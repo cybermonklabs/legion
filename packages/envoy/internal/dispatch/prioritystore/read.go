@@ -140,7 +140,11 @@ func List(ctx context.Context, q Queryer) ([]Node, error) {
 // A priority belongs to no project, but each `advances` tuple into it names the issue at its far
 // end, which does: the third leg answers a tuple only where the viewer bound at $2 (the visibility
 // argument, refs.VisibilityArg) sees that issue's project (access.IssueProjectClause over the
-// column advancing.from_id).
+// column advancing.from_id). A relation out of the node is held to the node at its own far end
+// the same way: one to a priority, which belongs to no project, is answered to every viewer, one
+// to an issue only where the viewer sees that issue's project, and one to a node of any other kind,
+// which this store writes none of, to no viewer, as a kind the graph's registry holds no rule for
+// answers nothing (refs.VisibleKind).
 func Timeline(ctx context.Context, q Queryer, id string, viewer any) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
@@ -151,6 +155,7 @@ func Timeline(ctx context.Context, q Queryer, id string, viewer any) ([]Tuple, e
 			select `+tupleColumns+`
 			from priority_tuples
 			where from_kind = '`+KindPriority+`' and from_id = $1 and to_kind <> '`+KindValue+`'
+				and (to_kind = '`+KindPriority+`' or (to_kind = '`+KindIssue+`' and `+access.IssueProjectClause("to_id", "$2")+`))
 			union all
 			select `+tupleColumns+`
 			from priority_tuples advancing
