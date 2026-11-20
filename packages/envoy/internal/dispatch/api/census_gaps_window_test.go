@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +21,12 @@ import (
 // two. Each row here makes the object hidden in that window - the moment the route's own read of
 // it has run - and reads what the keyed read answered.
 //
-// The object is a file of an agent's conversation, owned by no project and read by its session's
-// rule (access.SessionClause): it is the one owner a reader's viewer, resolved once per request,
-// does not decide alone. A session placed in a project the reader does not see is hidden from
+// The object is one a session's rule decides (access.SessionClause, the live session_projects
+// pairs): a direct message to the session, and a file of its conversation. It is the one kind of
+// owner a reader's viewer, resolved once per request (readerFor), does not decide alone: a
+// project's own rule reads only that viewer, and no object changes project, so an issue, a
+// document, an ask or a comment has no window (a conversation's file holds no ask and no comment,
+// 400 ARTIFACT_AGENT_OWNED). A session placed in a project the reader does not see is hidden from
 // that reader from the moment its session_projects pair commits, so the switch is that pair.
 
 // gapWindow is a tracer that, armed, places the seed's session in PRIV right after the first
@@ -120,11 +124,14 @@ func sqlHolding(fragments ...string) func(string) bool {
 }
 
 // gapSeed is verification v16's seed with a conversation of an agent of carol's: the session
-// gapSession, placed in PUB alone, so alice reads it, and alice's direct message to it.
+// gapSession, placed in PUB alone, so alice reads it; alice's direct message to it; a file of its
+// conversation; and, citing that file, a comment on PUB's issue and a document of PUB, whose
+// mention stores an excerpt.
 type gapSeed struct {
 	privateSeed
-	window *gapWindow
-	direct string
+	window          *gapWindow
+	direct, address string
+	citingComment   string
 }
 
 const (
@@ -146,6 +153,20 @@ func seedGapWindow(t *testing.T) *gapSeed {
 	seed.direct = createdID(t, seed.mustRequest(t, callerAlice, http.MethodPost, "/api/v1/agents/"+gapSession+"/messages", map[string]any{
 		"body": "Are you still on the build?", "delivery": "btw",
 	}, http.StatusCreated))
+	uploaded := multipartRequest(t, seed.handler, "/api/v1/agents/"+gapSession+"/artifacts", map[string]string{"name": "gap-shot.png"},
+		"gap-shot.png", "image/png", pngBytes("the gap shot"), seedCarol)
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("carol uploads to %s's conversation: %d %s", gapSession, uploaded.Code, uploaded.Body.String())
+	}
+	file := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
+	seed.address = "dispatch://agent/" + gapSession + "/artifact/" + file.Slug
+	seed.citingComment = createdID(t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+		map[string]any{"body": "The shot is at " + seed.address + " for the record."}, http.StatusCreated))
+	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects/"+seedPublic+"/artifacts", map[string]any{
+		"name": "gap-citations.md", "content": "# Citations\n\nThe shot of the build is at " + seed.address + " today.\n",
+	}, http.StatusCreated)
 	return seed
 }
 
@@ -179,25 +200,40 @@ func (s *gapSeed) windowReads() []gapWindowRead {
 	messageDeliveries := func(sql string) bool {
 		return strings.Contains(sql, "from message_deliveries") && strings.Contains(sql, "message_id = any($1::uuid[])")
 	}
+	edges := func(sql string) bool {
+		return strings.Contains(sql, "from graph_edges g where g.to_kind = 'artifact' and g.to_id = $1")
+	}
+	excerpts := func(sql string) bool { return strings.Contains(sql, "r.excerpt_text from refs r") }
 	return []gapWindowRead{
 		{
 			name: "a direct message's deliveries", target: "/api/v1/messages/" + s.direct,
 			check: sqlHolding("from messages m where m.id = $1 and"), read: messageDeliveries,
 			leaked: []string{`"attempt":`},
 		},
+		{
+			name: "a conversation file's references", target: "/api/v1/references?" + url.Values{"to": {s.address}}.Encode(),
+			check: sqlHolding("/* visibility predicate: artifact */"), read: edges,
+			leaked: []string{s.citingComment, "gap-citations"},
+		},
+		{
+			// The excerpts ride on the edges they are of, so with the edges held alice's answer
+			// carries none either way: the row is the rows the excerpt read answered.
+			name: "the stored excerpts of a conversation file's mentions", target: "/api/v1/references?" + url.Values{"to": {s.address}}.Encode(),
+			check: sqlHolding("/* visibility predicate: artifact */"), read: excerpts,
+		},
 	}
 }
 
 // TestCensusGapsAKeyedReadHoldsItsObjectOnItsOwn: each read keyed by an object an earlier
 // statement of the route checked binds the reader's clause itself, so an object made hidden
-// between the two answers no row: an ask's followers (asks.Followers), a comment's mentions and
-// delivery attempts (loadCommentMentions, loadCommentDeliveries) and a message's delivery attempts
-// (loadMessageDeliveries). alice reads each route while gapSession's conversation is hers to read;
-// the moment the route's own read of the object has run, the session is placed in PRIV, and the
-// keyed read must answer nothing of it.
+// between the two answers no row: a direct message's delivery attempts (loadMessageDeliveries,
+// after loadMessage), and a conversation file's edges (refs.Edges) and the stored excerpts of its
+// mentions (refs.StoredExcerpts), after the file's own read (refs.Node). alice reads each route
+// while gapSession's conversation is hers to read; the moment the route's own read of the object
+// has run, the session is placed in PRIV, and the keyed read must answer nothing of it.
 //
 // Control: one keyed read's clause dropped; it then answers the hidden object's rows and its row
-// fails, naming them in alice's answer.
+// fails, naming them, and in alice's answer what they carry.
 func TestCensusGapsAKeyedReadHoldsItsObjectOnItsOwn(t *testing.T) {
 	seed := seedGapWindow(t)
 	for _, read := range seed.windowReads() {
@@ -225,9 +261,9 @@ func TestCensusGapsAKeyedReadHoldsItsObjectOnItsOwn(t *testing.T) {
 
 // TestCensusGapsWithTheObjectInViewTheKeyedReadsAnswerAsBefore is the window rows' control and R9:
 // with the session left in PUB, and again with no private project and the session in PRIV too,
-// alice reads each route's keyed rows - the follower, the mention, the delivery attempt - as the
-// base answered them. Each answer is logged with its times and ids blanked, beside its sha256, for
-// the report's comparison of the two commits.
+// alice reads each route's keyed rows - the delivery attempt, the citing comment and document -
+// as the base answered them. Each answer is logged with its times and ids blanked, beside its
+// sha256, for the report's comparison of the two commits.
 func TestCensusGapsWithTheObjectInViewTheKeyedReadsAnswerAsBefore(t *testing.T) {
 	seed := seedGapWindow(t)
 	check := func(t *testing.T, label string) {
