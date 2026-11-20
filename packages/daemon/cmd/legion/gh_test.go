@@ -2519,6 +2519,13 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 
 // Concurrent processes share one log and rotate it as one operation, so no appended line that
 // fits after the oversized prior content is lost.
+//
+// The 128 processes are copies of this test binary, each run on one P (GOMAXPROCS=1). A copy left
+// to size GOMAXPROCS to the host starts a thread for each P its garbage collector's idle mark
+// workers take: about 80 threads a copy on a 288-CPU host against 5 on one P, so on such a host
+// the 128 together held up to 6,800 tasks and fork failed under a 4096-task cgroup limit. Each copy
+// appends one line, which one P does as well as many. Every copy is waited for before the test
+// reports, so a failure leaves none running into the next test.
 func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
 		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
@@ -2541,6 +2548,7 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 		go func() {
 			command := exec.Command(os.Args[0], "-test.run=^TestAppendGhCallLogKeepsConcurrentLinesThatFit$")
 			command.Env = append(os.Environ(),
+				"GOMAXPROCS=1",
 				"LEGION_TEST_GH_CALL_LOG_REPOSITORY="+repository,
 				"LEGION_TEST_GH_CALL_LOG_STATE="+state,
 			)
@@ -2549,8 +2557,11 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 	}
 	for range calls {
 		if err := <-errs; err != nil {
-			t.Fatal(err)
+			t.Error(err)
 		}
+	}
+	if t.Failed() {
+		return
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
