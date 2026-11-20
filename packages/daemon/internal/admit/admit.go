@@ -986,7 +986,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		return err
 	}
 	if logOrphan && observation.Parent != "" {
-		a.log.Info("admission orphan", "issue", observation.Key, "parent", observation.Parent)
+		store.OnCommit(ctx, func() { a.log.Info("admission orphan", "issue", observation.Key, "parent", observation.Parent) })
 	}
 	return nil
 }
@@ -1173,7 +1173,9 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 			// already under way into a root of its own, and promotion admits such a candidate
 			// whatever its links say (blockers.WaitsOn).
 			if !handover.Cancelled && root != nil && root.LingersAt(handover.Generation) {
-				a.log.Info("admission hand-over", "issue", stored.Key, "tree", handover.Tree, "linger", handover.Generation)
+				store.OnCommit(ctx, func() {
+					a.log.Info("admission hand-over", "issue", stored.Key, "tree", handover.Tree, "linger", handover.Generation)
+				})
 				return a.readmit(ctx, tx, stored, o, stored.CarriesRun())
 			}
 		}
@@ -1189,7 +1191,7 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 		// An orphan that started a phase is the same work as a hand-over, whoever handed it to
 		// Legion: a child stranded by a root that closed before its hand-over existed carries its
 		// phase, gate and pull request too (record.Issue.CarriesRun).
-		a.log.Info("admission orphan", "issue", stored.Key, "parent", observation.Parent)
+		store.OnCommit(ctx, func() { a.log.Info("admission orphan", "issue", stored.Key, "parent", observation.Parent) })
 		return a.readmit(ctx, tx, stored, o, stored.CarriesRun())
 	}
 	return a.recordObservation(ctx, tx, stored, o)
@@ -1634,6 +1636,13 @@ func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int
 	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
 }
 
+// logOnCommit writes one Info line once the transaction commits (store.OnCommit), for a line that
+// says what the transaction wrote: a pass rolled back writes none, and one retried after a failed
+// commit writes it once.
+func (a *Admission) logOnCommit(ctx context.Context, msg string, args ...any) {
+	store.OnCommit(ctx, func() { a.log.Info(msg, args...) })
+}
+
 // promote gives each issue of the waiting line what its promotion needs — a slot, a tree opened,
 // a first phase started, an architect resumed — in the line's own order, until the cap is full
 // or the line empties, and reports how many candidates it promoted and the slots it released.
@@ -1933,7 +1942,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// the row is claimable the moment it commits, and the grant wakes the issue's
 				// lifecycle lane (the daemon's projectRecords.PutSlot), so the task is delivered
 				// in the same second rather than at the next sweep.
-				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
+				a.logOnCommit(ctx, "admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
 			case record.LineWaitingOnIssue:
 				// The wait is over — a candidate still waiting never reaches here, the skip
 				// above passes over it — and the row granted above is the whole of this
@@ -1941,7 +1950,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// start again. What its phase needs next, a first phase at admitted among it,
 				// the line offers from the record this grant leaves, the mark cleared, which is
 				// why this round is read again below (record.Waiting).
-				a.log.Info("admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
+				a.logOnCommit(ctx, "admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
 				resumed = true
 			case record.LineAnswered:
 				awaiting := issue.Awaiting
@@ -2244,8 +2253,9 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 		if err := a.enqueue(ctx, tx, key, workflow.ChildrenFirstNotice(facts.ChildWaits[key]), now); err != nil {
 			return err
 		}
-		a.log.Info("admission: an issue waits for the Dispatch children under it", "issue", key,
-			"tree", parent.Tree, "generation", parent.Generation, "children", len(facts.ChildWaits[key].Open))
+		children := len(facts.ChildWaits[key].Open)
+		a.logOnCommit(ctx, "admission: an issue waits for the Dispatch children under it", "issue", key,
+			"tree", parent.Tree, "generation", parent.Generation, "children", children)
 	}
 	return nil
 }
@@ -2478,6 +2488,16 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 			}
 		}
 	}
+	// The release's line says what this transaction does with the held roots, so it is a hook of
+	// its commit, registered before the pass's own so it still comes before the slots the pass
+	// takes, and it names the count the pass admitted, which the hook reads once the pass is done.
+	var admitted int
+	if caughtUp {
+		store.OnCommit(ctx, func() {
+			a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
+				"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
+		})
+	}
 	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp)
 	if err != nil {
 		return nil, err
@@ -2485,8 +2505,6 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 	if !caughtUp {
 		return returned, nil
 	}
-	a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
-		"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
 	store.OnCommit(ctx, func() { a.clearReleased(releasing) })
 	return returned, nil
 }
