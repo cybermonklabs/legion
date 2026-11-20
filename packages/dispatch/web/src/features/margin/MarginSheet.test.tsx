@@ -28,6 +28,7 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
       model={{
         actions: {
           closeComposer: () => {},
+          discardKeptDraft: () => {},
           onAction: () => {},
           onComposerKindChange: () => undefined,
           onEdit: async () => undefined,
@@ -50,6 +51,7 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
           commentsError: false,
           decisions: [],
           historicalAsks: [],
+          keptDrafts: [],
           marginRef: { current: null },
           isClosed: false,
           owner: { key: "CORE-1", kind: "issue" },
@@ -124,6 +126,7 @@ test("a document owner shows the Comments tab and comment composer only", () => 
         model={{
           actions: {
             closeComposer: () => {},
+            discardKeptDraft: () => {},
             onAction: () => {},
             onComposerKindChange: () => undefined,
             onEdit: async () => undefined,
@@ -152,6 +155,7 @@ test("a document owner shows the Comments tab and comment composer only", () => 
             commentsPending: false,
             decisions: [],
             historicalAsks: [],
+            keptDrafts: [],
             isClosed: false,
             issueError: false,
             issuePending: false,
@@ -268,6 +272,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
           model={{
             actions: {
               closeComposer: () => {},
+              discardKeptDraft: () => {},
               onAction: () => {},
               onComposerKindChange: () => undefined,
               onEdit: async () => undefined,
@@ -290,6 +295,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
               commentsPending: false,
               decisions: [],
               historicalAsks: [],
+              keptDrafts: [],
               isClosed: false,
               issueError: false,
               owner: { key: "CORE-1", kind: "issue" },
@@ -420,6 +426,7 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
           model={{
             actions: {
               closeComposer: () => {},
+              discardKeptDraft: () => {},
               onAction: (id, action) => {
                 actions.push([id, action]);
               },
@@ -444,6 +451,7 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
               commentsPending: false,
               decisions: [],
               historicalAsks: [],
+              keptDrafts: [],
               isClosed: false,
               issueError: false,
               owner: {

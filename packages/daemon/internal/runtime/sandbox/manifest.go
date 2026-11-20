@@ -398,11 +398,11 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first asks every role in it to push its work and answer, and not by the launch that
-// finds it; so the launch starts its role as that pod was built, and the role runs degraded —
-// without the secrets broker, without an overlay added since — until the round replaces the pod.
-// It can still push its work and answer the round, which a process that refused to start could
-// not.
+// which first asks every role in it to do the steps of its update message (supervise.UpdateTask)
+// and answer, and not by the launch that finds it; so the launch starts its role as that pod was
+// built, and the role runs degraded — without the secrets broker, without an overlay added
+// since — until the round replaces the pod. It can still do those steps and answer the round,
+// which a process that refused to start could not.
 type keptPod struct {
 	// enrolled is the enrollment decision (Runtime.enrollsIn) read of this pod when the launch
 	// began: the runtime enrols its pods and the pod carries that enrollment for the role, both
@@ -449,7 +449,8 @@ type keptPod struct {
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
 // repoints that role mid-turn: the update round replaces its pod once every worker has answered,
-// or at the round's bound.
+// no turn runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or
+// at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off

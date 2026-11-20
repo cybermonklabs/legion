@@ -1813,7 +1813,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // run as its `addressedSessionOpen()` check. An entry that lands in another conversation all
   // the same, where that session's next start will not read it, is logged. A forged
   // frame can name an attempt before Dispatch's frame does and so spend it; what that costs is
-  // `packages/pi-envoy/AGENTS.md`'s (the record's limit).
+  // the record's limit (`packages/pi-envoy/README.md`, "A person's message from Dispatch").
   const acceptedUserTurn = (
     rendered: RenderInboundResult,
     acceptedSessionID: string
@@ -5168,8 +5168,9 @@ export default function envoyExtension(hostApi: PiApi): void {
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
           // visible here: a plain topic's answer counts its subscribers and names none, since
-          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
-          // envoy skill carry the general rule. A direct envoy_send is unaffected: the
+          // the stream stores one copy each session's own consumer delivers. The listener's drop
+          // of a role message whose holder is its source is the general rule
+          // (skills/envoy/references/deliveries.md). A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
           // holder it names is the session the resolution read, which never received the message.

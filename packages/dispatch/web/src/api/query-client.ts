@@ -180,23 +180,61 @@ export class DispatchQueryClient extends QueryClient {
 }
 
 /**
+ * Reads who is signed in (`whoAmIQuery`) again for news that it may have changed, cancelling a
+ * check still out first: that check was sent before the news and may name the person signed in
+ * before, and an invalidation would wait for its answer rather than start another (TanStack's
+ * client joins a fetch while the query has no data, and this one fetches again only after it), so
+ * the page would be drawn for that person. The cancel takes effect at once, so the invalidation
+ * after it starts a check of its own; a sign-out's `resetQueries` needs no cancel, since a reset
+ * drops the fetch it finds.
+ *
+ * It answers once the newest check has answered, which is what a caller that reads the answer
+ * needs (`unauthorized` in `write-store.ts`). Another ask made while this one's check is out - a
+ * second write's 401, news of a sign-in - cancels that check and starts its own, which ends this
+ * ask's invalidation before any check has answered, so the wait goes on for the check out then. A
+ * check the network paused, offline, has not answered either: TanStack calls it `paused` rather
+ * than `fetching`, and only `idle` says no check is out, so the wait goes on until the network
+ * returns and the check answers.
+ */
+export async function askSignInAgain(client: QueryClient): Promise<void> {
+  void client.cancelQueries({ queryKey: ["whoami"] });
+  await client.invalidateQueries({ queryKey: ["whoami"] });
+  const whoami = client.getQueryCache().find({ exact: true, queryKey: ["whoami"] });
+  for (;;) {
+    const out =
+      whoami === undefined || whoami.state.fetchStatus === "idle" ? undefined : whoami.promise;
+    if (out === undefined) return;
+    await out.catch(() => undefined);
+  }
+}
+
+/**
  * Puts `updater`'s value into the query `queryKey` over every read of it still out. A read in
- * flight was asked before this write, so it answers the state the write replaces, and its answer
- * would put that state back when it lands: a mark's answer that clears an unread count would be
- * undone by the count a read asked before the mark brings (`storeAgentState`, `unread.ts`). So the
- * read is cancelled first, in the same synchronous step as the write, as `askSignInAgain` and the
- * board's moves (`board-moves.ts`) cancel theirs: TanStack's cancel takes effect at once, and puts
- * back the state from before that read, which the write then replaces. Nothing runs between the
- * two. A refetch `DispatchQueryClient` held behind the cancelled read (`#refetch`) starts only once
- * that read has settled, after this write, so it asks for the state the write is of. An awaited
- * cancel would put the write after that refetch has started, and every reader of this step would
- * still read the value the write replaces. Answers what `setQueryData` answers.
+ * flight was asked before this write, so what it answers of what the write is of is the state
+ * the write replaces, and its answer would put that state back when it lands: a mark's answer
+ * that clears an unread count would be undone by the count a read asked before the mark brings
+ * (`storeAgentState`, `unread.ts`). So the read is cancelled first, in the same synchronous step
+ * as the write, as `askSignInAgain` and the board's moves (`board-moves.ts`) cancel theirs:
+ * TanStack's cancel takes effect at once, and puts back the state from before that read, which
+ * the write then replaces. Nothing runs between the two. A refetch `DispatchQueryClient` held
+ * behind the cancelled read (`#refetch`) starts only once that read has settled, after this
+ * write, so it asks for the state the write is of. An awaited cancel would put the write after
+ * that refetch has started, and every reader of this step would still read the value the write
+ * replaces. A read it cancels was asked for a reason - news of another change, a view mounting -
+ * and its answer would have brought that news beside the old value, so once the write is in the
+ * query is read again, if anything still shows it: the read asked then is asked after the write,
+ * and answers both. Answers what `setQueryData` answers.
  */
 export function replaceQueryData<T>(
   client: QueryClient,
   queryKey: QueryKey,
   updater: Updater<T | undefined, T | undefined>
 ): T | undefined {
+  const fetchStatus = client.getQueryState(queryKey)?.fetchStatus ?? "idle";
   void client.cancelQueries({ exact: true, queryKey });
-  return client.setQueryData<T>(queryKey, updater);
+  const written = client.setQueryData<T>(queryKey, updater);
+  if (fetchStatus !== "idle") {
+    void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+  }
+  return written;
 }
