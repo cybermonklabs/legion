@@ -617,6 +617,39 @@ test("a release that fails on a claim drawn after the row was says so beside it"
   }
 });
 
+// The reader released the claim by keyboard, so the row handed the focus to its None. Another
+// session then claimed the issue, and the row drew the new claim in None's place: the focus fell
+// to the page, and the reader's next Tab started again from the top of the page. A change made
+// elsewhere that takes away the element holding the focus hands it on in the row, as the row's
+// own release does, to the new claim's Release.
+test("a claim made elsewhere while the focus is on the row's None hands it to the new claim's Release", async () => {
+  const { release, restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    release.mockReset();
+    release.mockResolvedValueOnce({ ...base, claim: null });
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await view.user.keyboard("{Enter}");
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await waitFor(() =>
+      expect(document.activeElement, "the release landed, and the focus is not on None").toBe(none)
+    );
+
+    view.drawClaim(reviewerClaim);
+    const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "another session claimed the issue while the focus was on the row's None, and the focus fell to the page rather than to the new claim's Release"
+      ).toBe(releaseNew)
+    );
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
