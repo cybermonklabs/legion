@@ -129,7 +129,7 @@ type remadeFailure struct {
 }
 
 func (r *remadeFailures) add(consumer string, failures []record.OpenFailure) {
-	if r == nil || len(failures) == 0 {
+	if len(failures) == 0 {
 		return
 	}
 	r.mu.Lock()
@@ -143,9 +143,6 @@ func (r *remadeFailures) add(consumer string, failures []record.OpenFailure) {
 }
 
 func (r *remadeFailures) has(consumer string, seq uint64) bool {
-	if r == nil {
-		return false
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.seqs[remadeFailure{consumer, seq}]
@@ -154,9 +151,6 @@ func (r *remadeFailures) has(consumer string, seq uint64) bool {
 
 // forget drops consumer's seq once its message succeeded and its open failure is gone.
 func (r *remadeFailures) forget(consumer string, seq uint64) {
-	if r == nil {
-		return
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.seqs, remadeFailure{consumer, seq})
@@ -366,7 +360,11 @@ func (r consumerRun) failed(ctx context.Context, message jetstream.Msg, metadata
 
 // recordFailure is failed's transaction: it records the failure and gives the message up where
 // the bound or the retention says so, and answers whether the message is to be terminated, given
-// up now or given up already. The termination follows the transaction's end.
+// up now or given up already. The termination follows the transaction's end. A give-up that does
+// not commit takes the failure's write back with it, so the failure is recorded again alone
+// (noteFailureAlone): the next delivery then reads this one as ended with its error, rather than
+// giving the message up as a delivery that did not end. A delivery a stop ended is left with no
+// write, as failed leaves such a delivery when the stream keeps its message.
 func (r consumerRun) recordFailure(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, decoded decodedMessage,
 	outcome messageOutcome, now time.Time, retention, stopping bool) (bool, error) {
 	spec := r.spec
@@ -395,9 +393,24 @@ func (r consumerRun) recordFailure(ctx context.Context, message jetstream.Msg, m
 		return false, tx.Commit(ctx)
 	}
 	if err := r.giveUpOpen(ctx, tx, metadata, failure.ID, reason, lastError, now); err != nil {
-		return false, err
+		if stopping {
+			return false, err
+		}
+		_ = tx.Rollback(ctx)
+		return false, errors.Join(err, r.noteFailureAlone(ctx, message, metadata, decoded, lastError, now))
 	}
 	return true, nil
+}
+
+// noteFailureAlone records, in a transaction of its own, that the delivery of message failed with
+// lastError at now (NoteFailure).
+func (r consumerRun) noteFailureAlone(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, decoded decodedMessage,
+	lastError string, now time.Time) error {
+	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := record.NewStore().NoteFailure(ctx, tx, r.intakeMessage(message, metadata, decoded.Source, decoded.EventID),
+			int(metadata.NumDelivered), lastError, now)
+		return err
+	})
 }
 
 // giveUpOpen gives up the open failure id in tx for reason, with lastError, at now
@@ -454,11 +467,12 @@ func commitGiveUps(ctx context.Context, tx pgx.Tx, spec ConsumerSpec, given []re
 	return nil
 }
 
-// logGiveUp writes giveUpLine for given, at error, with the record as it keeps it and delivered,
-// JetStream's count, then the whole of whole through storetext.LogWhole, where the record cut it.
+// logGiveUp writes giveUpLine for given, at error, with the record as it keeps it, its subject as
+// the state shows it (storetext.Text), and delivered, JetStream's count, then the whole of whole
+// through storetext.LogWhole, where the record cut it.
 func logGiveUp(logger *slog.Logger, given record.IntakeFailure, delivered uint64, whole string, attributes ...any) {
 	logger.Error(giveUpLine, append([]any{
-		"project", given.Project, "consumer", given.Consumer, "subject", given.Subject, "stream_seq", given.StreamSeq,
+		"project", given.Project, "consumer", given.Consumer, "subject", storetext.Text(given.Subject), "stream_seq", given.StreamSeq,
 		"stored_at", given.StoredAt.Format(time.RFC3339Nano), "event_id", given.EventID, "delivered", delivered,
 		"first_failed_at", given.FirstFailedAt.Format(time.RFC3339Nano), "reason", string(given.GiveUpReason), "record", given.ID,
 		"error", given.LastError,

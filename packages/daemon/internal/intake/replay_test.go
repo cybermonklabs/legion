@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -35,7 +36,7 @@ func replaySpec(logs *lockedBuffer) ConsumerSpec {
 // giveUpsOf is the replay and the discard of CAPTURE's give-ups on pool, applying with handlers.
 func giveUpsOf(t *testing.T, pool Pool, spec ConsumerSpec, handlers ...Handler) *GiveUps {
 	t.Helper()
-	giveUps, err := NewGiveUps(Records{Pool: pool, Spec: spec}, handlers...)
+	giveUps, err := NewGiveUps(Records{Pool: pool, Spec: spec, Repositories: func() []ghrepo.Repository { return spec.Repositories }}, handlers...)
 	if err != nil {
 		t.Fatalf("NewGiveUps: %v", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -30,28 +29,16 @@ func intakeRecords(t *testing.T, pool *pgxpool.Pool) []record.IntakeFailure {
 }
 
 // readIntakeRecords is intakeRecords for a caller that cannot fail the test, such as a handler or
-// a termination running on a goroutine of the consumer's.
+// a termination running on a goroutine of the consumer's. It reads through the record's own read
+// (record.Postgres.IntakeRecords), so every column is read as the statements read it.
 func readIntakeRecords(ctx context.Context, pool *pgxpool.Pool) ([]record.IntakeFailure, error) {
-	rows, err := pool.Query(ctx, `select id, project, consumer, subject, stream_seq, stored_at, headers, payload,
-		coalesce(event_source, ''), coalesce(event_id, ''), first_failed_at, updated_at, deliveries, ended_delivery, last_error,
-		given_up_at, coalesce(give_up_reason, ''), coalesce(notice_id, 0) from intake_failures order by id`)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (record.IntakeFailure, error) {
-		var f record.IntakeFailure
-		var seq int64
-		var givenUp *time.Time
-		var reason string
-		err := row.Scan(&f.ID, &f.Project, &f.Consumer, &f.Subject, &seq, &f.StoredAt, &f.Headers, &f.Payload, &f.EventSource, &f.EventID,
-			&f.FirstFailedAt, &f.UpdatedAt, &f.Deliveries, &f.EndedDelivery, &f.LastError, &givenUp, &reason, &f.NoticeID)
-		f.StreamSeq, f.GiveUpReason = uint64(seq), record.IntakeGiveUpReason(reason)
-		f.StoredAt, f.FirstFailedAt, f.UpdatedAt = f.StoredAt.UTC(), f.FirstFailedAt.UTC(), f.UpdatedAt.UTC()
-		if givenUp != nil {
-			f.GivenUpAt = givenUp.UTC()
-		}
-		return f, err
+	var records []record.IntakeFailure
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		records, err = record.NewStore().IntakeRecords(ctx, tx)
+		return err
 	})
+	return records, err
 }
 
 // intakeRecordOf is the row of consumer's message at stream sequence seq, and false for none.
@@ -90,12 +77,12 @@ func committedGiveUp(ctx context.Context, pool *pgxpool.Pool, consumer string, s
 // failingRecordPool is a Pool that stands for a PostgreSQL refusing the intake's record: while
 // refuse is on, every statement on intake_failures fails before it reaches the server, and while
 // refuseCommit is on, the commit of a transaction that ran one fails and the transaction is rolled
-// back. Every other statement and commit passes through. refused and commitsRefused count what it
-// refused.
+// back; refuseNextCommit refuses one such commit and is then off again. Every other statement and
+// commit passes through. refused and commitsRefused count what it refused.
 type failingRecordPool struct {
 	Pool
-	refuse, refuseCommit    atomic.Bool
-	refused, commitsRefused atomic.Int32
+	refuse, refuseCommit, refuseNextCommit atomic.Bool
+	refused, commitsRefused                atomic.Int32
 }
 
 var errRecordRefused = errors.New("the test refuses the intake's record")
@@ -154,7 +141,7 @@ func (tx *failingRecordTx) QueryRow(ctx context.Context, sql string, args ...any
 }
 
 func (tx *failingRecordTx) Commit(ctx context.Context) error {
-	if tx.recorded && tx.pool.refuseCommit.Load() {
+	if tx.recorded && (tx.pool.refuseCommit.Load() || tx.pool.refuseNextCommit.CompareAndSwap(true, false)) {
 		tx.pool.commitsRefused.Add(1)
 		_ = tx.Tx.Rollback(ctx)
 		return errRecordRefused

@@ -951,9 +951,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
 // and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
 // the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
-// while no lease holds it, and one that finds it leased opens the next. Nobody inside a tree is
-// told: the message is the intake's, of no issue an architect runs, and the controller replays or
-// discards it (dispatch://INFRA-1575).
+// while no publish has taken it, and one that finds it leased or given back to retry opens the
+// next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
+// and the controller replays or discards it (dispatch://INFRA-1575).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"

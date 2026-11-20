@@ -44,14 +44,40 @@ func holds(t *testing.T, st *store.Store, statement string, want IntakeFailure) 
 	}
 }
 
-// wholeMessage is a failing message whose payload and header value each hold a NUL and a byte
-// that is no UTF-8, which the record keeps byte for byte: the columns are bytea, so neither the
-// store's text rule nor any encoding touches them.
+// wholeMessage is a failing message whose subject, payload and header value each hold a NUL and a
+// byte that is no UTF-8, which the record keeps byte for byte: the columns are bytea, so neither
+// the store's text rule nor any encoding touches them.
 func wholeMessage(project string, seq uint64) IntakeMessage {
 	message := failingMessage(project, seq)
+	message.Subject += "\x00\xff"
 	message.Headers = IntakeHeaders(map[string][]string{"Nats-Msg-Id": {"dispatch-\x00\xff"}, "Content-Type": {"application/json"}})
 	message.Payload = []byte("{\"body\":\"\x00\xff\"}")
 	return message
+}
+
+// asAnswered is failure as every statement but the replay's claim answers it: without its header
+// block and payload, which those statements do not read back (intakeGiveUpColumns).
+func asAnswered(failure IntakeFailure) IntakeFailure {
+	failure.Headers, failure.Payload = nil, nil
+	return failure
+}
+
+// noteFailureAt records, in a transaction of its own, that delivery delivered of message failed at
+// now (NoteFailure), and answers the row as the table holds it after, read whole. It fails the
+// test unless NoteFailure answered that row without the message's bytes.
+func noteFailureAt(t *testing.T, st *store.Store, message IntakeMessage, delivered int, lastError string, now time.Time) IntakeFailure {
+	t.Helper()
+	var answered IntakeFailure
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		answered, err = NewStore().NoteFailure(context.Background(), tx, message, delivered, lastError, now)
+		must(t, err)
+	})
+	whole, found := failureOf(t, st, answered.ID)
+	if !found || !reflect.DeepEqual(answered, asAnswered(whole)) {
+		t.Fatalf("NoteFailure answered\n%#v\nwant the row it wrote without the message's bytes\n%#v", answered, asAnswered(whole))
+	}
+	return whole
 }
 
 // Every statement of intake_failures.go keeps its row as its rule says, read back whole from the
@@ -64,18 +90,12 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 	later := at.Add(5 * time.Minute)
 	const failure = "apply the fact: the database refused the write"
 
-	// opened is message's open failure as NoteFailure writes it at delivery delivered.
+	// opened is message's open failure as NoteFailure writes it at delivery delivered, read whole.
 	opened := func(t *testing.T, st *store.Store, message IntakeMessage, delivered int, now time.Time) IntakeFailure {
 		t.Helper()
-		var row IntakeFailure
-		inTx(t, st, func(tx pgx.Tx) {
-			var err error
-			row, err = records.NoteFailure(ctx, tx, message, delivered, failure, now)
-			must(t, err)
-		})
-		return row
+		return noteFailureAt(t, st, message, delivered, failure, now)
 	}
-	// givenUp is message failed at at and given up at the bound at at.
+	// givenUp is message failed at at and given up at the bound at at, read whole.
 	givenUp := func(t *testing.T, st *store.Store, message IntakeMessage) IntakeFailure {
 		t.Helper()
 		return giveUpAt(t, st, message, at)
@@ -94,7 +114,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 				must(t, err)
 			})
 			want := IntakeFailure{ID: got.ID, IntakeMessage: message, FirstFailedAt: at, UpdatedAt: at, Deliveries: 2}
-			if !reflect.DeepEqual(got, want) {
+			if !reflect.DeepEqual(got, asAnswered(want)) {
 				t.Fatalf("NoteRedelivery answered %#v, want %#v", got, want)
 			}
 			holds(t, st, "NoteRedelivery", want)
@@ -110,7 +130,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			})
 			want := first
 			want.UpdatedAt, want.Deliveries = later, 2
-			if !reflect.DeepEqual(got, want) {
+			if !reflect.DeepEqual(got, asAnswered(want)) {
 				t.Fatalf("NoteRedelivery answered %#v, want %#v: the first failure's time and its ended delivery kept", got, want)
 			}
 			holds(t, st, "NoteRedelivery", want)
@@ -123,7 +143,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 				got, err = records.NoteRedelivery(ctx, tx, failingMessage("LEGION", 41), 22, later)
 				must(t, err)
 			})
-			if !reflect.DeepEqual(got, gave) {
+			if !reflect.DeepEqual(got, asAnswered(gave)) {
 				t.Fatalf("NoteRedelivery of a given-up record answered %#v, want the record as it stood, %#v", got, gave)
 			}
 			holds(t, st, "NoteRedelivery", gave)
@@ -134,7 +154,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			want := IntakeFailure{ID: got.ID, IntakeMessage: message, FirstFailedAt: at, UpdatedAt: at, Deliveries: 1, EndedDelivery: 1,
 				LastError: failure}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("NoteFailure answered %#v, want %#v", got, want)
+				t.Fatalf("NoteFailure wrote %#v, want %#v", got, want)
 			}
 			holds(t, st, "NoteFailure", want)
 		}},
@@ -150,7 +170,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			})
 			want := first
 			want.UpdatedAt, want.Deliveries, want.EndedDelivery, want.LastError = later, 3, 3, storetext.FarSideError(long)
-			if !reflect.DeepEqual(got, want) {
+			if !reflect.DeepEqual(got, asAnswered(want)) {
 				t.Fatalf("NoteFailure answered %#v, want %#v", got, want)
 			}
 			holds(t, st, "NoteFailure", want)
@@ -163,7 +183,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 				got, err = records.NoteFailure(ctx, tx, failingMessage("LEGION", 41), 1, "a later failure", later)
 				must(t, err)
 			})
-			if !reflect.DeepEqual(got, gave) {
+			if !reflect.DeepEqual(got, asAnswered(gave)) {
 				t.Fatalf("NoteFailure of a given-up record answered %#v, want the record as it stood, %#v", got, gave)
 			}
 			holds(t, st, "NoteFailure", gave)
@@ -186,7 +206,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			})
 			want := first
 			want.GivenUpAt, want.GiveUpReason, want.LastError, want.UpdatedAt = later, GiveUpDidNotEnd, sentence, later
-			if !reflect.DeepEqual(got, want) {
+			if !reflect.DeepEqual(got, asAnswered(want)) {
 				t.Fatalf("GiveUpIntakeMessage answered %#v, want %#v", got, want)
 			}
 			holds(t, st, "GiveUpIntakeMessage", want)
@@ -208,7 +228,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			undecoded.EventSource, undecoded.EventID = "", ""
 			want := IntakeFailure{ID: got.ID, IntakeMessage: undecoded, FirstFailedAt: at, UpdatedAt: at, Deliveries: 1, EndedDelivery: 1,
 				LastError: decode, GivenUpAt: at, GiveUpReason: GiveUpUndecodable}
-			if !reflect.DeepEqual(got, want) {
+			if !reflect.DeepEqual(got, asAnswered(want)) {
 				t.Fatalf("RecordUndecodable answered %#v, want %#v", got, want)
 			}
 			holds(t, st, "RecordUndecodable", want)
@@ -248,10 +268,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 				got, err = records.ListPassedFailures(ctx, tx, "LEGION", below.Consumer, 42)
 				must(t, err)
 			})
-			want := []OpenFailure{
-				{ID: below.ID, StreamSeq: 41, StoredAt: below.StoredAt, UpdatedAt: at},
-				{ID: at42.ID, StreamSeq: 42, StoredAt: at42.StoredAt, UpdatedAt: later},
-			}
+			want := []OpenFailure{{ID: below.ID, StreamSeq: 41}, {ID: at42.ID, StreamSeq: 42}}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("ListPassedFailures through 42 = %#v, want the open failures at or below it in stream order, %#v", got, want)
 			}
@@ -268,7 +285,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			})
 			want := passed
 			want.GivenUpAt, want.GiveUpReason, want.LastError, want.UpdatedAt = later, GiveUpConsumerMovedPast, ConsumerMovedPastError, later
-			if !reflect.DeepEqual(got, []IntakeFailure{want}) {
+			if !reflect.DeepEqual(got, []IntakeFailure{asAnswered(want)}) {
 				t.Fatalf("SweepPassedFailures answered %#v, want the one record no statement touched since the listing, %#v", got, want)
 			}
 			holds(t, st, "SweepPassedFailures", want)
@@ -565,12 +582,7 @@ func TestIntakeFailuresOfAnotherProjectAreNeitherReadNorWritten(t *testing.T) {
 	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
 	later := at.Add(time.Hour)
 	theirs := giveUpAt(t, st, failingMessage("OTHER", 41), at)
-	var open IntakeFailure
-	inTx(t, st, func(tx pgx.Tx) {
-		var err error
-		open, err = records.NoteFailure(ctx, tx, failingMessage("OTHER", 42), 1, "the handler failed", at)
-		must(t, err)
-	})
+	open := noteFailureAt(t, st, failingMessage("OTHER", 42), 1, "the handler failed", at)
 
 	inTx(t, st, func(tx pgx.Tx) {
 		if _, err := records.ClaimIntakeReplay(ctx, tx, "LEGION", IntakeSelector{ID: theirs.ID}, 100, time.Minute, later); !errors.Is(err, ErrIntakeGiveUpNotFound) {

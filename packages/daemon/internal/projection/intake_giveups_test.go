@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -63,13 +64,15 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	}
 
 	// Fifty-one decoded messages of one consumer, given up a minute apart, then the newest of all,
-	// a message that did not decode, whose error is 400 characters of three bytes each.
+	// a message that did not decode, whose error is 400 characters of three bytes each and whose
+	// subject holds a NUL and a byte that is no UTF-8.
 	var decoded []int64
 	for i := range 51 {
 		decoded = append(decoded, giveUp(message("LEGION", uint64(100+i)), base.Add(time.Duration(i)*time.Minute)))
 	}
 	longError := strings.Repeat("日", 400)
 	undecodable := message("LEGION", 200)
+	undecodable.Subject += "\x00\xff"
 	undecodable.EventSource, undecodable.EventID = "", ""
 	var newest record.IntakeFailure
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
@@ -169,6 +172,12 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 		if !utf8.ValidString(got.LastError) || got.LastError != strings.Repeat("日", stateGiveUpErrorRunes) {
 			t.Errorf("the listed error is %d bytes, %d runes, valid UTF-8 %t; want the first %d characters whole",
 				len(got.LastError), utf8.RuneCountInString(got.LastError), utf8.ValidString(got.LastError), stateGiveUpErrorRunes)
+		}
+	})
+	t.Run("a subject that is no storable text is shown as the store keeps text", func(t *testing.T) {
+		got := state.IntakeGiveUps.Newest[0]
+		if want := storetext.Text(undecodable.Subject); got.ID != newest.ID || got.Subject != want {
+			t.Errorf("the newest listed give-up = %+v, want the undecodable message %d with the subject %q", got, newest.ID, want)
 		}
 	})
 }

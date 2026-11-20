@@ -98,7 +98,7 @@ func TestAReplayOfAnUnrecordedChildsOldEventRecordsItAsDispatchShowsItNow(t *tes
 		}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(records, workflow.Config{Project: project, Repositories: redeliveredRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, log)
-	giveUps, err := intake.NewGiveUps(intake.Records{Pool: pool, Spec: spec},
+	giveUps, err := intake.NewGiveUps(intake.Records{Pool: pool, Spec: spec, Repositories: func() []ghrepo.Repository { return spec.Repositories }},
 		blockers.NewMirror(records, project), engine, admit.New(records, engine, 10, project, log))
 	if err != nil {
 		t.Fatalf("NewGiveUps: %v", err)

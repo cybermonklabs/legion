@@ -124,7 +124,7 @@ func productionRun(t *testing.T, pool Pool, logs *lockedBuffer, now func() time.
 		t.Fatalf("normalizedSpec: %v", err)
 	}
 	return consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: notificationStreamMaxAge, names: &issueNames{},
-		dropped: newDroppedSettlements()}
+		remade: &remadeFailures{}, dropped: newDroppedSettlements()}
 }
 
 // notificationStreamMaxAge is how long production's notification stream keeps a message, its
@@ -567,6 +567,42 @@ func TestWhileTheRecordCannotBeWrittenTheMessageIsNakedAndRecordedLater(t *testi
 				t.Fatalf("the delivery after the refusal ended: %d terminations, finding a committed give-up: %t (%v); want it recorded, then terminated", terms, committed, readErr)
 			}
 		})
+	}
+}
+
+// A give-up whose commit fails takes back the failure its transaction recorded, so the failure is
+// recorded again, alone, before the nak: the open failure ends at that delivery with its error,
+// and the next delivery runs its handler, rather than giving the message up as a delivery that
+// did not end, with a stop or a crash for its cause that never happened.
+func TestAGiveUpWhoseCommitFailsStillRecordsTheDeliverysFailure(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	consumer := dispatchConsumerName("CAPTURE")
+	raw := migratedPool(t)
+	pool := &failingRecordPool{Pool: raw}
+	run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
+	calls := 0
+	first := newDelivery(consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 800, now.Add(-time.Minute))
+	pool.refuseNextCommit.Store(true)
+	consumeDelivery(context.Background(), first, run, failingHandler(&calls))
+	if acks, terms, naks := first.asked(); acks != 0 || terms != 0 || !slices.Equal(naks, []time.Duration{nakDelay(1, run.spec)}) {
+		t.Fatalf("the delivery whose give-up was refused: asked %d acks, %d terms and naks %v, want one nak of %s", acks, terms, naks, nakDelay(1, run.spec))
+	}
+	if refused := pool.commitsRefused.Load(); refused != 1 {
+		t.Fatalf("%d commits were refused, want the give-up's alone", refused)
+	}
+	open, found := intakeRecordOf(t, raw, consumer, 800)
+	if !found || open.GivenUp() || open.Deliveries != 1 || open.EndedDelivery != 1 || open.LastError != errAlwaysFails.Error() {
+		t.Fatalf("the record after the refused give-up = %+v (found %t), want an open failure ended at delivery 1 with the handler's error", open, found)
+	}
+
+	again := first.deliveredAgain(2)
+	consumeDelivery(context.Background(), again, run, failingHandler(&calls))
+	if calls != 2 {
+		t.Fatalf("the handler ran %d times, want it run at the next delivery too", calls)
+	}
+	given, _ := intakeRecordOf(t, raw, consumer, 800)
+	if _, terms, _ := again.asked(); terms != 1 || given.GiveUpReason != record.GiveUpBound || given.LastError != errAlwaysFails.Error() {
+		t.Fatalf("the next delivery made %d terminations and left %+v, want the message given up at the bound with the handler's error", terms, given)
 	}
 }
 

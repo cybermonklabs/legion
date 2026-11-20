@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -247,7 +248,8 @@ func TestIntakeCommandsReplayAndDiscardRecordedGiveUps(t *testing.T) {
 	records := record.NewStore()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(records, workflow.Config{Project: project, Repositories: resolvedRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, quiet)
-	giveUps, err := intake.NewGiveUps(intake.Records{Pool: st.Pool(), Spec: intake.ConsumerSpec{Project: project, Logger: quiet}},
+	giveUps, err := intake.NewGiveUps(intake.Records{Pool: st.Pool(), Spec: intake.ConsumerSpec{Project: project, Logger: quiet},
+		Repositories: func() []ghrepo.Repository { return nil }},
 		blockers.NewMirror(records, project), engine, admit.New(records, engine, 2, project, quiet))
 	if err != nil {
 		t.Fatalf("NewGiveUps: %v", err)

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -526,8 +527,9 @@ const stateNewestGiveUps = 50
 const stateGiveUpErrorRunes = 300
 
 // intakeGiveUpsView is open as the state shows it: each consumer's count and newest sequence, and
-// each listed record with its error cut to stateGiveUpErrorRunes and a null event id for a
-// message that did not decode.
+// each listed record with its subject as the store keeps text (storetext.Text), since the record
+// keeps the publisher's bytes and the state is JSON text a reader takes in, its error cut to
+// stateGiveUpErrorRunes, and a null event id for a message that did not decode.
 func intakeGiveUpsView(open record.IntakeGiveUps) api.IntakeGiveUpsView {
 	view := api.IntakeGiveUpsView{
 		Consumers: make([]api.IntakeGiveUpCountView, len(open.Consumers)),
@@ -538,7 +540,7 @@ func intakeGiveUpsView(open record.IntakeGiveUps) api.IntakeGiveUpsView {
 	}
 	for i, failure := range open.Newest {
 		listed := api.IntakeGiveUpView{
-			ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject, StreamSeq: failure.StreamSeq,
+			ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject), StreamSeq: failure.StreamSeq,
 			StoredAt: failure.StoredAt, Deliveries: failure.Deliveries, GaveUpAt: failure.GivenUpAt,
 			Reason: failure.GiveUpReason, LastError: firstRunes(failure.LastError, stateGiveUpErrorRunes),
 		}

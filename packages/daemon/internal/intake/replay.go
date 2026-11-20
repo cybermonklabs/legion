@@ -34,7 +34,6 @@ const discardReasonRunes = storetext.FarSideErrorRunes
 // Records is what the replay and the discard of give-ups read of the intake (Consumers.Records):
 // the pool the records and every fact are kept in, the consumers' spec, and the repositories
 // GitHub intake hears now, which a replay decodes a GitHub event against as a delivery is decoded.
-// A nil Repositories is the spec's, the boot's, for a caller whose set never changes.
 type Records struct {
 	Pool         Pool
 	Spec         ConsumerSpec
@@ -56,20 +55,19 @@ type GiveUps struct {
 }
 
 // NewGiveUps is the replay and the discard of the give-ups of records' project, a replay applying
-// each fact with handlers.
+// each fact with handlers. It refuses records that name no pool or no Repositories.
 func NewGiveUps(records Records, handlers ...Handler) (*GiveUps, error) {
 	if records.Pool == nil {
 		return nil, errors.New("a replay of give-ups needs the Postgres pool they and every fact are kept in")
+	}
+	if records.Repositories == nil {
+		return nil, errors.New("a replay of give-ups needs the repositories GitHub intake hears, which it decodes a GitHub event against")
 	}
 	spec, err := normalizedSpec(records.Spec)
 	if err != nil {
 		return nil, err
 	}
-	repositories := records.Repositories
-	if repositories == nil {
-		repositories = func() []ghrepo.Repository { return spec.Repositories }
-	}
-	return &GiveUps{pool: records.Pool, spec: spec, repositories: repositories, handlers: handlers, dropped: newDroppedSettlements()}, nil
+	return &GiveUps{pool: records.Pool, spec: spec, repositories: records.Repositories, handlers: handlers, dropped: newDroppedSettlements()}, nil
 }
 
 // RequestError is a replay or a discard refused for what it asks, before any statement: a
@@ -168,21 +166,21 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 	}
 	log := func(level slog.Level, line string, attributes ...any) {
 		g.spec.Logger.Log(context.Background(), level, line,
-			append(attributes, "subject", given.Subject, "stream_seq", given.StreamSeq, "replay", given.ID)...)
+			append(attributes, "subject", storetext.Text(given.Subject), "stream_seq", given.StreamSeq, "replay", given.ID)...)
 	}
 	work, cancel := context.WithTimeout(withReplayClose(ctx, replayClose{project: g.spec.Project, id: given.ID, by: caller, now: g.spec.Now}),
 		g.spec.HandlerLimit)
 	defer cancel()
 	outcome := handleMessage(work, log, nil, g.spec, g.pool, decoded, g.handlers, g.dropped)
-	switch {
-	case outcome.nak:
+	switch outcome.kind {
+	case outcomeNak:
 		return g.failed(ctx, replayed, outcome.err)
-	case outcome.duplicate:
+	case outcomeApplied:
+		replayed.Outcome = ReplayApplied
+	case outcomeDuplicate:
 		logDuplicate(log, decoded, given.Consumer, uint64(given.Deliveries))
 		replayed.Outcome = ReplayAlreadyApplied
-	case outcome.applied:
-		replayed.Outcome = ReplayApplied
-	default:
+	case outcomeAcked:
 		return g.noFact(ctx, replayed, caller)
 	}
 	return replayed

@@ -66,8 +66,12 @@ const (
 // IntakeMessage is one message of a durable consumer as the record keeps it: whose project it is,
 // the consumer that delivered it, its subject, its stream sequence and the time JetStream stored
 // it, which together with the consumer are its key, its header block (IntakeHeaders, nil for
-// none) and its payload, both kept byte for byte, and the fact's source and event id, empty for a
-// message that did not decode.
+// none) and its payload, and the fact's source and event id, empty for a message that did not
+// decode. The subject, the header block and the payload are the publisher's bytes and are kept
+// byte for byte, so a replay decodes the subject and the payload the delivery decoded; a NUL or a
+// byte that is no UTF-8 in them never makes the record's write fail. The source and the event id
+// are kept as the store keeps text (storetext.Text), since a replay decodes them from the payload
+// again.
 type IntakeMessage struct {
 	Project     string
 	Consumer    string
@@ -109,13 +113,12 @@ type IntakeFailure struct {
 // GivenUp says whether the intake gave the message up: a record, where false is an open failure.
 func (f IntakeFailure) GivenUp() bool { return !f.GivenUpAt.IsZero() }
 
-// OpenFailure is an open failure as the sweep lists it (ListPassedFailures): its id, where it
-// stands on the stream, and when a statement last wrote it.
+// OpenFailure is an open failure as ListPassedFailures lists it: its id, which the sweep gives it
+// up by, and its stream sequence, by which a consumer made again knows that a delivery may have an
+// open failure (intake's remadeFailures).
 type OpenFailure struct {
 	ID        int64
 	StreamSeq uint64
-	StoredAt  time.Time
-	UpdatedAt time.Time
 }
 
 // IntakeGiveUpCount is one consumer's open give-ups: how many, and the highest stream sequence
@@ -223,7 +226,10 @@ func IntakeHeaders(headers map[string][]string) []byte {
 }
 
 // The columns of a record as scanIntakeFailure reads them, and the same with its headers and
-// payload read as null, for a read that shows neither.
+// payload read as null. Only the replay's claim reads the message bytes (ClaimIntakeReplay),
+// since a replay decodes the payload; every other statement reads neither, the failure path's
+// among them, which runs at each failed delivery and would otherwise read back a payload of up to
+// the megabyte NATS takes in one message each time for a caller that never looks at it.
 const (
 	intakeFailureKey  = `id, project, consumer, subject, stream_seq, stored_at, `
 	intakeFailureRest = `, coalesce(event_source, ''), coalesce(event_id, ''), first_failed_at, updated_at, deliveries,
@@ -244,15 +250,16 @@ const (
 // as the zero time.
 func scanIntakeFailure(row scanner) (IntakeFailure, error) {
 	var f IntakeFailure
+	var subject []byte
 	var seq int64
 	var givenUp, claimed, closed, discarded *time.Time
 	var reason, how string
-	if err := row.Scan(&f.ID, &f.Project, &f.Consumer, &f.Subject, &seq, &f.StoredAt, &f.Headers, &f.Payload, &f.EventSource,
+	if err := row.Scan(&f.ID, &f.Project, &f.Consumer, &subject, &seq, &f.StoredAt, &f.Headers, &f.Payload, &f.EventSource,
 		&f.EventID, &f.FirstFailedAt, &f.UpdatedAt, &f.Deliveries, &f.EndedDelivery, &f.LastError, &givenUp, &reason, &f.NoticeID,
 		&claimed, &closed, &how, &f.ClosedBy, &discarded, &f.DiscardedBy, &f.DiscardReason); err != nil {
 		return IntakeFailure{}, err
 	}
-	f.StreamSeq = uint64(seq)
+	f.Subject, f.StreamSeq = string(subject), uint64(seq)
 	f.StoredAt, f.FirstFailedAt, f.UpdatedAt = f.StoredAt.UTC(), f.FirstFailedAt.UTC(), f.UpdatedAt.UTC()
 	f.GivenUpAt, f.ReplayClaimedAt, f.ClosedAt, f.DiscardedAt = utcOrZero(givenUp), utcOrZero(claimed), utcOrZero(closed), utcOrZero(discarded)
 	f.GiveUpReason, f.ClosedHow = IntakeGiveUpReason(reason), IntakeClosedHow(how)
@@ -273,22 +280,24 @@ func utcOrZero(at *time.Time) time.Time {
 }
 
 // messageArgs is message's key and contents as the statements below take them, $1 to $7: the
-// project, the consumer, the subject, the stream sequence, the stored time truncated to the
-// microseconds PostgreSQL keeps (never rounded up, as intake's recordStreamPosition truncates
-// it), the header block and the payload. An empty payload is written as no bytes rather than as
-// null, which the column refuses: a NATS message may carry none.
+// project, the consumer, the subject as bytes, which the bytea column keeps as they came, the
+// stream sequence, the stored time truncated to the microseconds PostgreSQL keeps (never rounded
+// up, as intake's recordStreamPosition truncates it), the header block and the payload. An empty
+// payload is written as no bytes rather than as null, which the column refuses: a NATS message may
+// carry none.
 func messageArgs(message IntakeMessage) []any {
 	payload := message.Payload
 	if payload == nil {
 		payload = []byte{}
 	}
-	return []any{message.Project, message.Consumer, message.Subject, int64(message.StreamSeq),
+	return []any{message.Project, message.Consumer, []byte(message.Subject), int64(message.StreamSeq),
 		message.StoredAt.Truncate(time.Microsecond), message.Headers, payload}
 }
 
 // noteIntakeFailure runs statement, an insert of message's record that updates an open failure
 // of the same message on conflict and leaves one given up as it is, and answers the row it
 // returns; where it returns none, the record is given up, and it answers that record as it stands.
+// Either is read without the message's bytes (intakeGiveUpColumns), which no caller reads.
 func noteIntakeFailure(ctx context.Context, tx pgx.Tx, message IntakeMessage, statement string, args ...any) (IntakeFailure, error) {
 	failure, err := scanIntakeFailure(tx.QueryRow(ctx, statement, args...))
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -297,7 +306,7 @@ func noteIntakeFailure(ctx context.Context, tx pgx.Tx, message IntakeMessage, st
 		}
 		return failure, nil
 	}
-	failure, err = scanIntakeFailure(tx.QueryRow(ctx, `select `+intakeFailureColumns+` from intake_failures
+	failure, err = scanIntakeFailure(tx.QueryRow(ctx, `select `+intakeGiveUpColumns+` from intake_failures
 		where project = $1 and consumer = $2 and stream_seq = $3 and stored_at = $4`,
 		message.Project, message.Consumer, int64(message.StreamSeq), message.StoredAt.Truncate(time.Microsecond)))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -312,24 +321,25 @@ func noteIntakeFailure(ctx context.Context, tx pgx.Tx, message IntakeMessage, st
 // NoteRedelivery notes delivery delivered (JetStream's count, 2 or more) of message before its
 // handling: it inserts the open failure when the message has none, with the first failure at now,
 // which starts the clock for a message whose handling never ended, and otherwise sets the count
-// and the time of the note. It answers the record as it stands, so the intake decides from it
-// before the handler runs: a record given up already, which this leaves as it is, is a
-// termination that was lost.
+// and the time of the note. It answers the record as it stands, without the message's bytes, so
+// the intake decides from it before the handler runs: a record given up already, which this leaves
+// as it is, is a termination that was lost.
 func (s *Postgres) NoteRedelivery(ctx context.Context, tx pgx.Tx, message IntakeMessage, delivered int, now time.Time) (IntakeFailure, error) {
 	return noteIntakeFailure(ctx, tx, message, `insert into intake_failures (project, consumer, subject, stream_seq, stored_at,
 		headers, payload, event_source, event_id, first_failed_at, updated_at, deliveries)
 		values ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), nullif($9, ''), $10, $10, $11)
 		on conflict (consumer, stream_seq, stored_at) do update set updated_at = excluded.updated_at, deliveries = excluded.deliveries
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
-		returning `+intakeFailureColumns, append(messageArgs(message), message.EventSource, message.EventID, now, delivered)...)
+		returning `+intakeGiveUpColumns, append(messageArgs(message), storetext.Text(message.EventSource), storetext.Text(message.EventID),
+		now, delivered)...)
 }
 
 // NoteFailure records that delivery delivered of message failed with lastError, a far side's
 // error text kept as storetext.FarSideError keeps it (the caller logs it whole): it inserts the
 // open failure at the message's first failed delivery, and sets the count, the delivery that
 // ended, the error and the time of the note on it after. It answers the record, whose first
-// failure the bound reads; a record given up already it leaves as it is and answers, and the
-// intake terminates the message.
+// failure the bound reads, without the message's bytes; a record given up already it leaves as it
+// is and answers, and the intake terminates the message.
 func (s *Postgres) NoteFailure(ctx context.Context, tx pgx.Tx, message IntakeMessage, delivered int, lastError string, now time.Time) (IntakeFailure, error) {
 	return noteIntakeFailure(ctx, tx, message, `insert into intake_failures (project, consumer, subject, stream_seq, stored_at,
 		headers, payload, event_source, event_id, first_failed_at, updated_at, deliveries, ended_delivery, last_error)
@@ -337,16 +347,16 @@ func (s *Postgres) NoteFailure(ctx context.Context, tx pgx.Tx, message IntakeMes
 		on conflict (consumer, stream_seq, stored_at) do update set updated_at = excluded.updated_at,
 			deliveries = excluded.deliveries, ended_delivery = excluded.ended_delivery, last_error = excluded.last_error
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
-		returning `+intakeFailureColumns, append(messageArgs(message), message.EventSource, message.EventID, now, delivered,
-		storetext.FarSideError(lastError))...)
+		returning `+intakeGiveUpColumns, append(messageArgs(message), storetext.Text(message.EventSource), storetext.Text(message.EventID),
+		now, delivered, storetext.FarSideError(lastError))...)
 }
 
 // GiveUpIntakeMessage is the whole of a give-up's step in the record, in the transaction that
 // decides it: the open failure id of project is marked given up at now for reason, with lastError
 // as storetext.FarSideError keeps it, and, where a controller is registered, counted in a notice
-// whose outbox id the record keeps (countIntakeGiveUp). It answers the record as it left it, and
-// false, with nothing written, where project has no open failure of that id: one given up
-// already, or none.
+// whose outbox id the record keeps (countIntakeGiveUp). It answers the record as it left it,
+// without the message's bytes, and false, with nothing written, where project has no open failure
+// of that id: one given up already, or none.
 func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project string, id int64, reason IntakeGiveUpReason, lastError string, now time.Time) (IntakeFailure, bool, error) {
 	switch reason {
 	case GiveUpBound, GiveUpDidNotEnd, GiveUpRetention, GiveUpUndecodable, GiveUpConsumerMovedPast:
@@ -356,7 +366,7 @@ func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project s
 	failure, err := scanIntakeFailure(tx.QueryRow(ctx, `update intake_failures
 		set given_up_at = $3, give_up_reason = $4, last_error = $5, updated_at = $3
 		where id = $1 and project = $2 and given_up_at is null
-		returning `+intakeFailureColumns, id, project, now, string(reason), storetext.FarSideError(lastError)))
+		returning `+intakeGiveUpColumns, id, project, now, string(reason), storetext.FarSideError(lastError)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IntakeFailure{}, false, nil
 	}
@@ -372,9 +382,10 @@ func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project s
 
 // RecordUndecodable records message, which did not decode, as given up at its delivery delivered
 // with decodeError, holding its payload and headers and no event id, and counts it in a notice as
-// a give-up does. An open failure of the same message is given up with it. It answers the record
-// and true; and false, with nothing written, for a message recorded as given up already, which is
-// a termination that was lost: no second record and no second count.
+// a give-up does. An open failure of the same message is given up with it. It answers the record,
+// without the message's bytes, and true; and false, with nothing written, for a message recorded
+// as given up already, which is a termination that was lost: no second record and no second
+// count.
 func (s *Postgres) RecordUndecodable(ctx context.Context, tx pgx.Tx, message IntakeMessage, delivered int, decodeError string, now time.Time) (IntakeFailure, bool, error) {
 	failure, err := scanIntakeFailure(tx.QueryRow(ctx, `insert into intake_failures (project, consumer, subject, stream_seq, stored_at,
 		headers, payload, first_failed_at, updated_at, deliveries, ended_delivery, last_error, given_up_at, give_up_reason)
@@ -383,7 +394,7 @@ func (s *Postgres) RecordUndecodable(ctx context.Context, tx pgx.Tx, message Int
 			give_up_reason = excluded.give_up_reason, last_error = excluded.last_error, deliveries = excluded.deliveries,
 			ended_delivery = excluded.ended_delivery, updated_at = excluded.updated_at
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
-		returning `+intakeFailureColumns,
+		returning `+intakeGiveUpColumns,
 		append(messageArgs(message), now, delivered, storetext.FarSideError(decodeError), string(GiveUpUndecodable))...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IntakeFailure{}, false, nil
@@ -422,7 +433,10 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 	}
 	for i := range failures {
 		failure := &failures[i]
-		notice, err := s.countIntakeGiveUp(ctx, tx, project, NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject}, now)
+		// The notice is a jsonb row, which refuses the \u0000 escape a NUL in the subject encodes
+		// to, so it names the subject as the store keeps text, as the state shows it.
+		named := NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject)}
+		notice, err := s.countIntakeGiveUp(ctx, tx, project, named, now)
 		if err != nil {
 			return err
 		}
@@ -437,17 +451,19 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 // countIntakeGiveUp counts giveUp in project's intake-gave-up notice and answers that notice's
 // outbox id. It takes the project's transaction-scoped lock first, so the give-ups of the three
 // consumers, each in a transaction of its own, join one row rather than each opening one. The
-// notice it joins is the oldest of the project's that no lease holds: its count rises by one, and
-// it names giveUp while it names fewer than giveUpNoticeNames. A leased row is being published and
-// a count raised in it may never reach the controller, so with none unleased it opens a row on the
-// project key, due giveUpNoticeDelay after now, counting and naming giveUp. A row the outbox gave
-// back to retry holds no lease, so it takes give-ups again rather than leaving one more row behind.
+// notice it joins is the oldest of the project's that no publish has taken: no lease holds it and
+// no attempt has run it. Its count rises by one, and it names giveUp while it names fewer than
+// giveUpNoticeNames. A count raised in a row a publish took may never reach the controller: a
+// leased row is being published, and a row the outbox gave back to retry may have reached the
+// controller in the attempt that failed, while its retry publishes under the same key (OutboxKey),
+// which Envoy does not deliver twice. So with no row left to join it opens one on the project
+// key, due giveUpNoticeDelay after now, counting and naming giveUp.
 func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project string, giveUp NoticeGiveUp, now time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.intake_give_up_notice:' || $1::text))`, project); err != nil {
 		return 0, fmt.Errorf("lock %s's intake-gave-up notice: %w", project, err)
 	}
 	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3 and lease_until is null
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3 and lease_until is null and attempts = 0
 		order by id limit 1 for update`, string(OutboxKindControllerNotice), project, string(IntakeGaveUpNotice)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		opened, err := NewOutboxRow(project, ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}, now.Add(giveUpNoticeDelay))
@@ -495,7 +511,7 @@ func (s *Postgres) ClearIntakeFailure(ctx context.Context, tx pgx.Tx, project, c
 // order: what the sweep lists at or below the consumer's ack floor, and, with the highest
 // sequence, every open failure of a consumer made again.
 func (s *Postgres) ListPassedFailures(ctx context.Context, tx pgx.Tx, project, consumer string, throughSeq uint64) ([]OpenFailure, error) {
-	rows, err := tx.Query(ctx, `select id, stream_seq, stored_at, updated_at from intake_failures
+	rows, err := tx.Query(ctx, `select id, stream_seq from intake_failures
 		where project = $1 and consumer = $2 and stream_seq <= $3 and given_up_at is null
 		order by stream_seq, stored_at, id`, project, consumer, throughSeqArg(throughSeq))
 	if err != nil {
@@ -504,8 +520,8 @@ func (s *Postgres) ListPassedFailures(ctx context.Context, tx pgx.Tx, project, c
 	failures, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OpenFailure, error) {
 		var failure OpenFailure
 		var seq int64
-		err := row.Scan(&failure.ID, &seq, &failure.StoredAt, &failure.UpdatedAt)
-		failure.StreamSeq, failure.StoredAt, failure.UpdatedAt = uint64(seq), failure.StoredAt.UTC(), failure.UpdatedAt.UTC()
+		err := row.Scan(&failure.ID, &seq)
+		failure.StreamSeq = uint64(seq)
 		return failure, err
 	})
 	if err != nil {
@@ -527,7 +543,7 @@ func (s *Postgres) SweepPassedFailures(ctx context.Context, tx pgx.Tx, project s
 	rows, err := tx.Query(ctx, `update intake_failures
 		set given_up_at = $3, give_up_reason = $4, last_error = $5, updated_at = $3
 		where project = $1 and id = any($2) and given_up_at is null and updated_at < $6
-		returning `+intakeFailureColumns, project, ids, now, string(GiveUpConsumerMovedPast), ConsumerMovedPastError, listedAt)
+		returning `+intakeGiveUpColumns, project, ids, now, string(GiveUpConsumerMovedPast), ConsumerMovedPastError, listedAt)
 	if err != nil {
 		return nil, fmt.Errorf("give up %s's open failures its consumers moved past: %w", project, err)
 	}
@@ -578,6 +594,22 @@ func (s *Postgres) OpenIntakeGiveUps(ctx context.Context, tx pgx.Tx, project str
 		return IntakeGiveUps{}, fmt.Errorf("list %s's newest open give-ups: %w", project, err)
 	}
 	return IntakeGiveUps{Consumers: consumers, Newest: listed}, nil
+}
+
+// IntakeRecords is every row of intake_failures, of every project, in id order, each read whole
+// by scanIntakeFailure: the open failures and the records given up alike. The daemon never reads
+// the table whole; a test that holds the table to what the intake wrote reads it here, so the
+// record's columns and their scan are written once.
+func (s *Postgres) IntakeRecords(ctx context.Context, tx pgx.Tx) ([]IntakeFailure, error) {
+	rows, err := tx.Query(ctx, `select `+intakeFailureColumns+` from intake_failures order by id`)
+	if err != nil {
+		return nil, fmt.Errorf("read the intake's records: %w", err)
+	}
+	records, err := pgx.CollectRows(rows, intakeFailureRow)
+	if err != nil {
+		return nil, fmt.Errorf("read the intake's records: %w", err)
+	}
+	return records, nil
 }
 
 // giveUpForUpdate is project's give-up id, locked for the rest of the transaction, and

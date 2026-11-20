@@ -950,7 +950,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	// no longer takes ends its open failure: the server delivers it again after the filter moves,
 	// and it decodes to no fact.
 	if decoded.Fact == nil {
-		return acknowledged(ctx, message, metadata, run, mayHaveFailed)
+		return acknowledged(ctx, message, metadata, run, mayHaveFailed, false)
 	}
 	if metadata != nil && metadata.NumDelivered >= 2 {
 		if decided, handled := run.noteRedelivery(ctx, message, metadata, decoded); decided {
@@ -980,7 +980,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	// above). So the daemon says when one did: this is the only line that reports how long a fact
 	// took, nothing else times one, and the consumer-lag warning (lagWatch) speaks only five
 	// minutes late.
-	outlived := !outcome.nak && took > spec.AckWait
+	outlived := outcome.kind != outcomeNak && took > spec.AckWait
 	// A handler the limit cut is otherwise hard to see while it still holds the message: for as
 	// long as it holds, the cut shows neither as repeated preparation work nor as a rising
 	// delivery count (the delivery mechanism: HandlerLimit's comment above), and the nak warning
@@ -992,7 +992,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	// ignores the context it was handed, and the handling still asks for the acknowledgement
 	// below. Such a message was never cut, and saying it was would send an operator looking for a
 	// redelivery that is not coming of a fact that is already applied.
-	cut := outcome.nak && ctx.Err() == nil && errors.Is(work.Err(), context.DeadlineExceeded)
+	cut := outcome.kind == outcomeNak && ctx.Err() == nil && errors.Is(work.Err(), context.DeadlineExceeded)
 	if outlived || cut {
 		if outlived {
 			logMessage(spec.Logger, slog.LevelInfo, "an intake fact outlived its acknowledgement window and was held in progress while it ran", message,
@@ -1004,65 +1004,81 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 		}
 	}
 
-	if outcome.nak {
+	switch outcome.kind {
+	case outcomeNak:
 		return run.failed(ctx, message, metadata, decoded, outcome)
+	case outcomeApplied:
+		return acknowledged(ctx, message, metadata, run, mayHaveFailed, true)
+	case outcomeDuplicate:
+		logDuplicate(log, decoded, consumerOf(metadata), deliveredCount(metadata))
+		return acknowledged(ctx, message, metadata, run, mayHaveFailed, true)
+	default: // outcomeAcked
+		return acknowledged(ctx, message, metadata, run, mayHaveFailed, false)
 	}
-	if outcome.applied {
-		if outcome.duplicate {
-			logDuplicate(log, decoded, consumerOf(metadata), deliveredCount(metadata))
-		}
-		acked := ackMessage(spec.Logger, message)
-		if acked && mayHaveFailed {
-			run.remade.forget(metadata.Consumer, metadata.Sequence.Stream)
-		}
-		return acked
-	}
-	return acknowledged(ctx, message, metadata, run, mayHaveFailed)
 }
 
-// acknowledged acknowledges message, which succeeded with no transaction, and then deletes its
-// open failure where it may have one (consumerRun.cleared). It reports whether the client sent
-// the acknowledgement; one that was not sent leaves the row, and the message comes back.
-func acknowledged(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, mayHaveFailed bool) bool {
+// acknowledged acknowledges message and then, where it may have an open failure, deletes that
+// failure: deleted says the fact's transaction deleted it already (withStreamPosition), so only
+// the memory of the consumers made again forgets it (remadeFailures); otherwise, for a message
+// handled with no transaction, it is deleted in a statement of its own (consumerRun.cleared). It
+// reports whether the client sent the acknowledgement; one that was not sent leaves the row, and
+// the message comes back.
+func acknowledged(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, mayHaveFailed, deleted bool) bool {
 	if !ackMessage(run.spec.Logger, message) {
 		return false
 	}
-	if mayHaveFailed {
+	switch {
+	case mayHaveFailed && deleted:
+		run.remade.forget(metadata.Consumer, metadata.Sequence.Stream)
+	case mayHaveFailed:
 		run.cleared(ctx, metadata)
 	}
 	return true
 }
 
+// outcomeKind is which of the four outcomes a message's handling asks for (messageOutcome).
+type outcomeKind int
+
+const (
+	// outcomeAcked is the acknowledgement of a message handled with no transaction.
+	outcomeAcked outcomeKind = iota
+	// outcomeApplied is the acknowledgement of a fact ApplyFact committed, whose transaction
+	// deleted the message's open failure.
+	outcomeApplied
+	// outcomeDuplicate is the acknowledgement of a fact ApplyFact found applied already
+	// (Result.Duplicate), whose transaction deleted the open failure too, and whose line the
+	// caller writes (logDuplicate).
+	outcomeDuplicate
+	// outcomeNak is a nak, with what nakResolve names the failure by.
+	outcomeNak
+)
+
 // messageOutcome is what one message's handling asks of JetStream, with nothing of it taken yet:
-// acknowledge the message, or nak it with what nakResolve names the failure by. applied is an
-// acknowledgement of a fact ApplyFact committed, whose transaction deleted the message's open
-// failure, and duplicate one whose fact ApplyFact found applied already (Result.Duplicate), whose
-// line the caller writes (logDuplicate). handleMessage returns one rather than ending the message
+// one of the outcomes outcomeKind names, and for a nak what nakResolve logs and the failure. Only
+// its four constructors make one. handleMessage returns one rather than ending the message
 // itself, so its caller can stop the progress keeper before the one terminal call, and so a
 // replay, which has no message to end, reads it as the record's outcome (GiveUps.Replay).
 type messageOutcome struct {
-	nak       bool
-	applied   bool
-	duplicate bool
-	what      string
-	nakWhat   string
-	err       error
+	kind    outcomeKind
+	what    string
+	nakWhat string
+	err     error
 }
 
 // ackOutcome asks for the acknowledgement of a message handled with no transaction.
-func ackOutcome() messageOutcome { return messageOutcome{} }
+func ackOutcome() messageOutcome { return messageOutcome{kind: outcomeAcked} }
 
 // appliedOutcome asks for the acknowledgement of a fact ApplyFact committed.
-func appliedOutcome() messageOutcome { return messageOutcome{applied: true} }
+func appliedOutcome() messageOutcome { return messageOutcome{kind: outcomeApplied} }
 
 // duplicateOutcome asks for the acknowledgement of a fact ApplyFact found applied already.
-func duplicateOutcome() messageOutcome { return messageOutcome{applied: true, duplicate: true} }
+func duplicateOutcome() messageOutcome { return messageOutcome{kind: outcomeDuplicate} }
 
 // nakOutcome asks for the nak nakResolve makes: what failed, which it logs at warn, nakWhat, which
 // it logs at error if the nak itself fails, and the failure, whose RetryLater can widen the delay.
 // The event both lines name is the caller's own, which holds the decoded message.
 func nakOutcome(what, nakWhat string, err error) messageOutcome {
-	return messageOutcome{nak: true, what: what, nakWhat: nakWhat, err: err}
+	return messageOutcome{kind: outcomeNak, what: what, nakWhat: nakWhat, err: err}
 }
 
 // messageLog writes one line about the message a handling is for: line at level with attributes,

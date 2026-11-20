@@ -203,10 +203,11 @@ type IntakeGiveUpCountView struct {
 
 // IntakeGiveUpView is one open give-up as the state lists it, without the message's headers and
 // payload, which the record keeps whole: its record id, the consumer that delivered it, its
-// subject, stream sequence and stored time, the fact's event id (null for a message that did not
-// decode), how many deliveries JetStream made of it, when the intake gave it up and why
-// (record.IntakeGiveUpReason), and the start of its last error, cut where the projection cuts it
-// (projection's stateGiveUpErrorRunes).
+// subject as the store keeps text (storetext.Text: each NUL and each run of bytes that is no UTF-8
+// shown as U+FFFD, where the record keeps the publisher's bytes), stream sequence and stored
+// time, the fact's event id (null for a message that did not decode), how many deliveries
+// JetStream made of it, when the intake gave it up and why (record.IntakeGiveUpReason), and the
+// start of its last error, cut where the projection cuts it (projection's stateGiveUpErrorRunes).
 type IntakeGiveUpView struct {
 	ID         int64                     `json:"id"`
 	Consumer   string                    `json:"consumer"`

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -54,7 +55,8 @@ func failingMessage(project string, seq uint64) IntakeMessage {
 
 // giveUpAt fails message once at now and gives it up at the bound in the same transaction, as the
 // intake does at the delivery that reaches the count and the hour: NoteFailure, then
-// GiveUpIntakeMessage. It answers the record as the give-up left it.
+// GiveUpIntakeMessage. It answers the record as the table holds it after, read whole, and fails
+// the test unless the give-up answered that record without the message's bytes.
 func giveUpAt(t *testing.T, st *store.Store, message IntakeMessage, now time.Time) IntakeFailure {
 	t.Helper()
 	ctx := context.Background()
@@ -70,7 +72,11 @@ func giveUpAt(t *testing.T, st *store.Store, message IntakeMessage, now time.Tim
 			t.Fatalf("the give-up of the open failure %d gave nothing up", failed.ID)
 		}
 	})
-	return given
+	whole, found := failureOf(t, st, given.ID)
+	if !found || !reflect.DeepEqual(given, asAnswered(whole)) {
+		t.Fatalf("GiveUpIntakeMessage answered\n%#v\nwant the record it left without the message's bytes\n%#v", given, asAnswered(whole))
+	}
+	return whole
 }
 
 // intakeNotice is one intake-gave-up controller notice row and its payload.
@@ -123,9 +129,9 @@ func noticeIDOf(t *testing.T, st *store.Store, id int64) int64 {
 	return notice
 }
 
-// named is the name a notice gives the give-up of failure.
+// named is the name a notice gives the give-up of failure: its subject as the store keeps text.
 func named(failure IntakeFailure) NoticeGiveUp {
-	return NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject}
+	return NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject)}
 }
 
 // leaseNotice leases the notice row id as the outbox's lane does when it comes due at now, and
@@ -182,19 +188,15 @@ func TestAGiveUpBeforeTheNoticeIsLeasedJoinsIt(t *testing.T) {
 
 // A give-up that finds the project's notice leased by the outbox's lane opens the next notice,
 // due 60 seconds after it, since the leased row is being published and a count raised in it now
-// may never reach the controller. A row the lane gave back to retry (RetryOutbox clears the
-// lease) takes give-ups again, so the notices do not pile up while the controller's topic refuses
-// them: the next give-up joins the oldest row no lease holds.
+// may never reach the controller.
 func TestAGiveUpThatFindsTheNoticeLeasedOpensTheNext(t *testing.T) {
 	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-	ctx := context.Background()
 	st := migratedStore(t)
-	records := NewStore()
 	registerIntakeController(t, st, "LEGION")
 
 	first := giveUpAt(t, st, failingMessage("LEGION", 41), now)
 	leasedAt := now.Add(giveUpNoticeDelay)
-	token := leaseNotice(t, st, first.NoticeID, leasedAt)
+	leaseNotice(t, st, first.NoticeID, leasedAt)
 
 	secondAt := leasedAt.Add(time.Second)
 	second := giveUpAt(t, st, failingMessage("LEGION", 42), secondAt)
@@ -215,20 +217,68 @@ func TestAGiveUpThatFindsTheNoticeLeasedOpensTheNext(t *testing.T) {
 	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(second)}}); !reflect.DeepEqual(next.notice, want) {
 		t.Errorf("the next notice reads %#v, want %#v", next.notice, want)
 	}
+}
 
+// A give-up after a failed attempt of the project's notice opens the next notice rather than
+// joining the one the lane gave back to retry (RetryOutbox clears the lease): the attempt may have
+// reached the controller though its answer was an error, and the retry publishes under the same
+// key, which Envoy does not deliver twice, so a count raised after the attempt may never be heard.
+// The give-up after it joins the new notice, which no attempt has run, and each give-up is counted
+// in exactly one notice: the one its record keeps, which names it.
+func TestAGiveUpAfterAFailedAttemptOfTheNoticeOpensTheNext(t *testing.T) {
+	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	registerIntakeController(t, st, "LEGION")
+
+	first := giveUpAt(t, st, failingMessage("LEGION", 41), now)
+	leasedAt := now.Add(giveUpNoticeDelay)
+	token := leaseNotice(t, st, first.NoticeID, leasedAt)
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RetryOutbox(ctx, tx, first.NoticeID, token, leasedAt.Add(time.Minute), "the controller's topic refused the notice"))
+		must(t, records.RetryOutbox(ctx, tx, first.NoticeID, token, leasedAt.Add(time.Second), "the controller's topic timed out"))
 	})
+
+	secondAt := leasedAt.Add(time.Minute)
+	second := giveUpAt(t, st, failingMessage("LEGION", 42), secondAt)
+	if second.NoticeID == first.NoticeID {
+		t.Fatalf("the give-up after a failed attempt of notice %d joined it; want a notice of its own", first.NoticeID)
+	}
 	third := giveUpAt(t, st, failingMessage("LEGION", 43), secondAt.Add(5*time.Second))
-	if third.NoticeID != first.NoticeID {
-		t.Fatalf("the give-up after the retry was counted in notice %d, want the retried notice %d, which no lease holds", third.NoticeID, first.NoticeID)
+	if third.NoticeID != second.NoticeID {
+		t.Fatalf("the give-up after the second was counted in notice %d, want the second's notice %d, which no attempt has run", third.NoticeID, second.NoticeID)
 	}
-	notices = intakeNotices(t, st)
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 2, GiveUps: []NoticeGiveUp{named(first), named(third)}}); !reflect.DeepEqual(notices[0].notice, want) {
-		t.Errorf("the retried notice reads %#v, want %#v", notices[0].notice, want)
+
+	notices := intakeNotices(t, st)
+	if len(notices) != 2 {
+		t.Fatalf("the outbox holds %d intake-gave-up notices, want the retried one and the next: %#v", len(notices), notices)
 	}
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(second)}}); !reflect.DeepEqual(notices[1].notice, want) {
-		t.Errorf("the next notice reads %#v after the third give-up, want it unchanged, %#v", notices[1].notice, want)
+	retried, next := notices[0], notices[1]
+	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(first)}}); retried.row.ID != first.NoticeID ||
+		!reflect.DeepEqual(retried.notice, want) {
+		t.Errorf("the retried notice is row %d reading %#v, want row %d as its attempt read it, %#v", retried.row.ID, retried.notice, first.NoticeID, want)
+	}
+	if !next.row.NextAt.Equal(secondAt.Add(giveUpNoticeDelay)) {
+		t.Errorf("the next notice is due at %s, want %s", next.row.NextAt.UTC(), secondAt.Add(giveUpNoticeDelay))
+	}
+	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 2, GiveUps: []NoticeGiveUp{named(second), named(third)}}); !reflect.DeepEqual(next.notice, want) {
+		t.Errorf("the next notice reads %#v, want %#v", next.notice, want)
+	}
+	namedIn := map[int64][]int64{}
+	counted := 0
+	for _, n := range notices {
+		counted += n.notice.Count
+		for _, g := range n.notice.GiveUps {
+			namedIn[g.ID] = append(namedIn[g.ID], n.row.ID)
+		}
+	}
+	if counted != 3 {
+		t.Errorf("the notices count %d give-ups, want the 3", counted)
+	}
+	for _, failure := range []IntakeFailure{first, second, third} {
+		if kept := noticeIDOf(t, st, failure.ID); !reflect.DeepEqual(namedIn[failure.ID], []int64{kept}) {
+			t.Errorf("give-up %d is named in notices %v and its record keeps notice %d, want it named in that one notice alone", failure.ID, namedIn[failure.ID], kept)
+		}
 	}
 }
 

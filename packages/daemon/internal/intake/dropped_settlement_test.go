@@ -168,7 +168,7 @@ func dropConsumer(t *testing.T, logs *lockedBuffer) (ConsumerSpec, *issueNames, 
 // dropConsumer gives: its metadata parsed once and handed on with it, over pool, with no handler.
 func consumeDropped(message jetstream.Msg, spec ConsumerSpec, pool Pool, names *issueNames, dropped *droppedSettlements) bool {
 	metadata, _ := message.Metadata()
-	run := consumerRun{spec: spec, repositories: capturedRepositories, pool: pool, names: names, dropped: dropped}
+	run := consumerRun{spec: spec, repositories: capturedRepositories, pool: pool, names: names, remade: &remadeFailures{}, dropped: dropped}
 	return consumeMessage(context.Background(), message, metadata, run, nil)
 }
 

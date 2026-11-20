@@ -5,10 +5,12 @@
 -- intake_failures holds one row per failing message of a durable consumer, keyed by the consumer,
 -- the stream sequence and the time JetStream stored the message, with the whole message: its
 -- subject, its header block in the NATS/1.0 form (record.IntakeHeaders) and its payload, each byte
--- as it came, which is why both are bytea. A row is an open failure while given_up_at is null: the
--- intake writes it at the message's first failed delivery and deletes it when a later delivery
--- succeeds. A row given up is a record the operator or the controller replays or discards; closed_*
--- is its latest close, and discarded_* its discard, which a later replay's close keeps.
+-- as it came, which is why all three are bytea: a NUL or a byte that is no UTF-8, which a text
+-- column refuses, is the publisher's to send, and a replay decodes the subject and the payload the
+-- delivery decoded. A row is an open failure while given_up_at is null: the intake writes it at the
+-- message's first failed delivery and deletes it when a later delivery succeeds. A row given up is
+-- a record the operator or the controller replays or discards; closed_* is its latest close, and
+-- discarded_* its discard, which a later replay's close keeps.
 -- internal/record's intake_failures.go holds every statement on the table. Every row carries its
 -- project, because the daemons of several projects can share one database.
 --
@@ -76,7 +78,7 @@ create table intake_failures (
   id bigserial primary key,
   project text not null,
   consumer text not null,
-  subject text not null,
+  subject bytea not null,
   stream_seq bigint not null,
   -- The time JetStream stored the message, truncated to the microseconds PostgreSQL keeps, as
   -- intake's recordStreamPosition truncates it.

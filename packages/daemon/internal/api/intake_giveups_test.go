@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -75,7 +76,8 @@ func giveUpsApplying(t *testing.T, h *harness, prepare func(context.Context, int
 	t.Helper()
 	spec := intake.ConsumerSpec{Project: testDispatchProject, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now: func() time.Time { return giveUpsNow }, PrepareRepository: prepare}
-	giveUps, err := intake.NewGiveUps(intake.Records{Pool: h.store.Pool(), Spec: spec}, handlers...)
+	giveUps, err := intake.NewGiveUps(intake.Records{Pool: h.store.Pool(), Spec: spec, Repositories: func() []ghrepo.Repository { return spec.Repositories }},
+		handlers...)
 	if err != nil {
 		t.Fatalf("NewGiveUps: %v", err)
 	}
