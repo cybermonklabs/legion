@@ -259,8 +259,8 @@ and each command runs there.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
   keeps what that run left in it. Where a row needs such state empty, the module exports a reset and
-  the preload (`web/src/__tests__/setup.ts`) runs it before and after each row, as it runs
-  `resetRowReferenceReadings` for the readings and key-list ids `row-references.ts` keeps. State a
+  the preload (`web/src/__tests__/setup.ts`) runs it after each row (`resetRowReferenceReadings`,
+  for the readings and key-list ids `row-references.ts` keeps, runs before each row too). State a
   module keeps across rows on purpose stays, such as the loaded Markdown engine
   (`markdown-engine.ts`). Without that reset, the two rows of `row-references.test.ts` that count
   readings passed their first run and failed the 19 reruns after it, each counting fewer reads than

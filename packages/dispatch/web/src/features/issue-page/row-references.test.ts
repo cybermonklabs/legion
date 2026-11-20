@@ -221,18 +221,27 @@ test("a text's fifth list of keys evicts the slot asked longest ago, and keeps o
   }
 });
 
-// The ids of the lists of keys are kept too: 64 sets of keys keep an id, and a 65th forgets them
-// all. A text read against one list, then another, then a new list of the first list's keys, is
-// read twice where few sets are kept. Where rows before it had left 63, it was read three times:
-// the second list forgot the first list's set, so the new list took a new id and was read anew.
-test("a new list of a kept list's keys finds that list's reading, whatever rows ran before", () => {
+// The ids of the lists of keys are kept too: 64 sets of keys keep an id, and the 65th forgets them
+// all. The row makes that boundary itself. It gives 63 sets of its own an id, so list A takes the
+// 64th, list B the 65th, which forgets A's set, and a new array of A's keys a new id and a new
+// reading: 3 reads. That holds only where the row starts with no set kept. A reset that forgot the
+// readings but kept the ids left the sets of the run before, which move the boundary: on a rerun
+// A's set outlived B, the new array found A's reading, and the row counted 2.
+test("the 65th set of keys forgets the first 64, counted from a table the row starts empty", () => {
+  for (let i = 1; i <= 63; i += 1) {
+    rowReferences("A filler text.", [`CORE-${500 + i}`]);
+  }
   const reads = spyOn(textReferences, "readTextReferences");
   try {
     const text = "Kept list: see CORE-401 and CORE-402.";
     rowReferences(text, ["CORE-401"]);
     rowReferences(text, ["CORE-402"]);
+    expect(reads, "the two lists of keys were not each read once").toHaveBeenCalledTimes(2);
     rowReferences(text, ["CORE-401"]);
-    expect(reads, "a new list of a kept list's keys was read again").toHaveBeenCalledTimes(2);
+    expect(
+      reads,
+      "the 65th set of keys did not forget the first list's set, so the table did not start empty"
+    ).toHaveBeenCalledTimes(3);
   } finally {
     reads.mockRestore();
   }
