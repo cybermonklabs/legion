@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
@@ -475,7 +476,11 @@ func scanOneSource(row pgx.Row, name string, extra ...any) (model.ArchitectureSo
 // load is left alone, and the sync's own write finds it superseded and starts
 // again from the load, which resolves again.
 func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, name, token string, err error) {
-	owner, name, err = splitRepo(source.Repo)
+	// The stored `owner/name` is held to the names GitHub allows before its halves go into any
+	// GitHub path (refs.SplitGitHubRepo), and refused with an error naming it otherwise. The
+	// route that saves a source holds it to that rule already (api's parseSourceRepo); this keeps
+	// a row stored before that, or by direct SQL, from ever reaching GitHub.
+	owner, name, err = refs.SplitGitHubRepo(source.Repo)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -993,14 +998,6 @@ func snapshotFiles(files map[string][]byte) map[string]string {
 		stored[name] = string(content)
 	}
 	return stored
-}
-
-func splitRepo(repo string) (owner, name string, err error) {
-	owner, name, found := strings.Cut(repo, "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", fmt.Errorf("stored repository %q is not owner/name", repo)
-	}
-	return owner, name, nil
 }
 
 // ScanSource decodes one SourceColumns row into a model.ArchitectureSource.

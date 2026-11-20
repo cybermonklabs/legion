@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -601,7 +602,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, nil
 	}
 
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -704,7 +705,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 		return false, nil
 	}
 	repoFull := payload["repo"]
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -849,15 +850,6 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	default:
 		return nil
 	}
-}
-
-// splitRepo splits "owner/repo" into its two segments.
-func splitRepo(repoFull string) (owner, repo string, err error) {
-	parts := strings.SplitN(repoFull, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
-	}
-	return parts[0], parts[1], nil
 }
 
 // containsString reports whether values contains s, exactly.
