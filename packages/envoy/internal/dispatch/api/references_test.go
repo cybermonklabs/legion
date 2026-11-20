@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createReferenceAPIProject(t *testing.T, handler http.Handler, key string) {
@@ -254,6 +255,41 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"NO_IDENTITY"`) {
 			t.Fatalf("unauthenticated %s: status=%d body=%s", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
+// that bound and gives its connection back. refs is locked in another connection, so the walk,
+// which reads refs, waits however fast it would run, and the bound is what ends it. The control
+// is the first read, before the lock: the same request answers 200.
+func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
+		t.Fatalf("references before the lock: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	holdLock(t, database, "lock table refs in access exclusive mode")
+	acquired := database.Pool.Stat().AcquiredConns()
+	started := time.Now()
+	response := issueReferencesRequest(t, handler, issue.Key, "")
+	took := time.Since(started)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
+	}
+	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
+		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
+	}
+	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
+		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	}
+	var conns int32
+	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
+		conns = database.Pool.Stat().AcquiredConns()
+		return conns <= acquired
+	})
+	if conns > acquired {
+		t.Errorf("the pool holds %d acquired connections after the answer, more than the %d it held before the request: the walk kept its connection", conns, acquired)
 	}
 }
 
