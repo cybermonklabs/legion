@@ -146,8 +146,22 @@ type ExternalAccountIdentity struct {
 	IAMCredentialsURL string
 }
 
+// Describe names the identity in every trade's log line and error: the audience, the broker's
+// Google exchange audience, as internal/redact's allow-list prints a URL, and by what it is where
+// that withholds it, since it is text a broker's settings answer wrote; and the account where it
+// is a service account's email or unique id (serviceAccountWords), else by the credentials file
+// that names it, since the file is a credential's place.
 func (e *ExternalAccountIdentity) Describe() string {
-	return "a Google identity token for " + e.Audience + " minted as " + e.ServiceAccount + " through the external_account credential " + credentialsFileVar + " names"
+	audience := "the Google exchange audience the broker names"
+	if redact.Clean(e.Audience) {
+		audience = e.Audience
+	}
+	return "a Google identity token for " + audience + " minted as " + e.account() + " through the external_account credential " + credentialsFileVar + " names"
+}
+
+// account is the service account the identity acts as, as a message names it.
+func (e *ExternalAccountIdentity) account() string {
+	return serviceAccountWords(e.ServiceAccount, credentialsFileVar)
 }
 
 // Token mints the service account's access token with the credentials file's own exchange and
@@ -173,9 +187,9 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 		if answered.status/100 > 2 {
 			cause = redact.Answered(answered.status, nil)
 		}
-		return "", "", fmt.Errorf("mint %s's access token with the external_account credential %s names: %s", e.ServiceAccount, credentialsFileVar, cause)
+		return "", "", fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, cause)
 	}
-	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.ServiceAccount, e.Audience, access.AccessToken)
+	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, access.AccessToken)
 	if err != nil {
 		return "", "", err
 	}
