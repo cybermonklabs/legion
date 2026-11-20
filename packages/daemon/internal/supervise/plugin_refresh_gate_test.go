@@ -116,7 +116,7 @@ func gatedHarness(t *testing.T, rate int) (*harness, *fakeAdmitter) {
 
 // refreshPass is the daemon's own stale-plugin pass over this one claim: a credit is asked of the
 // gate first, and the event is posted only where one was granted, carrying it (refreshStalePlugins
-// in internal/daemon, StalePlugin.Admitted). It answers whether the claim was posted at all, since
+// in internal/daemon, StalePlugin.Credit). It answers whether the claim was posted at all, since
 // a refused claim is left to the next sweep and nothing reaches the machine.
 //
 // It is the pass over a claim the snapshot shows idle, which is the only claim that pass takes
@@ -398,8 +398,8 @@ func TestAnUncreditedRelaunchAsksTheGateAndRelaunchesNothingWhenItIsFull(t *test
 
 	// Every credit is out over other claims of the same wave by the time this post is decided.
 	gate.refusing(true)
-	// Admitted is omitted, as the daemon's pass omits it for a claim its snapshot read in a turn
-	// (refreshStalePlugins, StalePlugin.Admitted).
+	// Credit is omitted, as the daemon's pass omits it for a claim its snapshot read in a turn
+	// (refreshStalePlugins, StalePlugin.Credit).
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
 	h.wantState(StateIdle)
@@ -652,7 +652,7 @@ func TestARefreshTheLaunchPathRefusesGivesItsCreditBack(t *testing.T) {
 	h.m.deps.Store = &cleanupReservedAfterFirstCheckStore{memStore: h.store}
 
 	// The pass's own admission, as refreshPass makes it: the event is posted carrying the credit
-	// the gate granted for it (refreshStalePlugins in internal/daemon, StalePlugin.Admitted).
+	// the gate granted for it (refreshStalePlugins in internal/daemon, StalePlugin.Credit).
 	// The post is handled here rather than through that helper because the refusal hands its
 	// error back to the caller.
 	credit := gate.Admit()
@@ -808,7 +808,7 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsOwnDecisionGivesTheCreditBack(t *
 	h.m.deps.PluginContract = refreshContract
 
 	// The pass's own admission, as refreshPass makes it (refreshStalePlugins in internal/daemon,
-	// StalePlugin.Admitted). The post is handled here rather than through that helper because the
+	// StalePlugin.Credit). The post is handled here rather than through that helper because the
 	// refused take-back hands its error back to the caller.
 	h.store.fail("PutDelivery", errBoom)
 	credit2 := gate.Admit()

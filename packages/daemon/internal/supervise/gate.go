@@ -17,34 +17,43 @@ package supervise
 // that every other lane's wakes, a newly admitted tree's first architect launch among them, queue
 // behind one minute of refreshes rather than behind the whole fleet's worth.
 //
-// A credit is taken before a refresh is posted (Admit) and given back once, at the end of the
-// decision that holds it when no refresh wake of this machine's own is waiting (RefreshCredit.
-// Release, Machine.unlock). The gate counts the credits it has granted and not had back, exactly,
-// and each sweep raises that count to the refresh wakes it re-reads waiting when the re-read
-// finds more (Correct).
+// A credit is taken before a refresh is posted (Admit) and comes back exactly once
+// (RefreshCredit.Release, which does nothing after the first call). The gate counts the credits it
+// has granted and not had back, exactly, and each sweep raises that count to the refresh wakes it
+// re-reads waiting when the re-read finds more (Correct). Nothing else lowers the count, so a
+// credit that never came back would hold its place in the gate for the life of the daemon: the
+// rule of return below is what the bound rests on.
 //
-// The release is one rule enforced in one place: a machine holds a credit only while a
-// WakePluginRefresh wake of its own is parked or is having its turn, and every decision that ends
-// with no such wake on the machine gives the credit back as it ends (Machine.unlock,
-// endRefreshLane). Every path that drops, spends or never raises such a wake is covered by that
-// one check without naming the lane at all — the branches of refreshPlugin that raise no
-// relaunch, the refusal of every launch there is, the park of another kind over this lane's wake,
-// the wake's own turn, and the process let go with the wake parked over it — which is why just
-// one decision of this package releases a credit of its own accord. That one is the arrival
-// rule: a post that reaches a machine already holding a credit gives the credit it carries
-// straight back to the gate, because one flag holds one credit (refreshPlugin). A credit that
-// outlived its wake would cost the lane more than the credit: the machine goes on reading it as
-// held, so its next uncredited post skips the gate and parks a wake the gate never granted,
-// which is the one thing this bound promises cannot happen (Machine.refreshCredit,
+// The rule of return. Whoever holds a credit gives it back, and each holder has one place it does:
+//
+//   - The daemon's refresh pass holds it from Admit to the post that carries it, and gives it back
+//     when the supervisor drops that post (internal/daemon's refreshStalePlugins, supervisor.post).
+//   - The machine the post reaches holds it from then on if it takes it (refreshPlugin, the one
+//     place that sets Machine.refreshCredit). A post the machine does not take — a state whose row
+//     ignores it, a settle or a fence that returns before the row, a post for another claim — comes
+//     back at the end of that decision (Machine.Handle, settleUntakenCredit), and so does the post
+//     that reaches a machine already holding a credit, which refreshPlugin releases at once
+//     because one machine holds one credit (the arrival rule).
+//   - A machine holds a credit only while a WakePluginRefresh wake of its own is parked or is
+//     having its turn, and every decision that ends with no such wake on the machine gives the
+//     credit back as it ends (Machine.unlock, endRefreshLane). Every path that drops, spends or
+//     never raises such a wake is covered by that one check without naming the lane at all — the
+//     branches of refreshPlugin that raise no relaunch, the refusal of every launch there is, the
+//     park of another kind over this lane's wake, the wake's own turn, and the process let go with
+//     the wake parked over it.
+//
+// A credit that outlived its wake would cost the lane more than the credit: the machine goes on
+// reading it as held, so its next uncredited post skips the gate and parks a wake the gate never
+// granted, which is the one thing this bound promises cannot happen (Machine.refreshCredit,
 // refreshPlugin).
 //
-// Every credit comes back, because every place a credit's life can end gives it back: the end of
-// every decision of the machine that holds it, the arrival rule, and the daemon's own pass when
-// the post it made goes nowhere (internal/daemon's refreshStalePlugins, supervisor.post). Release
-// is idempotent, so no path can give one credit back twice either. The count of credits out is
-// therefore the count Admit bounds, and no re-read lowers it: a re-read is made of views the
-// machines publish at the ends of their decisions, so it misses the refresh posted a moment
-// before it and the refresh whose turn is running, and each of those credits is still out.
+// No re-read lowers the count below the credits out, and the order in which a machine stores its
+// view and gives a credit back cannot open a window in either direction. A re-read is made of the
+// views the machines publish, so it can miss a refresh posted a moment before it, and a refresh
+// whose turn is running (the turn takes the wake off the view before the decision that runs it
+// ends): each of those credits is still out, and the count holds it. A re-read can also see a
+// wake whose credit came back a moment before its machine stored the view without it: the
+// correction then counts one more than is out, which admits one fewer until the next sweep.
 //
 // Two windows of the lane lean the other way, and the correction answers both: each is a wake of
 // this lane that enters the pacing with no admission behind it and waits there until the next
@@ -68,10 +77,10 @@ package supervise
 // daemon's own pass over every stale claim (refreshStalePlugins) and the machine that holds a
 // stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). The
 // machine's own lines to it are at the foot of this file (admitRefresh, releaseRefresh,
-// endRefreshLane) but for one: the Release refreshPlugin makes itself for a post that arrives
-// over a credit already held. The credit each machine may hold is one, because a claim that
-// holds a wake is decided nothing and that second admission never becomes a second credit
-// (Machine.refreshCredit, refreshPlugin).
+// settleUntakenCredit, endRefreshLane) but for one: the Release refreshPlugin makes itself for a
+// post that arrives over a credit already held. The credit each machine may hold is one, because
+// a claim that holds a wake is decided nothing and that second admission never becomes a second
+// credit (Machine.refreshCredit, refreshPlugin).
 
 import "sync"
 
@@ -216,6 +225,17 @@ func (m *Machine) releaseRefresh() {
 	}
 	m.refreshCredit.Release()
 	m.refreshCredit = nil
+}
+
+// settleUntakenCredit gives back credit, the one a refresh post carried to this decision, unless
+// the decision took it (refreshPlugin set it as the machine's own). Machine.Handle defers it for
+// every credited StalePlugin, so a post the machine ignores, or returns before reaching, still
+// gives its credit back; a credit the decision took is the machine's to give back
+// (endRefreshLane), and a second Release would do nothing anyway.
+func (m *Machine) settleUntakenCredit(credit *RefreshCredit) {
+	if m.refreshCredit != credit {
+		credit.Release()
+	}
 }
 
 // endRefreshLane holds the stale-plugin lane to its invariants, at the one line every decision of

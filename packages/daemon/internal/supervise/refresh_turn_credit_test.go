@@ -65,3 +65,45 @@ func TestACreditWhoseTurnIsRunningIsCountedByACorrectionMadeDuringTheTurn(t *tes
 			r.granted, wakeRate-1)
 	}
 }
+
+// A credited refresh post that reaches a claim whose row ignores it gives its credit back in the
+// decision that ignores it: a suspended claim and a retired claim each receive the rate's worth
+// of credited posts, and the gate grants its whole share again afterwards. The daemon's pass
+// reads its claims from a snapshot, so a claim the snapshot shows idle can be suspended, retired,
+// launching or failed by the time its post is decided; the machine then takes nothing, and the
+// credit has no other holder to give it back (RefreshGate, the rule of return).
+//
+// The negative control is the settle of an untaken credit removed from Machine.Handle: each
+// ignored post's credit then stays out, and the gate grants nothing after the rate's worth.
+func TestACreditedRefreshPostAClaimIgnoresGivesItsCreditBack(t *testing.T) {
+	for _, state := range []ClaimState{StateSuspended, StateRetired} {
+		t.Run(string(state), func(t *testing.T) {
+			gate := NewRefreshGate(wakeRate)
+			h := pacedHarness(t, wakeRate, func(d *Deps) { d.RefreshGate = gate })
+			if state == StateRetired {
+				h.reach(StateIdle)
+				h.must(RequestStop{Claim: h.token})
+			} else {
+				h.reach(state)
+			}
+			h.wantState(state)
+			h.m.deps.PluginContract = refreshContract
+
+			for i := range wakeRate {
+				credit := gate.Admit()
+				if credit == nil {
+					t.Fatalf("the gate refused the %dth credited post to a %s claim, want every credit of the ignored posts back", i+1, state)
+				}
+				if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit}); err != nil {
+					t.Fatalf("the credited post to a %s claim: %v", state, err)
+				}
+			}
+
+			h.wantState(state)
+			if got := admissions(t, gate, wakeRate+1); got != wakeRate {
+				t.Fatalf("the gate granted %d after %d credited posts a %s claim ignored, want %d: an ignored post's credit comes back",
+					got, wakeRate, state, wakeRate)
+			}
+		})
+	}
+}

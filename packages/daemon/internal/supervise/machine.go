@@ -1642,6 +1642,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	// A refresh post carries a credit of the gate, and this decision is the last place that credit
+	// can come back if the machine does not take it: a state whose row ignores the post, a settle
+	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
+	if stale, ok := ev.(StalePlugin); ok && stale.Credit != nil {
+		defer m.settleUntakenCredit(stale.Credit)
+	}
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)

@@ -127,9 +127,9 @@ const PodUpdateContract = 46
 // that kind alone (dispatch://INFRA-2712 R4). The other caller of relaunchStale passes the
 // launch kind instead, because it is one claim's own launch (staleRegistration).
 //
-// admitted is whether a credit of the refresh gate was taken for this claim before this decision
+// credit is the credit of the refresh gate taken for this claim, or nil, before this decision
 // was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
-// claim it posts and hands it over on the event (StalePlugin.Admitted). The machine holds it
+// claim it posts and hands it over on the event (StalePlugin.Credit). The machine holds it
 // from here until the decision that raises the relaunch ends with no refresh wake of this
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
@@ -369,8 +369,8 @@ func (m *Machine) commitPluginRelaunch() {
 
 // refreshStalePlugin is the StalePlugin event's row, for the four states a claim's relaunched
 // process can run in: the event's own Trigger (boot or sweep) names the pass that posted it, and
-// its Admitted says whether that pass took a credit of the refresh gate for this claim, which
-// the machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
+// its Credit is the credit of the refresh gate that pass took for this claim, or nil, which the
+// machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 	stale := ev.(StalePlugin)
 	return m.refreshPlugin(ctx, stale.Trigger, stale.Credit)
