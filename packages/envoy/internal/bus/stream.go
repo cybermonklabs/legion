@@ -144,7 +144,8 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // DeliverSubject is the relay subject of session sessionID: the subject the listener that owns the
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
-// from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
+// from a plain NATS subscription of its own (packages/envoy/docs/architecture.md, "Session
+// consumers" under "Runtime shape").
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }

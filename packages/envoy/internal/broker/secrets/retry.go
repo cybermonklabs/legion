@@ -16,10 +16,10 @@ import (
 // The retry's numbers. A mint runs inside the release of a grant, which its caller waits for
 // whole, so the bounds are the mint's: at most mintAttemptsPerCall attempts of each upstream
 // call, and at most mintWaitBudget of added wait over every call one mint makes (a GitHub mint
-// lists installation pages, asks for a token for each owner, perhaps once more without actions,
-// perhaps revokes one). Each attempt runs under mintAttemptTimeout, since the production minters'
-// own client (ownClient) has none and the airlock mints under a caller's request that has no
-// deadline: without it a hung attempt would spend the whole release and leave no time to retry.
+// lists installation pages, asks for a token for each owner, perhaps revokes one). Each attempt
+// runs under mintAttemptTimeout, since the production minters' own client (ownClient) has none
+// and the airlock mints under a caller's request that has no deadline: without it a hung attempt
+// would spend the whole release and leave no time to retry.
 const (
 	mintAttemptsPerCall = 3
 	mintWaitBudget      = 10 * time.Second
