@@ -106,7 +106,7 @@ func (i *Importer) Pushed(ctx context.Context, repo, branch string) error {
 // pass, by whichever process runs it. A push that finds the worker running is that worker's,
 // which names it if the process stops first (importPushes).
 func (i *Importer) recordPush(source EnabledSource, branch string) {
-	key := sourceKey(source.Project, source.Repo)
+	key := syncKey(source.Project, source.Repo)
 	i.pushMu.Lock()
 	defer i.pushMu.Unlock()
 	pending, running := i.pushes[key]
@@ -123,7 +123,7 @@ func (i *Importer) recordPush(source EnabledSource, branch string) {
 	pending.at = append(pending.at, time.Now())
 }
 
-// importPushes is the push worker of source, whose entry in i.pushes is under its sourceKey. It
+// importPushes is the push worker of source, whose entry in i.pushes is under its syncKey. It
 // runs on i.owner, as a flight does, because the caller that handed the push over does not wait
 // for the import. Each round reads the newest push the entry holds, imports the source as a caller
 // of Sync that asked at that push's moment, and drops every push the import covered
@@ -144,7 +144,7 @@ func (i *Importer) recordPush(source EnabledSource, branch string) {
 // line as well, and nothing would be logged of an import that failed while the process ran.
 func (i *Importer) importPushes(source EnabledSource) {
 	defer i.running.done()
-	key := sourceKey(source.Project, source.Repo)
+	key := syncKey(source.Project, source.Repo)
 	for {
 		i.pushMu.Lock()
 		pending := i.pushes[key]

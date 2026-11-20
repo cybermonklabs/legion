@@ -121,11 +121,28 @@ type Importer struct {
 	// inside that lock.
 	syncs singleflight.Group
 	// pushes holds, for each source whose push worker runs and under its
-	// sourceKey, the pushes no import has covered yet (push.go). pushMu guards
+	// syncKey, the pushes no import has covered yet (push.go). pushMu guards
 	// it, and a push's record and a worker's decision to return are both taken
 	// under it, so no push falls between a worker's last look and its exit.
 	pushMu sync.Mutex
 	pushes map[string]*pushedSource
+	// ended is, for each source a call of Sync is running for, its newest
+	// flight to have ended, on syncs' keys: what a caller that refused an
+	// older flight takes when it began after the caller's call. Sync enters
+	// its key on the way in and leaves it on the way out, so no entry
+	// outlives the calls of its key.
+	ended endedFlights
+
+	// afterFlightTaken runs in Sync once a caller holds the flight it waits
+	// on, joined or started; afterSyncRefusal once it has refused a flight
+	// whose head lookup came before its call, before it looks again; and
+	// afterCalledAt once it has stamped its call, before it looks for a
+	// flight. Nothing in production sets any of them; the package's tests of
+	// late refusers wait on the first rather than sleeping for their callers
+	// to join, and hold a caller on the other two.
+	afterFlightTaken func()
+	afterSyncRefusal func()
+	afterCalledAt    func()
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -260,24 +277,31 @@ func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResul
 // does not serve it, though — the caller stamps the moment it asked and takes
 // an answer only from a flight that issued its head lookup no earlier, so a
 // person who pushes and then asks for a Refresh is never told the pre-push
-// commit with a fresh last_sync_at.
+// commit with a fresh last_sync_at. A caller that refused a flight and looks
+// again after the next one has ended takes that one's answer rather than
+// starting a third, so the callers that refused one flight make one more set
+// of GitHub calls between them, however late each looks again. That answer is
+// kept only while a call of the source runs (endedFlights).
 func (i *Importer) Sync(ctx context.Context, project, repo string) (model.ArchitectureSource, error) {
-	// The moment is stamped once, before any join: what a flight has to be
-	// newer than is the moment this caller asked, not the moment it last
-	// looked.
-	source, _, err := i.syncAfter(ctx, project, repo, time.Now())
+	source, _, err := i.syncAfter(ctx, project, repo, time.Time{})
 	return source, err
 }
 
 // syncAfter is Sync for a caller that asked at after, a moment no later than
-// the call: it takes an answer only from a flight that issued its head lookup
-// no earlier than after, and answers that flight's servedAt beside the row and
-// the error. That moment is how fresh the answer is, and a push worker reads
-// it to know which pushes the import covered: every push recorded no later
-// than it (push.go). A zero time is answered only when ctx is done or the
-// importer's process is stopping as syncAfter is called, or when ctx ends
-// before the flight answers. A flight that Close cut short answers like any
-// other flight: its own servedAt, beside the error that stopped it.
+// the call, and for Sync itself, which names the zero time: such a call is
+// stamped as it is made, once its key is entered. It takes an answer only from
+// a flight that issued its head lookup no earlier than that moment, and
+// answers that flight's servedAt beside the row and the error. That moment is
+// how fresh the answer is, and a push worker reads it to know which pushes the
+// import covered: every push recorded no later than it (push.go). A push
+// worker names the moment of the newest push it holds, which came before its
+// key is entered, so a flight fresh for that push that ended in between is
+// recorded nowhere (endedFlights) and the worker starts one of its own: one set
+// of GitHub calls more, and never a push left uncovered. A zero time is
+// answered only when ctx is done or the importer's process is stopping as
+// syncAfter is called, or when ctx ends before the flight answers. A flight
+// that Close cut short answers like any other flight: its own servedAt, beside
+// the error that stopped it.
 func (i *Importer) syncAfter(ctx context.Context, project, repo string, after time.Time) (model.ArchitectureSource, time.Time, error) {
 	// A caller that has already hung up, and an importer whose process is
 	// stopping, start no flight: the work would outlive both of them.
@@ -287,9 +311,41 @@ func (i *Importer) syncAfter(ctx context.Context, project, repo string, after ti
 	if err := i.owner.Err(); err != nil {
 		return model.ArchitectureSource{}, time.Time{}, err
 	}
-	key := sourceKey(project, repo)
+	key := syncKey(project, repo)
+	// The key is entered before the call is stamped, so a flight that looks
+	// the head up after this call's stamp, and so is fresh for it, finds the
+	// entry held open when it ends, whoever started it and whether its
+	// starter is still there.
+	i.ended.enter(key)
+	defer i.ended.leave(key)
+	// calledAt is stamped once, before any join: what a flight has to be
+	// newer than is the moment this caller asked, not the moment it last
+	// looked.
+	calledAt := after
+	if calledAt.IsZero() {
+		calledAt = time.Now()
+	}
+	if i.afterCalledAt != nil {
+		i.afterCalledAt()
+	}
 	for {
-		answered := i.syncs.DoChan(key, func() (any, error) { return i.flight(ctx, project, repo) })
+		// A flight this caller starts hands back the newest flight of the
+		// source to have ended, when its head lookup came no earlier than
+		// this caller's call, as it would have had the caller joined it, and
+		// makes no GitHub call. Otherwise it runs a flight of its own and
+		// records it once it ends.
+		answered := i.syncs.DoChan(key, func() (any, error) {
+			if ended := i.ended.fresh(key, calledAt); ended != nil {
+				return ended, ended.err
+			}
+			flight, err := i.flight(ctx, project, repo)
+			flight.err = err
+			i.ended.record(key, flight)
+			return flight, err
+		})
+		if i.afterFlightTaken != nil {
+			i.afterFlightTaken()
+		}
 		select {
 		case <-ctx.Done():
 			return model.ArchitectureSource{}, time.Time{}, ctx.Err()
@@ -297,111 +353,32 @@ func (i *Importer) syncAfter(ctx context.Context, project, repo string, after ti
 			flight := result.Val.(*syncFlight)
 			// Not Before rather than After: two readings of the clock that
 			// land on the same instant must end the loop, not spin it.
-			if served := flight.servedAt(); !served.Before(after) {
+			if served := flight.servedAt(); !served.Before(calledAt) {
 				return flight.source, served, result.Err
 			}
 			// That flight looked the head up before this caller asked, so
-			// its row may predate a push the caller already knows about: join
-			// the next one. This is the last round, because singleflight
-			// deletes the key before it sends a result, so the flight joined
-			// or created now necessarily began after this call, which is no
-			// earlier than after.
+			// its row may predate a push the caller already knows about: take
+			// the next one. singleflight deletes the key before it sends a
+			// result, and the flight records itself as its source's newest
+			// ended one before that, so the flight joined or started now began
+			// after calledAt.
+			//
+			// That flight may still answer with one older than this call.
+			// When an older caller that refused a flight started it, it
+			// hands back the newest ended flight that is fresh for that older
+			// call, and this caller, which joined it, refuses that answer too
+			// and goes round again. That round makes no GitHub call: the
+			// flight it joined answered from the record. The loop still ends.
+			// A flight this caller starts answers only with a flight fresh
+			// for this call, or makes its own head lookup after it. Only a
+			// caller older than this one can hand it an answer it refuses,
+			// those callers are a fixed set once this call is made, and each
+			// of them ends by the same argument, the oldest first.
+			if i.afterSyncRefusal != nil {
+				i.afterSyncRefusal()
+			}
 		}
 	}
-}
-
-// sourceKey is the key one source's flight and push worker are kept under.
-func sourceKey(project, repo string) string { return project + "\x00" + repo }
-
-// syncOnce is one attempt of Sync, from the load of the source row to its write. It stamps the
-// flight's head lookup, which is how fresh the answer every caller of the flight reads is.
-func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, flight *syncFlight) (model.ArchitectureSource, error) {
-	source, err := i.loadSourceByRepo(ctx, project, repo)
-	if err != nil {
-		return model.ArchitectureSource{}, err
-	}
-	owner, name, token, importErr := i.resolve(ctx, &source)
-	if importErr != nil {
-		// Each of the four steps of the sync that read GitHub -- resolve here, then Ref, Dir and
-		// DirFiles -- gives up this source's read when it fails, which the running import's
-		// attempt records (githubreads), whatever failed inside it. The client notes only the
-		// answers no caller takes as data; a repository the App is not installed on, a missing
-		// Contents permission, a branch GitHub does not have and a 4xx GitHub answers a read with
-		// are answers it leaves to its caller, so the sync notes them here. ctx carries the values
-		// of the caller that started the flight, so a sync that a route, a command or a push's
-		// import (Importer.Pushed's worker) started notes nothing. The content of the files (a note
-		// over notes.MaxFileSize, notes.Parse, the projection) is no GitHub read: last_error
-		// records it, and the attempt does not.
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	flight.headAt = time.Now()
-	commit, importErr := i.github.Ref(ctx, token, owner, name, source.Branch)
-	if importErr != nil {
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	// Unchanged head of a healthy source: the projection already is this
-	// commit. Refresh the freshness stamp only.
-	if source.LastError == nil && source.LastCommit != nil && *source.LastCommit == commit {
-		return i.touch(ctx, source, commit)
-	}
-	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir)
-	if importErr != nil {
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	// The head moved but the architecture directory's tree object is
-	// identical: record the new commit without re-fetching or re-projecting.
-	if source.LastError == nil && source.LastTreeSha != nil && *source.LastTreeSha == listing.SHA {
-		return i.touch(ctx, source, commit)
-	}
-	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
-	if importErr != nil {
-		// The client refuses a note over notes.MaxFileSize at two points, both
-		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
-		// a blob's decoded size after the read GitHub answered. Either is the source's content
-		// and no failure of GitHub's, so the attempt does not note it.
-		if !errors.Is(importErr, notes.ErrFileTooLarge) {
-			githubreads.NoteFailure(ctx, importErr)
-		}
-		return i.failed(ctx, parent, source, importErr)
-	}
-	parsed, importErr := notes.Parse(files)
-	if importErr != nil {
-		return i.failed(ctx, parent, source, importErr)
-	}
-	updated, importErr := i.project(ctx, source, commit, listing.SHA, files, parsed)
-	// A projection PostgreSQL refused, or one whose ids another source of the project holds, is
-	// recorded like any other import failure. A source that moved or was deleted while the sync
-	// ran has nothing to record it on, and one another sync recorded first is retried.
-	if importErr != nil && !errors.Is(importErr, errSourceMoved) && !errors.Is(importErr, ErrNoSource) &&
-		!errors.Is(importErr, errSuperseded) {
-		return i.failed(ctx, parent, source, importErr)
-	}
-	return updated, importErr
-}
-
-// failed records importErr on the source row and hands both back: the Sync
-// contract for every import failure. The sync's own deadline is always
-// recorded, on parent — the flight's own context, which carries no sync
-// deadline of its own and which the process stopping is the only thing to end
-// — so that the timeout lands on the row like any other failure while Close
-// can still cut a record write short, as it must: cmd/dispatch runs Close
-// inside the wait the shutdown takes before the pool closes. Which caller is
-// still listening does not come into it: a flight has no single caller, and
-// nobody being there was never a reason to lose the fact that GitHub timed
-// out.
-func (i *Importer) failed(ctx, parent context.Context, source loadedSource, importErr error) (model.ArchitectureSource, error) {
-	recordCtx := ctx
-	if ctx.Err() != nil {
-		recordCtx = parent
-	}
-	updated, err := i.recordFailure(recordCtx, source, importErr)
-	if err != nil {
-		return model.ArchitectureSource{}, err
-	}
-	return updated, importErr
 }
 
 // touch is the unchanged-model short-circuit's only write: last_sync_at (and

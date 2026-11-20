@@ -291,7 +291,7 @@ func TestAPushWhoseImportFailsWhileTheProcessRunsSaysSo(t *testing.T) {
 // recordPush records the push that starts a worker, but starts none: the test plays the worker's
 // part. It answers the source's key.
 func seedPush(importer *Importer, at time.Time) string {
-	key := sourceKey("CORE", archRepo)
+	key := syncKey("CORE", archRepo)
 	importer.pushMu.Lock()
 	defer importer.pushMu.Unlock()
 	importer.pushes[key] = &pushedSource{branch: "main", at: []time.Time{at}}

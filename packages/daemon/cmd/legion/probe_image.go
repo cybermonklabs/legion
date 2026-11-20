@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,7 +67,13 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // with the mark bootprobe.ModelFallbackUnread, so the deployment's capability report shows that
 // row open rather than the probe's own line going missing. When every check passes, it prints
 // bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
-// probe's message, exit 1, so a broken image never publishes. Unlike the
+// probe's message, exit 1, so a broken image never publishes. Each check is judged as it returns,
+// by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
+// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), and a TLS
+// run with no verdict (probeTLSClients) have no verdict, which ends nothing, so the later checks
+// still run. Where nothing failed and something has no verdict, it prints
+// bootprobe.NoVerdictLine, naming each, to stderr and exits bootprobe.NoVerdictExit, which
+// asks the daemon's probe Sandbox for another attempt rather than refusing the image. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
 // same commit must declare. The load probe also holds every task agent the
@@ -242,13 +249,22 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			env[name] = value
 		}
 	}
+	// From here on each step is judged as it returns: a failure it saw while ctx was alive ends
+	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
+	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
+	// names each step and TLS run with no verdict; where nothing failed, they make the exit
+	// bootprobe.NoVerdictExit.
+	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,
 		ClaudeRoot: f.claudeRoot, ClaudeCodePin: f.claudeCodePin,
 		RoleReferences: references, SkipAgentModels: f.skipAgentModels,
 		Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}))),
 	})
-	if err != nil {
+	switch {
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded):
+		noVerdict = append(noVerdict, "launch probes: "+err.Error())
+	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
@@ -272,18 +288,32 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
-	if err := newTLSPositiveControls(ctx, environ); err != nil {
+	for _, line := range lines {
+		if line.Status == capabilities.StatusUnanswered {
+			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
+		}
+	}
+	// The sites the positive controls reached, where a TLS client's run its own limit ends with no
+	// answer has no verdict (probeTLSClients): every compromised site once the controls passed.
+	var reached []tlsSite
+	var controlsNoVerdict tlsNoVerdicts
+	switch err := newTLSPositiveControls(ctx, environ); {
+	case errors.As(err, &controlsNoVerdict):
+		noVerdict = append(noVerdict, controlsNoVerdict...)
+	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
+	default:
+		reached = compromisedTLSSites()
+		fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
 	}
-	fmt.Fprintln(stdout, tlsPositiveControlsLine(compromisedTLSSites()))
 	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
 	defer removeTLSStateDir()
-	observations, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir))
+	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
 	for _, observation := range observations {
 		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
 			observation.client, observation.site.name, observation.status, observation.detail)
@@ -292,6 +322,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
+	noVerdict = append(noVerdict, clientsNoVerdict...)
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
@@ -300,11 +331,17 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
-	if code := checkRoleOverlays(f.roleOverlays, func(value, alone []string) (string, error) {
+	code, overlaysNoVerdict := checkRoleOverlays(ctx, f.roleOverlays, func(value, alone []string) (string, error) {
 		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), value...)
 		return capabilities.CheckOverlays(ctx, roleImage, overlays, alone)
-	}, stderr); code != 0 {
+	}, stderr)
+	if code != 0 {
 		return code
+	}
+	noVerdict = append(noVerdict, overlaysNoVerdict...)
+	if len(noVerdict) > 0 {
+		fmt.Fprintln(stderr, bootprobe.NoVerdictLine(noVerdict))
+		return bootprobe.NoVerdictExit
 	}
 	agentModels := bootprobe.AgentModelsResolved
 	if f.skipAgentModels {
@@ -382,6 +419,13 @@ func envValue(environ []string, name string) string {
 // refuses, else 0. A run check reports as unanswered (a timeout) is printed and does not stop
 // that value's verdict: a refusal found after it still refuses.
 //
+// Each call of check is judged by ctx, the probe's, as it returns. One that returned after ctx
+// ended has no verdict, whether it answered a refusal or left a run unanswered, since a refusal
+// read then may be the deadline's own doing: the end of ctx stops the read's process group with a
+// SIGTERM (procgroup), and an Oh My Pi that then exits on its own with a non-zero status reads as
+// refusing (capabilities.CheckOverlays). noVerdict names each such call, "role overlays: <role>:
+// <the refusal or the error>", for the next attempt to read again; it fails nothing.
+//
 // check takes the whole value and, beside it, the overlays of that value to read on their own.
 // Each distinct value is read once and each distinct overlay is read alone once, over every
 // entry (capabilities.OverlayReads, which the boot gate's own read holds too): a role's own
@@ -389,7 +433,7 @@ func envValue(environ []string, name string) string {
 // same answer whichever value it stands in, so a deployment that declares arms would otherwise
 // pay for the thing it added at every probe. The refusal still names the first role holding the
 // refused value, since the loop reaches it before any other role of it.
-func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) int {
+func checkRoleOverlays(ctx context.Context, entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) (code int, noVerdict []string) {
 	reads := capabilities.OverlayReads{}
 	for _, entry := range entries {
 		unread, first := reads.Unread(entry.files)
@@ -397,13 +441,22 @@ func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string)
 			continue
 		}
 		why, err := check(entry.files, unread)
+		if ctx.Err() != nil {
+			if why == "" && err != nil {
+				why = err.Error()
+			}
+			if why != "" {
+				noVerdict = append(noVerdict, "role overlays: "+entry.role+": "+why)
+			}
+			continue
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "legion probe-image: role %s's overlays were read but Oh My Pi did not answer on some of them: %v\n", entry.role, err)
 		}
 		if why != "" {
 			fmt.Fprintln(stderr, bootprobe.RoleOverlaysRefusedLine(entry.role, why))
-			return 1
+			return 1, noVerdict
 		}
 	}
-	return 0
+	return 0, noVerdict
 }
