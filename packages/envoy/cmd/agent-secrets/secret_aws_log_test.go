@@ -24,6 +24,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	read := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(r)
