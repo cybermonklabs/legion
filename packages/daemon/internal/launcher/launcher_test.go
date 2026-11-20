@@ -67,12 +67,9 @@ func TestLauncherChild(t *testing.T) {
 type rig struct {
 	t        *testing.T
 	listener *daemonEnd
-	// token is this rig's own launcher token (ownToken): its launcher's hellos carry it, and no
-	// other rig's do.
-	token   string
-	private string
-	cancel  context.CancelFunc
-	result  chan error
+	private  string
+	cancel   context.CancelFunc
+	result   chan error
 	// roleConn is the daemon end of the role's current connection, which accept replaces.
 	*roleConn
 	// stderr is what the launcher and its children wrote to Config.Stderr.
@@ -120,7 +117,7 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &rig{t: t, listener: listener, token: token, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
+	g := &rig{t: t, listener: listener, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), token, "legion-legion-legion-208"
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
 	go func() {
@@ -140,7 +137,8 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	return g
 }
 
-// accept takes the launcher's next connection through its hello, acknowledgement and state.
+// accept takes the launcher's next connection through its hello, acknowledgement and state. The
+// daemon end takes only a hello under the rig's own token (listenForLauncher).
 func (g *rig) accept() shimwire.LauncherState {
 	g.t.Helper()
 	hello := shimwire.LauncherHello{}
@@ -148,7 +146,7 @@ func (g *rig) accept() shimwire.LauncherState {
 		hello = g.hello
 	}
 	conn := acceptRole(g.t, g.listener)
-	if conn.hello.Token != g.token || conn.hello.Role != "tester" || conn.hello.PodUID != "pod-1" {
+	if conn.hello.Role != "tester" || conn.hello.PodUID != "pod-1" {
 		g.t.Fatalf("hello = %#v", conn.hello)
 	}
 	if hello.LauncherID != "" && conn.hello.LauncherID != hello.LauncherID {
@@ -606,9 +604,6 @@ type fleet struct {
 	conns                 map[string]*roleConn
 }
 
-// token is the launcher token the fleet's roles directory holds for role.
-func (f *fleet) token(role string) string { return f.tokens[role] }
-
 // newFleet is newFleetOf of a launcher that carries no fields of its own but its stop grace.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
@@ -771,7 +766,7 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	f := newFleet(t, 2*time.Second, "tester", "reviewer")
 	for _, role := range []string{"tester", "reviewer"} {
 		hello := f.role(role).hello
-		if hello.Token != f.token(role) || hello.Sandbox != "legion-legion-legion-208" || hello.PodUID != "pod-1" {
+		if hello.Token != f.tokens[role] || hello.Sandbox != "legion-legion-legion-208" || hello.PodUID != "pod-1" {
 			t.Fatalf("role %s hello = %#v, want its own token for this sandbox and pod", role, hello)
 		}
 	}
@@ -782,7 +777,7 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	first := f.role("tester").hello.LauncherID
 	_ = f.role("tester").conn.Close()
 	again := acceptRole(t, f.listener)
-	if again.hello.Role != "tester" || again.hello.LauncherID != first || again.hello.Token != f.token("tester") {
+	if again.hello.Role != "tester" || again.hello.LauncherID != first || again.hello.Token != f.tokens["tester"] {
 		t.Fatalf("the reconnect hello is %#v, want tester as launcher %s again", again.hello, first)
 	}
 	again.acknowledge()

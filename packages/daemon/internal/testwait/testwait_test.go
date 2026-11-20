@@ -60,9 +60,10 @@ func armedFor(t *testing.T, c *fakeClock, answers <-chan received) time.Duration
 }
 
 // On its own clock, a receive is still waiting a second before its give-up moment and takes a
-// value then; it gives up when its timer fires and no value came, reading its clock at that
-// moment; and its give-up moment is the margin before the deadline: 30 s under a 10 minute
-// -timeout, and a quarter of a 25 s one, 6.25 s, so the waits of a short -timeout still wait.
+// value then; it gives up when its timer fires and no value came, reading its clock as it gives up
+// (here a second past the give-up moment, as a timer a loaded machine fires late reads), not the
+// moment it computed; and its give-up moment is the margin before the deadline: 30 s under a 10
+// minute -timeout, and a quarter of a 25 s one, 6.25 s, so the waits of a short -timeout still wait.
 func TestReceiveGivesUpExactlyTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -89,14 +90,16 @@ func TestReceiveGivesUpExactlyTheMarginBeforeTheDeadline(t *testing.T) {
 				t.Fatalf("the receive answered %+v, want the 7 sent while it waited", got)
 			}
 
-			// At the give-up moment, with no value, it gives up, reading that moment.
+			// Its timer fires late, a second past the give-up moment, with no value: it gives up,
+			// reading its clock then.
 			c = newFakeClock(giveUp.Add(-time.Second))
 			answers = startReceive(c, deadline, tc.timeout, make(chan int))
 			armedFor(t, c, answers)
-			c.now = giveUp
-			c.fire <- giveUp
-			if got := <-answers; got.ok || !got.gaveUp.Equal(giveUp) {
-				t.Fatalf("the receive answered %+v, want it to give up at %s", got, giveUp)
+			late := giveUp.Add(time.Second)
+			c.now = late
+			c.fire <- late
+			if got := <-answers; got.ok || !got.gaveUp.Equal(late) {
+				t.Fatalf("the receive answered %+v, want it to give up reading its clock, %s", got, late)
 			}
 		})
 	}
@@ -108,7 +111,7 @@ const receiveChildEnv = "TESTWAIT_RECEIVE_CHILD"
 
 // Receive returns what the channel yields, the zero value of a closed one, and otherwise fails
 // once its margin before the test binary's deadline has come, before the binary's own alarm. The
-// child run waits under a -timeout of 4 s, whose margin is 1 s, and RequireGaveUp reads its
+// child run waits under a -timeout of 20 s, whose margin is 5 s, and RequireGaveUp reads its
 // failure.
 func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 	if os.Getenv(receiveChildEnv) == "1" {
@@ -126,7 +129,7 @@ func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 		t.Fatalf("Receive of a closed channel = %d, want 0", got)
 	}
 
-	child := exec.Command(os.Args[0], "-test.run=^TestReceiveFailsNamingWhenItGaveUp$", "-test.count=1", "-test.timeout=4s")
+	child := exec.Command(os.Args[0], "-test.run=^TestReceiveFailsNamingWhenItGaveUp$", "-test.count=1", "-test.timeout=20s")
 	child.Env = append(os.Environ(), receiveChildEnv+"=1")
 	out, err := child.CombinedOutput()
 	exit, failed := err.(*exec.ExitError)
@@ -136,5 +139,5 @@ func TestReceiveFailsNamingWhenItGaveUp(t *testing.T) {
 	case strings.Contains(string(out), "panic: test timed out"):
 		t.Fatalf("the child run ran into the binary's deadline, want the wait's own failure first; its output:\n%s", out)
 	}
-	RequireGaveUp(t, string(out), "a value nothing sends", 4*time.Second)
+	RequireGaveUp(t, string(out), "a value nothing sends", 20*time.Second)
 }

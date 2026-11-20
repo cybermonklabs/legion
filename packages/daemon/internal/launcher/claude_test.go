@@ -459,7 +459,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 		<-exited
 	}
 	t.Cleanup(kill)
-	g = &rig{t: t, listener: listener, token: token, private: private, result: make(chan error, 1), stderr: &lockedBuffer{}}
+	g = &rig{t: t, listener: listener, private: private, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	g.accept()
 	return g, kill
 }

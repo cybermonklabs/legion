@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -20,16 +21,14 @@ import (
 // daemonEnd is the daemon's end of a loopback listener that the code under test dials (a launcher,
 // or a shim), with the accept loop that reads every connection reaching it. A connection is the
 // code under test's only when its first line is the opening that code sends (opens says which).
-// Another process of the machine can reach the listener too: the kernel hands a listener a
-// loopback port that a client of another test binary may still redial (on the dev box, a NATS
-// client an envoy cmd/listener test left reconnecting to its stopped server dialled
-// 127.0.0.1:36031 about every 6 s, sending nothing, the client's way of waiting for the server to
-// speak first). Each connection's first line is read on a goroutine of its own, so one that sends
-// nothing holds up no other; one that opens with anything else is closed and logged, and fails
-// nothing, and so is one still silent when the case ends. The code under test's opening carries a
-// token of this listener's own (ownToken), so no launcher or shim of another rig, this package's
-// own included, opens as this one's code. The listener itself is the loop's alone: nothing else
-// accepts from it, so no case can take a connection past the loop.
+// Another process of the machine can reach the listener too, since the kernel can hand it a
+// loopback port that a client of another test binary still redials. Each connection's first line
+// is read on a goroutine of its own, so one that sends nothing holds up no other. One that opens
+// with anything but a frame of the wire is closed and logged, and fails nothing (read), and so is
+// one still silent when the case ends. The code under test's opening carries a token of this
+// listener's own (ownToken), so no launcher or shim of another rig, this package's own included,
+// opens as this one's code. No code but the loop accepts from the listener (a case reads only its
+// Addr), so no case takes a connection past the loop.
 type daemonEnd struct {
 	listener net.Listener
 	t        *testing.T
@@ -123,7 +122,12 @@ func (end *daemonEnd) accept() {
 	}
 }
 
-// read reads conn's first line and hands the connection on when it is the code under test's opening.
+// read reads conn's first line and hands the connection on when it is the code under test's
+// opening. It closes and logs any other connection, which fails nothing: one that sent nothing, a
+// line that is no frame of the wire, or a hello under a token that is not this listener's. A first
+// frame that is no hello fails the test, though: the launcher and the shim each open with their
+// hello, as does any other process's launcher or shim, so such a frame is the code under test
+// opening with something else.
 func (end *daemonEnd) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	line, readErr := reader.ReadBytes('\n')
@@ -144,8 +148,13 @@ func (end *daemonEnd) read(conn net.Conn) {
 		end.deliver(arrival{conn: conn, reader: reader, frame: frame})
 	default:
 		_ = conn.Close()
-		end.t.Logf("the daemon end closed a connection from %s that opened with no opening of the code under test (%.200q, %v)",
-			conn.RemoteAddr(), line, readErr)
+		switch frame.(type) {
+		case nil, shimwire.LauncherHello, shimwire.Hello2:
+			end.t.Logf("the daemon end closed a connection from %s that opened with no opening of the code under test (%.200q, %v)",
+				conn.RemoteAddr(), line, readErr)
+		default:
+			end.t.Errorf("a connection from %s opened with a %T, which no launcher or shim sends first (%.200q)", conn.RemoteAddr(), frame, line)
+		}
 	}
 }
 
@@ -265,9 +274,11 @@ func listensAt(t *testing.T, out string) string {
 // The wait for a role's hello has no bound of its own. A role whose connection never sends its
 // hello fails the test its margin before the test binary's deadline, naming what it waited for
 // (testwait.RequireGaveUp holds the moment and the -timeout the text names), and a launcher that
-// returns before it connects fails it at once, naming what it returned. A child run of this test
-// binary holds each, under a -timeout of 20 s, whose margin is 5 s: the silent role's wait outlasts
-// the 10 s the rig's read once had, and ends by the wait's own text rather than the binary's panic.
+// returns before it connects fails it at once, naming what it returned: the rig and the fleet each
+// report their launcher's return (codeReturned), here of a stop grace Run refuses before it dials.
+// A child run of this test binary holds each, under a -timeout of 20 s, whose margin is 5 s: the
+// silent role's wait outlasts the 10 s the rig's read once had, and ends by the wait's own text
+// rather than the binary's panic.
 func TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline(t *testing.T) {
 	switch os.Getenv(helloWaitChildEnv) {
 	case "silent":
@@ -281,14 +292,10 @@ func TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline(t *testin
 		acceptRole(t, end)
 		return
 	case "returned":
-		token := ownToken("launcher-token")
-		end := listenForLauncher(t, token)
-		// A configuration with no sandbox is refused before Run dials anything.
-		go func() {
-			end.codeReturned(Run(t.Context(), Config{Connect: "tcp://" + end.Addr().String(), Token: token,
-				Role: "tester", PodUID: "pod-1", PrivateDir: t.TempDir()}))
-		}()
-		acceptRole(t, end)
+		newSessionRig(t, Config{StopGrace: -time.Second})
+		return
+	case "fleet-returned":
+		newFleet(t, -time.Second, "tester")
 		return
 	}
 	const run = "^TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline$"
@@ -300,59 +307,121 @@ func TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline(t *testin
 		what := "a connection to " + listensAt(t, out) + " that opens with the hello of the launcher under test"
 		testwait.RequireGaveUp(t, out, what, 20*time.Second)
 	})
-	t.Run("returned", func(t *testing.T) {
-		out, code := runChild(t, run, "returned", 20*time.Second)
-		const want = "the code under test returned (launcher: no sandbox) before it opened the connection this case waits for"
-		if code != 1 || !strings.Contains(out, want) {
-			t.Fatalf("the child run exited %d, want 1 and %q; its output:\n%s", code, want, out)
-		}
-	})
-}
-
-// A connection that sends nothing through the whole case is closed when the case ends, and logged
-// once, as the daemon end logs every other connection it closes. A child run dials one such
-// connection, which stays open past the daemon end's own cleanup as another process's client
-// would, and ends once the daemon end is reading it.
-func TestAConnectionSilentThroughTheCaseIsLoggedOnce(t *testing.T) {
-	if os.Getenv(helloWaitChildEnv) == "silent-to-the-end" {
-		var conn net.Conn
-		// Registered before the daemon end's own, so it runs after the daemon end has stopped.
-		t.Cleanup(func() {
-			if conn != nil {
-				_ = conn.Close()
+	for _, child := range []string{"returned", "fleet-returned"} {
+		t.Run(child, func(t *testing.T) {
+			out, code := runChild(t, run, child, 20*time.Second)
+			const want = "the code under test returned (launcher: stop grace must be positive) before it opened the connection this case waits for"
+			if code != 1 || !strings.Contains(out, want) {
+				t.Fatalf("the child run exited %d, want 1 and %q; its output:\n%s", code, want, out)
 			}
 		})
-		end := listenForLauncher(t, ownToken("launcher-token"))
-		var err error
-		if conn, err = net.Dial("tcp", end.Addr().String()); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("the stray dials from %s", conn.LocalAddr())
-		testwait.Eventually(t, "the daemon end to read the stray's first line", func() bool {
-			end.mu.Lock()
-			defer end.mu.Unlock()
-			return len(end.pending) == 1
-		})
-		return
-	}
-	out, code := runChild(t, "^TestAConnectionSilentThroughTheCaseIsLoggedOnce$", "silent-to-the-end", 10*time.Minute)
-	_, after, _ := strings.Cut(out, "the stray dials from ")
-	stray, _, _ := strings.Cut(after, "\n")
-	line := "the daemon end closed a connection from " + strings.TrimSpace(stray) + " that sent nothing by the end of the case"
-	if code != 0 || stray == "" || strings.Count(out, line) != 1 || strings.Count(out, "the daemon end closed a connection") != 1 {
-		t.Fatalf("the child run exited %d, want 0 and the line %q once, and no other close; its output:\n%s", code, line, out)
 	}
 }
 
-// A rig's waits still wait under a -timeout of 30 s or less: their margin is a quarter of such a
-// -timeout (testwait.Receive). A child run of a rig case that takes about 2 s passes under a
-// -timeout of 25 s, where a margin of 30 s would have every wait give up at once.
-func TestARigsWaitsStillWaitUnderAShortTimeout(t *testing.T) {
-	if os.Getenv(helloWaitChildEnv) != "" {
+// The wait for a role's next frame has no bound of its own either (roleConn.next). A connection
+// that opens with the launcher's hello and then sends nothing more fails the test its margin before
+// the test binary's deadline, naming what it waited for, and not at a read deadline of the rig's:
+// a child run of this test binary, under a -timeout of 20 s, waits past the 10 s that read once had.
+func TestTheWaitForARolesNextFrameHasNoBoundButTheDeadline(t *testing.T) {
+	if os.Getenv(helloWaitChildEnv) == "next-frame" {
+		token := ownToken("launcher-token")
+		end := listenForLauncher(t, token)
+		conn, err := net.Dial("tcp", end.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if err := shimwire.NewWriter(conn).WriteFrame(launcherHelloOf(token)); err != nil {
+			t.Fatal(err)
+		}
+		acceptRole(t, end).next()
 		return
 	}
-	out, code := runChild(t, "^TestTheLauncherLogsOneLineForEachAcknowledgedHello$", "", 25*time.Second)
-	if code != 0 || !strings.Contains(out, "--- PASS: TestTheLauncherLogsOneLineForEachAcknowledgedHello ") {
-		t.Fatalf("the rig case under -timeout 25s exited %d, want it to pass; its output:\n%s", code, out)
+	out, code := runChild(t, "^TestTheWaitForARolesNextFrameHasNoBoundButTheDeadline$", "next-frame", 20*time.Second)
+	if code != 1 {
+		t.Fatalf("the child run exited %d, want 1; its output:\n%s", code, out)
+	}
+	testwait.RequireGaveUp(t, out, "the launcher's next frame on the connection of role tester", 20*time.Second)
+}
+
+// launcherHelloOf is the hello a launcher of role tester sends under token.
+func launcherHelloOf(token string) shimwire.LauncherHello {
+	return shimwire.LauncherHello{Token: token, Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1"}
+}
+
+// Each listener's token is its own: two ownToken calls for one name give two tokens, each that name
+// and a suffix.
+func TestEachOwnTokenIsItsOwn(t *testing.T) {
+	first, second := ownToken("launcher-token"), ownToken("launcher-token")
+	if first == second || !strings.HasPrefix(first, "launcher-token-") || !strings.HasPrefix(second, "launcher-token-") {
+		t.Fatalf("ownToken gave %q and %q, want two different tokens, each launcher-token and a suffix", first, second)
+	}
+}
+
+// When the case ends, the daemon end closes every connection it still holds: one that sent nothing
+// the whole case long, which it logs once, as it logs every other connection it closes, and one
+// that opened as the code under test opens but that no case took. A child run holds one of each
+// open past the daemon end's own cleanup, as another process's client would, and reads the close
+// of each. The stray is known by its own address, so a connection another process opens to the
+// child's port changes nothing.
+func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *testing.T) {
+	if os.Getenv(helloWaitChildEnv) == "silent-to-the-end" {
+		var stray, untaken net.Conn
+		// Registered before the daemon end's own, so it runs after the daemon end has stopped.
+		t.Cleanup(func() {
+			for what, conn := range map[string]net.Conn{"the stray": stray, "the connection no case took": untaken} {
+				if conn != nil {
+					requireClosedByTheDaemonEnd(t, what, conn)
+				}
+			}
+		})
+		token := ownToken("launcher-token")
+		end := listenForLauncher(t, token)
+		var err error
+		if stray, err = net.Dial("tcp", end.Addr().String()); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("the stray dials from %s", stray.LocalAddr())
+		if untaken, err = net.Dial("tcp", end.Addr().String()); err != nil {
+			t.Fatal(err)
+		}
+		if err := shimwire.NewWriter(untaken).WriteFrame(launcherHelloOf(token)); err != nil {
+			t.Fatal(err)
+		}
+		testwait.Eventually(t, "the daemon end to read the stray's first line and hold the connection no case took", func() bool {
+			end.mu.Lock()
+			defer end.mu.Unlock()
+			reading := false
+			for conn := range end.pending {
+				reading = reading || conn.RemoteAddr().String() == stray.LocalAddr().String()
+			}
+			return reading && len(end.arrivals) == 1
+		})
+		return
+	}
+	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", 20*time.Second)
+	_, after, _ := strings.Cut(out, "the stray dials from ")
+	stray, _, _ := strings.Cut(after, "\n")
+	stray = strings.TrimSpace(stray)
+	closed := "the daemon end closed a connection from " + stray + " "
+	line := closed + "that sent nothing by the end of the case"
+	if code != 0 || stray == "" || strings.Count(out, line) != 1 || strings.Count(out, closed) != 1 {
+		t.Fatalf("the child run exited %d, want 0 and the line %q once, and no other close of the stray; its output:\n%s", code, line, out)
+	}
+}
+
+// requireClosedByTheDaemonEnd fails t unless the daemon end has closed conn, what names: a read of
+// conn gives EOF. The read runs on a goroutine and is waited for through testwait.Receive, so a
+// connection the daemon end never closed fails at the wait's margin. conn's own end is closed then.
+func requireClosedByTheDaemonEnd(t *testing.T, what string, conn net.Conn) {
+	t.Helper()
+	defer func() { _ = conn.Close() }()
+	reads := make(chan error, 1)
+	go func() {
+		_, err := conn.Read(make([]byte, 1))
+		reads <- err
+	}()
+	if err := testwait.Receive(t, "the daemon end's close of "+what, reads); err != io.EOF {
+		t.Fatalf("a read of %s gave %v, want the EOF of the daemon end's close", what, err)
 	}
 }

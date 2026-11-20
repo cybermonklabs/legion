@@ -26,11 +26,12 @@ func init() {
 
 // A launcher in a process of its own (processRig) ends when the test binary that started it is
 // killed, and dials nothing more. One that outlived its binary would go on redialing its daemon's
-// port with the hello every rig of this package takes, so a later test whose listener the kernel
-// put on that port would read it as its own role. A child run of this test binary starts
-// processRig, reports its launcher's pid and waits; the test kills that run with SIGKILL, as a
-// timeout's panic or an OOM kill ends a test binary, and waits until the launcher has ended or
-// its log shows a dial made after the kill.
+// port with its hello: a stray on the listener of whatever later test the kernel put on that port,
+// and, while every rig of this package shared one launcher token, a hello that test's daemon end
+// took as its own role's. A child run of this test binary starts processRig, reports its
+// launcher's pid and waits; the test kills that run with SIGKILL, as a timeout's panic or an OOM
+// kill ends a test binary, and waits until the launcher has ended or its log shows a dial made
+// after the kill.
 //
 // This file holds only what the rig had before the launcher's stdin ended it (processRig, zombie,
 // shortTempDir, testwait.Eventually), so the same case runs against that rig.

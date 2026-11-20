@@ -96,7 +96,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	prefix := pidNamespace(t)
 	token := ownToken("launcher-token")
 	listener := listenForLauncher(t, token)
-	g := &rig{t: t, listener: listener, token: token, private: t.TempDir(), result: make(chan error, 1)}
+	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
