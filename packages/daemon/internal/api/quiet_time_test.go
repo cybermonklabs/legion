@@ -161,7 +161,7 @@ func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
 		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps", "assignments", "experiment"},
 		contract: quietTimeContract,
 		files: []string{
-			"packages/daemon/internal/api/server.go",
+			"packages/daemon/internal/api/shaping.go",
 			"packages/daemon/internal/api/state.go",
 			"packages/daemon/internal/projection/project.go",
 			"packages/daemon/internal/projection/project_test.go",

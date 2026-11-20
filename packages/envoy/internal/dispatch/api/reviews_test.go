@@ -14,7 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -622,7 +622,7 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 	caller := newBrokerCaller(t)
 	const personToken = "a-person-token-that-would-review"
 	person := liveNamedToken(caller.jkt)
-	person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
+	person.ProjectScope, person.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(personToken, person)
 	const machineToken = "a-machine-token-naming-no-person"
 	rig.broker.Says(machineToken, serviceOnlyToken(caller.jkt))

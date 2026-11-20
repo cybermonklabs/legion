@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,7 +28,7 @@ import (
 type approveTestToken struct {
 	name   string
 	token  string
-	answer brokertoken.Introspection
+	answer ciphertoken.Introspection
 	code   string
 	scope  string
 }
@@ -36,9 +36,9 @@ type approveTestToken struct {
 // personScopedTokenAnswer is the broker's answer for a dev box session's token: live, bound to jkt,
 // acting as its person (the project scope person) and naming no project. It is what a person's
 // sign-in and a person's machine login both trade for.
-func personScopedTokenAnswer(jkt string) brokertoken.Introspection {
+func personScopedTokenAnswer(jkt string) ciphertoken.Introspection {
 	answer := liveNamedToken(jkt)
-	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
 	return answer
 }
 
