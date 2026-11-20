@@ -33,9 +33,9 @@ afterEach(() => {
 type Comment = { readonly id: string; readonly body: string };
 
 /**
- * The keyed comment store both rigs below keep, as Dispatch's keyed layer keeps one: a request under
- * a key it holds is replayed the comment stored under it, and any other is stored as a new comment.
- * Each request it takes is recorded in `posts`, stored or not.
+ * The keyed comment store the two Bun stand-ins below keep. Like Dispatch's keyed layer, a request
+ * under a key it holds replays the stored comment and any other key stores a new comment. Each
+ * request it takes is recorded in `posts`, stored or not.
  */
 function keyedStore() {
   const comments: Comment[] = [];
