@@ -8,14 +8,17 @@ package daemon
 // moment in what it asserts.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -700,6 +703,156 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 			t.Fatalf("the controller had been told %d times, want once per round", len(notices))
 		}
 	})
+}
+
+// A round open over a pod the runtime cannot read (dispatch://INFRA-4109 R5). The read decides
+// nothing: no pod is replaced, the round stays open, and the next sweep reads the pod again. So a
+// runtime that keeps failing that read holds the round past its bound, and only a person can find
+// out why. A minute before the bound the controller is told nothing, since the bound may still
+// end the round. From the bound on it is told once over three sweeps, with the reason that names
+// the unread pod.
+//
+// An operator's suspension of a claim of the same round is told in the unread pod's place: one
+// round is told once, and a notice of the unread pod would hide a hold that only the operator can
+// end.
+//
+// The pod is read in two places, and each is a subtest pair. The first is the drift read of the
+// pod the claims record (reconcileIssuePodUpdate's podUnread), which the fake fails for every
+// claim (FailPodDrift). The second is the read of the round's own pod once no live claim records
+// a process in it (roundWithNoProcessInItsPod), reached as
+// TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod reaches it: through a snapshot taken
+// before the round's only claim was suspended, with every read after the sweep's drift read
+// failing (podUnreadAfterTheDriftRead).
+func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
+	unread := errors.New("the API server did not answer the read of the Sandbox")
+
+	// toldOnce makes one sweep a minute before the round's bound and three from the bound on,
+	// each through sweep. It holds the controller to no notice before the bound and to one notice
+	// past it, of the round over its pod, and returns that notice. No sweep asks the runtime to
+	// replace the pod, through a process or by issue, and the claim of role stays in the round.
+	toldOnce := func(t *testing.T, rig *podUpdateRig, role claim.Role, sweep func()) record.ControllerNotice {
+		t.Helper()
+		rig.clockAt(podUpdateBound.Add(-time.Minute))
+		sweep()
+		if notices := rig.notices(); len(notices) != 0 {
+			t.Fatalf("at %s, a minute before the bound %s, the controller was told %+v", rig.clock.Now(), podUpdateBound, notices)
+		}
+		rig.clockAt(podUpdateBound)
+		for range 3 {
+			sweep()
+		}
+		notices := rig.notices()
+		if len(notices) != 1 {
+			t.Fatalf("over three sweeps from the bound %s the controller was told %d times, want once: %+v", podUpdateBound, len(notices), notices)
+		}
+		if u := notices[0].Update; u == nil || u.Round != podUpdateRound || u.Pod != podUpdatePod {
+			t.Errorf("the notice carries %+v, want round %s over pod %s", u, podUpdateRound, podUpdatePod)
+		}
+		if calls, byIssue := len(rig.replacements())+len(rig.notDue()), len(rig.byIssueAsks()); calls+byIssue != 0 {
+			t.Fatalf("the runtime was asked to replace the pod %d times through a process and %d times by issue, want never: it cannot read the pod", calls, byIssue)
+		}
+		if c := rig.claimOf(role); c.UpdateRound != podUpdateRound {
+			t.Fatalf("the %s is in round %q, want the round open while its pod cannot be read", role, c.UpdateRound)
+		}
+		wantNoRefusedNotice(t, rig)
+		return notices[0]
+	}
+	// opened is the round over the implementer and the tester, which the implementer answered.
+	opened := func(t *testing.T) *podUpdateRig {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+		rig.drifts(podUpdateDrift)
+		rig.tick()
+		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+		rig.awaitRound(claim.RoleTester, podUpdateRound)
+		rig.signal(claim.RoleImplementer, "a1b2c3d")
+		rig.settleAll()
+		return rig
+	}
+	// withNoProcess is the round over the implementer alone, which by suspended after a sweep
+	// read the claims, and the sweep that runs on that read: its drift read of the pod answers,
+	// and its read of the round's own pod, made once it finds no live claim recording a process
+	// there, fails.
+	withNoProcess := func(t *testing.T, by supervise.SuspendSource) (*podUpdateRig, func()) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+		rig.drifts(podUpdateDrift)
+		rig.tick()
+		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+		rig.settleAll()
+		group := rig.snapshot()
+		rig.suspendBy(claim.RoleImplementer, by)
+		return rig, func() {
+			rig.s.runtime = &podUnreadAfterTheDriftRead{Runtime: rig.rt, err: unread}
+			rig.s.reconcilePodUpdates(rig.ctx, group)
+		}
+	}
+	// heldInstead holds the notice to the operator's suspension of role rather than the unread
+	// pod.
+	heldInstead := func(t *testing.T, notice record.ControllerNotice, role claim.Role) {
+		t.Helper()
+		for _, want := range []string{"An operator suspended", string(role)} {
+			if !strings.Contains(notice.Reason, want) {
+				t.Errorf("the notice says %q, want it to say %q: the operator's hold is told in the unread pod's place", notice.Reason, want)
+			}
+		}
+	}
+
+	t.Run("alone", func(t *testing.T) {
+		rig := opened(t)
+		rig.rt.FailPodDrift(unread)
+
+		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
+		if notice.Reason != unreadPodReason {
+			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
+		}
+		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
+	})
+
+	t.Run("beside an operator's hold", func(t *testing.T) {
+		rig := opened(t)
+		rig.suspendByOperator(claim.RoleTester)
+		rig.rt.FailPodDrift(unread)
+
+		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
+		heldInstead(t, notice, claim.RoleTester)
+		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
+	})
+
+	t.Run("alone, with no process in the pod", func(t *testing.T) {
+		rig, sweep := withNoProcess(t, supervise.SuspendedByDaemon)
+
+		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
+		if notice.Reason != unreadPodReason {
+			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
+		}
+		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})
+	})
+
+	t.Run("beside an operator's hold, with no process in the pod", func(t *testing.T) {
+		rig, sweep := withNoProcess(t, supervise.SuspendedByOperator)
+
+		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
+		heldInstead(t, notice, claim.RoleImplementer)
+		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})
+	})
+}
+
+// podUnreadAfterTheDriftRead is the runtime failing to read a pod while one sweep runs: the first
+// read answers what the test scripted, and every read after it answers err, as a runtime whose
+// API server stops answering a moment later does. The sweep reads the drift of the pod the claims
+// record first, and asks about the round's own pod only once it finds no live claim recording a
+// process there (roundWithNoProcessInItsPod), so that second read is the one that fails. A test
+// sets a new one before each sweep it makes through it.
+type podUnreadAfterTheDriftRead struct {
+	runtime.Runtime
+	err   error
+	reads atomic.Int64
+}
+
+func (r *podUnreadAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+	if r.reads.Add(1) == 1 {
+		return r.Runtime.PodDrift(ctx, k)
+	}
+	return nil, r.err
 }
 
 // podUpdateDeployReset puts the rig's store in the state that migration 20261113110610 leaves

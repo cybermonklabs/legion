@@ -891,8 +891,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // names the status the root stood at. An update-stalled notice names an issue whose update round
 // has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
 // it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
-// claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
-// is told once per round (the daemon's reconcilePodUpdates). A
+// claim recording a process in the round's pod (or in any pod), claims recording two pods, or a
+// pod the runtime cannot read. It is told once per round (the daemon's reconcilePodUpdates). A
 // provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
