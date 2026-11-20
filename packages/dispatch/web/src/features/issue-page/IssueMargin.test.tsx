@@ -230,7 +230,7 @@ function drawIssue(
   });
 }
 
-/** One row of Details, by the name in its label column (`IssueMargin.tsx`'s `Row`). */
+/** One row of Details, by the name in its label column (`details-leaves.tsx`'s `Row`). */
 function detailsRow(name: string): HTMLElement {
   const row = screen
     .getByText(name, { exact: true, selector: "[data-page-chrome]" })
@@ -4460,8 +4460,7 @@ test("a close made elsewhere hands the focus of the route's control it disables 
 // A press on Details' plain text moves the focus to the page's body and sends no `focusin`, so
 // the panel still kept the route's control the reader had left, and a close made elsewhere then
 // moved the focus to Development's heading although the reader was no longer in the section. A
-// control the reader leaves while it still takes a press is forgotten, and the close moves
-// nothing.
+// control the reader leaves is forgotten, and the close moves nothing.
 test("a close made elsewhere leaves the focus on the body once the reader left the route's control", async () => {
   const { getIssue, restore } = stubIssueApi();
   const { queryClient, unmount } = renderDetails();
@@ -4622,6 +4621,64 @@ test("a close made elsewhere leaves the focus on the blocked-by editor's Save wh
   } finally {
     stopBlurring();
     unmount();
+    restore();
+  }
+});
+
+// A busy control refuses a press (`aria-disabled`) but keeps the focus, and the reader can leave
+// it all the same: a press on Details' plain text moves the focus to the page's body and sends no
+// `focusin`. The labels' control is busy while its save is out, and another session's close then
+// disables it. The reader had left it, so the close moves nothing. While the panel forgot only a
+// control that still took a press as the focus left it, it kept the busy one, and the close moved
+// the focus to Development's heading.
+test("a close made elsewhere leaves the focus on the body once the reader left the labels' control while its save was out", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  getIssue.mockResolvedValue({ ...issue, labels: ["bug"] });
+  // The save is held out for the whole case.
+  patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: labelsControlName("CORE-1", {
+          labels: ["bug"],
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
+      })
+    );
+    await user.click(await screen.findByRole("option", { name: "bug" }));
+    await user.keyboard("{Escape}");
+    const control = await within(rowAt("labels")).findByRole("button", {
+      name: labelsControlName("CORE-1", { labels: [], saving: true, words: CONTROL_NAME_WORDS }),
+    });
+    expect(control, "the labels' control takes a press while its save is out").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    act(() => control.focus());
+    // As a press on plain text does: the focus leaves the control for the body.
+    act(() => control.blur());
+    expect(document.activeElement, "the blur left the focus on the labels' control").toBe(
+      document.body
+    );
+    drawIssue(getIssue, queryClient, { ...closedIssue, labels: ["bug"] });
+    await waitFor(() =>
+      expect(control, "the close left the labels' control enabled").toBeDisabled()
+    );
+    expect(
+      document.activeElement,
+      "the reader had left the busy labels' control, and the close moved the focus to Development's heading"
+    ).toBe(document.body);
+  } finally {
+    stopBlurring();
+    unmount();
+    listIssues.mockRestore();
     restore();
   }
 });

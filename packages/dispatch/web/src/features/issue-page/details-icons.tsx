@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
  * that font's width: ☺ is 13.7 px wide in DejaVu Sans and 15.3 px in Arial or Liberation Sans,
  * in a column of 14 px, and on a Mac an emoji face can draw it. Each icon is the shape of the
  * character it stands for, 12 px square, so it sits inside the rows' 14 px glyph column
- * (`IssueMargin.tsx`'s `Row`) and the files list's 16 px one whatever fonts the machine holds,
+ * (`details-leaves.tsx`'s `Row`) and the files list's 16 px one whatever fonts the machine holds,
  * on the text's baseline and in the text's colour. Each is decoration (`aria-hidden`): the
  * row's name, or the file's kind in words, says what it is.
  */

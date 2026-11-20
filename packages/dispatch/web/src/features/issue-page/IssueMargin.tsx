@@ -1,17 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  type FocusEventHandler,
-  type ReactNode,
-  type Ref,
-  type RefCallback,
-  type RefObject,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { flushSync } from "react-dom";
+import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -24,7 +12,6 @@ import {
   pageInkText,
   pageLabelChip,
   pageQuietText,
-  pageRowBorder,
   pageRowHoverBg,
 } from "../../theme/classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
@@ -41,7 +28,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { BLOCKED_BY_INPUT_ID, BlockedByControl, IssueLine } from "./BlockedByControl";
+import { BLOCKED_BY_INPUT_ID, BlockedByControl } from "./BlockedByControl";
 import {
   DetailsErrorLine,
   readFailed,
@@ -61,9 +48,17 @@ import {
   TICKED_BOX,
   UPRIGHT_BAR,
 } from "./details-icons";
+import {
+  FOLD_AFTER,
+  IssueList,
+  PropertySection,
+  Row,
+  ShowAll,
+  SMALL_GLYPH,
+  STATUS_ROW_SHAPE,
+} from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
-import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
@@ -72,25 +67,16 @@ import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
-import {
-  authorText,
-  MARGIN_SECTION_NAMES,
-  type MarginSection,
-  PROPERTY_LABELS,
-  pageChrome,
-} from "./page-structure";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
-import { firstUsable, usableControl } from "./usable-control";
+import { firstUsable } from "./usable-control";
+import { useCloseFocusKeeper } from "./useCloseFocusKeeper";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { type MarginSections, useMarginSections } from "./useMarginSections";
+import { useMarginSections } from "./useMarginSections";
 import { waitingOnReader } from "./waiting";
-
-/** How many entries a list of unbounded length draws before it folds behind a count that opens
- *  the rest. */
-const FOLD_AFTER = 10;
 
 /** The id of the Parent row's line that says why Dispatch refused a parent. */
 export const PARENT_ERROR_ID = "issue-parent-error";
@@ -103,15 +89,6 @@ function closedStoppedNote(what: string, field: string): string {
     anew: `The issue is closed, so the ${field} cannot be saved again.`,
   });
 }
-
-/** The rows of each section that a control elsewhere on the page opens Details at
- *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
- *  People holds the issue's collaborators, whose place there is `DetailsPeople`. */
-const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
-  development: ["labels", "parent", "route"],
-  people: ["collaborators"],
-  references: [],
-};
 
 /**
  * The margin's own side of the issue page's panel: the margin's cards, and - where the margin
@@ -400,63 +377,10 @@ export function IssueMarginPanel({
         retrying={failure.read.isFetching}
       />
     ) : null;
-  // Another session's close disables some of Development's controls - the route's control and
-  // its editor's box, the labels' control, the priority's line, the Repository row, the parent's
-  // editor's box, each `disabled` on a closed issue - and takes others off the page - Set or Edit
-  // parent issue, Blocked by's control, Add and its menu - and each takes the focus it held with
-  // it to the page's body. No hand-off above answers that, since each acts only as an element it
-  // holds leaves the page or as an editor closes. So the panel keeps the element the focus last
-  // went to in Development, which a focus anywhere else forgets, as does the reader's leaving it
-  // while it still takes a press; and as the issue closes, where the close took that element - it
-  // has left the page, or is `disabled` now - and the focus is still on it or on the body, the
-  // focus goes to Development's heading, where every other hand-off of the section ends. A
-  // control that only refuses a press (`aria-disabled`: an editor's Save and Cancel while its save
-  // is out, and the parent's and the route's Save on a closed issue) keeps the focus, so a close
-  // took nothing from it and the focus stays there, as a focus a hand-off already moved to a
-  // control that takes it does. An issue closed as the panel is drawn moves nothing.
-  const developmentFocus = useRef<HTMLElement | null>(null);
-  const noteDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
-    developmentFocus.current = event.target;
-  };
-  // A press on Details' plain text moves the focus to the body and sends no `focusin`, so the
-  // listener below never hears the reader leave, and a later close would move the focus to the
-  // heading of a section the reader had already left. An element that still takes a press as the
-  // focus leaves it was left by the reader, so it is forgotten. The elements a close takes the
-  // focus from stay noted: a control a close disables takes no press as Chromium blurs it, and
-  // React sends no `onBlur` for an element it takes off the page. A switch to another window or
-  // tab blurs the control too while the document itself has no focus, and the focus comes back
-  // to the control on return, so a blur while the document has no focus forgets nothing.
-  const forgetLeftDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
-    if (document.hasFocus() && usableControl(event.target)) {
-      developmentFocus.current = null;
-    }
-  };
-  useEffect(() => {
-    // In the capture phase of the document, so it runs before the section's `onFocus`, which
-    // React calls from its root and which notes the focus again where it went to Development. It
-    // also forgets what the section's `onBlur` keeps: an element that was busy as the reader left
-    // it for another.
-    const forget = () => {
-      developmentFocus.current = null;
-    };
-    document.addEventListener("focusin", forget, true);
-    return () => document.removeEventListener("focusin", forget, true);
-  }, []);
-  const wasClosed = useRef(isClosed);
-  // A layout effect, so it runs in the commit that closes the issue, after the layout effects of
-  // the `useFocusHandOff`s above in that same commit (an editor's close hands its focus on in a
-  // passive effect, which runs after this one), and before a browser that moves the focus off a
-  // disabled control only later does so.
-  useLayoutEffect(() => {
-    const closing = isClosed && !wasClosed.current;
-    wasClosed.current = isClosed;
-    const left = developmentFocus.current;
-    if (!closing || left === null) return;
-    // The close took the element only where it took it off the page or disabled it.
-    if (left.isConnected && !left.matches(":disabled")) return;
-    if (document.activeElement !== left && !focusOnDocument()) return;
-    developmentHeading.current?.focus({ preventScroll: true });
-  }, [isClosed]);
+  // The keeper of Development's focus through a close made in another session, called after each
+  // `useFocusHandOff` above so that in the commit that closes the issue a hand-off has moved its
+  // focus on before the keeper reads where the focus is.
+  const developmentFocus = useCloseFocusKeeper(isClosed, developmentHeading);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -493,8 +417,8 @@ export function IssueMarginPanel({
         drawerBox={drawerBox}
         headingRef={developmentHeading}
         name="development"
-        onBlur={forgetLeftDevelopmentFocus}
-        onFocus={noteDevelopmentFocus}
+        onBlur={developmentFocus.onBlur}
+        onFocus={developmentFocus.onFocus}
         sections={sections}
       >
         <Row glyph={<StatusGlyph glyph={STATUS_ROW_SHAPE} />} label={PROPERTY_LABELS.status}>
@@ -894,208 +818,6 @@ export function IssueMarginPanel({
         issueKey={issue.key}
       />
       <DetailsHistory issue={issue} state={state} />
-    </div>
-  );
-}
-
-/** The issues of a list of them, each its key as a link and its title beside it, folded after
- *  ten behind a count that opens the rest. */
-function IssueList({
-  issues,
-}: {
-  issues: readonly { readonly key: string; readonly title: string }[];
-}): ReactNode {
-  const [open, setOpen] = useState(false);
-  const list = useRef<HTMLDivElement>(null);
-  const shown = open ? issues : issues.slice(0, FOLD_AFTER);
-  return (
-    <div className="flex w-full min-w-0 flex-col gap-1" ref={list}>
-      {shown.map((one) => (
-        <IssueLine issueKey={one.key} key={one.key} title={one.title} />
-      ))}
-      {issues.length > FOLD_AFTER && !open ? (
-        <ShowAll
-          className="self-start"
-          count={issues.length}
-          list={list}
-          onShow={() => setOpen(true)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-/** The count a folded list is drawn behind, which opens the rest of it. `className` places it
- *  in the list that draws it, and `list` is that list, each of its children one entry. The
- *  count goes with its press, so the focus goes on to the link of the first entry it opened,
- *  the list's entry `FOLD_AFTER`, rather than falling to the page. */
-function ShowAll({
-  className,
-  count,
-  list,
-  onShow,
-}: {
-  className: string;
-  count: number;
-  list: RefObject<HTMLElement | null>;
-  onShow: () => void;
-}): ReactNode {
-  return (
-    <button
-      className={`${className} text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-      onClick={() => {
-        flushSync(onShow);
-        list.current?.children[FOLD_AFTER]?.querySelector<HTMLElement>("a[href]")?.focus();
-      }}
-      type="button"
-      {...pageChrome}
-    >
-      {/* One child, so the space before the count holds where every button is a flex box
-          (`styles.css`, below 1280 px), which drops a space between two of its children. */}
-      <span>
-        {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
-      </span>
-    </button>
-  );
-}
-
-/** One named section of the panel's properties, open or closed by its own one control. A closed
- *  section keeps its rows on the page and hides them (`hidden`: out of view, out of the tab order
- *  and out of the accessibility tree), so what a reader sees is what the page holds, and what a
- *  row holds of its own - a draft, an open form, a refusal said in the row - is still there when
- *  the section opens again, as the panel's is when Details does (`slots/details.tsx`). */
-function PropertySection({
-  children,
-  drawerBox,
-  headingRef,
-  name,
-  onBlur,
-  onFocus,
-  sections,
-}: {
-  children: ReactNode;
-  /** The drawer's `aside` the panel is placed in, which a request for a row is sent to. */
-  drawerBox: HTMLElement | null;
-  /** Takes the section's heading, its own control, so a focus can be handed to it. */
-  headingRef?: Ref<HTMLButtonElement>;
-  name: MarginSection;
-  /** Hears each focus that leaves an element of the section, one its rows draw in a portal
-   *  included. */
-  onBlur?: FocusEventHandler<HTMLElement>;
-  /** Hears each focus that goes to an element of the section, one its rows draw in a portal
-   *  included. */
-  onFocus?: FocusEventHandler<HTMLElement>;
-  sections: MarginSections;
-}): ReactNode {
-  const open = sections.isOpen(name);
-  // A control elsewhere on the page that opens Details at one of this section's rows asks the
-  // drawer for that row before it looks for it (`useOpenDetailsAt` sends
-  // `DETAILS_ROW_REQUEST_EVENT`). A closed section opens for it as its heading opens it, so the
-  // reader's kept choice follows, and in the same task, so the row is no longer hidden when the
-  // control looks for it and its control takes the focus.
-  const latest = useRef(sections);
-  latest.current = sections;
-  useEffect(() => {
-    if (drawerBox === null) return;
-    const openForRow = (event: Event) => {
-      if (
-        !(event instanceof CustomEvent) ||
-        !SECTION_ROWS[name].includes(event.detail) ||
-        latest.current.isOpen(name)
-      ) {
-        return;
-      }
-      flushSync(() => latest.current.toggle(name));
-    };
-    drawerBox.addEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
-    return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
-  }, [drawerBox, name]);
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone and what it has left, so the section needs no role of its own.
-    <section data-margin-section={name} onBlur={onBlur} onFocus={onFocus}>
-      <h2>
-        <button
-          aria-expanded={open}
-          className={`flex min-h-11 w-full items-center justify-between gap-2 text-xs leading-4 font-semibold tracking-[0.08em] uppercase md:min-h-8 ${pageQuietText}`}
-          onClick={() => sections.toggle(name)}
-          ref={headingRef}
-          type="button"
-          {...pageChrome}
-        >
-          <span>{MARGIN_SECTION_NAMES[name]}</span>
-          <span aria-hidden="true">{open ? "−" : "+"}</span>
-        </button>
-      </h2>
-      <div className="flex min-w-0 flex-col" hidden={!open}>
-        {children}
-      </div>
-    </section>
-  );
-}
-
-/** The one text glyph of Details' rows drawn smaller than the row's text, so that it fits its
- *  14 px column (`Row`'s `w-3.5`): the page's typeface (`Dispatch Inter`, `styles.css`) draws ⊘
- *  19 px wide at the row's 14 px, to 2 px from the row's name, and 13 px wide at 9 px. Every
- *  other text glyph fits at the row's size, and each icon is drawn to the column. */
-const SMALL_GLYPH = "⊘";
-
-/** The Status row's shape: that of a status in motion, as the prototype draws the row, which the
- *  page's one status icon draws (`StatusGlyph`). It is named through `statusGlyph`, since the
- *  character that names it is no character the page draws as text. */
-const STATUS_ROW_SHAPE = statusGlyph("in_progress");
-
-/**
- * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
- * and its name, and the value beside it; a `wide` row is one column, for a property whose own
- * control names it. The shape is an icon of `details-icons.tsx` where the page's typeface does
- * not hold the character, and otherwise that character as text, one the typeface holds and that
- * no font draws as an emoji unless asked to. `row` names the row a control elsewhere opens Details
- * at (`details-rows.ts`), and `valueRef` takes the box of the row's value.
- */
-function Row({
-  children,
-  glyph,
-  label,
-  row,
-  testId,
-  valueRef,
-  wide = false,
-}: {
-  children: ReactNode;
-  glyph?: ReactNode;
-  label?: ReactNode;
-  row?: DetailsRow;
-  testId?: string;
-  valueRef?: Ref<HTMLDivElement>;
-  wide?: boolean;
-}): ReactNode {
-  return (
-    <div
-      className={`grid min-w-0 gap-2.5 border-b py-2 text-sm leading-5 ${
-        wide ? "grid-cols-1" : "grid-cols-[112px_minmax(0,1fr)]"
-      } ${pageRowBorder}`}
-      data-testid={testId}
-      {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
-    >
-      {label === undefined ? null : (
-        <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>
-          <span
-            aria-hidden="true"
-            className={`w-3.5 shrink-0 text-center ${glyph === SMALL_GLYPH ? "text-[9px]" : ""}`}
-          >
-            {glyph}
-          </span>
-          <span className="min-w-0" {...pageChrome}>
-            {label}
-          </span>
-        </div>
-      )}
-      <div
-        className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 [overflow-wrap:break-word] ${pageInkText}`}
-        ref={valueRef}
-      >
-        {children}
-      </div>
     </div>
   );
 }

@@ -133,7 +133,8 @@ async function expectInsideSideways(page: Page, locator: Locator, what: string):
   ).toBeLessThanOrEqual(width + 1);
 }
 
-/** Each row's glyph in Details, the column before the row's name (`IssueMargin.tsx`'s `Row`). */
+/** Each row's glyph in Details, the column before the row's name (`details-leaves.tsx`'s
+ *  `Row`). */
 const ROW_GLYPHS = '[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]';
 /** Each document's and file's mark of its kind, in Details' list of them. */
 const FILE_MARKS = '[data-testid="issue-files"] a > span[aria-hidden="true"]';
@@ -510,7 +511,7 @@ test("every property with a value is visible in Details at every width @phone", 
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
-      // The labels of Development's rows, in the order they stand (`IssueMargin.tsx`'s `Row`).
+      // The labels of Development's rows, in the order they stand (`details-leaves.tsx`'s `Row`).
       await expect(
         marginSection(page, "development").locator(
           ":scope > div > div > div:first-child > span[data-page-chrome]"
@@ -726,7 +727,7 @@ test("every property with a value is visible in Details at every width @phone", 
         `the repository's box does not hold ${REPOSITORY} at ${width} px`
       ).toHaveValue(REPOSITORY);
       // The open box is the row's value: as wide as the row's value column, the second of the
-      // row's two columns (`IssueMargin.tsx`'s `Row`), and wide enough to show the repository
+      // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
       // whole. The box fills its list of suggestions from a read it starts when it takes the
       // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
       // so both are measured once the list holds the repository, as the reader sees the box.

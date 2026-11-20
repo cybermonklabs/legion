@@ -114,9 +114,9 @@ export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
 /** How many entries Details draws of a list before it folds the rest behind Show all: the
- *  panel's own `FOLD_AFTER` (`IssueMargin.tsx`), spelled here because Playwright cannot load
- *  that module - its imports reach a JSON module of `packages/envoy` imported without the
- *  `type: "json"` attribute Node requires. */
+ *  panel's own `FOLD_AFTER` (`details-leaves.tsx`), spelled here rather than imported, since that
+ *  module draws Details' components through imports no browser file has been run on in Node; the
+ *  rows that count a folded list (`toHaveCount(FOLD_AFTER)`) fail if the two differ. */
 export const FOLD_AFTER = 10;
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
  *  before it folds a list behind Show all. */
