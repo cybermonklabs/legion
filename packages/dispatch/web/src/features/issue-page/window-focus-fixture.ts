@@ -25,9 +25,15 @@ export function appClient(): QueryClient {
 }
 
 /** For unit tests only: the reader comes back to the tab 31 s after the reads answered, past the
- *  app's staleness (`appClient`). The caller puts the clock back (`setSystemTime()`) and leaves
- *  the window's focus to the browser again (`focusManager.setFocused(undefined)`). */
+ *  app's staleness (`appClient`). The caller undoes it with `restoreWindowFocus`. */
 export async function focusPastStaleness(client: QueryClient): Promise<void> {
   setSystemTime(Date.now() + 31_000);
   await act(() => refocus(client));
+}
+
+/** For unit tests only: puts the clock back and leaves the window's focus to the browser again,
+ *  undoing `focusPastStaleness`. */
+export function restoreWindowFocus(): void {
+  setSystemTime();
+  focusManager.setFocused(undefined);
 }

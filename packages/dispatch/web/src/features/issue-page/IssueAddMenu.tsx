@@ -16,7 +16,7 @@ import { labelsControlName } from "../issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
-import { blockedByControlName } from "./BlockedByControl";
+import { blockedByControlName } from "./details-names";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -32,7 +32,7 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
  * the labels, the issues this one waits on, the repository, the components and the priorities
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
- * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
+ * each by the name exported for that control - `assigneeControlName`, `labelsControlName`,
  * `blockedByControlName`, `repoControlName` and `repoTextControlName`, `componentsControlName`,
  * `addPriorityControlName` - so the two sides cannot drift apart, and lists one only while that
  * control takes a press (`usableControl`). A press on an entry opens that property's control, and

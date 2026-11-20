@@ -1,3 +1,4 @@
+import type { QueryStatus } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
@@ -19,7 +20,6 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -199,6 +199,7 @@ export function RepoControl({
   disabled = false,
   inRow = false,
   issueKey,
+  mappingsFreshness,
   project,
   repo: hostRepo,
   resolvedRepo: hostResolvedRepo,
@@ -209,6 +210,17 @@ export function RepoControl({
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issueKey: string;
+  /** The options of the read of the repositories Dispatch maps to projects, in place of the
+   *  app's defaults. A host whose reads events keep fresh passes their options, since the event
+   *  of a mapping's write reads the mappings again (`api/event-refresh.ts`), and a window focus
+   *  30 s after the read, the app's staleness, would read them again for nothing. Without it the
+   *  read keeps the app's defaults. */
+  mappingsFreshness?: {
+    readonly refetchOnWindowFocus: (query: {
+      readonly state: { readonly status: QueryStatus };
+    }) => boolean | "always";
+    readonly staleTime: number;
+  };
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
@@ -248,10 +260,7 @@ export function RepoControl({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
-    // Inside `NoTooltips`, the new issue page, the mappings are read again by the event of a
-    // mapping's write (`api/event-refresh.ts`), so a window focus 30 s after the read, the app's
-    // staleness, would read them again for nothing. Every other page keeps the app's defaults.
-    ...(page === null ? undefined : EVENT_FRESH),
+    ...mappingsFreshness,
   });
   const want = () => setWanted(true);
   const descriptionId = useId();

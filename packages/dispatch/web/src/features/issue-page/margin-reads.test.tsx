@@ -1,12 +1,12 @@
-import { afterEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
-import { focusManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
-import { appClient, focusPastStaleness } from "./window-focus-fixture";
+import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
 const OWNER: MarginOwner = { key: "CORE-1", kind: "issue" };
 
@@ -22,8 +22,7 @@ let restore = () => {};
 afterEach(() => {
   restore();
   restore = () => {};
-  setSystemTime();
-  focusManager.setFocused(undefined);
+  restoreWindowFocus();
 });
 
 /** Every read the margin of an issue sends on its Comments tab with no pin: the inbox, the

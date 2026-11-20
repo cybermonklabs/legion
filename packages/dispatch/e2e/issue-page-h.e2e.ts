@@ -2,7 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
-import { blockedByControlName } from "../web/src/features/issue-page/BlockedByControl";
+import {
+  blockedByControlName,
+  referencedByControlName,
+} from "../web/src/features/issue-page/details-names";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -685,7 +688,7 @@ test("every property with a value is visible in Details at every width @phone", 
           "Referenced by's count",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: `${PROPERTY_LABELS.referenced_by} (${oneRead.referenced_by_count})`,
+            name: referencedByControlName(oneRead.referenced_by_count),
           }),
         ],
         [

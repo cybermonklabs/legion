@@ -40,12 +40,7 @@ import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
-import {
-  BLOCKED_BY_INPUT_ID,
-  BlockedByControl,
-  blockedByControlName,
-  IssueLine,
-} from "./BlockedByControl";
+import { BLOCKED_BY_INPUT_ID, BlockedByControl, IssueLine } from "./BlockedByControl";
 import {
   DetailsErrorLine,
   readFailed,
@@ -66,6 +61,7 @@ import {
   UPRIGHT_BAR,
 } from "./details-icons";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
+import { blockedByControlName, referencedByControlName } from "./details-names";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
@@ -265,13 +261,14 @@ export function IssueMarginPanel({
   // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
   // only while its own section is open too - the first three are of rows in Development, where a
   // link reads GitHub as it is drawn, and the fourth is the References row's list: a reader who
-  // keeps a section closed costs none of its reads, nor any of them again on an event. The
+  // keeps a section closed costs none of its reads, nor any of them again on an event. Each
   // section's other rows make their own reads, as they do while Details itself is closed.
   const readingDevelopment = reading && sections.isOpen("development");
   const readingReferences = reading && sections.isOpen("references");
   const blockers = issue.blocked_by ?? [];
   // Read again by the event of an issue whose title changes (`api/event-refresh.ts`'s names
-  // reads), so never by its age or a window focus (`EVENT_FRESH`).
+  // reads), so never by its age, and by a window focus only while its last read failed
+  // (`EVENT_FRESH`).
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
     ...EVENT_FRESH,
@@ -285,8 +282,8 @@ export function IssueMarginPanel({
   // kind that point at it, each issue's title the head of its text that the edge carries as its
   // excerpt (the issue's node itself carries no text). It is kept under the backlink panels'
   // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
-  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`), and neither its age
-  // nor a window focus does (`EVENT_FRESH`).
+  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`), its age never
+  // does, and a window focus does only while its last read failed (`EVENT_FRESH`).
   const blocking = useQuery({
     enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
@@ -412,10 +409,10 @@ export function IssueMarginPanel({
   // focus leaves it was left by the reader, so it is forgotten. The elements a close takes the
   // focus from stay noted: a control a close disables takes no press as Chromium blurs it, and
   // React sends no `onBlur` for an element it takes off the page. A switch to another window or
-  // tab blurs the control too, but leaves it the document's active element, where the focus comes
-  // back on return, so a blur that leaves the element active forgets nothing.
+  // tab blurs the control too while the document itself has no focus, and the focus comes back
+  // to the control on return, so a blur while the document has no focus forgets nothing.
   const forgetLeftDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
-    if (event.target !== document.activeElement && usableControl(event.target)) {
+    if (document.hasFocus() && usableControl(event.target)) {
       developmentFocus.current = null;
     }
   };
@@ -645,6 +642,7 @@ export function IssueMarginPanel({
             disabled={isClosed}
             inRow
             issueKey={issue.key}
+            mappingsFreshness={EVENT_FRESH}
             project={issue.project}
             repo={issue.repo}
             resolvedRepo={issue.resolved_repo}
@@ -782,7 +780,7 @@ export function IssueMarginPanel({
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
             >
-              {`${PROPERTY_LABELS.referenced_by} (0)`}
+              {referencedByControlName(0)}
             </span>
           ) : (
             <button
@@ -792,14 +790,12 @@ export function IssueMarginPanel({
               onClick={() => setReferencesOpen((open) => !open)}
               type="button"
             >
-              {`${PROPERTY_LABELS.referenced_by} (${issue.referenced_by_count})`}
+              {referencedByControlName(issue.referenced_by_count)}
             </button>
           )}
           {/* The list reads what references the issue, and reads it again on each event about
               those references, so it is drawn only while the reader can see it: open, in an open
-              References of an open Details. A closed section keeps its rows on the page, hidden
-              (`PropertySection`), as a closed Details keeps the panel (`slots/details.tsx`), and
-              either would keep the list's read live with them. */}
+              References of an open Details. */}
           {referencesOpen && readingReferences ? (
             <ReferencedBy
               className="w-full"

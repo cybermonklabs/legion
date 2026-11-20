@@ -37,14 +37,14 @@ import { issueAsksQuery } from "./useIssueTree";
  *
  * The words come from the reads the outline and the history are drawn from, so the list costs no
  * request of its own: each read here is the outline's, under its key and with its options
- * (`useIssueTree.ts`: kept fresh by events, never read again by its age or a window focus,
- * `EVENT_FRESH`), so it shares the outline's answer and is read again only when the outline's
- * is. A record's words are the server's reading of its text, as its row draws them, and its
- * first line is drawn whole, wrapping rather than cut. Where a read has not answered, has
- * failed, or holds no words for a pin - a handoff, an event older than the history has read -
- * the pin is drawn by the page's word for its kind and never by its id. Until the reader's own
- * state has answered, which pins there are is not known: the section draws its heading alone,
- * and says None only once that state holds no pin.
+ * (`useIssueTree.ts`: kept fresh by events, never read again by its age, and by a window focus
+ * only while its last read failed, `EVENT_FRESH`), so it shares the outline's answer and is read
+ * again only when the outline's is. A record's words are the server's reading of its text, as its
+ * row draws them, and its first line is drawn whole, wrapping rather than cut. Where a read has
+ * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
+ * history has read - the pin is drawn by the page's word for its kind and never by its id. Until
+ * the reader's own state has answered, which pins there are is not known: the section draws its
+ * heading alone, and says None only once that state holds no pin.
  */
 export function IssuePins({
   dismissed,

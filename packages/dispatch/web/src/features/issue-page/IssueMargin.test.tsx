@@ -1,6 +1,6 @@
-import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
-import { focusManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
@@ -49,9 +49,9 @@ import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { blockedByControlName } from "./BlockedByControl";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
+import { blockedByControlName, referencedByControlName } from "./details-names";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
@@ -77,7 +77,7 @@ import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
-import { appClient, focusPastStaleness } from "./window-focus-fixture";
+import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
@@ -91,6 +91,9 @@ const OPEN_DRAWER: MarginDrawer = {
   setPage: () => undefined,
 };
 
+/** The same drawer, shut. */
+const SHUT_DRAWER: MarginDrawer = { ...OPEN_DRAWER, open: false };
+
 /** The page's words the labels control, the components picker and the Repository row's text
  *  control are named from inside `NoTooltips` (`labelsControlName`, `componentsControlName`,
  *  `repoTextControlName`). */
@@ -102,7 +105,9 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
  *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
  *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
  *  opens or closes does. `queryClient` is the client every read goes through: by default one
- *  whose reads are never stale, so none is read again by its age or a window focus. */
+ *  whose answered reads are never stale, so none of those is read again by its age or a window
+ *  focus; a read that holds no answer, as one whose first read failed does, is stale all the
+ *  same. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
@@ -243,6 +248,12 @@ function blocksReads(getReferences: Mock<typeof api.getReferences>, reference: s
   return getReferences.mock.calls.filter(
     ([to, options]) => to === reference && options?.kind === "blocked_by"
   ).length;
+}
+
+/** How many times `titles` read the title of `blocker`, the Blocked by row's read of the titles
+ *  of the issues this one waits on. */
+function titleReads(titles: Mock<typeof api.getReferenceTargets>, blocker: string): number {
+  return titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
 }
 
 /** Every Escape that reaches the window from now on, by whether a control marked it taken: the
@@ -577,7 +588,6 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
   // The titles of the issues this one waits on, and what waits on it.
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
-  const titleReads = () => titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -585,8 +595,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
   });
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   window.localStorage.setItem(kept, "development");
-  const shut: MarginDrawer = { ...OPEN_DRAWER, open: false };
-  const { redraw, unmount } = renderDetails(undefined, shut);
+  const { redraw, unmount } = renderDetails(undefined, SHUT_DRAWER);
 
   try {
     const development = await screen.findByRole("button", {
@@ -601,7 +610,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
       "Details read GitHub for the links of a closed Development"
     ).not.toHaveBeenCalled();
     expect(
-      titleReads(),
+      titleReads(titles, blocker),
       "Details read the titles of the issues a closed Development's Blocked by waits on"
     ).toBe(0);
     expect(
@@ -618,7 +627,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
     );
     await waitFor(() => {
       expect(
-        titleReads(),
+        titleReads(titles, blocker),
         "opening Development did not read the titles of the issues it waits on"
       ).toBeGreaterThan(0);
       expect(
@@ -1632,9 +1641,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", {
-      name: `${PROPERTY_LABELS.referenced_by} (3)`,
-    });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(3) });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -1682,9 +1689,7 @@ test("closing References or Details takes an open Referenced by list, and its re
       ?.getObserversCount() ?? 0;
 
   try {
-    await user.click(
-      await screen.findByRole("button", { name: `${PROPERTY_LABELS.referenced_by} (3)` })
-    );
+    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -1700,7 +1705,7 @@ test("closing References or Details takes an open Referenced by list, and its re
       "References opened again without the Referenced by list the reader left open"
     ).toBeInTheDocument();
 
-    redraw({ ...OPEN_DRAWER, open: false });
+    redraw(SHUT_DRAWER);
     expect(
       screen.queryByRole("region", { name: "Referenced by" }),
       "a closed Details still draws the Referenced by list"
@@ -1732,7 +1737,6 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
-  const titleReads = () => titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -1746,11 +1750,9 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
   const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
 
   try {
-    await user.click(
-      await screen.findByRole("button", { name: `${PROPERTY_LABELS.referenced_by} (3)` })
-    );
+    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
     await waitFor(() => {
-      expect(titleReads()).toBe(1);
+      expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
       expect(listReads()).toBe(1);
       expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
@@ -1759,7 +1761,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
     expect(
-      titleReads(),
+      titleReads(titles, blocker),
       "a window focus read the titles of the issues this one waits on again"
     ).toBe(1);
     expect(
@@ -1776,8 +1778,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
     titles.mockRestore();
     getReferences.mockRestore();
     restore();
-    setSystemTime();
-    focusManager.setFocused(undefined);
+    restoreWindowFocus();
   }
 });
 
@@ -1785,7 +1786,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
 // rather than drawing a second copy of it. It finds that control by the name the control
 // exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
 // its own, a word changed in one made the entry disappear with no error anywhere.
-test("the add menu opens the control the panel draws, under the name that control exports", async () => {
+test("the add menu opens the control the panel draws, under the name exported for it", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
@@ -1793,7 +1794,7 @@ test("the add menu opens the control the panel draws, under the name that contro
   try {
     expect(
       await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) }),
-      "the panel draws no blocked-by control under the name it exports"
+      "the panel draws no blocked-by control under the name exported for it"
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.blocked_by }));
@@ -4244,20 +4245,24 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
   }
 });
 
-// A switch to another window or tab blurs the route's control but leaves it the document's
-// active element, where the focus comes back on return, so the panel still keeps it, and a close
+// A switch to another window or tab blurs the route's control while the document has no focus,
+// and the focus comes back to the control on return, so the panel still keeps it, and a close
 // made elsewhere meanwhile hands its focus to Development's heading as it would with the reader
 // still on the page.
 test("a window switch keeps the route's control noted, and a close made elsewhere then hands its focus to Development's heading", async () => {
   const { getIssue, restore } = stubIssueApi();
   const { queryClient, unmount } = renderDetails();
   const stopBlurring = emulateChromiumFocusFixup();
+  // The page tells a window switch by whether the document has the focus, which happy-dom says
+  // it has whenever an element is active, so from the switch below the stub says it has none.
+  const hasFocus = spyOn(document, "hasFocus");
 
   try {
     const control = await screen.findByRole("button", { name: "Messages default to no route" });
     act(() => control.focus());
-    // As a switch to another window does: the control hears the focus leave (`focusout` is what
-    // React's `onBlur` listens to) and stays the document's active element.
+    // As a switch to another window does: the document loses the focus, and the control hears it
+    // leave (`focusout` is what React's `onBlur` listens to) and stays its active element.
+    hasFocus.mockReturnValue(false);
     act(() => {
       control.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
@@ -4274,6 +4279,7 @@ test("a window switch keeps the route's control noted, and a close made elsewher
       "the reader only switched windows, and the close did not move the focus to Development's heading"
     ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
   } finally {
+    hasFocus.mockRestore();
     stopBlurring();
     unmount();
     restore();
@@ -4461,8 +4467,7 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
   } finally {
     unmount();
     restore();
-    setSystemTime();
-    focusManager.setFocused(undefined);
+    restoreWindowFocus();
   }
 });
 

@@ -11,6 +11,7 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
+import { blockedByControlName } from "./details-names";
 import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
@@ -31,19 +32,6 @@ function issueKeysIn(value: string): readonly string[] {
 /** The id of the editor's box, by which Details finds the box when it hands the box a focus
  *  (`IssueMargin.tsx`). */
 export const BLOCKED_BY_INPUT_ID = "issue-blocked-by";
-
-/**
- * The name the blocked-by control answers to: the word it shows and what it opens, in the words
- * the box it opens is named by ("Issues CORE-1 waits on"), so a voice user saying what they read
- * presses it (WCAG 2.5.3) and every reader hears one sentence: "Add issues CORE-1 waits on". The
- * add menu reaches the control by this name rather than drawing a second copy of it, and calls
- * this function for it (`IssueAddMenu.tsx`), so the two sides cannot drift apart: a word changed
- * here changes both.
- */
-export function blockedByControlName(issueKey: string, blockerCount: number): string {
-  const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;
-  return `${verb} issues ${issueKey} waits on`;
-}
 
 /**
  * The issues this one waits on, in their row of Details beside the repository and the
