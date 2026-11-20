@@ -95,6 +95,8 @@ import (
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-1575's intake failures (20261120001432) create intake_failures and
+// cleared_pull_requests and touch no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -103,7 +105,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
-	20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
+	20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157, 20261120001432,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -118,9 +120,9 @@ var thisBranchsMigrations = []int{
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
 // each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
 // record (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
-// 20261117200337 and dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the
-// list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// 20261117200337, dispatch://INFRA-4374's 20261119003157 and dispatch://INFRA-1575's
+// 20261120001432. That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
