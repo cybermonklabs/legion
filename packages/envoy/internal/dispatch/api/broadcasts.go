@@ -920,12 +920,17 @@ func (s *server) keepReadableBroadcastReplies(ctx context.Context, who model.Act
 	if err != nil {
 		return fmt.Errorf("read which broadcast replies the caller reads: %w", err)
 	}
+	slices.Sort(readable)
+	reads := func(id string) bool {
+		_, found := slices.BinarySearch(readable, id)
+		return found
+	}
 	for seed, chain := range replies {
-		replies[seed] = slices.DeleteFunc(chain, func(reply model.Message) bool { return !slices.Contains(readable, reply.ID) })
+		replies[seed] = slices.DeleteFunc(chain, func(reply model.Message) bool { return !reads(reply.ID) })
 	}
 	for _, attempts := range deliveries {
 		for index := range attempts {
-			if reply := attempts[index].ReplyID; reply != nil && !slices.Contains(readable, *reply) {
+			if reply := attempts[index].ReplyID; reply != nil && !reads(*reply) {
 				attempts[index].ReplyID = nil
 			}
 		}

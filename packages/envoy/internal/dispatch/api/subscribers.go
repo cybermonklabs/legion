@@ -126,22 +126,17 @@ func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 // the given issue's alone is scoped to that issue.
 var otherIssueBase = issueSubscriberBase("-")
 
-// keyScopedTopics returns the subset of topics that deliver base's events and not those of every
-// other issue: its exact forms, and every narrower wildcard naming it (`<base>.*`, `<base>.issue.>`),
-// which a broader wildcard (`notifications.dispatch.>`) is not. A topic is read in every form a
-// reader takes it in (contracts.TopicForms), as matchingTopics reads it, so the form naming the
-// key's project (`notifications.dispatch.issue.<project>.<key>.>`) is scoped to the key too.
-func keyScopedTopics(topics []string, base string) []string {
-	scoped := make([]string, 0, len(topics))
-	for _, topic := range topics {
-		forms := contracts.TopicForms(topic)
-		delivers := slices.ContainsFunc(forms, func(form string) bool { return routing.Match(form, base+".marker") })
-		broader := slices.ContainsFunc(forms, func(form string) bool { return routing.Match(form, otherIssueBase+".marker") })
-		if delivers && !broader {
-			scoped = append(scoped, topic)
-		}
+// keyScoped reports whether topic delivers base's events and not those of every other issue: an
+// exact form of base, or a narrower wildcard naming it (`<base>.*`, `<base>.issue.>`), which a
+// broader wildcard (`notifications.dispatch.>`) is not. The topic is read in every form a reader
+// takes it in (contracts.TopicForms), as matchingTopics reads it, so the form naming the key's
+// project (`notifications.dispatch.issue.<project>.<key>.>`) is scoped to the key too.
+func keyScoped(topic, base string) bool {
+	forms := contracts.TopicForms(topic)
+	delivers := func(subject string) bool {
+		return slices.ContainsFunc(forms, func(form string) bool { return routing.Match(form, subject) })
 	}
-	return scoped
+	return delivers(base+".marker") && !delivers(otherIssueBase+".marker")
 }
 
 func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request) {
@@ -162,7 +157,7 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 
 // writeSubscribers answers the sessions whose interests deliver an event published under base,
 // each one who may see (seenSessions). hidden says base names an owner of a project the
-// viewer does not see: every topic scoped to that owner (keyScopedTopics) names it, so it is left
+// viewer does not see: every topic scoped to that owner (keyScoped) names it, so it is left
 // out of every row, and a row left with no topic is dropped; the answer is then the one a key
 // nobody holds gets, which lists what the broader wildcards deliver.
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, who model.Actor, base string, hidden bool) {
@@ -191,8 +186,7 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, who mo
 	for _, interest := range interests {
 		matched := matchingTopics(interest.Topics, base)
 		if hidden {
-			scoped := keyScopedTopics(matched, base)
-			matched = slices.DeleteFunc(matched, func(topic string) bool { return slices.Contains(scoped, topic) })
+			matched = slices.DeleteFunc(matched, func(topic string) bool { return keyScoped(topic, base) })
 		}
 		if len(matched) == 0 {
 			continue
