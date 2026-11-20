@@ -1346,7 +1346,6 @@ describe("one registration", () => {
         log: () => undefined,
       }).catch((error: unknown) => error);
 
-      // Each case names its refusal, so a failure says which one dropped or sent again.
       const answer = `${status} ${body.reason}`;
       expect(outcome).toBe(refused);
       expect({ answer, sent, dropped, told }).toEqual({

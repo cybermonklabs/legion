@@ -237,6 +237,13 @@ export function startRelaySocketStandIn(
     socket.send(JSON.stringify(frame));
   };
 
+  /** The listener's answer to a frame it cannot read: `bad_frame`, under the sid it named, then
+   *  the close. */
+  const badFrame = (socket: ServerWebSocket<SocketData>, sid?: number): void => {
+    send(socket, { op: "err", ...(sid === undefined ? {} : { sid }), code: "bad_frame" });
+    socket.close(1008, "bad_frame");
+  };
+
   const standIn: RelaySocketStandIn = {
     get url() {
       return origin;
@@ -278,9 +285,7 @@ export function startRelaySocketStandIn(
     },
     refuseFrame(session) {
       for (const socket of [...open]) {
-        if (socket.data.session !== session) continue;
-        send(socket, { op: "err", code: "bad_frame" });
-        socket.close(1008, "bad_frame");
+        if (socket.data.session === session) badFrame(socket);
       }
     },
     close(code, reason, session) {
@@ -410,19 +415,13 @@ export function startRelaySocketStandIn(
         });
       },
       message(socket, raw) {
-        // A frame it cannot read: the err frame `bad_frame`, under the sid it named, and the close.
-        const badFrame = (sid?: number): void => {
-          send(socket, { op: "err", ...(sid === undefined ? {} : { sid }), code: "bad_frame" });
-          socket.close(1008, "bad_frame");
-        };
         // Its members as sent, each read and checked below; any other is counted in `malformed`.
-        // JSON that is no object (`null`, a number) reads as one with no members.
         let frame: ClientFrame | null;
         try {
           frame = JSON.parse(String(raw)) as ClientFrame | null;
         } catch {
           standIn.malformed.push(String(raw));
-          badFrame();
+          badFrame(socket);
           return;
         }
         const { session } = socket.data;
@@ -436,7 +435,7 @@ export function startRelaySocketStandIn(
         const sid = Number.isInteger(frame?.sid) ? Number(frame?.sid) : undefined;
         if (frame?.op === "sub") {
           if (sid === undefined) {
-            badFrame();
+            badFrame(socket);
             return;
           }
           const subject = String(frame.subject);
@@ -447,7 +446,7 @@ export function startRelaySocketStandIn(
             return;
           }
           if (socket.data.subs.has(sid)) {
-            badFrame(sid);
+            badFrame(socket, sid);
             return;
           }
           if (socket.data.subs.size >= MOST_SUBSCRIPTIONS) {
@@ -462,7 +461,7 @@ export function startRelaySocketStandIn(
         }
         if (frame?.op === "unsub") {
           if (sid === undefined) {
-            badFrame();
+            badFrame(socket);
             return;
           }
           standIn.handled.push({ session, frame: `unsub ${sid}` });
@@ -470,7 +469,7 @@ export function startRelaySocketStandIn(
           return;
         }
         if (frame?.op !== "pub") {
-          badFrame(sid);
+          badFrame(socket, sid);
           return;
         }
         const subject = String(frame.subject);

@@ -302,8 +302,8 @@ function relayHeaders(raw: unknown): RelaySocketHeaders | undefined {
   };
 }
 
-/** The bytes a pong carries, as text: the ping sequence `flush` and the liveness check sent. */
-function pongText(data: unknown): string {
+/** A frame's or a pong's bytes as text, however Bun hands them over. */
+function frameText(data: unknown): string {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
   if (ArrayBuffer.isView(data)) {
@@ -431,7 +431,6 @@ export class ListenerRelay implements InboundConnection {
    */
   async flush(): Promise<void> {
     const socket = await this.#openSocket();
-    // The socket this waited for may have been dropped since, in the turn that woke it.
     if (socket !== this.#socket) {
       throw new LoggableError("the listener's relay socket closed before the flush was sent");
     }
@@ -686,7 +685,6 @@ export class ListenerRelay implements InboundConnection {
     // What Bun said of a socket that failed before it opened: the status an upgrade was refused
     // with (`UPGRADE_STATUS`), or why it could not be made.
     let failure = "";
-    // An upgrade a path took and never answered would stay connecting with no close at all.
     const handshake = setTimeout(() => {
       if (generation !== this.#generation || socket.readyState !== WebSocket.CONNECTING) return;
       refusal = `the upgrade was not answered within ${RELAY_HANDSHAKE_MS / 1000} s`;
@@ -716,7 +714,7 @@ export class ListenerRelay implements InboundConnection {
     });
     socket.addEventListener("pong", (event: Event) => {
       if (generation !== this.#generation) return;
-      this.#pong(pongText("data" in event ? event.data : undefined));
+      this.#pong(frameText("data" in event ? event.data : undefined));
     });
     socket.addEventListener("close", (event) => {
       clearTimeout(handshake);
@@ -778,7 +776,7 @@ export class ListenerRelay implements InboundConnection {
   #message(session: string, raw: unknown): void {
     let frame: unknown;
     try {
-      frame = JSON.parse(typeof raw === "string" ? raw : pongText(raw));
+      frame = JSON.parse(frameText(raw));
     } catch {
       this.#logOnce(
         `${session}\u0000json`,
