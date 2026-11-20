@@ -126,6 +126,70 @@ test(
   rowLimit("short")
 );
 
+// Playwright reads the word after an option that takes a value as that value, whatever it looks
+// like, so an `--output=` there names no directory; written as `--grep-invert=x`, or as a short
+// option with its value in its cluster, the option takes no next word and the `--output` counts.
+test(
+  "an --output that another option takes as its value names no directory, as Playwright reads it",
+  async () => {
+    const value = "--output=e2e/not-output";
+    for (const taken of [
+      ["--grep-invert", value],
+      ["-G", value],
+      ["-xG", value],
+    ]) {
+      const run = await visualRun(1, undefined, taken);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/test-results"));
+    }
+    for (const counted of [
+      ["--grep-invert=x", "--output=e2e/is-output"],
+      ["-Gx", "--output=e2e/is-output"],
+    ]) {
+      const run = await visualRun(1, undefined, counted);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/is-output"));
+    }
+  },
+  rowLimit("short", "short", "short", "short", "short")
+);
+
+/** The option names of one of visual-run.sh's two lists, sorted. */
+function listed(script: string, name: string): string[] {
+  const line = new RegExp(`^${name}="([^"]*)"$`, "m").exec(script);
+  if (line === null) throw new Error(`e2e/visual-run.sh holds no ${name}="..." line`);
+  return line[1].trim().split(/\s+/).sort();
+}
+
+// The script's two lists are the value-taking options of `playwright test` at the version the run
+// uses, copied from its help; a Playwright that gains or drops one makes this row fail until the
+// lists follow. The help is the one Playwright prints, read here through the tree's own package.
+test(
+  "the options visual-run.sh reads a value after are the pinned Playwright's",
+  async () => {
+    const help = await runBounded({
+      argv: [process.execPath, "node_modules/@playwright/test/cli.js", "test", "--help"],
+      bound: "short",
+      cwd: dispatchPackage,
+      from: import.meta.url,
+    });
+    expect(help.code).toBe(0);
+    const required: string[] = [];
+    const optional: string[] = [];
+    for (const match of help.stdout.matchAll(/^ {2}(?:(-\w), )?(--[\w-]+|-\w)(?: ([<[]))?/gm)) {
+      const [, short, name, value] = match;
+      const names = short === undefined ? [name] : [short, name];
+      if (value === "<") required.push(...names);
+      if (value === "[") optional.push(...names);
+    }
+    expect(required).toContain("--output");
+    const script = readFileSync(join(dispatchPackage, "e2e/visual-run.sh"), "utf8");
+    expect(listed(script, "playwright_value_options")).toEqual(required.sort());
+    expect(listed(script, "playwright_optional_options")).toEqual(optional.sort());
+  },
+  rowLimit("short")
+);
+
 test(
   "a run that passed says nothing of either, on either stream",
   async () => {

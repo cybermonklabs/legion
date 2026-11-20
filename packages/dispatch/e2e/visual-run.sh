@@ -183,27 +183,61 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
 # frame mid-change, so run the row again before acting). Its fix is that mark in the seed
 # (`markWhatTheShotPagesRead`, e2e/review-seed.ts), not a new baseline: a baseline taken from the
 # reverse run's shot holds the state the normal order never draws, and fails that run instead.
-# The loop reads `--output=DIR` and `--output DIR` as Playwright does: the last one wins, an empty
-# value names nothing, and arguments after `--` are no options. It cannot tell a word that another
-# option takes as its value (`--grep-invert --output=x`), which Playwright does not read as
-# `--output`. The status stays the container's however the lines go: a write to a closed stderr
-# fails and is ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end
-# this shell before the EXIT trap stopped the stack, so the signal is ignored from here on - after
-# `docker` has returned, so neither the container nor the stack inherits that.
+# The loop reads the arguments as Playwright's `test` command does: `--output=DIR` and `--output
+# DIR`, the last one wins, an empty value names nothing, arguments after `--` are no options, and
+# the word after an option that takes a value is that value, whatever it looks like - so
+# `--grep-invert --output=x` names no output directory, as Playwright reads it. The two lists are
+# the options of `playwright test` at the version the run uses (@playwright/test 1.64.1, the
+# package.json pin; the image runs this tree's node_modules), copied from its own help (`bun
+# node_modules/@playwright/test/cli.js test --help`): those written with `<value>`, which take the
+# next word always, and those written with `[value]`, which take it only when it starts with no
+# dash, so never an `--output`, and which end a cluster of short options. A short option that
+# takes a value takes the rest of its cluster where there is one (`-Gx`), else the next word.
+# e2e/__tests__/visual-run.test.ts reads both lists against that help and fails when they differ.
+# The status stays the container's however the lines go: a write to a closed stderr fails and is
+# ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end this shell
+# before the EXIT trap stopped the stack, so the signal is ignored from here on - after `docker`
+# has returned, so neither the container nor the stack inherits that.
+playwright_value_options=" --add-reporter --browser -c --config -g --grep -G --grep-invert --global-timeout -j --workers --last-failed-file --max-failures --output --project --repeat-each --reporter --retries --run-agents --shard --test-list --test-list-invert --timeout --trace --tsconfig --ui-host --ui-port --update-source-method "
+playwright_optional_options=" --debug --only-changed --shuffle -u --update-snapshots "
 if [ "$status" -ne 0 ]; then
   trap '' PIPE
   output=""
-  value_follows=""
+  next=""
   for arg in "$@"; do
-    if [ -n "$value_follows" ]; then
-      output=$arg
-      value_follows=""
+    case $next in
+      output) output=$arg ;;
+    esac
+    if [ -n "$next" ]; then
+      next=""
       continue
     fi
     case $arg in
       --) break ;;
       --output=*) output=${arg#--output=} ;;
-      --output) value_follows=1 ;;
+      --output) next=output ;;
+      --*=*) ;;
+      --*)
+        case $playwright_value_options in
+          *" $arg "*) next=value ;;
+        esac
+        ;;
+      -?*)
+        cluster=${arg#-}
+        while [ -n "$cluster" ]; do
+          letter=${cluster%"${cluster#?}"}
+          cluster=${cluster#?}
+          case $playwright_value_options in
+            *" -$letter "*)
+              [ -n "$cluster" ] || next=value
+              break
+              ;;
+          esac
+          case $playwright_optional_options in
+            *" -$letter "*) break ;;
+          esac
+        done
+        ;;
     esac
   done
   case $output in
