@@ -621,6 +621,27 @@ func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim
 	})
 }
 
+// holdPodUnderLaunchTurn has the next replacement that hold stops under the pod's launch turn
+// (fake's HoldReplacePod or HoldReplaceIssuePod) find a project's pause that holds the issue's pod:
+// a pause of LEGION opens there, and it holds the pod at the rig's clock, as recordPause records a
+// pause and its hold (openLegionPause, holdLegionPod). The hold clears itself, so the sweeps after
+// that replacement find the runtime as it left it. It sweeps until that replacement has opened the
+// hold, and so has asked its last word.
+func (r *podUpdateRig) holdPodUnderLaunchTurn(hold func(func())) {
+	r.t.Helper()
+	held := false
+	hold(func() {
+		hold(nil)
+		pause := openLegionPause(r.t, r.pool, r.clock.Now())
+		holdLegionPod(r.t, r.st, pause, podUpdateIssue, r.clock.Now())
+		held = true
+	})
+	testwait.Eventually(r.t, "a replacement to find the pod held by a pause under the pod's launch turn", func() bool {
+		r.tick()
+		return held
+	})
+}
+
 // dispatch://INFRA-4109 review round 5: the last word on a replacement through a process reads
 // the project pause's holds again under the pod's launch turn (replacementDue). A project's pause
 // held the pod and stopped no role. Its resume ended the hold a minute before the round opened
@@ -705,6 +726,82 @@ func TestTheByIssueReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testi
 	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
 		t.Fatalf("a launch replaced the round's pod %+v, which the pause keeps", replaced)
 	}
+}
+
+// dispatch://INFRA-4109 review round 6: each last word on a replacement reads whether a project's
+// pause holds the pod from the holds it reads again under the pod's launch turn (clockUnderTurn,
+// roundClock.held). It makes no other read of the hold. A hold that stands on the pod refuses the
+// replacement whatever the clock says (decision 12 of dispatch://INFRA-3759). In each case no
+// pause holds the pod when the sweep reads the holds, so the sweep goes to the replacement. While
+// the runtime waits for the pod's launch turn, a project's pause opens and holds the pod
+// (holdPodUnderLaunchTurn). Only the last word can see that hold.
+func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
+	// The last word on a replacement through a process (replacementDue). The implementer is the
+	// round's one member. It answers, and the round is complete. The last word refuses the
+	// replacement and names the pause's hold. The next sweeps read the hold too, and they keep the
+	// pod.
+	//
+	// Where the last word does not read the hold, the replacement deletes the pod that the pause
+	// holds.
+	t.Run("through a process", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+		rig.drifts(podUpdateDrift)
+
+		rig.tick()
+		rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+		rig.signal(claim.RoleImplementer, "a1b2c3d")
+		rig.settleAll()
+		rig.holdPodUnderLaunchTurn(rig.rt.HoldReplacePod)
+
+		if calls := rig.replacements(); len(calls) != 0 {
+			t.Fatalf("the pod was replaced %d times, want none: a project's pause holds it", len(calls))
+		}
+		refusals := loggedMessages(t, rig.logs.String(), backgroundNotDueLine)
+		if len(refusals) != 1 {
+			t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
+		}
+		if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, "a project's pause holds the pod") {
+			t.Errorf("the refusal's reason is %q, want it to name the pause's hold of the pod", reason)
+		}
+		rig.wantPodKept("the end of the pause's hold")
+	})
+
+	// The last word on a replacement by issue (issueReplacementDue), which reads the hold among
+	// what keeps the pod (issuePodKept, roundPodEnds). The members are those of pauseKeepsThePod,
+	// and the pause stopped neither of them: the implementer, which an idle release suspended
+	// before the round's ask reached it, and the tester, which answered and which the daemon then
+	// suspended. No process runs in the pod and nothing holds it, so the sweep goes to the
+	// replacement by issue. The last word refuses the replacement and names the pause's hold, and
+	// the next sweeps ask for no replacement by issue.
+	//
+	// Where the last word does not read the hold, the replacement by issue deletes the pod that the
+	// pause holds.
+	t.Run("by issue", func(t *testing.T) {
+		rig := newPodUpdateRig(t, releasedUnasked(claim.RoleImplementer), answeredThenSuspended(claim.RoleTester))
+		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+
+		rig.holdPodUnderLaunchTurn(rig.rt.HoldReplaceIssuePod)
+
+		if calls := rig.issueReplacements(); len(calls) != 0 {
+			t.Fatalf("the pod was replaced by issue %d times, want none: a project's pause holds it", len(calls))
+		}
+		refusals := loggedMessages(t, rig.logs.String(), byIssueNotDueLine)
+		if len(refusals) != 1 {
+			t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
+		}
+		if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, "a project's pause holds the pod") {
+			t.Errorf("the refusal's reason is %q, want it to name the pause's hold of the pod", reason)
+		}
+		rig.tick()
+		rig.tick()
+		rig.settleAll()
+		if asked := rig.byIssueAsks(); len(asked) != 1 || asked[0].Method != "ReplaceIssuePodNotDue" {
+			t.Fatalf("the runtime was asked to replace the pod by issue %+v, want only the call the last word refused", asked)
+		}
+		if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+			t.Fatalf("a launch replaced the round's pod %+v, which the pause holds", replaced)
+		}
+	})
 }
 
 // dispatch://INFRA-4109 R1 and R7 with the project pause carried, as its architect set the rule

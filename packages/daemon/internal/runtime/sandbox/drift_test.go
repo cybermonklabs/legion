@@ -25,8 +25,8 @@ import (
 //
 // PodDrift reads loc's Sandbox and the pod of the same name from r's informer stores. A write gets
 // to those stores through the watch, after the API has it. Thus driftOf first waits until r's
-// stores hold the Sandbox and the pod that g's trackers hold, and the test's context bounds that
-// wait. Where the tracker holds no such pod, the wait holds until the store holds none too. Without
+// stores hold the Sandbox and the pod that g's trackers hold, within Eventually's bound. Where
+// the tracker holds no such pod, the wait holds until the store holds none too. Without
 // the wait, a test that reads a write from the tracker can ask PodDrift about the Sandbox before
 // that write (TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed). The wait
 // compares the two decoded objects and not their resourceVersions, because a write to the fake
@@ -37,46 +37,27 @@ import (
 func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
 	t.Helper()
 	name := loc.Sandbox.Name
-	sandboxVersion := func(s *sandbox) string {
-		if s == nil {
-			return "(no Sandbox)"
-		}
-		return s.ResourceVersion
-	}
-	podVersion := func(p *corev1.Pod) string {
-		if p == nil {
-			return "(no pod)"
-		}
-		return p.ResourceVersion
-	}
-	wait, cancel := context.WithTimeout(g.ctx, testwait.Bounded(t, time.Minute, time.Second))
-	defer cancel()
-	poll := time.NewTicker(testwait.Poll)
-	defer poll.Stop()
-	for {
+	// differs names what the stores held unlike the trackers at the last read: the Sandbox, the
+	// pod, or both.
+	var differs []string
+	synced := func() bool {
 		held, heldPod := g.sandbox(name), g.pod(name)
 		stored, err := r.storedSandbox(name)
 		if err != nil {
 			t.Fatalf("PodDrift %s: the store's Sandbox %s: %v", loc.Claim, name, err)
 		}
-		storedPod := r.storedPod(name)
-		sandboxHeld, podHeld := equality.Semantic.DeepEqual(held, stored), equality.Semantic.DeepEqual(heldPod, storedPod)
-		if sandboxHeld && podHeld {
-			break
+		differs = differs[:0]
+		if !equality.Semantic.DeepEqual(held, stored) {
+			differs = append(differs, "the Sandbox")
 		}
-		select {
-		case <-wait.Done():
-			if !sandboxHeld {
-				t.Errorf("PodDrift %s: the store holds Sandbox %s at resourceVersion %q and the tracker at %q, and the two Sandboxes differ",
-					loc.Claim, name, sandboxVersion(stored), sandboxVersion(held))
-			}
-			if !podHeld {
-				t.Errorf("PodDrift %s: the store holds pod %s at resourceVersion %q and the tracker at %q, and the two pods differ",
-					loc.Claim, name, podVersion(storedPod), podVersion(heldPod))
-			}
-			t.Fatalf("PodDrift %s: the stores did not hold the trackers' objects: %v", loc.Claim, wait.Err())
-		case <-poll.C:
+		if !equality.Semantic.DeepEqual(heldPod, r.storedPod(name)) {
+			differs = append(differs, "the pod")
 		}
+		return len(differs) == 0
+	}
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, synced) {
+		t.Fatalf("PodDrift %s: the stores did not hold the trackers' objects named %s: %s of the store and of the tracker differ",
+			loc.Claim, name, strings.Join(differs, " and "))
 	}
 	drifted, err := r.PodDrift(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc})
 	if err != nil {
