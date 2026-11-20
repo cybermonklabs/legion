@@ -246,14 +246,14 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
 }
 
 /** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
- *  blocks refused, the page's two retries included, the conversation's outline says so over its
- *  tree, since it reads the same blocks, and the page opens on that line's Retry. `t p` from the
- *  conversation then opens Plan, which says in the page's words that it could not load the plan,
- *  with a Retry that holds the focus, and draws no bar and no switch. `t p` pressed from a
- *  control that holds the focus, the Spec control of the view row, puts the focus on that Retry
- *  too: the chord focuses the view's tree, and the stage the view is drawn in hands the focus on
- *  to the Retry (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter
- *  on that Retry asks it again, and the view draws the chart with the focus on its first row. */
+ *  blocks refused, the page's two retries included, the page still opens on the question that
+ *  waits on the reader, the spec's open question. `t p` from the conversation then opens Plan,
+ *  which says in the page's words that it could not load the plan, with a Retry that holds the
+ *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
+ *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
+ *  tree, and the stage the view is drawn in hands the focus on to the Retry
+ *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
+ *  asks it again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let refusing = true;
   const refuse = async (route: Route) => {
@@ -268,16 +268,15 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     // The page places its first focus once, when the reads its first rows come from have
-    // answered, here on the outline's line for the plan's blocks (`IssueTree.tsx`). The focus
-    // is moved to the page only after that, or the first focus could land after the move and
-    // keep the focus off the page.
-    await expect(
-      issuePage(page)
-        .locator("[data-failed-read]")
-        .filter({ hasText: STATE_LINES.plan_unreadable })
-        .getByRole("button"),
-      "the conversation whose read of the plan's blocks failed does not open on that line's Retry"
-    ).toBeFocused();
+    // answered: on the question that waits on the reader, whatever reads failed (`IssueTree.tsx`).
+    // The focus is moved to the page only after that, or the first focus could land after the
+    // move and keep the focus off the page.
+    const question = blockNodeId(await primarySlug(seeded.key), seeded.openQuestion.blockId);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the conversation does not open on the question that waits on the reader",
+      })
+      .toBe(question);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
