@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import {
@@ -11,25 +11,18 @@ import {
   type Block,
   type Cleanup,
   call,
-  deliveryFor,
-  isSelfCheck,
   type LegionPane,
   messageStream,
   ompNatsGuard,
-  ompRoot,
   type Refusal,
-  type RelayConnection,
   type Request,
+  type Rpc,
   refusalStream,
   runLegionPane,
   type StandinProvider,
   sendRelayFrame,
-  serveStandin,
-  spawnRpc,
-  writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { connect, headers, type MsgHdrs, StringCodec } from "nats";
+import { connect, headers, type NatsConnection, StringCodec } from "nats";
 
 // The model fallback on the real Oh My Pi (src/model-fallback.ts, on the cooldown machine and the
 // chain resolver of @legion/pi-shared): only the real binary shows which model each request went
@@ -98,12 +91,14 @@ const COOLDOWN_MS = 4_000;
  * first served turn, and reads the restored arming from where that turn went (below). */
 const RESUME_COOLDOWN_MS = 12_000;
 
-/** The cooldown the background job's case arms: long enough that the assignment which starts the
- * job has ended well inside it, so the pane is idle when the wait ends. */
+/** The cooldown the background job's case arms. The job's assignment, two requests the stand-in
+ * answers at once, has to end inside it for the wait to end while the pane is idle; the case
+ * checks that it did (`changes` before the wait) and fails by name where it did not, rather than
+ * pass on a return that run's own hooks made. */
 const JOB_COOLDOWN_MS = 12_000;
 
 /** How long an idle pane's wait for its return goes on past the due time before the case gives
- * up on it (`IdlePane.modelChanges`): it bounds only a pane that does not come back while it is
+ * up on it (`IdleLife.modelChanges`): it bounds only a pane that does not come back while it is
  * idle, which the case's own assertion then fails on, and a pane that does come back ends the
  * wait at the frame that says so. */
 const IDLE_RETURN_MS = 60_000;
@@ -148,10 +143,12 @@ function userText(request: Request): string {
     .join("\n");
 }
 
-/** One turn the gateway served: the model it was sent to, and when it arrived. */
+/** One turn the gateway served: the model it was sent to, when it arrived, and its request's
+ * messages as JSON. */
 interface Served {
   readonly model: string;
   readonly at: number;
+  readonly messages: string;
 }
 
 /** What a settled fallback pane left behind, beside every pane's own record. */
@@ -168,10 +165,38 @@ interface FallbackPane extends LegionPane {
 }
 
 /**
+ * What a case can do with its pane's first life once every prompt's run has settled and before
+ * that life ends (`fallbackPane`'s `whileUp`): the pane is up and idle, so a run can be started
+ * by something other than a prompt — an Envoy card, a background job's result.
+ */
+interface IdleLife {
+  /** Every turn the gateway served so far, in order. */
+  readonly served: readonly Served[];
+  /** The session's working directory, where its shell commands run. */
+  readonly workspace: string;
+  /** Writes `message` as one RPC `prompt` and resolves once the run it started has ended, with an
+   * `agent_end` the host marks terminal or not: a run that leaves a background job going ends
+   * with one marked not terminal, since the job's result continues it. */
+  readonly prompt: (message: string) => Promise<void>;
+  /** Hands the session one Envoy card carrying `summary` on its own inbox, as the listener's
+   * relay does, and resolves once the run the card started has ended. */
+  readonly card: (summary: string) => Promise<void>;
+  /** How many runs of the session have ended so far. */
+  readonly runs: () => number;
+  /** Resolves once more than `runs` runs of the session have ended. */
+  readonly runAfter: (runs: number) => Promise<void>;
+  /** How many changes of the session's model the host has reported since `since` (epoch ms). */
+  readonly changes: (since: number) => number;
+  /** Resolves true once `changes(since)` is `count`, or false at `giveUpAt` when it is not. */
+  readonly modelChanges: (since: number, count: number, giveUpAt: number) => Promise<boolean>;
+}
+
+/**
  * Runs one root architect's pane on the real Oh My Pi (`runLegionPane`) under the chain overlay,
  * its gateway answering each turn from `answer`, until every assignment's run has settled. A root
  * architect holds a Legion claim, which is all the model fallback gates on, and is the one role
  * the phase reminder leaves alone, so nothing but the case's own assignments starts a turn.
+ * `whileUp` runs in the first life once those runs have settled, before it ends.
  */
 async function fallbackPane(options: {
   readonly prompt: readonly string[];
@@ -182,9 +207,91 @@ async function fallbackPane(options: {
   readonly cooldownMs?: number;
   /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
   readonly chains?: readonly string[];
+  readonly whileUp?: (life: IdleLife) => Promise<void>;
 }): Promise<FallbackPane> {
   const { binary, nats } = setup();
   const served: Served[] = [];
+  /** The session the listener registered, whose deliver subject a card is relayed on. */
+  let sessionID = "";
+  let workspace = "";
+  /** When each `model_changed` frame arrived, and how many runs have ended. */
+  const modelChanged: number[] = [];
+  let runsEnded = 0;
+  /** The checks of every wait still open, run after each frame omp prints. */
+  const waits = new Set<() => void>();
+  const { whileUp } = options;
+
+  /** The case's view of the life `rpc` belongs to, over the real NATS server `nc`. */
+  const idleLife = (rpc: Rpc, nc: NatsConnection): IdleLife => {
+    /** Resolves true once `holds` does, read after each frame omp prints, or false at
+     * `giveUpAt`; rejects, with omp's stderr, once omp has closed its RPC stream. */
+    const until = (holds: () => boolean, giveUpAt = Number.POSITIVE_INFINITY): Promise<boolean> => {
+      if (holds()) return Promise.resolve(true);
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      // The one clock of the wait, on purpose: it bounds only a pane that never does what is
+      // waited for, and the cooldown it is set past runs on the omp process's own clock, which no
+      // test can move. A pane that does it ends the wait at the frame that says so.
+      const giveUp = Number.isFinite(giveUpAt)
+        ? setTimeout(() => settle(false), Math.max(0, giveUpAt - Date.now()))
+        : undefined;
+      const check = (): void => {
+        if (holds()) settle(true);
+      };
+      const settle = (value: boolean): void => {
+        waits.delete(check);
+        clearTimeout(giveUp);
+        resolve(value);
+      };
+      waits.add(check);
+      return Promise.race([promise, rpc.closed]);
+    };
+    const changes = (since: number): number => modelChanged.filter((at) => at >= since).length;
+    const codec = StringCodec();
+    let seq = 0;
+    return {
+      served,
+      workspace,
+      prompt: async (message) => {
+        const ended = runsEnded;
+        rpc.send({ type: "prompt", message });
+        await until(() => runsEnded > ended);
+      },
+      card: async (summary) => {
+        if (sessionID === "") throw new Error("the pane registered no Envoy session to send to");
+        const ended = runsEnded;
+        const key = `card-${randomUUID()}`;
+        seq += 1;
+        await sendRelayFrame({
+          connection: nc,
+          newHeaders: headers,
+          sessionID,
+          subject: `notifications.agent.${sessionID}`,
+          seq,
+          payload: codec.encode(
+            JSON.stringify({
+              event_id: `evt-${key}`,
+              source: "envoy",
+              source_event_id: `source-${key}`,
+              // The role lane of the claim `runLegionPane` registers.
+              topic: `${ROLE_TOPIC_PREFIX}legion-fallback-fall-1-architect`,
+              dedupe_key: `envoy.role.forward.publish.${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
+              issued_at: Date.now(),
+              payload_summary: summary,
+              trace_id: `trace-${key}`,
+            })
+          ),
+        });
+        await until(() => runsEnded > ended);
+      },
+      runs: () => runsEnded,
+      runAfter: async (runs) => {
+        await until(() => runsEnded > runs);
+      },
+      changes,
+      modelChanges: (since, count, giveUpAt) => until(() => changes(since) >= count, giveUpAt),
+    };
+  };
+
   const pane = await runLegionPane(
     binary,
     [],
@@ -202,10 +309,30 @@ async function fallbackPane(options: {
         // Well above every wait a case asks for, so the doubling is what decides them.
         LEGION_REFUSAL_COOLDOWN_MAX_MS: "600000",
       },
+      prepare: async (paths) => {
+        workspace = paths.workspace;
+      },
+      onFrame: (frame) => {
+        if ("type" in frame && frame.type === "model_changed") modelChanged.push(Date.now());
+        if ("type" in frame && frame.type === "agent_end") runsEnded += 1;
+        for (const check of [...waits]) check();
+      },
+      ...(whileUp === undefined
+        ? {}
+        : {
+            whileUp: async (rpc: Rpc) => {
+              const nc = await connect({ servers: nats });
+              cleanup.push(() => nc.close());
+              await whileUp(idleLife(rpc, nc));
+            },
+          }),
       answer: (url, body) => {
+        if (url.pathname === "/v1/interests/subscribe" && typeof body.session_id === "string") {
+          sessionID = body.session_id;
+        }
         if (url.pathname !== "/anthropic/v1/messages") return undefined;
         const model = String(body.model ?? "");
-        served.push({ model, at: Date.now() });
+        served.push({ model, at: Date.now(), messages: JSON.stringify(body.messages ?? null) });
         return options.answer(model, served.length, { path: url.pathname, body });
       },
     },
@@ -219,243 +346,6 @@ async function fallbackPane(options: {
       served.find((turn) => turn.at >= since && turn.model === "strong-model")?.at,
     cooldowns: async () =>
       (await pane.transcriptEntries(LEGION_FALLBACK_ENTRY)) as FallbackCooldownState[],
-  };
-}
-
-/** A fallback pane that stays up between its runs, so a run can be started by something other
- * than a prompt: an Envoy card, a background job's result (`idlePane`). */
-interface IdlePane {
-  /** Every turn the gateway served: its model and its time, in order. */
-  readonly served: readonly Served[];
-  /** The messages of each of those turns' requests, as JSON, in the same order. */
-  readonly conversations: readonly string[];
-  /** The session's working directory, where its shell commands run. */
-  readonly workspace: string;
-  /** Writes `message` as one RPC `prompt`, as the daemon's shim does, and resolves once the run it
-   * started has ended. */
-  readonly prompt: (message: string) => Promise<void>;
-  /** Hands the session one Envoy card carrying `summary` on its own inbox, as the listener's relay
-   * does, and resolves once the run the card started has ended. */
-  readonly card: (summary: string) => Promise<void>;
-  /** How many runs of the session have ended so far. */
-  readonly runs: () => number;
-  /** Resolves once more than `runs` runs of the session have ended. */
-  readonly runAfter: (runs: number) => Promise<void>;
-  /** Resolves true once the host has reported `count` changes of the session's model since
-   * `since` (epoch ms), or false at `giveUpAt` when it has not. */
-  readonly modelChanges: (since: number, count: number, giveUpAt: number) => Promise<boolean>;
-}
-
-/**
- * Runs one root architect's pane on the real Oh My Pi under the chain overlay, as `fallbackPane`
- * does, and keeps it up between runs: `runLegionPane` ends its life once the last prompt's run
- * has settled, and a card or a background job's result can only start a run of a session that is
- * up and idle. The stand-in is `runLegionPane`'s: the daemon's claim routes, the Envoy listener,
- * and the model gateway, which answers each Messages request from `answer`. A card goes over the
- * real NATS server, as a frame of the session's own consumer on its deliver subject
- * (`sendRelayFrame`).
- */
-async function idlePane(options: {
-  /** `LEGION_REFUSAL_COOLDOWN_MS`. */
-  readonly cooldownMs: number;
-  /** Answers the turn the gateway was sent: `model` is the request's own model id, and `nth`
-   * counts the turns of the pane from 1. */
-  readonly answer: (model: string, nth: number) => Response;
-}): Promise<IdlePane> {
-  const { binary, nats } = setup();
-  const { root, home, workspace, sessions } = await ompRoot(
-    binary,
-    "legion-fallback-card-",
-    cleanup
-  );
-  const state = path.join(root, "state");
-  await mkdir(state, { recursive: true, mode: 0o700 });
-  // The daemon's golden registration answer, as `runLegionPane` answers it.
-  const registered: Record<string, unknown> = JSON.parse(
-    await readFile(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),
-      "utf8"
-    )
-  );
-  const claimToken = "legion-fallback-card-fall-1-architect";
-
-  const served: Served[] = [];
-  const conversations: string[] = [];
-  let sessionID = "";
-  let grants = 0;
-  const { base } = serveStandin(cleanup, (url, body) => {
-    if (url.pathname === "/anthropic/v1/messages") {
-      // The run-end self-check is not a turn; this pane names no Dispatch, so none is sent, and
-      // one that came would be answered as `runLegionPane` answers it.
-      if (isSelfCheck({ path: url.pathname, body })) {
-        return replies([{ type: "text", text: "PROCEEDING" }], "btw");
-      }
-      const model = String(body.model ?? "");
-      served.push({ model, at: Date.now() });
-      conversations.push(JSON.stringify(body.messages ?? null));
-      return options.answer(model, served.length);
-    }
-    if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
-    if (url.pathname === "/legion/v1/claims/register") {
-      return Response.json({
-        ...registered,
-        claimToken,
-        tree: "FALL-1",
-        issue: "FALL-1",
-        role: "architect",
-        generation: 1,
-        secret: fixtureSecret("claim"),
-      });
-    }
-    if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/grants") {
-      grants += 1;
-      return Response.json({
-        grantId: `fallback-card-grant-${grants}`,
-        expiresAt: "2099-01-01T00:00:00Z",
-      });
-    }
-    if (url.pathname.startsWith("/legion/")) {
-      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
-    }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest,
-    // the registration with the session's own consumer, whose deliver subject the card takes.
-    const named = typeof body.session_id === "string" ? body.session_id : "";
-    if (url.pathname === "/v1/interests/subscribe" && named !== "") sessionID = named;
-    return Response.json({
-      session_id: named,
-      machine_id: "fallback-card-machine",
-      dir: workspace,
-      topics: [],
-      ...deliveryFor(url.pathname, body, named),
-    });
-  });
-  await writeStandinProfile(home, base, overlay(ONE_STEP), { providers: PROVIDERS });
-
-  const nc = await connect({ servers: nats });
-  cleanup.push(() => nc.close());
-  // `sendRelayFrame` names the slice of a connection it uses; the headers it passes back are the
-  // ones `headers()` made for it (`newHeaders` below), which is what `nats` takes.
-  const connection: RelayConnection = {
-    request: (subject, payload, options) =>
-      nc.request(subject, payload, {
-        timeout: options.timeout,
-        headers: options.headers as MsgHdrs,
-      }),
-  };
-  const codec = StringCodec();
-
-  /** When each `model_changed` frame arrived, and how many runs have ended. A run that leaves a
-   * background job going ends with an `agent_end` the host marks as not terminal, since the
-   * job's result will continue it; that end is the moment the pane goes idle, so it counts. */
-  const modelChanged: number[] = [];
-  let runsEnded = 0;
-  /** The checks of every wait still open, run after each frame omp prints. */
-  const waits = new Set<() => void>();
-  const closed: { error?: unknown } = {};
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions: [
-        path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-        path.resolve(import.meta.dir, "legion.ts"),
-      ],
-      home,
-      workspace,
-      sessions,
-      env: {
-        ENVOY_URL: base,
-        ENVOY_NATS_URL: nats,
-        LEGION_DAEMON_URL: base,
-        LEGION_ROLE: "architect",
-        LEGION_TREE: "FALL-1",
-        LEGION_ISSUE: "FALL-1",
-        LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: fixtureSecret("boot"),
-        LEGION_STATE_DIR: state,
-        LEGION_WORKSPACE: workspace,
-        LEGION_REFUSAL_COOLDOWN_MS: String(options.cooldownMs),
-        LEGION_REFUSAL_COOLDOWN_MAX_MS: "600000",
-      },
-      onFrame: (frame) => {
-        if ("type" in frame && frame.type === "model_changed") modelChanged.push(Date.now());
-        if ("type" in frame && frame.type === "agent_end") runsEnded += 1;
-        for (const check of [...waits]) check();
-      },
-    },
-    cleanup
-  );
-  rpc.closed.catch((error: unknown) => {
-    closed.error = error;
-  });
-
-  /** Resolves true once `holds` does, read after each frame omp prints, or false at `giveUpAt`;
-   * rejects, with omp's stderr, once omp has closed its RPC stream. */
-  const until = (holds: () => boolean, giveUpAt = Number.POSITIVE_INFINITY): Promise<boolean> => {
-    if (holds()) return Promise.resolve(true);
-    const { promise, resolve } = Promise.withResolvers<boolean>();
-    // The one clock of the wait, on purpose: it bounds only a pane that never does what is waited
-    // for, and the cooldown it is set past runs on the omp process's own clock, which no test can
-    // move. A pane that does it ends the wait at the frame that says so.
-    const giveUp = Number.isFinite(giveUpAt)
-      ? setTimeout(() => settle(false), Math.max(0, giveUpAt - Date.now()))
-      : undefined;
-    const check = (): void => {
-      if (holds()) settle(true);
-    };
-    const settle = (value: boolean): void => {
-      waits.delete(check);
-      clearTimeout(giveUp);
-      resolve(value);
-    };
-    waits.add(check);
-    return Promise.race([promise, rpc.closed]);
-  };
-
-  let seq = 0;
-  return {
-    served,
-    conversations,
-    workspace,
-    prompt: async (message) => {
-      const ended = runsEnded;
-      rpc.send({ type: "prompt", message });
-      await until(() => runsEnded > ended);
-    },
-    card: async (summary) => {
-      if (sessionID === "")
-        throw new Error("the pane registered no Envoy session to send a card to");
-      const ended = runsEnded;
-      const key = `card-${randomUUID()}`;
-      seq += 1;
-      await sendRelayFrame({
-        connection,
-        newHeaders: headers,
-        sessionID,
-        subject: `notifications.agent.${sessionID}`,
-        seq,
-        payload: codec.encode(
-          JSON.stringify({
-            event_id: `evt-${key}`,
-            source: "envoy",
-            source_event_id: `source-${key}`,
-            topic: `${ROLE_TOPIC_PREFIX}${claimToken}`,
-            dedupe_key: `envoy.role.forward.publish.${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
-            issued_at: Date.now(),
-            payload_summary: summary,
-            trace_id: `trace-${key}`,
-          })
-        ),
-        stopped: closed,
-      });
-      await until(() => runsEnded > ended);
-    },
-    runs: () => runsEnded,
-    runAfter: async (runs) => {
-      await until(() => runsEnded > runs);
-    },
-    modelChanges: (since, count, giveUpAt) =>
-      until(() => modelChanged.filter((at) => at >= since).length >= count, giveUpAt),
   };
 }
 
@@ -829,40 +719,45 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a card that wakes an idle pane once its wait is over starts its run on the model it fell back from",
   async () => {
-    const pane = await idlePane({
+    const summary = `CARD-${randomUUID().slice(0, 8)}`;
+    /** What the idle life saw: whether the return came, how many turns had been served when it
+     * did, and the first turn the card's run served. */
+    let cameBack = false;
+    let servedAtReturn = 0;
+    let first = 0;
+    const pane = await fallbackPane({
       cooldownMs: COOLDOWN_MS,
+      prompt: ["Start FALL-1."],
       answer: (_model, nth) =>
         // Refused after text, which the host leaves where it is: the plugin's own walk moves the
         // session to the weaker model and arms the return. Every later turn ends at once.
         nth === 1
           ? refuses("refusal_1", { text: "Looking at it." })
           : replies([{ type: "text", text: "Done." }], `msg_${nth}`),
+      whileUp: async (life) => {
+        const refusedAt = life.served[0]?.at ?? 0;
+        // The pane is idle now and nothing starts a run of its own: the session comes back when
+        // the wait is over or not at all. The walk is the first model change the host reports
+        // after the refusal, and the return is the second.
+        cameBack = await life.modelChanges(refusedAt, 2, refusedAt + COOLDOWN_MS + IDLE_RETURN_MS);
+        servedAtReturn = life.served.length;
+        // A card is an agent-attributed wake: the host starts its run with no
+        // `before_agent_start`, and reads the run's model before the `context` hook of its first
+        // request runs. So that request goes to the model the session was left on while idle.
+        first = life.served.length;
+        await life.card(summary);
+      },
     });
 
-    await pane.prompt("Start FALL-1.");
-    const refusedAt = pane.served[0]?.at ?? 0;
-    // The pane is idle now and nothing starts a run of its own: the session comes back when the
-    // wait is over or not at all. The walk is the first model change the host reports after the
-    // refusal, and the return is the second; the case waits for that fact, and gives up only on
-    // a pane that does not come back while it is idle.
-    const cameBack = await pane.modelChanges(
-      refusedAt,
-      2,
-      refusedAt + COOLDOWN_MS + IDLE_RETURN_MS
-    );
-
-    // A card is an agent-attributed wake: the host starts its run with no `before_agent_start`,
-    // and reads the run's model before the `context` hook of its first request runs. So the model
-    // that run's first request goes to is the one the session was left on while it was idle.
-    const summary = `CARD-${randomUUID().slice(0, 8)}`;
-    const first = pane.served.length;
-    await pane.card(summary);
+    expect(cameBack).toBe(true);
+    // No request ran a hook while the pane waited: the refused one was the last before the return,
+    // so the return is the timer's.
+    expect(servedAtReturn).toBe(1);
     const woken = pane.served.slice(first);
     expect(woken.length).toBeGreaterThan(0);
     // The run is the card's: its first request carries the card.
-    expect(pane.conversations[first]).toContain(summary);
+    expect(woken[0]?.messages).toContain(summary);
     expect(woken[0]?.model).toBe("strong-model");
-    expect(cameBack).toBe(true);
   },
   180_000
 );
@@ -873,8 +768,14 @@ test.skipIf(skip)(
     /** The file whose existence ends the background job: the case makes it once the wait is
      * over, so the job's result comes when the case says rather than at a sleep's end. */
     const release = ".release-job";
-    const pane = await idlePane({
+    let cameBack = false;
+    let changesBeforeIdle = 0;
+    let servedAtIdle = 0;
+    let servedAtReturn = 0;
+    let first = 0;
+    const pane = await fallbackPane({
       cooldownMs: JOB_COOLDOWN_MS,
+      prompt: ["Start FALL-1."],
       answer: (_model, nth) => {
         // Refused after text: the plugin's own walk moves the session to the weaker model.
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
@@ -893,30 +794,40 @@ test.skipIf(skip)(
         }
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
+      whileUp: async (life) => {
+        const refusedAt = life.served[0]?.at ?? 0;
+        // The job's run ends with an `agent_end` the host marks as not terminal, since the job's
+        // result continues it; `runLegionPane` settles a prompt only at a terminal one, so this
+        // prompt is sent here.
+        await life.prompt("Start the job.");
+        // The pane is idle from here. Only the walk may have changed the model so far: a return
+        // made inside the job's run would be its own hooks', not the idle return this case is for.
+        changesBeforeIdle = life.changes(refusedAt);
+        servedAtIdle = life.served.length;
+        const runs = life.runs();
+        cameBack = await life.modelChanges(
+          refusedAt,
+          2,
+          refusedAt + JOB_COOLDOWN_MS + IDLE_RETURN_MS
+        );
+        servedAtReturn = life.served.length;
+        // The job's result is an agent-attributed wake, as a card is: no `before_agent_start`,
+        // and the run's model read before the `context` hook of its first request runs.
+        first = life.served.length;
+        await writeFile(path.join(life.workspace, release), "");
+        await life.runAfter(runs);
+      },
     });
 
-    await pane.prompt("Start FALL-1.");
-    const refusedAt = pane.served[0]?.at ?? 0;
-    await pane.prompt("Start the job.");
-    const runs = pane.runs();
-    // Idle, as in the case above: the return comes when the wait is over or not at all.
-    const cameBack = await pane.modelChanges(
-      refusedAt,
-      2,
-      refusedAt + JOB_COOLDOWN_MS + IDLE_RETURN_MS
-    );
-
-    // The job's result is an agent-attributed wake, as a card is: no `before_agent_start`, and
-    // the run's model read before the `context` hook of its first request runs.
-    const first = pane.served.length;
-    await writeFile(path.join(pane.workspace, release), "");
-    await pane.runAfter(runs);
+    expect(changesBeforeIdle).toBe(1);
+    expect(cameBack).toBe(true);
+    // No request ran a hook while the pane waited, so the return is the timer's.
+    expect(servedAtReturn).toBe(servedAtIdle);
     const woken = pane.served.slice(first);
     expect(woken.length).toBeGreaterThan(0);
     // The run is the job's: its first request carries the job's output.
-    expect(pane.conversations[first]).toContain("released");
+    expect(woken[0]?.messages).toContain("released");
     expect(woken[0]?.model).toBe("strong-model");
-    expect(cameBack).toBe(true);
   },
   180_000
 );
