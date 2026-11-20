@@ -101,8 +101,8 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			go func() { _ = server.Serve(lis) }()
 			t.Cleanup(server.Stop)
 			restore := gcpClientDial
-			gcpClientDial = func(ctx context.Context, _ *google.Credentials) (*secretmanager.Client, error) {
-				conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			gcpClientDial = func(ctx context.Context, _ *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+				conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(interceptor))
 				if err != nil {
 					return nil, err
 				}

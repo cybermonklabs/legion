@@ -80,7 +80,6 @@ func (n *gcpNewSecret) begin(ctx context.Context) (discardOutcome, error) {
 		},
 	})
 	cancel()
-	err = b.storeFailure("CreateSecret", err)
 	if err != nil {
 		if gcpDefiniteRefusal(err) {
 			return madeNothing, err
@@ -120,7 +119,6 @@ func (n *gcpNewSecret) settleLostCreate(ctx context.Context) (discardOutcome, st
 	getCtx, cancel := withStoreDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
-	err = n.b.storeFailure("GetSecret", err)
 	switch {
 	case status.Code(err) == codes.NotFound:
 		return keptUnknown, fmt.Sprintf("%s, and reading it back did not find it then, but a create the store has not finished may still land: `%s` shows whether it is there, and one whose %s label is %s, with `versions: none`, is this create's empty secret, which %s clears",
@@ -151,7 +149,7 @@ func (b *gcpBackend) countVersions(ctx context.Context, id string) (int, error) 
 func (b *gcpBackend) deleteOutright(ctx context.Context, id, etag string) error {
 	ctx, cancel := withStoreDeadline(ctx)
 	defer cancel()
-	return b.storeFailure("DeleteSecret", b.client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: id, Etag: etag}))
+	return b.client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: id, Etag: etag})
 }
 
 // gcloud is a gcloud command line for printing, in backticks, pinned to the sign-in this command
@@ -226,7 +224,6 @@ func (n *gcpNewSecret) discard(ctx context.Context) (discardOutcome, error) {
 	getCtx, cancel := withStoreDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
-	err = n.b.storeFailure("GetSecret", err)
 	switch {
 	case status.Code(err) == codes.NotFound:
 		n.deleted.Store(true)
@@ -291,7 +288,6 @@ func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteE
 	getCtx, cancel := withStoreDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
-	err = n.b.storeFailure("GetSecret", err)
 	switch {
 	case status.Code(err) == codes.NotFound:
 		n.deleted.Store(true)

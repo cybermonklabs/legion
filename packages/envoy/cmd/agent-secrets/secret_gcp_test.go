@@ -371,8 +371,10 @@ func startFakeSecretManager(t *testing.T, f *fakeSecretManager) {
 	t.Cleanup(server.Stop)
 
 	restore := gcpClientDial
-	gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
-		dial := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+		// A client built on a connection dialled here ignores the client's own dial options, so
+		// the interceptor that words every failure is installed on the connection itself.
+		dial := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(interceptor)}
 		if creds != nil && creds.TokenSource != nil {
 			dial = append(dial, grpc.WithPerRPCCredentials(bearerOf{creds.TokenSource}))
 		}

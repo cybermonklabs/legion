@@ -357,10 +357,11 @@ func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
 	roots := x509.NewCertPool()
 	roots.AddCert(listener.Certificate())
 	restore := gcpClientDial
-	gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
+	gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
 		return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
 			option.WithEndpoint(listener.Listener.Addr().String()),
-			option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots}))))
+			option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots}))),
+			option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor)))
 	}
 	t.Cleanup(func() { gcpClientDial = restore })
 }

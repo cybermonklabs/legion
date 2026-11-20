@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -47,6 +48,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -184,13 +186,17 @@ var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, 
 	return userinfo.Email, nil
 }
 
-// gcpClientDial builds the Secret Manager client for creds. Tests replace it to dial a local fake
-// Secret Manager server instead of the real API. option.WithLogger discards the SDK's own debug
-// log (GOOGLE_SDK_GO_LOGGING_LEVEL): at debug level the SDK logs every request as protojson,
-// which for AddSecretVersion includes the secret's value, base64-encoded, in Payload.Data (the
-// broker's own GCP store takes the same precaution, internal/broker/secrets/gcp.go).
-var gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
-	return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)))
+// gcpClientDial builds the Secret Manager client for creds, every call it makes through
+// interceptor (storeInterceptor, which words each failure). Tests replace it to dial a local fake
+// Secret Manager server instead of the real API, and a replacement installs interceptor too:
+// a client it builds on a connection it dialled itself ignores the dial options given here.
+// option.WithLogger discards the SDK's own debug log (GOOGLE_SDK_GO_LOGGING_LEVEL): at debug
+// level the SDK logs every request as protojson, which for AddSecretVersion includes the secret's
+// value, base64-encoded, in Payload.Data (the broker's own GCP store takes the same precaution,
+// internal/broker/secrets/gcp.go).
+var gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+	return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
+		option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor)))
 }
 
 // gcloudTokenLife is how long this command takes an access token `gcloud auth print-access-token`
@@ -577,7 +583,7 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 	if err := b.signIn(ctx); err != nil {
 		return nil, err
 	}
-	client, err := gcpClientDial(ctx, b.storeCredentials())
+	client, err := gcpClientDial(ctx, b.storeCredentials(), b.storeInterceptor)
 	if err != nil {
 		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
@@ -922,7 +928,7 @@ func (b *gcpBackend) hasCurrentVersion(ctx context.Context, id string) (bool, er
 		return false, nil
 	}
 	if err != nil {
-		return false, b.storeFailure("GetSecretVersion", err)
+		return false, err
 	}
 	return version.GetState() == secretmanagerpb.SecretVersion_ENABLED, nil
 }
@@ -957,7 +963,7 @@ func (b *gcpBackend) list(ctx context.Context) ([]secretView, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("list the agent secrets: %w", b.storeFailure("ListSecrets", err))
+			return nil, fmt.Errorf("list the agent secrets: %w", err)
 		}
 		if !strings.HasPrefix(secret.GetName(), b.settings.SecretsPrefix) {
 			continue // the parent held more than the namespace
@@ -982,7 +988,7 @@ func (b *gcpBackend) versionsOf(ctx context.Context, id string) (map[string][]st
 			break
 		}
 		if err != nil {
-			return nil, b.storeFailure("ListSecretVersions", err)
+			return nil, err
 		}
 		number := v.GetName()[strings.LastIndex(v.GetName(), "/")+1:]
 		versions[number] = []string{v.GetState().String()}
@@ -994,7 +1000,7 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 	id := b.id(slug)
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
 	if err != nil {
-		return secretView{}, b.storeFailure("GetSecret", err)
+		return secretView{}, err
 	}
 	view, err := b.viewOf(ctx, secret)
 	if err != nil {
@@ -1017,13 +1023,13 @@ func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error
 		Parent:  parent,
 		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
 	})
-	return b.storeFailure("AddSecretVersion", err)
+	return err
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
 	if err != nil {
-		return heldTags{}, b.storeFailure("GetSecret", err)
+		return heldTags{}, err
 	}
 	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
 }
@@ -1035,7 +1041,7 @@ func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error)
 	latest := b.id(slug) + "/versions/latest"
 	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})
 	if err != nil {
-		return "", b.storeFailure("AccessSecretVersion", err)
+		return "", err
 	}
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {
@@ -1091,7 +1097,6 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
-	err = b.storeFailure("UpdateSecret", err)
 	if status.Code(err) == codes.FailedPrecondition {
 		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
 	}
@@ -1108,7 +1113,7 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	if err != nil {
-		return nil, b.storeFailure("UpdateSecret", err)
+		return nil, err
 	}
 	return &expire, nil
 }
@@ -1120,11 +1125,19 @@ func (b *gcpBackend) restore(ctx context.Context, slug string) error {
 		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
-	return b.storeFailure("UpdateSecret", err)
+	return err
 }
 
 func (b *gcpBackend) isAccessDenied(err error) bool {
 	return status.Code(err) == codes.PermissionDenied
+}
+
+// storeInterceptor is the gRPC interceptor every Secret Manager call this client makes goes
+// through (gcpClientDial installs it): a call's failure is storeFailure's, named by the call's
+// method, so no call site wraps a refusal by hand, and a call a later change adds cannot forget
+// to.
+func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return b.storeFailure(path.Base(method), invoker(ctx, method, req, reply, cc, opts...))
 }
 
 // storeFailure is err, the failure of the Secret Manager call method, as a message prints it: the
@@ -1134,25 +1147,40 @@ func (b *gcpBackend) isAccessDenied(err error) bool {
 // failure that is no answer of Secret Manager's by its class (redact.Class). An Unauthenticated
 // whose cause was this client's own token source failing prints that failure (storeTokens): gRPC
 // writes it into the status message, and its words are this program's own (redactedTokens,
-// gcloudToken, googleidentity). Every Secret Manager call's failure goes through it, and it unwraps
-// to err, so status.Code, isAccessDenied and gcpDefiniteRefusal still read the code.
+// gcloudToken, googleidentity). An answer's failure is a storeRefusal, whose status holds the
+// call's code and these words alone, so status.Code, isAccessDenied, gcpDefiniteRefusal and
+// gax's retries still read the code, and gax, which builds its APIError from that status and
+// prints the status's details beside its text, prints none of the server's.
 func (b *gcpBackend) storeFailure(method string, err error) error {
 	if err == nil {
 		return nil
 	}
 	call := "Secret Manager " + method
 	answer, ok := status.FromError(err)
-	switch {
-	case !ok:
+	if !ok {
 		return redact.Masked(err, call+" failed: "+redact.Class(err).Error())
-	case answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil:
-		return redact.Masked(err, call+" answered Unauthenticated: "+b.tokens.failure().Error())
 	}
-	if permission := gcpMissingPermission(answer.Message()); permission != "" {
-		return redact.Masked(err, call+" answered "+answer.Code().String()+" (missing permission: "+permission+"; its message is not printed)")
+	words := call + " answered " + answer.Code().String() + " (its message is not printed)"
+	if answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil {
+		words = call + " answered Unauthenticated: " + b.tokens.failure().Error()
+	} else if permission := gcpMissingPermission(answer.Message()); permission != "" {
+		words = call + " answered " + answer.Code().String() + " (missing permission: " + permission + "; its message is not printed)"
 	}
-	return redact.Masked(err, call+" answered "+answer.Code().String()+" (its message is not printed)")
+	return &storeRefusal{words: words, status: status.New(answer.Code(), words), err: err}
 }
+
+// storeRefusal is Secret Manager's refusal of a call as storeFailure words it: Error is the words,
+// GRPCStatus a status of the call's code and those words with no details, and Unwrap the
+// refusal itself.
+type storeRefusal struct {
+	words  string
+	status *status.Status
+	err    error
+}
+
+func (e *storeRefusal) Error() string              { return e.words }
+func (e *storeRefusal) Unwrap() error              { return e.err }
+func (e *storeRefusal) GRPCStatus() *status.Status { return e.status }
 
 // gcpPermission is how Google's message names the IAM permission a refusal lacks: "Permission
 // '<service>.<resource>.<verb>' denied", dotted words of letters.
