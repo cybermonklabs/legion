@@ -1654,8 +1654,11 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 
 // agentBusy is Oh My Pi's own refusal of a prompt for a turn already running, which it words
 // exactly this way. Every other rejection — a provider that answered before any turn began among
-// them — is the agent failing to take the work. Reading the message is the daemon's only handle
-// on which it is: the wire carries a string, not a kind.
+// them — is the agent failing to take the work. Reading the message is the daemon's one handle on
+// which it is. The pinned Oh My Pi also gives the refusal a kind, `code: "session_busy"`
+// (shimwire.Response.Code, shimwire.PromptError.Code), but that kind covers two refusals besides
+// this one, a session busy with maintenance or user work and a prompt that waited 30 s while
+// another run held the agent (rpc-busy-code.ts), so it does not tell this one apart.
 func agentBusy(reason string) bool {
 	return strings.HasPrefix(reason, "Agent is already processing")
 }
@@ -1735,8 +1738,8 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 //
 // The persisted working state is reported to the daemon (Machine.OnDurableState), because a turn is
 // the one observation that a woken pod's role came back and took work, whether or not the wake
-// carried a delivery for it to confirm: a wake for a notice or a phase-ended message carries
-// none, and its resume would otherwise never be measured (R5).
+// carried a delivery for it to confirm: a wake for a notice or a hook prompt carries none, and its
+// resume would otherwise never be measured (R5).
 //
 // The question a restart left (askFirst) counts as in flight for every delivery but one: a root
 // architect's task of a run (asksRoot) may be a task nobody has ever sent, held on the claim while

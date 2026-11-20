@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -158,22 +159,149 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
 }
 
+// The three answers of the confirmed publish route are other failures, and keep the ordinary retry:
+// a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
+// does not advertise the delivery mode can be replaced by another session on the role, and a
+// forward the listener's own NATS grant denies goes through once an operator changes that grant.
+// Only a role with no live holder ends the row.
+func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
+	ctx := context.Background()
+	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	row.ID = 61
+	publisher := &outboxPublisher{}
+	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "a holder that did not confirm it", err: notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_t"}},
+		{name: "a holder that does not advertise the delivery mode", err: notify.ErrRefusedByHolder{Holder: "ses_t"}},
+		{name: "a forward the listener's grant denies", err: notify.ErrPublishDenied{Message: denial}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
+			err := runner.execute(ctx, row)
+			if err == nil || !errors.Is(err, tc.err) {
+				t.Fatalf("the hook prompt answered %v = %v, want the answer as a failure, retried", tc.err, err)
+			}
+			t.Logf("%s: %v", tc.name, err)
+		})
+	}
+	publisher.err = fmt.Errorf("publish to the implementer's topic: %w: no holder", notify.ErrNoHolder)
+	if err := runner.execute(ctx, row); err != nil {
+		t.Fatalf("the hook prompt no session holds = %v, want the row finished", err)
+	}
+}
+
+// A relaunch the wake pacing parks over a process the claim still records holds no row: the
+// machine leaves that claim as it stands, idle on its process (supervise's parkWake), and its
+// live session can take a publish now, so the row's first attempt publishes. The claim is one of
+// the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
+// earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
+// held there would hold every notice, hook prompt, merge-queue removal and merge forward's message
+// to a live session behind that session's paced refresh. The negative control is
+// wakeForDelivery's park check without its first half, the claim launching with no process: each
+// row then waits for the relaunch (parkedWait) and publishes nothing.
+func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
+	t.Run("a hook prompt", func(t *testing.T) {
+		ctx := context.Background()
+		publisher := &holderPublisher{}
+		runner, sup, pool := hookRunner(t, publisher)
+		parkedOverItsProcess(t, sup, "LEGION-208", claim.RoleImplementer)
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
+
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("the row's first attempt: %v", err)
+		}
+		topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+		attempts, delivered := publisher.snapshot()
+		if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != firedHook.Message("LEGION-208") {
+			t.Fatalf("the first attempt made %d publishes and delivered %+v, want the prompt delivered to %s: the relaunch waits over a live session",
+				attempts, delivered, topic)
+		}
+		if left := outboxRows(t, pool); left != 0 {
+			t.Fatalf("outbox rows left = %d, want the row finished by its first attempt", left)
+		}
+	})
+	t.Run("an architect's notice", func(t *testing.T) {
+		ctx := context.Background()
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		parkedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
+		publisher := &holderPublisher{}
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("the notice's first attempt = %v, want it published: the relaunch waits over a live session", err)
+		}
+		want := architectTopic(t, "LEGION-1")
+		if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != want || delivered[0].key != record.OutboxKey(row.ID) {
+			t.Fatalf("notice publishes = %+v, want one to %s under the row's key", delivered, want)
+		}
+	})
+}
+
+// parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
+// wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
+// the process it records, which speaks the contract before the daemon's (liveClaim), under the
+// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
+// the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
+// (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
+// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Admitted).
+func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
+	t.Helper()
+	ctx := context.Background()
+	// A machine takes its deps where it is built, so the clock and the pacing go in before the
+	// claim is created.
+	sup.deps.Clock = &heldClock{}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	token := mustClaimToken(t, issue, role)
+	live := liveClaim(1, token, sup.deps.PluginContract-1)
+	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
+	machine, _, err := sup.Create(ctx, live, "")
+	if err != nil {
+		t.Fatalf("create the live %s's claim: %v", role, err)
+	}
+	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Admitted: true}); err != nil {
+		t.Fatalf("raise the stale-plugin relaunch of the %s: %v", role, err)
+	}
+	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||
+		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakePluginRefresh {
+		t.Fatalf("the %s is %s recording %+v with wake %+v, want it idle on its process under the stale-plugin relaunch the pacing parked",
+			role, held.State, held.Locator, held.WakeWaiting)
+	}
+	return machine
+}
+
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
 // the phase a move back to implementing leaves it in, with the admission slot its work holds. It
-// drains on the caller's goroutine (RunOnce), as the red's runner does.
+// drains on the caller's goroutine (RunOnce).
 func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
+	t.Helper()
+	runner, sup, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
+	holdSlot(t, pool, "LEGION-208")
+	return runner, sup, pool
+}
+
+// runnerIn is an outbox runner over an isolated database holding LEGION-208 in phase at with
+// Dispatch status status, its tree admitted, and a supervisor with no claim on it yet. It
+// publishes to publisher, logs to log, and drains on the caller's goroutine (RunOnce).
+func runnerIn(t *testing.T, at phase.Phase, status string, publisher notify.Publisher, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
+		Tree: "LEGION-208", Title: "Workflow", Phase: at, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	holdSlot(t, pool, issue.Key)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{
 		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree),
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher,
-		now: func() time.Time { return time.Now() }, log: quietLogger(),
+		now: time.Now, log: log,
 	}
 	return runner, sup, pool
 }
@@ -285,7 +413,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	row.ID = noticeRowID(t, pool)
 	p := &parkedWake{t: t, runner: runner, pool: pool, publisher: publisher, machine: machine, clock: clock, row: row, topic: topic}
 
-	p.attemptAt(0, "the row's first attempt")
+	drainAt(t, runner, 0, "the row's first attempt")
 	held := machine.View()
 	if held.State != supervise.StateLaunching || held.Locator != nil ||
 		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakeLaunch {
@@ -294,7 +422,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	}
 	p.turn = held.WakeWaiting.At.UTC()
 
-	p.found = p.attemptAt(parkFound, "the row's attempt that finds the park")
+	p.found = drainAt(t, runner, parkFound, "the row's attempt that finds the park")
 	if tries, waited, _ := p.waiting(); tries != 2 || !strings.Contains(waited, "launch, which the wake pacing holds until") {
 		t.Fatalf("the row has run %d times and last waited on %q, want two attempts, the second waiting for the launch the wake pacing holds", tries, waited)
 	}
@@ -304,14 +432,14 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	return p
 }
 
-// attemptAt drains the outbox with the runner's clock held ahead of the wall clock by ahead, and
-// answers the moment that clock reads through the drain.
-func (p *parkedWake) attemptAt(ahead time.Duration, what string) time.Time {
-	p.t.Helper()
+// drainAt drains runner's outbox with its clock held ahead of the wall clock by ahead, past the
+// backoff of every attempt before it, and answers the moment that clock reads through the drain.
+func drainAt(t *testing.T, runner *outbox, ahead time.Duration, what string) time.Time {
+	t.Helper()
 	at := time.Now().Add(ahead).UTC()
-	p.runner.now = func() time.Time { return at }
-	if err := p.runner.RunOnce(context.Background()); err != nil {
-		p.t.Fatalf("%s: %v", what, err)
+	runner.now = func() time.Time { return at }
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("%s: %v", what, err)
 	}
 	return at
 }
@@ -349,11 +477,11 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a routine wait (routineWait) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's park",
 			waited, at, named, p.found.Add(parkedWakeBound))
 	}
-	p.attemptAt(parkFound+parkedWakeBound/2, "a drain before the bound")
+	drainAt(p.t, p.runner, parkFound+parkedWakeBound/2, "a drain before the bound")
 	if tries, _, _ := p.waiting(); tries != 2 {
 		t.Fatalf("the row has run %d times after a drain before the bound, want the two it had: it is due at the bound", tries)
 	}
-	again := p.attemptAt(parkFound+parkedWakeBound+time.Minute, "the row's attempt past the bound")
+	again := drainAt(p.t, p.runner, parkFound+parkedWakeBound+time.Minute, "the row's attempt past the bound")
 	tries, _, due := p.waiting()
 	if want := again.Add(parkedWakeBound); tries != 3 || !due.Equal(want.Truncate(time.Microsecond)) {
 		t.Fatalf("the row has run %d times and is due at %s after an attempt past the bound, want three attempts and the row due at the next bound, %s, the park still holding",
@@ -361,7 +489,7 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	}
 	// The row can come due a moment before the machine's own timer runs the wake: its turn is
 	// past then, and the row waits on its backoff rather than at a moment already gone.
-	p.attemptAt(parkedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
+	drainAt(p.t, p.runner, parkedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
 	tries, _, due = p.waiting()
 	if tries != 4 || !due.After(p.turn) {
 		t.Fatalf("the row has run %d times and is due at %s after an attempt past the turn %s, want four attempts and the row due on its backoff, past the turn",
@@ -378,7 +506,7 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the wake's turn, want the resume launched", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	p.attemptAt(parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
+	drainAt(p.t, p.runner, parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
 	keptOnce(t, p.publisher, p.pool, role, p.row.ID, p.topic, message, "the attempt after the launch")
 }
 
@@ -397,7 +525,7 @@ func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the operator's resume, want the resume launched at once", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	p.attemptAt(parkFound+parkedWakeBound, "the row's attempt at the bound")
+	drainAt(p.t, p.runner, parkFound+parkedWakeBound, "the row's attempt at the bound")
 	if attempts, _ := p.publisher.snapshot(); attempts == 0 {
 		_, _, due := p.waiting()
 		t.Fatalf("the row's attempt at the bound after the operator's resume published nothing, the row due at %s: a row due at the wake's turn, %s, waits out a turn the operator's resume has already ended",

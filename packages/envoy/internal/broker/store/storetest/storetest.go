@@ -151,8 +151,8 @@ func admin(t testing.TB, databaseURL, statement string) {
 	}
 }
 
-// Querier is what AwaitLockWaiters polls through: a pool, or a connection of its own when the
-// pool's connections may all be waiting.
+// Querier is what AwaitLockWaiters and LockWaitersBehind read through: a pool, or a connection of
+// its own when the pool's connections may all be waiting.
 type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -165,18 +165,9 @@ type Querier interface {
 // in other tests on the same server, never count.
 func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
-	ctx := context.Background()
 	pid := holder.Conn().PgConn().PID()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		var waiting []int32
-		if err := q.QueryRow(ctx, `with recursive waiting(pid) as (
-				select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
-				union
-				select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
-			)
-			select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
-			t.Fatalf("read the backends waiting behind %d: %v", pid, err)
-		}
+		waiting := LockWaitersBehind(t, q, pid)
 		if len(waiting) >= n {
 			pids := make([]uint32, len(waiting))
 			for i, w := range waiting {
@@ -188,6 +179,25 @@ func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
 			t.Fatalf("%d backends waited on a lock behind %d, want %d", len(waiting), pid, n)
 		}
 	}
+}
+
+// LockWaitersBehind is every backend that waits on a lock behind pid's backend, read once and in
+// pid order: one waiting on a lock pid's backend holds, or on one a backend already counted holds
+// or is ahead of it for, as AwaitLockWaiters counts them. It is the read AwaitLockWaiters polls,
+// for a test whose other way out is the waiter returning, which AwaitLockWaiters would fail after
+// ten seconds with no waiter.
+func LockWaitersBehind(t testing.TB, q Querier, pid uint32) []int32 {
+	t.Helper()
+	var waiting []int32
+	if err := q.QueryRow(context.Background(), `with recursive waiting(pid) as (
+			select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+			union
+			select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+		)
+		select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
+		t.Fatalf("read the backends waiting behind %d: %v", pid, err)
+	}
+	return waiting
 }
 
 // Exec is a tamper that runs statements as a writer other than the broker would: $1 is the

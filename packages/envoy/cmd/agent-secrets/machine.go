@@ -24,6 +24,14 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// refuseUnexpectedArgument prints form's refusal of an argument it does not take and answers
+// exitUsageError. The argument itself is not printed: an argument a form does not take is where
+// a credential pasted in the wrong place shows up.
+func refuseUnexpectedArgument(stderr io.Writer, form string) int {
+	fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
+	return exitUsageError
+}
+
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
 // login, prints the broker's confirmation code and where to type it — AGENT_SECRETS_APPROVE_URL's
 // /credentials/machine when that is set, else the broker's verification_uri the helper relays,
@@ -36,8 +44,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets machine login: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "machine login")
 	}
 	sock, _ := helperSocket()
 	resp, err := helper.Call(sock, helper.Request{Op: "login"}, helper.BrokerCallWait)
@@ -54,7 +61,10 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	// would start a line of its own or rewrite this one.
 	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
-		fmt.Fprintf(stdout, "enter it at %s/credentials/machine — approve only if the code matches this terminal\n", base)
+		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
+		// URL, redact.NotPrinted otherwise - beside the setting that names its origin, which is
+		// where a person who pasted a credential in place of Dispatch's address finds it.
+		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
 	} else if resp.VerificationURI != "" {
 		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
 	} else {
@@ -112,8 +122,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "machine login-status")
 	}
 	sock, _ := helperSocket()
 	resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
@@ -198,8 +207,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", form, positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, form)
 	}
 	base, signer, err := machineContext()
 	if err != nil {

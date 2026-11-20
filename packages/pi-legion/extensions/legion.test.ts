@@ -500,7 +500,7 @@ type HostTitle = { name?: string; source?: "auto" | "user"; readonly set: string
  * the session runs now; `unresolvable` are the selectors `ctx.models.resolve` answers nothing
  * for; `suppressed` are the ones the host itself holds suppressed; and `changes` are the
  * `model_change` entries each accepted switch appended, as the host appends one with the
- * ordinary role (`session/model-controls.ts:249-252` at the pinned tag). */
+ * ordinary role (`session/model-controls.ts:322-325` at the pinned tag). */
 type HostModels = {
   readonly set: HostModel[];
   answers: boolean;
@@ -740,10 +740,10 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:143-154): the
- * child's transcript sits inside a directory named after the parent's transcript file, minus
- * its `.jsonl` extension, so `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds
- * `parentFile`. */
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:484-504 at the
+ * pinned tag): the child's transcript sits inside a directory named after the parent's
+ * transcript file, minus its `.jsonl` extension, so
+ * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
 async function createSubagentTranscriptPaths(): Promise<{
   readonly parentFile: string;
   readonly childFile: string;

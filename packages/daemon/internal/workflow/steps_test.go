@@ -56,9 +56,8 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 	}
 }
 
-// A move back that a role or a report asked for ends the step failed, a move back nobody asked for
-// (a head that conflicts with its base) ends it stopped, and both name the step the work returned
-// to; every other move ends it passed and returns nowhere.
+// A move back that a role or a report asked for ends the step failed and names the step the work
+// returned to; every other move ends it passed and returns nowhere.
 func TestEndOfReadsTheTrigger(t *testing.T) {
 	for _, tc := range []struct {
 		trigger TriggerKind
@@ -68,7 +67,6 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 		{TriggerTesterFailed, "failed", true},
 		{TriggerReviewRejected, "failed", true},
 		{TriggerBackward, "failed", true},
-		{TriggerConflict, "stopped", true},
 		{TriggerGateOpened, "passed", false},
 		{TriggerPlannerCompleted, "passed", false},
 		{TriggerImplementationReady, "passed", false},
