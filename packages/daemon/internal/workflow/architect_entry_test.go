@@ -296,7 +296,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeRoleMessage, string(token))
 	start := architectStartOf(t, rig.pool)
-	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token)) {
+	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token), StoppedByRelease) {
 		t.Fatalf("the wake's start = entry %d carrying %q, want no entry and the wake's own task: a wake hands no phase entry's work",
 			start.Entry, start.Task)
 	}
