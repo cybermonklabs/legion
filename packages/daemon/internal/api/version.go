@@ -2488,8 +2488,9 @@ package api
 // under an older daemon finds no route for the controller's two (404), and the bump is what keeps
 // the two apart.
 //
-// The change carries store migration `20261120001432_intake_failures`, which adds
-// `intake_failures` and `cleared_pull_requests`. An older daemon binary put back on this schema
+// The change carries store migration `20261120001432_intake_failures`, which adds the tables
+// `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_runs` and
+// `dispatch_issues.status_seq`. An older daemon binary put back on this schema
 // decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
 // an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
 // each time; and it applies or drops a message with an open failure without telling the table, so
@@ -2497,8 +2498,8 @@ package api
 // the migration header's last paragraph (`migrations.WayBack`), the same text `docs/kubernetes.md`
 // carries under "Rolling back the release that gives up on intake messages": with the daemon
 // stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures,
-// each statement naming the project. The given-up records and both tables stay, which the older
-// binary never reads and a roll forward finds in place.
+// each statement naming the project. The given-up records, both tables and both columns stay,
+// which the older binary never reads and a roll forward finds in place.
 // (This entry takes 184: the base of this branch, which merged main, declares 178, as main did when
 // it was read on 2026-11-20, and the open pull requests read that day declared 179, 180, 181, 182
 // and 183, so 184 is the lowest number above main's that no open head declares. Read main's own

@@ -1636,10 +1636,15 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
 - **`STALLED`** (`stalled`) is messages waiting and none of that consumer's handled for 60
   seconds, since the last one (`lastHandledAt`) or, before the first, since the daemon started.
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
-  out of reach, say), or the message in hand does not finish. Search the daemon's log for
+  out of reach, say), or the message in hand does not finish. A message put back waits longer after
+  each failure, from one second up to five minutes, and once JetStream has delivered it 21 times and
+  an hour has passed since its first failure, the daemon gives it up and it waits no more
+  ([A message the intake gave up](#a-message-the-intake-gave-up)). Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A handler that does not finish writes none of those
-  lines while it holds ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
+  consumer, whose `error` says what fails, `delivered` how many times JetStream has delivered the
+  message and `retry_in` how long the daemon waits for its next delivery. A handler that does not
+  finish writes none of those lines while it holds
+  ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
   The stall is all that shows until the handler passes the intake handler limit and the daemon
   writes `an intake handler outran its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
@@ -1666,7 +1671,112 @@ timer. The daemon's read of an issue's pull request
 ([Running Legion](/legion/legion/running-legion/#the-github-apps)) is the backstop, and it runs
 at the daemon's start and after every handoff: it records the open pull request GitHub lists on
 the issue's branch, and applies a head, a review or an approval-carrying push GitHub shows. An
-event that waits for a phase no handoff is coming for waits for the consumer to catch up.
+event that waits for a phase no handoff is coming for waits for the consumer to catch up. An event
+the daemon gave up waits for a replay ([A message the intake gave up](#a-message-the-intake-gave-up)).
+
+## A message the intake gave up
+
+The daemon takes each GitHub event, each Dispatch event and each wake report of the Envoy listener
+as a message of one of its three durable consumers ([GitHub events wait](#github-events-wait)).
+When the handling of a message fails, the daemon puts the message back, and JetStream delivers it
+again: one second after the first failure, and twice as long after each later failure, up to five
+minutes. When GitHub's rate limit names a longer wait, the daemon waits that long. Each failure
+writes the warning `retryable intake processing failure`, with its `error`, the wait (`retry_in`)
+and JetStream's count of the message's deliveries (`delivered`). From the first failure the daemon
+keeps the whole message in its database, with the error of the last failure.
+
+The daemon gives the message up, and stops taking it, for one of five reasons, which the record
+keeps:
+
+- **`bound`**: JetStream has delivered the message 21 times, and its first failure is at least an
+  hour old. With the waits above, both are true at the 21st delivery, about 64 minutes after the
+  first.
+- **`did not end`**: the handling of one delivery never ended, because the daemon stopped or
+  crashed during it, and the bound is reached. The next delivery gives the message up before its
+  handler runs again.
+- **`retention`**: the stream would delete the message before its next delivery.
+- **`undecodable`**: the message does not decode. The daemon gives it up at its first delivery.
+- **`consumer moved past`**: the consumer moved past the message without delivering it again,
+  because the consumer was made again past it or the stream deleted it. A sweep finds such a
+  message within a few minutes. Its record keeps the error `the consumer moved past it without
+  delivering it again`, so the error of its handling is in the earlier `retryable intake processing
+  failure` warnings with the same `stream_seq`.
+
+A message given up is terminated: JetStream does not deliver it again, and its consumer counts it
+as handled and moves past it. The daemon writes one error line, `intake: a message was given up`,
+with `consumer`, `subject`, `stream_seq`, `delivered`, `reason`, `record` (the record's id) and the
+start of the `error`. Where the record cuts the error, the lines `intake: a given-up message's error
+in full; …` with the same `record` carry the whole of it. The record stays open until a replay or a
+discard closes it. While a controller is registered, the daemon also tells it: one
+`intake-gave-up` notice goes a minute after the first give-up, counts each give-up of that minute
+(`count`), and names up to 100 of them by record id, consumer and subject (`giveUps`).
+
+An operator acts on the records with `legion intake replay` and `legion intake discard`
+([Running Legion](/legion/legion/running-legion/#replay-or-discard-a-message-the-intake-gave-up)),
+and the controller with its `legion` tool's `replay_give_up` and `discard_give_up`. Each takes one
+record by its id (`--give-up`, or `giveUp`), or every open record of one consumer at or below a
+stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughSeq`).
+
+1. **Read the give-ups.** `legion state` prints one line for each consumer with open give-ups,
+   with how many and the newest stream sequence among them, and one line for each of the ten
+   newest:
+
+   ```text
+   intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
+   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
+   ```
+
+   `legion state --config legion.yaml --json | jq .intakeGiveUps` lists the 50 newest, each with
+   the first 300 characters of its `lastError` ([Running Legion](/legion/legion/running-legion/#observe)).
+   The controller reads the counts in `read_state`'s summary, as
+   `intake give-ups <consumer> open <n> newest seq <seq>`, and the record ids in the notice.
+2. **Find the cause in the last error.** The subject names the event:
+   `notifications.dispatch.issue.<KEY>.…` is an event of that issue, and
+   `notifications.github.<owner>.<repo>.…` an event of that repository. Search the daemon's log
+   for the give-up line with `record=<id>`. The controller's tools show no record's error: a replay
+   of one record by its id answers `failed` with the error, and leaves the record as it was.
+3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
+   Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
+   cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
+   that already works on that code, or hand the defect over as an issue for Legion. The controller
+   hands over a clear defect as its skill says.
+4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
+   handling a live delivery takes, and publishes nothing to the stream. It judges the fact against
+   the records as they stand now: however late the replay comes, a fact older than what an issue
+   or a pull request holds moves no record back, and it wakes no worker for a head the pull
+   request has left. Replay one record by its id, an open one or a discarded one, or every open
+   record of one consumer at or below a stream sequence. The newest sequence on the consumer's
+   line takes all of them:
+
+   ```sh
+   legion intake replay --config legion.yaml --operator-token-file operator-token --give-up 412
+   legion intake replay --config legion.yaml --operator-token-file operator-token --consumer legion-go-WIDGETS-dispatch --through-seq 48213
+   ```
+
+   Read the outcome of each record. `applied` (its fact applied now), `already applied` (the
+   daemon had applied the same fact before, so nothing changed) and `no fact` (the message holds
+   nothing the daemon acts on now, such as an event of a repository it no longer hears) each close
+   the record. `failed`, with its error, leaves the record as it was. One call takes at most 100
+   records, the lowest stream sequences first, and `remaining` counts the open records of the
+   selection left after it: make the same call again. A record that fails stays open and comes
+   first again at the next call, so once 100 records keep failing, no bulk call reaches the
+   records after them. Discard those that can never apply, or replay a record after them by its
+   id.
+5. **Discard a message that can never apply**, with the reason: most often a payload that does
+   not decode, which its producer should not have published. A discard applies nothing. Its record
+   stays, with the time, who discarded it (`operator`, or `controller session <id>`) and the
+   reason, so a replay by its id undoes a wrong discard. A discard of a consumer's records passes
+   over a record that a running replay holds.
+
+   ```sh
+   legion intake discard --config legion.yaml --operator-token-file operator-token --give-up 412 --reason 'the payload is not JSON, so no release can apply it'
+   ```
+
+The daemon refuses a discard whose reason is blank or longer than 2,048 characters
+(`400 GIVE_UP_REQUEST_INVALID`), an id of no give-up of this project (`404 GIVE_UP_NOT_FOUND`), a
+replay of a record a replay closed and a discard of a closed record (`409 GIVE_UP_CLOSED`, naming
+how and when it closed), an id that a running replay holds (`409 GIVE_UP_BEING_REPLAYED`), and
+every call to a daemon that runs no intake (`503 NO_INTAKE`).
 
 ## An architect is told `pull-request-missing`
 
@@ -1715,8 +1825,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   the message in progress only until the limit, and the handler returns once the step that is
   running honours the cancelled context, which every step does at once today; only then is
   this warning written and the message naked. The event is sent again, and its `delivered` count
-  goes up by one, no sooner than that return: one nak delay (a second) after the nak, or at the
-  consumer's next pull where the step held the handler past about one acknowledgement window
+  goes up by one, no sooner than that return: one nak delay after the nak (a second after the first
+  failure, twice as long after each later one, up to five minutes), or at the consumer's next pull
+  where the step held the handler past about one acknowledgement window
   after the limit ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
   The reports stop at the limit, so a handler cut there has had no report for whatever it ran
   past the limit. A step that ignored the cancelled context would hold the message, and this
@@ -1744,7 +1855,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   ```
 
   The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
-  held. The next delivery of the same event takes the same path and is cut the same way.
+  held. The next delivery of the same event takes the same path and is cut the same way, until the
+  daemon gives the event up at its bound ([A message the intake gave up](#a-message-the-intake-gave-up)).
 
   The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
   `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
@@ -1789,12 +1901,15 @@ notice comes once per handoff commit, from whichever read finds it first.
   below). This line's own `delivered` is that delivery's count: the handling that outlived the
   window writes the line before its own acknowledgement.
 - **`an intake fact was delivered again and dropped as already applied`** (an info line with
-  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`).
-  Intake was handed a fact it had already applied, so it ran no handler, wrote no record and
-  acknowledged the message. `delivered` and `subject` say where the second reading of the fact
-  came from, and there are five. A `delivered` above 1 is a JetStream redelivery of the same
-  message. A `delivered` of 1 is a second reading of one fact, in one of four ways: the
-  listener publishes a review or comment that mentions the trigger on each of its mention
+  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`, or
+  `replay` in place of `delivery_seq`). Intake was handed a fact it had already applied, so it ran
+  no handler and wrote no record: it acknowledged the message or, on a replay, closed the give-up
+  as `already applied`. `delivered`, `subject` and `replay` say where the second reading of the
+  fact came from, and there are six. A line with `replay=<record id>` is a replay of a message the
+  intake gave up ([A message the intake gave up](#a-message-the-intake-gave-up)), and its
+  `delivered` is the count the record kept. A `delivered` above 1 on a line with no `replay` is a
+  JetStream redelivery of the same message. A `delivered` of 1 is a second reading of one fact, in
+  one of four ways: the listener publishes a review or comment that mentions the trigger on each of its mention
   topics beside its own, one fact under one dedupe key; a durable consumer created again at the
   last message it applied is delivered that message once more (the `intake: a missing durable
   consumer is created at the last message it applied` entry below); the listener publishes a
@@ -1810,11 +1925,12 @@ notice comes once per handoff commit, from whichever read finds it first.
   took the fact lock before the deduplication found it applied, whichever reading it is, and
   `ApplyFact`'s other callers drop duplicates the same way and write no line, so the total is
   the intake consumer's part of what decides whether `processed_events` should be read before
-  the lock. The lines whose `delivered` is above 1 are the rate at which JetStream delivers again
-  a fact this consumer had already applied. The daemon writes a line only for a copy it finds
-  already applied, so that rate counts no redelivery of an event that carries no fact, and none of
-  an event not yet applied. A recreated consumer's replay reads 1 and stands outside the rate,
-  although JetStream did hand the fact over twice.
+  the lock. The lines whose `delivered` is above 1 and that carry no `replay` are the rate at which
+  JetStream delivers again a fact this consumer had already applied. The daemon writes a line only
+  for a copy it finds already applied, so that rate counts no redelivery of an event that carries
+  no fact, and none of an event not yet applied. A recreated consumer's delivery of its last
+  applied message reads 1 and stands outside the rate, although JetStream did hand the fact over
+  twice.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
@@ -1837,11 +1953,12 @@ notice comes once per handoff commit, from whichever read finds it first.
 - **`intake: a missing durable consumer's last applied message is older than the stream's first
   message; …`** (a warning with `consumer`, `start` and `stream_first`). The stream keeps 72 hours
   of messages, and the last message the consumer applied is older than the oldest it still holds.
-  Only an applied event moves that position, not one the daemon acknowledged without acting on, so
-  on a quiet project the consumer may have handled every event between `start` and `stream_first`
-  before it went missing. Any it had not reached may have been missed: the daemon applied none of
-  them, and nothing replays them, so an issue one of them would have moved waits for its next
-  event, or for the daemon's own read of its pull request at that issue's next handoff.
+  Only an applied event, or one the daemon gave up, moves that position, not one the daemon
+  acknowledged without acting on, so on a quiet project the consumer may have handled every event
+  between `start` and `stream_first` before it went missing. Any it had not reached may have been
+  missed: the daemon applied none of them, and nothing replays them, so an issue one of them would
+  have moved waits for its next event, or for the daemon's own read of its pull request at that
+  issue's next handoff.
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the

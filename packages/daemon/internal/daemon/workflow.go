@@ -1754,8 +1754,9 @@ const defaultHoldPollInterval = 2 * time.Second
 
 // defaultHoldWarnAfter and defaultHoldWarnEvery bound the watchdog log a hold that has not
 // released gets: a Dispatch event whose transaction always fails (an unmet precondition, a
-// programming bug) pins the ack floor forever, since the consumer sets no MaxDeliver to ever give
-// up on it, and nothing else says why a labeled root is waiting.
+// programming bug) holds the ack floor below it until the intake gives the event up, no sooner
+// than an hour after its first failure (intake's giveUpDue), and nothing else says why a labeled
+// root waits that long.
 const (
 	defaultHoldWarnAfter = 2 * time.Minute
 	defaultHoldWarnEvery = 5 * time.Minute

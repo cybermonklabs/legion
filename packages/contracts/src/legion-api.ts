@@ -1111,7 +1111,7 @@ const legionRepositories = z.object({
  * (JetStream's pending plus acknowledgement-pending); `oldestAt`, the stream time of the oldest of
  * them, and `oldestAgeSeconds` its age at the read, both null when nothing waits or that message
  * could not be read; `lastHandledAt`, when the daemon last acknowledged one of its messages or
- * terminated one as poison, null before the first; `stalled`, messages waiting and none handled for
+ * terminated one it gave up, null before the first; `stalled`, messages waiting and none handled for
  * 60 seconds; and `unavailable`, what NATS did not answer or refused, absent when every read
  * answered. */
 const legionConsumerLag = z.object({

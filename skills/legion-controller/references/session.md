@@ -17,6 +17,7 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 - `compact` (`issue`, `role`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
 - `fresh_session` (`issue`, `role`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
 - Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
+- `replay_give_up` and `discard_give_up` (`giveUp`, or `consumer` and `throughSeq`; `reason` for a discard): see the docs site's troubleshooting page, "A message the intake gave up".
 
 ## `gh`
 

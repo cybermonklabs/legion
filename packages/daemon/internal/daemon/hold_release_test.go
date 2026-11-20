@@ -606,11 +606,11 @@ func (f *failingPositionReader) DispatchPosition(context.Context) (intake.Dispat
 	return f.position, nil
 }
 
-// Non-blocking: a Dispatch event whose transaction always fails pins the ack floor forever (the
-// consumer sets no MaxDeliver), so the hold never releases and, before this, nothing in the log
-// said why. Once a hold has persisted past a bound, the poll warns on its own schedule — never
-// releasing on the strength of the timer, only naming what it is still waiting for: the target,
-// the current ack floor, and the stream sequence stuck behind it.
+// Non-blocking: a Dispatch event whose transaction always fails holds the ack floor below it until
+// the intake gives it up, no sooner than an hour after its first failure, so the hold does not
+// release before then and, before this, nothing in the log said why. Once a hold has persisted
+// past a bound, the poll warns on its own schedule — never releasing on the strength of the timer,
+// only naming what it is still waiting for: the target and the current ack floor.
 func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	var logBuf syncBuffer

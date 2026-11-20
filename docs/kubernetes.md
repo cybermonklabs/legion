@@ -2150,6 +2150,54 @@ So run this once more with the earlier release stopped, before this release star
 delete from outbox where kind = 'phase_ended';
 ```
 
+#### Rolling back the release that gives up on intake messages
+
+The release that gives up on an intake message whose handling keeps failing is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-1575`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+That release keeps each failing message whole in the daemon's database, tells the controller of each message it gives up (the controller notice kind `intake-gave-up`), and lets the operator (`legion intake replay` and `legion intake discard`) or the controller (`replay_give_up` and `discard_give_up`) replay or discard it ([A message the intake gave up](https://cybermonklabs.github.io/legion/legion/troubleshooting/#a-message-the-intake-gave-up)).
+Its migration `20261120001432_intake_failures` adds two tables and two columns, and it drops nothing:
+
+- `intake_failures` holds each message of a durable consumer whose handling failed, with its subject, its headers and its payload.
+  A row is an open failure until a later delivery succeeds or the intake gives the message up, and from then on a given-up record, which a replay or a discard closes and which stays in the table after that.
+
+- `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the time of the head the record last held, so a late opened event of that pull request at an older head records nothing.
+
+- `pull_requests.settled_runs` keeps the newest run of each check for each of the last heads a CI settlement applied on, so an earlier settlement of a head the branch came back to is stale.
+
+- `dispatch_issues.status_seq` is the sequence of the Dispatch event at which the mirror last saw the issue's status change, so a person's approval of a parked root's spec that reaches the daemon late queues the root only when no status change came after the approval.
+
+The earlier release never reads the two tables or the two columns, so the rollback leaves both tables and both columns standing.
+That release's own writes leave the two columns as they stand, and a row it creates takes the column's default: an empty list, or null.
+At the roll forward `Migrate` finds the migration's version recorded and applies nothing, and this release reads each table and column as it stands.
+`status_seq` can then stand at a sequence older than the issue's newest status change, which only lets a late approval queue the root, as the earlier release did.
+Under the earlier daemon, `legion intake` and the controller's `replay_give_up` and `discard_give_up` find no route (404), and the state carries no `intakeGiveUps`.
+
+**Two kinds of the project's rows must go before the earlier image is pinned.**
+The first is each unsent `intake-gave-up` controller notice.
+The earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither that kind nor the notice's `count` and `giveUps`, so it refuses such a row at every attempt and retries it on its backoff until the roll forward.
+The second is each open failure: a row of `intake_failures` whose message the intake has not given up.
+The earlier release applies or drops that message and does not tell the table, so after the roll forward the failure sweep would find the row below its consumer's ack floor and give up, as `consumer moved past`, a message that applied.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'intake-gave-up'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+delete from intake_failures where project = '<PROJECT>' and given_up_at is null;
+```
+
+The header of `20261120001432_intake_failures.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox and `intake_failures` are one table each for all of them, but each daemon runs only its own project's outbox rows (`DueRows` in `record/store.go`) and reads only its own project's records.
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own notices and still counts its own open failures.
+
+**What the rollback costs.**
+Each deleted notice is a notice the controller never gets.
+The given-up records it counted stay, and after the roll forward the state lists each one that is still open (`legion state`, `intakeGiveUps` in `--json`, and the summary of the controller's `read_state`).
+Each deleted open failure takes with it the time of its message's first failure: a message that still fails after the roll forward opens a new row at its next failure, and its hour counts from then.
+While the earlier release runs, it handles a failing message as it did before this release: it puts the message back and takes it again until it applies or the stream deletes it, and it terminates a message that does not decode, with no record of either.
+The given-up records stay as they were, and after the roll forward a replay or a discard takes them as before.
+
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
@@ -2929,6 +2977,7 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
+20261120001432_intake_failures adds the tables `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_runs` and `dispatch_issues.status_seq`, and touches none of the six, so the block holds over it and leaves both tables and both columns standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
