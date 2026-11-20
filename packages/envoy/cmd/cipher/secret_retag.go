@@ -133,7 +133,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	var remove []string
 	if *newType == tagNone {
 		// The rollback guard goes with the type: a stored secret is safe on every broker.
-		remove = append(remove, policy.TagType, policy.LegacyTypeTag, policy.TagRollbackGuard)
+		remove = append(remove, policy.TagType, "kind", policy.TagRollbackGuard)
 	}
 	if *newGitHubOwners == tagNone {
 		remove = append(remove, policy.TagGitHubOwners)

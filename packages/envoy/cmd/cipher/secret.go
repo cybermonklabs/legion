@@ -116,8 +116,8 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 	// outrank them.
 	for _, a := range args[1:] {
 		flagName, _, _ := strings.Cut(a, "=")
-		if strings.HasPrefix(flagName, "-") && strings.TrimLeft(flagName, "-") == policy.LegacyTypeTag {
-			fmt.Fprintf(stderr, "agent-secrets secret: flag provided but not defined: -%s; use --type on secret create or retag\n", policy.LegacyTypeTag)
+		if strings.HasPrefix(flagName, "-") && strings.TrimLeft(flagName, "-") == "kind" {
+			fmt.Fprintf(stderr, "agent-secrets secret: flag provided but not defined: -%s; use --type on secret create or retag\n", "kind")
 			return exitUsageError
 		}
 		if a == "--profile" || strings.HasPrefix(a, "--profile=") {
