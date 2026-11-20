@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +18,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
@@ -571,6 +576,139 @@ func TestASweepLeavesOutADeliveryWhoseGUIDTheBucketCannotKey(t *testing.T) {
 			}
 			requireCut(t, sighting{where: "the guid of the left-out line", shown: lineAttr(line, "guid"), text: tc.guid, alone: true})
 			h.requireNoneWhole(tc.guid)
+		})
+	}
+}
+
+// largeRefusal is a body GitHub could answer a refused request with: JSON that names its message
+// first, filled with refusalFiller to the 1 MiB a response may hold. A line that quotes the body
+// escapes the quotes of its JSON and leaves the filler as it is, so a search of the log finds the
+// body whole where it finds the filler whole.
+var (
+	refusalFiller = strings.Repeat("x", 1<<20-len(`{"message":"Server Error","filler":""}`))
+	largeRefusal  = `{"message":"Server Error","filler":"` + refusalFiller + `"}`
+)
+
+// longNextLink is the path and query of a next page link of the listing far past the longest link
+// the client follows (githubapp's nextLinkMaxBytes, 2048 bytes): its cursor is 64 KiB.
+var longNextLink = "/app/hook/deliveries?per_page=100&cursor=" + strings.Repeat("v", 1<<16)
+
+// inFrontOfGitHub points h's client at a server of the test's own in front of a webhook fake that
+// h holds from then on, and answers the server's origin: front answers every request the client
+// sends, itself or by handing it to the fake, so a test overrides only the answers it is about.
+// The fake newHarness made is left idle, since a request handed on must carry an App JWT the fake
+// verifies, and the key newHarness signs with is newHarness's own.
+func (h *harness) inFrontOfGitHub(front func(w http.ResponseWriter, r *http.Request, fake http.Handler)) string {
+	h.t.Helper()
+	key, pemText := githubapptest.Key(h.t)
+	h.webhook = githubapptest.NewWebhook(h.t, &key.PublicKey, clientID, nil)
+	h.webhook.SetClock(h.clock.Now)
+	origin, err := url.Parse(h.webhook.URL())
+	if err != nil {
+		h.t.Fatalf("parse the fake's origin: %v", err)
+	}
+	fake := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(origin) }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { front(w, r, fake) }))
+	h.t.Cleanup(server.Close)
+	h.client, err = githubapp.New(&auth.AppConfig{ClientID: clientID, PEM: pemText}, server.URL, githubapp.WithLimits(h.limits))
+	if err != nil {
+		h.t.Fatalf("App client: %v", err)
+	}
+	return server.URL
+}
+
+// isListing is whether r is a request for a page of the deliveries listing.
+func isListing(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/app/hook/deliveries"
+}
+
+// refuseLargely answers w as GitHub refuses a request, with status and largeRefusal.
+func refuseLargely(t *testing.T, w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := io.WriteString(w, largeRefusal); err != nil {
+		t.Errorf("write GitHub's refusal: %v", err)
+	}
+}
+
+// failedListing sweeps once and then runs one sweep of the running loop, each of which fails at
+// the listing (what names why), and answers the places that show text: the error the sweep
+// answered, and the WARN line the running sweep logs its error with (sweepAndReport).
+func (h *harness) failedListing(t *testing.T, what, text string) []sighting {
+	t.Helper()
+	_, err := h.sweeper().Sweep(context.Background(), redeliver.Options{})
+	if err == nil {
+		t.Fatalf("the sweep whose %s answered no error", what)
+	}
+	runningSweep(h.sweeper())
+	line := h.oneLine("webhook redelivery sweep failed")
+	return []sighting{
+		{where: "the error the sweep answered", shown: err.Error(), text: text},
+		{where: "the error of the sweep-failed line", shown: lineAttr(line, "error"), text: text},
+	}
+}
+
+// GitHub's answers to the sweep's own requests are GitHub's text too: the body of an error status
+// GitHub answers the deliveries listing or a redelivery request with, which may be as long as a
+// response may be (1 MiB), and the listing's next page link. The githubapp client the sweep lists
+// and asks through words such a body into its errors as githubapp.ShownBody shows GitHub's text,
+// and refuses a next page link longer than it follows, showing the link the same way, so the
+// sweep holds each to the bound, its start and its size, and never whole: a listing's refusal and
+// a next page link past the bound in the error the sweep answers and in the WARN line the running
+// sweep logs it with, and a redelivery request's refusal in the request-refused line. Each case is
+// a real sweep through the real client against the fake, with a server in front of the fake that
+// gives the one answer the case is about (inFrontOfGitHub).
+func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// run makes the case on h, and answers every place it shows GitHub's text and the text a
+		// search of the log must not find whole.
+		run func(t *testing.T, h *harness) (shown []sighting, whole string)
+	}{
+		{"a listing GitHub refuses with a body past the bound", func(t *testing.T, h *harness) ([]sighting, string) {
+			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+				if isListing(r) {
+					refuseLargely(t, w, http.StatusInternalServerError)
+					return
+				}
+				fake.ServeHTTP(w, r)
+			})
+			return h.failedListing(t, "listing GitHub refused", largeRefusal), refusalFiller
+		}},
+		{"a next page link past the bound", func(t *testing.T, h *harness) ([]sighting, string) {
+			origin := h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+				if isListing(r) {
+					w.Header().Set("Link", "<http://"+r.Host+longNextLink+`>; rel="next"`)
+				}
+				fake.ServeHTTP(w, r)
+			})
+			h.fail("guid-paged", http.StatusServiceUnavailable, time.Minute)
+			link := origin + longNextLink
+			return h.failedListing(t, "next page link is past the bound", link), link
+		}},
+		{"a redelivery request GitHub refuses with a body past the bound", func(t *testing.T, h *harness) ([]sighting, string) {
+			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+				if r.Method == http.MethodPost {
+					refuseLargely(t, w, http.StatusUnprocessableEntity)
+					return
+				}
+				fake.ServeHTTP(w, r)
+			})
+			h.fail("guid-refused", http.StatusServiceUnavailable, time.Minute)
+			if got := outcome(h.sweep(redeliver.Options{}), "guid-refused"); got != redeliver.RequestRefused {
+				t.Fatalf("the sweep's outcome %q, want %q", got, redeliver.RequestRefused)
+			}
+			line := h.oneLine("webhook redelivery request refused")
+			return []sighting{{where: "the error of the request-refused line", shown: lineAttr(line, "error"), text: largeRefusal}}, refusalFiller
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			shown, whole := tc.run(t, h)
+			for _, s := range shown {
+				requireCut(t, s)
+			}
+			h.requireNoneWhole(whole)
 		})
 	}
 }

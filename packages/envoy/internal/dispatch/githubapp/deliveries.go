@@ -440,7 +440,7 @@ func rateLimitWait(header http.Header) time.Duration {
 
 // StatusError is GitHub answering a request with a status other than 200 that is no rate limit
 // (CheckResponse): the status, and the whole body GitHub answered. Its text is StatusText's, which
-// leaves out the body of an answer at a 2xx status.
+// leaves out the body of an answer at a 2xx status and shows any other body as ShownBody does.
 type StatusError struct {
 	Status int
 	Body   string
@@ -456,17 +456,20 @@ func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
 }
 
-// shownBodyRunes is how many runes of GitHub's text a line or an error shows (ShownBody): the
-// start of the text, in a line of bounded length.
+// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
+// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
+// length.
 const shownBodyRunes = 512
 
-// ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most
+// ShownBody is body, an answer GitHub gave, as an error's text shows it: whole where it is at most
 // shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
-// the length of the whole body. A line that logs such text writes it whole, so the webhook
-// redelivery sweep shows each GUID, event, action and bucket refusal it logs or returns this way
-// (redeliver), and the architecture importer a push's repository and branch
-// (architecture.Importer.Pushed). It reads at most shownBodyRunes × 4 bytes of body, the most that
-// many runes take, and never splits a rune; a byte that is no UTF-8 counts as one rune.
+// the length of the whole body. Every error of this package whose text holds such a body holds it
+// as this shows it: a line that logs the error writes the text whole, and a body may be as long as
+// a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into one field of a WARN
+// line (review of cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at
+// the end of such a text (api's ciUnreadDetail) finds it as this shows it. It reads at most
+// shownBodyRunes × 4 bytes of body, the most that many runes take, and never splits a rune; a byte
+// that is no UTF-8 counts as one rune.
 func ShownBody[Body ~string | ~[]byte](body Body) string {
 	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
 	runes := 0
@@ -499,15 +502,16 @@ func StatusText[Body string | []byte](status int, body Body) string {
 	return withBody(head, body)
 }
 
-// withBody is head, then `: ` and body when body is not empty: the one rule of every text of an
-// answer this package words (StatusText, RateLimitError, failedAnswer). An answer with no body
-// ends at its head, since a loop notes such a text as it is and GET /healthz serves it as a
-// read's cause, where a `: ` with nothing after it says nothing.
+// withBody is head, then `: ` and body as ShownBody shows it when body is not empty: the one rule
+// of every text of an answer this package words (StatusText, RateLimitError, failedAnswer). An
+// answer with no body ends at its head, since a loop notes such a text as it is and GET /healthz
+// serves it as a read's cause, where a `: ` with nothing after it says nothing. A body is bounded
+// because a response may hold 1 MiB, and a line that logs the text writes it whole.
 func withBody[Body string | []byte](head string, body Body) string {
 	if len(body) == 0 {
 		return head
 	}
-	return head + ": " + string(body)
+	return head + ": " + ShownBody(body)
 }
 
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
@@ -525,8 +529,15 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	return &StatusError{Status: status, Body: string(body)}
 }
 
+// nextLinkMaxBytes is the longest next page link nextLink follows. GitHub's links of the deliveries
+// listing are about a hundred bytes. A link is GitHub's text, and once followed it is the target of
+// the next request and of each error that names that request, so a longer one is refused and shown
+// as ShownBody shows GitHub's text.
+const nextLinkMaxBytes = 2048
+
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
-// client's API origin: the next page is fetched with the App's JWT.
+// client's API origin, since the next page is fetched with the App's JWT, and one longer than
+// nextLinkMaxBytes.
 func nextLink(header, base string) (string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
@@ -543,6 +554,9 @@ func nextLink(header, base string) (string, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(segments[0]), "<"), ">")
+		if len(target) > nextLinkMaxBytes {
+			return "", fmt.Errorf("next page link %q is longer than %d bytes", ShownBody(target), nextLinkMaxBytes)
+		}
 		parsed, err := url.Parse(target)
 		if err != nil {
 			return "", fmt.Errorf("parse next page link %q: %w", target, err)

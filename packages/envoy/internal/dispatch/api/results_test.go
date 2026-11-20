@@ -3668,10 +3668,11 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	assertUnread(t, checkOf(t, readResults(t, keyless, other.Key), "c1"), "no private key")
 }
 
-// GitHub's refusal of a read carries its whole body in the error, up to the 16 MiB a page of
-// check runs may take, and none of it reaches the detail: the detail names the status and the
-// `message` of a JSON body, names the status alone for a body that is not JSON, and is cut to
-// 2,000 runes where the message itself is longer.
+// GitHub's refusal of a read carries its body in the error as githubapp.ShownBody shows it, the
+// start of a page of check runs that may take 16 MiB and its size, and none of it reaches the
+// detail: the detail names the status and the `message` of a JSON body, read from the whole body,
+// names the status alone for a body that is not JSON, and is cut to 2,000 runes where the message
+// itself is longer.
 func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "Large refusal")
@@ -4044,8 +4045,10 @@ func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 // Retry-After. Nothing is stored. Stored, the result would sit under a repository no read showed
 // to hold its commit. The installation token mint is such a read too, and a 403 on it — GitHub's
 // answer for a suspended installation — is refused the same way, the sentence naming the mint as
-// the read that failed. An error that carries GitHub's body whole, as the mint's does, half a
-// megabyte that is not JSON among them, is cut to about a kilobyte, and the refusal says so.
+// the read that failed. An error that carries GitHub's body, as the mint's does, carries it as
+// githubapp.ShownBody shows it, so half a megabyte that is not JSON comes to the refusal as the
+// start of the page and its size, never whole: that page is ASCII, so ShownBody's bound is the
+// one that acts, and gitHubReason's cut, which bounds the whole reason, finds nothing to cut.
 func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
@@ -4078,7 +4081,8 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 				linked.unminted = []string{"acme/tools"}
 				linked.mintStatus, linked.mintBody = http.StatusBadGateway, "<html>"+strings.Repeat("x", 1<<19)+"</html>"
 			},
-			says:    []string{"status 502: <html>xxxx", "(GitHub's error, cut to its first 1024 of", "Nothing was recorded: record the result again"},
+			says: []string{"status 502: <html>xxxx", fmt.Sprintf("… (%d bytes)", len("<html></html>")+1<<19),
+				"Nothing was recorded: record the result again"},
 			longest: gitHubReasonBytes + 512,
 		},
 		{
