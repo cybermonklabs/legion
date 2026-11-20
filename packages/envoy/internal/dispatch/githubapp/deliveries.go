@@ -71,7 +71,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		}
 		var page []Delivery
 		if err := json.Unmarshal(body, &page); err != nil {
-			return nil, fmt.Errorf("decode webhook deliveries: %w", shownErr(err))
+			return nil, fmt.Errorf("decode webhook deliveries: %w", ShownErr(err))
 		}
 		for _, delivery := range page {
 			if delivery.DeliveredAt.Before(since) {
@@ -462,16 +462,25 @@ const shownBodyRunes = 512
 
 // ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most
 // shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
-// the length of the whole body. Every error of this package whose text holds a body GitHub
-// answered holds it as this shows it (withBody), and so does every error of the package whose text
-// quotes a value of an answer the package cannot decode or a response line a transport error of
-// net/http quotes (shownError): each text is cut once, where it enters the error. A line that logs
-// the error writes the text whole, and a body may be as long as a response may be (responseLimit,
-// 1 MiB), which put 1,048,697 bytes into one field of a WARN line (review of
-// cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at the end of such a
-// text (api's gitHubErrorText) finds it as this shows it. It reads at most shownBodyRunes × 4
-// bytes of body, the most that many runes take, and never splits a rune; a byte that is no UTF-8
-// counts as one rune.
+// the length of the whole body. A line that logs an error writes the error's text whole, and a
+// body may be as long as a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into
+// one field of a WARN line (review of cybermonklabs/legion#4209 at def907052c, H3). So the errors
+// of this package cut each text of GitHub's once, where it enters an error, and n is the size of
+// the text that was cut:
+//
+//   - A refusal's body is cut alone, with the body's size. Every error of this package whose text
+//     holds a body GitHub answered holds it as this shows it (withBody). A reader that finds the
+//     body at the end of such a text (api's gitHubErrorText) finds it as this shows it.
+//   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
+//     alone, with the value's size. The error still names the layout, or the field and the type
+//     (ShownErr).
+//   - A transport error of send cuts its URL, with the URL's size, and its cause (ShownErr). A
+//     line the cause quotes is cut with the cause's text, with the size of the cause's text.
+//   - Any other error that quotes GitHub's text, such as a bucket error that quotes a key
+//     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
+//
+// It reads at most shownBodyRunes × 4 bytes of body, the most that many runes take, and never
+// splits a rune. A byte that is no UTF-8 counts as one rune.
 func ShownBody[Body ~string | ~[]byte](body Body) string {
 	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
 	runes := 0
@@ -487,26 +496,110 @@ func ShownBody[Body ~string | ~[]byte](body Body) string {
 	return head
 }
 
-// shownError is err as this package's errors show it: its text is err's as ShownBody shows
-// GitHub's text. err is an error whose text quotes text GitHub gave, either a value of an answer
-// Go cannot decode (json.UnmarshalTypeError copies a number literal, time.ParseError quotes the
-// value) or a response line a transport error of net/http quotes. So the package shows that text
-// as ShownBody shows GitHub's, once, where the error enters an error of the package (shownErr), and
-// Unwrap is err, so errors.Is and errors.As still reach it.
-type shownError struct{ err error }
+// ShownErr is err as the errors of this package show it, cut once where it enters such an error,
+// and nil for nil. ShownErr is err itself where no text in err passes the bound, so err keeps its
+// own type and every method a caller type-asserts, such as net.Error's Timeout. Otherwise it cuts
+// the text of GitHub's that err holds as ShownBody shows it. Three types hold that text in a field
+// of its own, and ShownErr cuts that field alone and keeps the type, so errors.As reaches the
+// answer as it reaches err. ShownErr reads the type of err itself (a type switch), not of the
+// errors that err wraps:
+//
+//   - A *url.Error, the transport error of send's request, has the text `<Op> "<URL>": <cause>`.
+//     ShownErr answers a new *url.Error with the same Op, the URL as ShownBody shows it, with the
+//     URL's size, and the cause (Err) as ShownErr shows it. So a long URL never pushes the cause
+//     out of the text. A cause that quotes a long line of an answer (net/http's `malformed MIME
+//     header`) is cut with the cause's text, with the size of the cause's text.
+//   - A *time.ParseError is a time in an answer that JSON could not decode. ShownErr answers a
+//     copy whose Value and ValueElem are as ShownBody shows them, with the value's size. Layout,
+//     LayoutElem and Message stay, so the error still names the layout and the reason. Package
+//     time quotes each value in the error's text and writes each byte past ASCII as \xNN, so the
+//     `…` of the cut shows as \xe2\x80\xa6 there.
+//   - A *json.UnmarshalTypeError is a value in an answer that its Go type cannot take. Its Value
+//     is the JSON kind of the value ("number"), and after a space the literal the decode copies
+//     where it copies one (a number past the range of int64). ShownErr answers a copy whose
+//     literal is as ShownBody shows it, with the literal's size. A Value with no space is cut
+//     whole. Field, Struct, Type, Offset and Err stay, so the error still names the field and the
+//     type.
+//
+// Any other error is cut whole: ShownErr answers an error whose text is err's text as ShownBody
+// shows it, with the size of err's text, and whose Unwrap is err, so errors.Is and errors.As still
+// reach err (shownError). Go's own words take part of the shownBodyRunes runes there.
+//
+// The package cuts with it the error of every JSON decode of an answer GitHub gave whose error it
+// returns, the error of send's request, and the error of send's read of the answer. Another
+// package cuts with it an error whose text quotes GitHub's text (redeliver's bucketErr, for a
+// bucket error that quotes a key).
+func ShownErr(err error) error {
+	shown, _ := shownErr(err)
+	return shown
+}
 
-func (e *shownError) Error() string { return ShownBody(e.err.Error()) }
+// shownErr is ShownErr(err), and cut is whether shown is an error other than err. The *url.Error
+// case reads cut for its cause and never compares two errors, since == panics on two errors of
+// one type that Go cannot compare.
+func shownErr(err error) (shown error, cut bool) {
+	switch e := err.(type) {
+	case nil:
+		return nil, false
+	case *url.Error:
+		cause, causeCut := shownErr(e.Err)
+		target := ShownBody(e.URL)
+		if !causeCut && target == e.URL {
+			return err, false
+		}
+		return &url.Error{Op: e.Op, URL: target, Err: cause}, true
+	case *time.ParseError:
+		value, valueElem := ShownBody(e.Value), ShownBody(e.ValueElem)
+		if value == e.Value && valueElem == e.ValueElem {
+			return err, false
+		}
+		c := *e
+		c.Value, c.ValueElem = value, valueElem
+		return &c, true
+	case *json.UnmarshalTypeError:
+		// at is where the literal starts: after the kind and its space, or at 0 where Value has no
+		// space.
+		at := strings.IndexByte(e.Value, ' ') + 1
+		literal := ShownBody(e.Value[at:])
+		if literal == e.Value[at:] {
+			return err, false
+		}
+		c := *e
+		c.Value = e.Value[:at] + literal
+		return &c, true
+	}
+	text := err.Error()
+	if cutText := ShownBody(text); cutText != text {
+		return &shownError{err: err, text: cutText}, true
+	}
+	return err, false
+}
+
+// shownError is an error ShownErr cut whole: text is err's text as ShownBody shows it, made once,
+// when ShownErr made the error. Unwrap is err.
+type shownError struct {
+	err  error
+	text string
+}
+
+func (e *shownError) Error() string { return e.text }
 
 func (e *shownError) Unwrap() error { return e.err }
 
-// shownErr is err as shownError shows it, and nil for nil: the error of every JSON decode of an
-// answer GitHub gave whose error this package returns, and the transport's error of send's request
-// and of its read of the answer.
-func shownErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &shownError{err: err}
+// Timeout is what the first error in err's chain that has a Timeout method answers, and false
+// where no error in the chain has one. So a cut error answers net.Error's Timeout as err does. A
+// url.Error whose Err is a cut error also answers it: url.Error's Timeout asks only its Err, by a
+// type assertion, and does not read the chain.
+func (e *shownError) Timeout() bool {
+	var timeout interface{ Timeout() bool }
+	return errors.As(e.err, &timeout) && timeout.Timeout()
+}
+
+// Temporary is what the first error in err's chain that has a Temporary method answers, and false
+// where no error in the chain has one, for the same reason as Timeout.
+func (e *shownError) Temporary() bool {
+	var temporary interface{ Temporary() bool }
+	return errors.As(e.err, &temporary) && temporary.Temporary()
 }
 
 // StatusText is the text of an answer GitHub gave with status and body that its reader takes as

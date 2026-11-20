@@ -42,11 +42,17 @@
 //
 // A delivery's GUID, event and action are GitHub's text, and so is every key that holds a GUID, so
 // each line and error of this package shows them as githubapp.ShownBody shows GitHub's text: whole
-// up to 512 runes, and past that its first 512 runes and its size. It shows an error the bucket
-// answered the same way (bucketErr), since a refusal of bus.KeyValue quotes the key it refused.
-// GitHub's text in the errors of the GitHub calls (Sweeper.GitHub) reaches the sweep already cut
-// that way by the githubapp client: a refusal's body, a value of an answer the client cannot
-// decode, a line a transport error quotes. So the sweep shows those errors as they are.
+// up to 512 runes, and past that its first 512 runes and its size. An error the bucket answered
+// quotes the key it refused. githubapp.ShownErr cuts such an error whole, as it cuts any other
+// error that quotes GitHub's text, with the size of the error's text (bucketErr). GitHub's
+// text in the errors of the GitHub calls (Sweeper.GitHub) reaches the sweep already cut by the
+// githubapp client, so the sweep shows those errors as they are:
+//
+//   - A refusal's body is cut alone, with the body's size.
+//   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
+//     alone, with the value's size. The error still names the layout, or the field and the type.
+//   - A transport error cuts its URL, with the URL's size, and its cause. A line the cause quotes
+//     is cut with the cause's text, with the size of the cause's text.
 //
 // Dispatch runs the sweep because it holds the App's private key, which the list and redeliver
 // endpoints require (they take only an App JWT).

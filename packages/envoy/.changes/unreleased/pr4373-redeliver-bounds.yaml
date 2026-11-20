@@ -2,7 +2,11 @@ kind: Fixed
 body: |-
     The webhook redelivery sweep shows each delivery's GUID, event and action, and each bucket key or bucket error that holds a GUID, in its log lines and errors to a bound: whole up to 512 characters, and past that its first 512 characters and its size.
     A listed delivery whose GUID the bucket cannot key (outside the key alphabet, or so long that its index entry's key passes the write bound) is left out of the sweep with one WARN line, `webhook redelivery left out a delivery whose GUID the bucket cannot key`; before, such a GUID failed every sweep or left every sweep incomplete.
-    The errors of Dispatch's GitHub App client (githubapp) now show GitHub's text whole up to 512 characters, and past that its first 512 characters and its size: a refusal's body, a value of an answer the client cannot decode, and a line a transport error quotes.
+    The errors of Dispatch's GitHub App client (githubapp) now show a refusal's body whole up to 512 characters, and past that its first 512 characters and the body's size.
+    A value of an answer the client cannot decode, in a time parse error or a JSON type error, is cut alone the same way, with the value's size, and the error still names the time layout, or the field and its type.
+    A transport error cuts its URL the same way, with the URL's size, and cuts its cause, so it still names the cause after a long URL, such as `context deadline exceeded`.
+    A line the cause quotes is cut with the cause's text, with the size of the cause's text.
+    Any other error that quotes GitHub's text, such as a bucket error that quotes a key, is cut whole the same way, with the size of its text.
     A next page link of the deliveries listing longer than 2048 bytes is refused and shown the same way.
     The redelivery sweep's errors and log lines therefore carry GitHub's text that way.
 time: 2026-11-18T03:49:52.405000027Z

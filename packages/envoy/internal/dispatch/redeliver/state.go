@@ -244,27 +244,20 @@ func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, 
 	}
 }
 
-// bucketError is an error the sweep's bucket answered, as the sweep's lines and errors show it: its
-// text cut as githubapp.ShownBody cuts GitHub's. A refusal of bus.KeyValue quotes the key it
-// refused whole (bus/kv.go's check and invalidKey), and every key of a delivery holds the
-// delivery's GUID, which is GitHub's text and may be as long as a key may be. Unwrap is the error
-// itself, so errors.Is and errors.As reach every class it carries (nats.ErrKeyNotFound,
-// bus.ErrRefused and the rest). bus.IsCASConflict reads the text rather than a class, so it is
-// asked of the bucket's error before that error is wrapped here, and never of this.
-type bucketError struct{ err error }
-
-func (e *bucketError) Error() string { return githubapp.ShownBody(e.err.Error()) }
-
-func (e *bucketError) Unwrap() error { return e.err }
-
-// bucketErr is err, an error the sweep's bucket answered, as the sweep shows it (bucketError), and
-// nil for nil. Every error the package takes from a call on its bucket passes through here once
-// the caller has classified it. A scan of the bucket (kvwatch) is not such a call: its errors name
-// the pattern this package scans by, which holds no GUID, and carry whole the error the scan's own
-// visit answered, which this package wrote and bounded itself (scanOpenRecords).
+// bucketErr is err, an error the sweep's bucket answered, as the sweep's lines and errors show it
+// (githubapp.ShownErr), and nil for nil: err itself where githubapp.ShownBody shows its text
+// whole, and otherwise an error whose text is err's text as ShownBody shows it, with the size of
+// err's text. A refusal of bus.KeyValue quotes the key it refused whole (bus/kv.go's check and
+// invalidKey), and every key of a delivery holds the delivery's GUID, which is GitHub's text and
+// may be as long as a key may be. The cut error's Unwrap is err, so errors.Is and errors.As reach
+// every class it carries (nats.ErrKeyNotFound, bus.ErrRefused and the rest). bus.IsCASConflict
+// reads the text rather than a class, so it is asked of the bucket's error before that error is
+// wrapped here, and never of what bucketErr answers.
+//
+// Every error the package takes from a call on its bucket passes through here once the caller has
+// classified it. A scan of the bucket (kvwatch) is not such a call: its errors name the pattern
+// this package scans by, which holds no GUID, and carry whole the error the scan's own visit
+// answered, which this package wrote and bounded itself (scanOpenRecords).
 func bucketErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &bucketError{err: err}
+	return githubapp.ShownErr(err)
 }

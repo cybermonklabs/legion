@@ -476,7 +476,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Installation{}, fmt.Errorf("decode installation: %w", shownErr(err))
+		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
 	}
 	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
 }
@@ -529,7 +529,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			}
 			var payload []installationPayload
 			if err := json.Unmarshal(body, &payload); err != nil {
-				return nil, fmt.Errorf("decode installations (page %d): %w", page, shownErr(err))
+				return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
 			}
 			if len(payload) == 0 {
 				break
@@ -644,7 +644,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 			} `json:"repositories"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, shownErr(err))
+			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, ShownErr(err))
 		}
 		if len(payload.Repositories) == 0 {
 			break
@@ -839,7 +839,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		Permissions auth.AppPerms `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return cachedToken{}, fmt.Errorf("decode installation token: %w", shownErr(err))
+		return cachedToken{}, fmt.Errorf("decode installation token: %w", ShownErr(err))
 	}
 	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
 	c.mu.Lock()
@@ -954,6 +954,10 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // GitHub answers, is noted: no answer at all, a body that could not be read or ran past limit, a
 // held limit (noted, though nothing was sent), a 5xx and a 401. A context with no attempt changes
 // nothing.
+//
+// Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
+// keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
+// passes the bound in send's errors.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
@@ -970,7 +974,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target), ShownErr(err))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -983,19 +987,19 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, target, shownErr(err))
+		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), ShownErr(err))
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		err = fmt.Errorf("read %s %s response: %w", method, target, shownErr(err))
+		err = fmt.Errorf("read %s %s response: %w", method, ShownBody(target), ShownErr(err))
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	if int64(len(responseBody)) > limit {
-		err := fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
+		err := fmt.Errorf("%s %s: %w", method, ShownBody(target), &ResponseTooLargeError{Limit: limit})
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
@@ -1022,10 +1026,11 @@ func noteFailure(ctx context.Context, err error) {
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
 // own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 5xx or a 401, and
 // "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for a
-// limit GitHub answered (limitNoted, RateLimitError), each ending at its head where there is no
-// body (withBody). Its text is made only where the note can still become a cause
-// (githubreads.NoteFailure), so a request outside the leased passes formats nothing. The target
-// carries no token: every token travels in the Authorization header.
+// limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
+// send shows it, and each ending at its head where there is no body (withBody). Its text is made
+// only where the note can still become a cause (githubreads.NoteFailure), so a request outside the
+// leased passes formats nothing. The target carries no token: every token travels in the
+// Authorization header.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
 // for a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit its
@@ -1047,9 +1052,9 @@ type failedAnswer[Detail string | []byte] struct {
 
 func (f *failedAnswer[Detail]) Error() string {
 	if f.limit != nil {
-		return f.method + " " + f.target + ": " + f.limit.Error()
+		return f.method + " " + ShownBody(f.target) + ": " + f.limit.Error()
 	}
-	return f.method + " " + f.target + ": " + StatusText(f.status, f.detail)
+	return f.method + " " + ShownBody(f.target) + ": " + StatusText(f.status, f.detail)
 }
 
 // limitNoted is the client's note of limited, a limit GitHub answered method's request to target
@@ -1130,7 +1135,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(body, &ref); err != nil {
-		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, shownErr(err))
+		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, ShownErr(err))
 	}
 	if ref.Ref != "refs/heads/"+branch || !commitSHA.MatchString(ref.Object.SHA) {
 		return "", noBranch
@@ -1196,7 +1201,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		} `json:"tree"`
 	}
 	if err := json.Unmarshal(body, &tree); err != nil {
-		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, shownErr(err))
+		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, ShownErr(err))
 	}
 	if tree.Truncated {
 		return Dir{}, fmt.Errorf("%w: %s/%s@%s:%s", ErrTreeTruncated, owner, repo, sha, dir)
@@ -1220,13 +1225,15 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 // keyed by file name. The bound is the notes package's: a file whose listed
 // size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
 // before any blob is fetched, and so is a decoded blob over it; a blob that
-// vanished between the listing and the read fails the whole set.
+// vanished between the listing and the read fails the whole set. A path is
+// GitHub's text (Dir), so the error of notes.CheckSize names it as ShownBody
+// shows it.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
 	for _, file := range listing.Files {
-		if err := notes.CheckSize(file.Path, file.Size); err != nil {
+		if err := notes.CheckSize(ShownBody(file.Path), file.Size); err != nil {
 			return nil, err
 		}
 	}
@@ -1242,6 +1249,10 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 	return files, nil
 }
 
+// blob reads the blob sha, the file at path, under token. sha and path come from GitHub's tree
+// answer (Dir), so every error blob answers shows sha, path and the target that holds sha as
+// ShownBody shows GitHub's text: blob's own errors, send's (which shows its target so), and
+// notes.CheckSize's, which blob gives the path as ShownBody shows it.
 func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([]byte, error) {
 	target := repoBase + "/git/blobs/" + url.PathEscape(sha)
 	body, status, _, err := c.doLimited(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, blobResponseLimit)
@@ -1249,23 +1260,23 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): %s", target, path, StatusText(status, body))
+		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target), ShownBody(path), StatusText(status, body))
 	}
 	var payload struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s): %w", sha, path, shownErr(err))
+		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), ShownErr(err))
 	}
 	if payload.Encoding != "base64" {
-		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", sha, path, ShownBody(payload.Encoding))
+		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", ShownBody(sha), ShownBody(path), ShownBody(payload.Encoding))
 	}
 	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
 	if err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s) content: %w", sha, path, err)
+		return nil, fmt.Errorf("decode blob %s (%s) content: %w", ShownBody(sha), ShownBody(path), err)
 	}
-	if err := notes.CheckSize(path, int64(len(content))); err != nil {
+	if err := notes.CheckSize(ShownBody(path), int64(len(content))); err != nil {
 		return nil, err
 	}
 	return content, nil
