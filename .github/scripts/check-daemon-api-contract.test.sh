@@ -223,7 +223,7 @@ check "exits 1" "$(is "$status" 1)"
 # The declaration line is named, rather than a fixed number: touch_history can place the second
 # numeric header after the const in this miniature file.
 check "names the declaration and its line" \
-  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:[0-9]+:')"
+  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:[0-9][0-9]*:')"
 check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
