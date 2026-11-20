@@ -1301,8 +1301,8 @@ func TestContractShapesFixture(t *testing.T) {
 // nothing from a pod whose claims record it (callerKind.reaches says why the pod kind stops
 // there). Both are held to the same records, because a body is owed to the reader and not to the
 // way it said who it is, and the second is the population this change is about. Each caller is
-// placed as production places it (servedShapes). On the state, the record and every body
-// placedByPod names its pod places it. On every other answer the pod decides no shape (a fresh
+// placed as production places it (servedShapes): on the state, on the record and on every body
+// placedByPod names, by its pod. On every other answer the pod decides no shape (a fresh
 // session's pod decides only what a stop means, readsTheStopAsAFailure), so the pod kind is
 // served this daemon's own body, and a serving-down there that only the header kind gets is red
 // here.
