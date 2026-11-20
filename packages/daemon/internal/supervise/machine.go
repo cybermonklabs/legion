@@ -3205,7 +3205,8 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // detail the workflow tells the issue, its architect and the controller (Deps.SessionLost).
 // answer is the runtime's answer that led to the forget, nil for a Claude Code claim's, which
 // asked the runtime nothing. It is a far side's error text, so the line carries it as the claim
-// keeps one (logFarSideError), and the two texts carry that kept text.
+// keeps one (logFarSideError). Only the texts of a session no store holds (SessionLossGone) carry
+// that kept text; the texts of the other two causes carry no answer (forgetWords).
 //
 // The workflow is told once, at the forget and before the spawn: a fresh spawn that fails is a
 // launch failure the caller charges, and its retry finds no session to forget, so a report made

@@ -197,9 +197,10 @@ func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
 // claim's machine meets with a fresh agent charged nothing. A recorded file gone from directly
 // under a temporary directory, as the real tmux rig's under /tmp, sends the search to the folders
 // of that directory's parent, and one of them, as /tmp/snap-private-tmp, may be another user's. An
-// entry of the sessions directory that is no folder — a file, one it may not read among them, a
-// symlink to a file or to nothing — holds no session and is skipped by its type, never as unread,
-// so the list names none of them.
+// entry of the sessions directory that is no folder holds no session: a file, one it may not read
+// among them, is skipped by its type and never opened, and a symlink to a file or to nothing is
+// skipped because it reads as no folder (not a directory, or not there). Neither is a failure to
+// read, so the list names none of them.
 func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
 	recorded := filepath.Join(t.TempDir(), "sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
 	for name, shut := range map[string]func(t *testing.T, folder string) (unread string){
