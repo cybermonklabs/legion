@@ -10,6 +10,7 @@
 // runs, a summary line follows, and the exit status is 1 when any case failed. A step outside the
 // cases that fails (the sign-in, the project, the fake listener's seed) exits 2 naming it.
 import { connect, StringCodec } from "nats";
+import { dispatchCall, type Json } from "./lib/dispatch-driver-calls";
 
 const [dispatchUrl, natsUrl, envoyUrl] = process.argv.slice(2);
 const agentToken = process.env.CLAIMANT_E2E_AGENT_TOKEN ?? "";
@@ -48,7 +49,6 @@ const sessionC = "claimant-e2e-c";
 const sessionQ = "claimant-e2e-q";
 const agentPrefix = "notifications.agent.";
 
-type Json = Record<string, unknown>;
 interface DispatchEvent {
   id: number;
   seq: number;
@@ -77,20 +77,13 @@ void (async () => {
 })();
 await nats.flush();
 
-async function call(
+function call(
   method: string,
   path: string,
   headers: Record<string, string>,
   body?: Json
 ): Promise<unknown> {
-  const response = await fetch(new URL(path, dispatchUrl), {
-    body: body === undefined ? undefined : JSON.stringify(body),
-    headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
-    method,
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`);
-  return text === "" ? undefined : JSON.parse(text);
+  return dispatchCall(dispatchUrl, method, path, headers, body);
 }
 
 /** A session's request: the shared agent token, and on a write the session as its `actor`. */

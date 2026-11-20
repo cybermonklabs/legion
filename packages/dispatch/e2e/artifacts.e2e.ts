@@ -6,6 +6,8 @@ import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
 import {
+  bodyForTest,
+  contextSessionCookie,
   createAsk,
   createComment,
   createIssue,
@@ -722,7 +724,12 @@ test("a mounted editor does not reconnect into a document made unreadable while 
   await expect(documentEditor(page)).toBeHidden();
   const text = await page.request.get(`/api/v1/artifacts/${upload.artifact.id}/text`);
   expect(text.status()).toBe(409);
-  await expect(text.text()).resolves.toContain(`"code":"DOC_SCHEMA"`);
+  // `includes`, so a failure prints the body as `bodyForTest` names it and not as it came.
+  const refused = await text.text();
+  expect(
+    refused.includes(`"code":"DOC_SCHEMA"`),
+    bodyForTest(refused, await contextSessionCookie(page.context()))
+  ).toBe(true);
   expect(sockets()).toBe(2);
 });
 
@@ -811,6 +818,10 @@ test("a live document refuses a rebuild", async ({ page }) => {
   await expect(documentEditor(page)).toContainText("before");
   const rebuilt = await postAsPage(page, `/api/v1/artifacts/${upload.artifact.id}/rebuild`, {});
   expect(rebuilt.status()).toBe(409);
-  await expect(rebuilt.text()).resolves.toContain(`"code":"DOCUMENT_LIVE"`);
+  const refused = await rebuilt.text();
+  expect(
+    refused.includes(`"code":"DOCUMENT_LIVE"`),
+    bodyForTest(refused, await contextSessionCookie(page.context()))
+  ).toBe(true);
   await expect(documentEditor(page)).toContainText("before");
 });

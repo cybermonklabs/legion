@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import fixture from "../__fixtures__/display-read-census.json" with { type: "json" };
 import {
   CLASSES,
@@ -271,5 +273,81 @@ describe("reading production", () => {
     } finally {
       held.restore();
     }
+  });
+
+  // A gateway or a proxy in Dispatch's place can answer a read with a page of its own that
+  // echoes the request back, the token with it. The unit's error names such a page in one line
+  // with the token that read presented redacted, a 4xx at once and a 5xx once every attempt has
+  // failed, and Dispatch's own error JSON as Dispatch wrote it.
+  describe("a read refused", () => {
+    let status = 403;
+    /** A gateway's page echoing the read: its bearer bare on a line of its own, first, so only
+     *  the redaction of that very bearer can hide it, then the header as it came. */
+    const echoPage = (request: Request): Response => {
+      const authorization = request.headers.get("authorization") ?? "";
+      return new Response(
+        `<html><body>\n${authorization.replace(/^Bearer /, "")}\n<pre>GET /api/v1/projects\n` +
+          `authorization: ${authorization}</pre></body></html>\n`,
+        { headers: { "Content-Type": "text/html" }, status }
+      );
+    };
+    let answer: (request: Request) => Response = echoPage;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => answer(request),
+    });
+    afterAll(() => server.stop(true));
+
+    const refusalOf = async (token: string): Promise<{ status: number; message: string }> => {
+      const config = {
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential(token),
+      };
+      try {
+        await get(config, "/api/v1/projects", new Rate(1000), { requests: 0 });
+      } catch (error) {
+        const refused = error as Error & { status: number };
+        return { status: refused.status, message: refused.message };
+      }
+      throw new Error("the read answered");
+    };
+
+    test("a 4xx proxy's page is named in one line, the bearer redacted", async () => {
+      const token = fixtureSecret("display");
+      status = 403;
+      answer = echoPage;
+      const refused = await refusalOf(token);
+      expect(refused.status).toBe(403);
+      expect(refused.message).toStartWith("403 a body that is not Dispatch's error JSON (");
+      expect(refused.message).not.toContain(token);
+      expect(refused.message).not.toContain("\n");
+    });
+
+    test("a 5xx proxy's page is named in the last failure, the bearer redacted", async () => {
+      const token = fixtureSecret("display");
+      status = 502;
+      answer = echoPage;
+      // The waits between the attempts are what a 5xx earns; the read's answer is what is held.
+      const sleep = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+      try {
+        const refused = await refusalOf(token);
+        expect(refused.status).toBe(0);
+        expect(refused.message).toStartWith(
+          "GET /api/v1/projects: 5 attempts failed: 502 a body that is not Dispatch's error JSON ("
+        );
+        expect(refused.message).not.toContain(token);
+        expect(refused.message).not.toContain("\n");
+      } finally {
+        sleep.mockRestore();
+      }
+    });
+
+    test("Dispatch's own error JSON is named as Dispatch wrote it", async () => {
+      const refusal = { code: "PROJECT_NOT_FOUND", error: "no project carries the key ACME" };
+      answer = () => Response.json(refusal, { status: 404 });
+      const refused = await refusalOf(fixtureSecret("display"));
+      expect(refused).toEqual({ status: 404, message: `404 ${JSON.stringify(refusal)}` });
+    });
   });
 });

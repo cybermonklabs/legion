@@ -6,6 +6,7 @@ import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worke
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
+  bodyForTest,
   createBroadcast,
   createComment,
   createIssue,
@@ -179,12 +180,14 @@ async function uploadAgentPicture(sessionID: string): Promise<string> {
   const form = new FormData();
   form.append("name", "shot.png");
   form.append("file", new Blob([Buffer.from(tinyPng, "base64")], { type: "image/png" }));
+  const headers = await userHeaders("alice");
   const response = await fetch(
     new URL(`/api/v1/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
-    { body: form, headers: await userHeaders("alice"), method: "POST" }
+    { body: form, headers, method: "POST" }
   );
   if (!response.ok) {
-    throw new Error(`agent picture upload: ${response.status} ${await response.text()}`);
+    const answer = bodyForTest(await response.text(), headers.Cookie);
+    throw new Error(`agent picture upload: ${response.status} ${answer}`);
   }
   // The server's own upload answer, as e2e/api.ts reads every JSON answer.
   const uploaded = (await response.json()) as ArtifactUploadResponse;

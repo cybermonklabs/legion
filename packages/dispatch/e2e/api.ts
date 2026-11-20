@@ -4,7 +4,11 @@ import {
   type InboxThreadKind,
   type paths,
 } from "@legion/contracts";
-import type { Cookie } from "@playwright/test";
+import type { BrowserContext, Cookie } from "@playwright/test";
+// By path, not as `@legion/envoy-client/excerpt`: Playwright loads this module under Node, which
+// takes that package's `default` export condition, its unbuilt `dist/`, where Bun takes the
+// source; Playwright transpiles a source file it is handed by path as it does this one.
+import { bodyForText, type Tokens } from "../../envoy-client/src/excerpt";
 import {
   type Body,
   type Op,
@@ -240,6 +244,45 @@ export async function userHeaders(
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
+/** The session cookie a page of `context` sends Dispatch, as a `Cookie` header carries it
+ *  (`dsession=<value>`), or "" for a context signed in as no one: the credential every
+ *  `page.request` of that context carries, which `bodyForTest` takes. It is read whatever host it
+ *  was set for: a project such as the plain-HTTP one gives the config's `baseURL` another host
+ *  than this module's `baseUrl` (e2e/playwright.config.ts). */
+export async function contextSessionCookie(context: BrowserContext): Promise<string> {
+  const cookie = (await context.cookies()).find(({ name }) => name === sessionCookieName);
+  return cookie === undefined ? "" : `${cookie.name}=${cookie.value}`;
+}
+
+/** Whether `text` is Dispatch's own refusal: a JSON object with a string `error`, which every
+ *  refusal the server writes holds (`writeError`). */
+function isDispatchRefusal(text: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "error" in parsed &&
+    typeof parsed.error === "string"
+  );
+}
+
+/** `text`, the body of an answer to a request that carried `credential`, as a row's failure or
+ *  assertion message names it. Dispatch's own refusal (`isDispatchRefusal`) reads as it came.
+ *  Any other body - a gateway's or a proxy's page, which can echo the request back with its
+ *  credential in it, an empty body, JSON of another shape, a 2xx answer a row did not want -
+ *  reads as `bodyForText` names it: one line of plain text with every run of `credential`, and
+ *  any `Authorization`, `Bearer` or `DPoP` value, redacted. `credential` is what the request
+ *  carried, one or several: its bearer token, or its session cookie as the `Cookie` header
+ *  carries it (`userHeaders`, and `contextSessionCookie` for a `page.request`). */
+export function bodyForTest(text: string, credential: Tokens): string {
+  return isDispatchRefusal(text) ? text : bodyForText(text, credential, "Dispatch's error JSON");
+}
+
 async function request<T>(
   path: string,
   method: string,
@@ -255,10 +298,14 @@ async function request<T>(
         ? { ...body, actor: options.actor ?? seedActor }
         : body;
 
+  let credential: string;
   if (as === "agent") {
-    headers.Authorization = `Bearer ${options.token ?? e2eAgentToken}`;
+    credential = options.token ?? e2eAgentToken;
+    headers.Authorization = `Bearer ${credential}`;
   } else {
-    Object.assign(headers, await userHeaders(options.login, options.process));
+    const user = await userHeaders(options.login, options.process);
+    credential = user.Cookie;
+    Object.assign(headers, user);
   }
   if (options.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = options.idempotencyKey;
@@ -272,7 +319,8 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
+    const answer = bodyForTest(await response.text(), credential);
+    throw new Error(`${method} ${path} failed: ${response.status} ${answer}`);
   }
 
   return (response.status === 204 ? undefined : await response.json()) as T;

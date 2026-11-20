@@ -12,6 +12,7 @@ import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
 } from "../../packages/envoy-client/src/dispatch-http";
+import { bodyForText } from "../../packages/envoy-client/src/excerpt";
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -390,6 +391,25 @@ function parseArguments(argv: readonly string[]): RunOptions {
   };
 }
 
+/**
+ * A refused read's body as its error names it. Dispatch's error JSON, an object whose `error` is a
+ * string, is named as Dispatch wrote it. Any other body was written by something in Dispatch's
+ * place, a gateway or a proxy, which can echo the request back, the token with it: it is named in
+ * one line with `sent`, the token and the DPoP proof the read presented, redacted (`bodyForText`),
+ * never whole.
+ */
+function refusedBody(text: string, sent: readonly string[]): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+      if (typeof parsed.error === "string") return text;
+    }
+  } catch {
+    // Not JSON, so not Dispatch's: named below.
+  }
+  return bodyForText(text, sent, "Dispatch's error JSON");
+}
+
 /** One read of Dispatch that goes around DispatchClient (`run`'s issue lists), as JSON. */
 export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
   const url = `${config.url}${path}`;
@@ -397,11 +417,14 @@ export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
   // that goes with it: this read goes around DispatchClient, so it presents the credential itself,
   // under the bound DispatchClient puts on each of its own requests.
   const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-  const response = await fetch(url, {
-    headers: await config.credential.headers("GET", url, undefined, deadline),
-    signal: deadline,
-  });
-  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
+  const presented = await config.credential.headers("GET", url, undefined, deadline);
+  const response = await fetch(url, { headers: presented, signal: deadline });
+  if (!response.ok) {
+    // The token this read presented, after its scheme, and its DPoP proof: a broker credential
+    // can hold another by now, traded for while other reads were in flight.
+    const sent = [(presented.Authorization ?? "").replace(/^\S+\s+/, ""), presented.DPoP ?? ""];
+    throw new Error(`GET ${path}: ${response.status} ${refusedBody(await response.text(), sent)}`);
+  }
   return (await response.json()) as T;
 }
 

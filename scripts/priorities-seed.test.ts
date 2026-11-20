@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
 import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
 import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
@@ -85,6 +86,24 @@ let document = { markdown: TABLE, version: 1 };
  *  ACTOR_KIND "bearer callers require actor.kind session"). The shared token every pod carries
  *  is such a bearer. */
 let requireActor = false;
+/** The requests a gateway in Dispatch's place answers instead of the fake, with a page of its own
+ *  (`echoPage`); none while it is undefined. */
+let proxied: ((method: string, path: string) => boolean) | undefined;
+/** The status `echoPage` answers with. */
+let proxiedStatus = 502;
+
+/** The page a gateway answers in Dispatch's place, echoing the request: the bearer it carried
+ *  bare on a line of its own, first, so only the redaction of that very bearer can hide it, then
+ *  the request's headers as they came. */
+function echoPage(request: Request): Response {
+  const authorization = request.headers.get("authorization") ?? "";
+  const proof = request.headers.get("dpop") ?? "";
+  return new Response(
+    `<html><body>\n${authorization.replace(/^\S+ /, "")}\n${proof}\n<pre>${request.method} ` +
+      `${new URL(request.url).pathname}\nauthorization: ${authorization}</pre></body></html>\n`,
+    { headers: { "Content-Type": "text/html" }, status: proxiedStatus }
+  );
+}
 
 /** The id the server writes for a title, as `priorityIDFromTitle` does: the title as a slug. */
 function slug(title: string): string {
@@ -112,6 +131,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname } = new URL(request.url);
+    if (proxied?.(request.method, pathname)) return echoPage(request);
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
@@ -194,6 +214,8 @@ beforeEach(() => {
   requests.length = 0;
   document = { markdown: TABLE, version: 1 };
   requireActor = false;
+  proxied = undefined;
+  proxiedStatus = 502;
   issues.clear();
   for (const [key, status] of [
     ["TEST-1", "in_progress"],
@@ -411,4 +433,95 @@ test("every request of the seed hands its credential a deadline", async () => {
   } finally {
     held.restore();
   }
+});
+
+// A gateway or a proxy in Dispatch's place can answer with a page of its own that echoes the
+// request back, the bearer with it. The seed's error names such a page in one line with the bearer
+// it presented redacted, and Dispatch's own error JSON as Dispatch wrote it.
+test("a read refused with a proxy's page names it in one line, the bearer redacted", async () => {
+  const token = fixtureSecret("seed");
+  proxied = (_, path) => path === "/api/v1/priorities";
+  const seeding = seedPriorities({ ...config, credential: bearerCredential(token) }, DOCUMENT);
+  const error = await seeding.then(
+    () => undefined,
+    (refused: unknown) => refused
+  );
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toStartWith(
+    "GET /api/v1/priorities: 502 a body that is not Dispatch's error JSON ("
+  );
+  expect(message).not.toContain(token);
+  expect(message).not.toContain("\n");
+});
+
+test("an issue read refused with a proxy's page names it in one line, the bearer redacted", async () => {
+  const token = fixtureSecret("seed");
+  proxied = (method, path) => method === "GET" && path === "/api/v1/issues/TEST-1";
+  const seeding = seedPriorities({ ...config, credential: bearerCredential(token) }, DOCUMENT);
+  const error = await seeding.then(
+    () => undefined,
+    (refused: unknown) => refused
+  );
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toStartWith(
+    "GET /api/v1/issues/TEST-1: 502 a body that is not Dispatch's error JSON ("
+  );
+  expect(message).not.toContain(token);
+  expect(message).not.toContain("\n");
+});
+
+// A broker credential presents a DPoP proof beside its token, and a page that echoes the request
+// can print the proof bare: the seed redacts each secret its request carried, the proof with it.
+test("a read refused with a proxy's page names it without the DPoP proof the read carried", async () => {
+  const token = fixtureSecret("seed");
+  const proof = `eyJ${fixtureSecret("proof")}.eyJ${fixtureSecret("claims")}.sig`;
+  proxied = (_, path) => path === "/api/v1/priorities";
+  const credential = {
+    scheme: "DPoP",
+    headers: () => ({ Authorization: `DPoP ${token}`, DPoP: proof }),
+    secret: () => token,
+  };
+  const error = await seedPriorities({ ...config, credential }, DOCUMENT).then(
+    () => undefined,
+    (refused: unknown) => refused
+  );
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toStartWith(
+    "GET /api/v1/priorities: 502 a body that is not Dispatch's error JSON ("
+  );
+  expect(message).not.toContain(token);
+  expect(message).not.toContain(proof.slice(0, 12));
+});
+
+// Only Dispatch's own 404, its error JSON, says no issue carries a key. A page in its place that
+// answers 404 is that page's error: read as "no issue", it would leave the row's issue unrelated
+// and record it as missing, and a later run would act on what already exists.
+test("an issue read a proxy's page answers 404 is that page's error, never a missing issue", async () => {
+  const token = fixtureSecret("seed");
+  proxied = (method, path) => method === "GET" && path === "/api/v1/issues/TEST-1";
+  proxiedStatus = 404;
+  const error = await seedPriorities(
+    { ...config, credential: bearerCredential(token) },
+    DOCUMENT
+  ).then(
+    () => undefined,
+    (refused: unknown) => refused
+  );
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toStartWith(
+    "GET /api/v1/issues/TEST-1: 404 a body that is not Dispatch's error JSON ("
+  );
+  expect(message).not.toContain(token);
+  expect(priorities).toEqual([]);
+});
+
+test("a refusal in Dispatch's own error JSON prints as Dispatch wrote it", async () => {
+  requireActor = true;
+  await expect(seedPriorities(config, DOCUMENT)).rejects.toThrow(
+    'POST /api/v1/priorities: 400 {"code":"ACTOR_KIND","error":"bearer callers require actor.kind session"}'
+  );
 });

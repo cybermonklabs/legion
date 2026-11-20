@@ -11,9 +11,15 @@
  *   {"seq":1,"label":"omp-a","at":1761,"method":"POST","path":"/v1/roles/set","status":409,
  *    "request":{...},"response":{...},"ms":3}
  *
+ * `response` is the listener's own JSON as it came, which is what the smoke's readers take fields
+ * of (role-takeover/clients.sh). The proxy forwards each client's `Authorization`, and an answer
+ * the listener did not write, such as a gateway's page echoing the request back, can hold that
+ * credential, so such an answer is logged as one line with it redacted (`logAnswer`).
+ *
  * Usage: bun listener-proxy.ts --port <n> --upstream <url> --log <file> --label <name>
  */
 import { appendFileSync } from "node:fs";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 
 interface Options {
   readonly port: number;
@@ -36,7 +42,8 @@ function parseOptions(argv: readonly string[]): Options {
   const upstream = values.get("upstream");
   const log = values.get("log");
   const label = values.get("label");
-  if (!Number.isInteger(port) || port <= 0) throw new Error("listener-proxy: --port is required");
+  // 0 asks for any free port, which the ready line names: the proxy's own test starts it so.
+  if (!Number.isInteger(port) || port < 0) throw new Error("listener-proxy: --port is required");
   if (upstream === undefined) throw new Error("listener-proxy: --upstream is required");
   if (log === undefined) throw new Error("listener-proxy: --log is required");
   if (label === undefined) throw new Error("listener-proxy: --label is required");
@@ -55,6 +62,45 @@ function logBody(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+/** The shortest run of a credential's characters that holds it, as the excerpt counts one
+ *  (`BEARER_PIECE` of packages/envoy-client/src/excerpt.ts): a credential shorter than this is
+ *  held only whole. */
+const CREDENTIAL_PIECE = 8;
+
+/** Whether `text` holds a run of `CREDENTIAL_PIECE` characters of any of `credentials`. */
+function holdsCredential(text: string, credentials: readonly string[]): boolean {
+  return credentials.some((credential) => {
+    if (credential === "") return false;
+    const length = Math.min(CREDENTIAL_PIECE, credential.length);
+    for (let at = 0; at + length <= credential.length; at += 1) {
+      if (text.includes(credential.slice(at, at + length))) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * The answer as the log carries it: null for an empty body, and the listener's own JSON, an
+ * object or a list, parsed. Anything else did not come from the listener, which a gateway or a
+ * proxy in its place can answer with a page that echoes the request back, the client's credential
+ * in it: text, JSON that is no object or list, and JSON that holds `secret` or `proof`, which the
+ * listener never writes back. That is logged as `bodyForText` names it, one line with every run of
+ * `secret`, the credential the client's `Authorization` presented, and of `proof`, its DPoP proof,
+ * redacted, and any `Authorization`, `Bearer` or `DPoP` value.
+ */
+function logAnswer(text: string, secret: string, proof: string): unknown {
+  if (text === "") return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && !holdsCredential(text, [secret, proof])) {
+      return parsed;
+    }
+  } catch {
+    // Not JSON, so not the listener's.
+  }
+  return bodyForText(text, [secret, proof], "the listener's JSON");
 }
 
 function record(entry: Record<string, unknown>): void {
@@ -95,7 +141,12 @@ const server = Bun.serve({
       return Response.json({ error: "the listener did not answer the proxy" }, { status: 502 });
     }
     const text = await answer.text();
-    record({ ...entry, status: answer.status, response: logBody(text), ms: Date.now() - started });
+    // The credential the client presented, after its scheme (a bearer, a DPoP-bound token, Basic's
+    // user and password), and its DPoP proof: what the proxy forwarded and an echo can hold.
+    const secret = (headers.get("authorization") ?? "").trim().replace(/^\S+\s+/, "");
+    const proof = (headers.get("dpop") ?? "").trim();
+    const response = logAnswer(text, secret, proof);
+    record({ ...entry, status: answer.status, response, ms: Date.now() - started });
     const answerHeaders = new Headers(answer.headers);
     answerHeaders.delete("content-encoding");
     answerHeaders.delete("content-length");

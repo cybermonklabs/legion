@@ -6,6 +6,7 @@ import type { BlockSchema, LiveClientFrame, LiveServerFrame } from "../web/src/a
 import { schemaCreatable } from "../web/src/features/doc/schema-creatable";
 import {
   baseUrl,
+  bodyForTest,
   createAsk,
   createIssue,
   createProject,
@@ -442,14 +443,19 @@ test("a document holding newer content shows that state and no replace drop zone
     new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/_test/newer-content`, baseUrl),
     { headers: { Authorization: `Bearer ${e2eAgentToken}` }, method: "POST" }
   );
-  expect(injected.status, await injected.text()).toBe(204);
+  expect(injected.status, bodyForTest(await injected.text(), e2eAgentToken)).toBe(204);
   for (const target of dispatchProcesses) {
     const text = await fetch(
       new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/text`, baseUrl),
       { headers: { Authorization: `Bearer ${e2eAgentToken}`, ...pinnedTo(target) } }
     );
     expect(text.status).toBe(409);
-    expect(await text.text()).toContain('"code":"DOC_NEWER_CONTENT"');
+    // `includes`, so a failure prints the body as `bodyForTest` names it and not as it came.
+    const refused = await text.text();
+    expect(
+      refused.includes('"code":"DOC_NEWER_CONTENT"'),
+      bodyForTest(refused, e2eAgentToken)
+    ).toBe(true);
   }
 
   for (const target of dispatchProcesses) {

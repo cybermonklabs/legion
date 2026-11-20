@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { bodyForText } from "../../packages/envoy-client/src/excerpt";
 import { CannotRunError, pool } from "./corpus-io";
 
 /**
@@ -13,7 +14,8 @@ import { CannotRunError, pool } from "./corpus-io";
  *
  * One retry policy covers every read: a transport error or a 5xx is tried again, four times, with
  * a growing wait, and a 4xx is thrown at once, since the route or the item is not there and
- * another try would not help.
+ * another try would not help. Either error names the answer's body as `refusedBody` does: never
+ * a body whole that something in Dispatch's place wrote, which can echo the bearer back.
  */
 
 /** The growing waits between the tries of one read: four retries after the first try. */
@@ -22,7 +24,7 @@ const RETRY_WAITS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
 const DEFAULT_CONCURRENCY = 8;
 /** The page the event log is asked for, which is that route's own maximum. */
 const EVENT_PAGE_SIZE = 1000;
-/** How much of a refused read's body is kept: enough to name the refusal, never a whole page. */
+/** How much of Dispatch's own refusal is kept: enough to name the refusal, never a whole page. */
 const REFUSAL_BODY_CHARS = 500;
 
 /** The server and the bearer, as one call read them from the environment. */
@@ -154,6 +156,25 @@ export async function readText(path: string, config?: DispatchConfig): Promise<s
   return read(path, config, (answer) => answer.text());
 }
 
+/**
+ * A refused read's body as its error names it. Dispatch's error JSON, an object whose `error` is a
+ * string, is named by its first `REFUSAL_BODY_CHARS` characters, as Dispatch wrote it. Any other
+ * body was written by something in Dispatch's place, a gateway or a proxy, which can echo the
+ * request back, the bearer with it: it is named in one line with `token`, the bearer the read
+ * presented, redacted (`bodyForText`), never whole.
+ */
+function refusedBody(text: string, token: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+      if (typeof parsed.error === "string") return text.slice(0, REFUSAL_BODY_CHARS);
+    }
+  } catch {
+    // Not JSON, so not Dispatch's: named below.
+  }
+  return bodyForText(text, token, "Dispatch's error JSON");
+}
+
 /** One GET under the retry policy, its successful answer's body taken by `body`. */
 async function read<T>(
   path: string,
@@ -170,11 +191,11 @@ async function read<T>(
         headers: { authorization: `Bearer ${resolved.token}` },
       });
       if (answer.status >= 400 && answer.status < 500) {
-        const refusal = (await answer.text()).slice(0, REFUSAL_BODY_CHARS);
+        const refusal = refusedBody(await answer.text(), resolved.token);
         throw new DispatchRefusedError(path, answer.status, refusal);
       }
       if (answer.ok) return await body(answer);
-      lastFailure = `${answer.status} ${(await answer.text()).slice(0, REFUSAL_BODY_CHARS)}`;
+      lastFailure = `${answer.status} ${refusedBody(await answer.text(), resolved.token)}`;
     } catch (error) {
       if (error instanceof DispatchRefusedError) throw error;
       lastFailure = error instanceof Error ? error.message : String(error);

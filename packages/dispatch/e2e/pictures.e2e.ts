@@ -5,6 +5,8 @@ import {
 } from "../web/src/features/refs/ref-preview-timing";
 import { agentRow, setLiveSessions } from "./agents";
 import {
+  bodyForTest,
+  contextSessionCookie,
   createAsk,
   createComment,
   createIssue,
@@ -425,7 +427,8 @@ test("a long-named picture in a comment draws, its link to a long-named document
         name: pictureName,
       },
     });
-    expect(upload.status(), await upload.text()).toBeLessThan(300);
+    const cookie = await contextSessionCookie(alice);
+    expect(upload.status(), bodyForTest(await upload.text(), cookie)).toBeLessThan(300);
     const pictureSlug = ((await upload.json()) as ArtifactUploadResponse).artifact.slug;
     // Words, so the link's title - the document's name - wraps in the column.
     const design = await createIssueArtifact(issue.key, {

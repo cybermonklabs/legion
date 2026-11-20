@@ -1,6 +1,10 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
-import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  bearerCredential,
+  type RequestCredential,
+} from "../../../packages/envoy-client/src/bearer.ts";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
@@ -408,4 +412,66 @@ test("ask-census's own read hands its credential the request's deadline", async 
   } finally {
     held.restore();
   }
+});
+
+// A gateway or a proxy in Dispatch's place can answer the census's own read with a page of its
+// own that echoes the request back, the token with it. The read's error names such a page in one
+// line with the token that request presented redacted, and Dispatch's own error JSON as Dispatch
+// wrote it.
+describe("ask-census's own read, refused", () => {
+  let answer: (request: Request) => Response = () => new Response("unset", { status: 500 });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => answer(request) });
+  afterAll(() => server.stop(true));
+  const url = `http://127.0.0.1:${server.port}`;
+  const path = "/api/v1/issues?project=ACME";
+
+  /** A gateway's page echoing the request: the token after the request's Authorization scheme
+   *  bare on a line of its own, first, so only the redaction of that very token can hide it,
+   *  then the header as it came. */
+  const echoPage = (request: Request): Response => {
+    const authorization = request.headers.get("authorization") ?? "";
+    return new Response(
+      `<html><body>\n${authorization.replace(/^\S+ /, "")}\n<pre>GET ${path}\n` +
+        `authorization: ${authorization}</pre></body></html>\n`,
+      { headers: { "Content-Type": "text/html" }, status: 403 }
+    );
+  };
+
+  const refusalOf = (credential: RequestCredential): Promise<string> =>
+    get({ url, credential }, path).then(
+      () => "the read answered",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+
+  test("names a proxy's page in one line, the bearer redacted", async () => {
+    const token = fixtureSecret("census");
+    answer = echoPage;
+    const message = await refusalOf(bearerCredential(token));
+    expect(message).toStartWith(`GET ${path}: 403 a body that is not Dispatch's error JSON (`);
+    expect(message).not.toContain(token);
+    expect(message).not.toContain("\n");
+  });
+
+  // A broker credential trades a new token while other reads are in flight, so what it holds by
+  // the time an answer is read can be another token than the one that read presented.
+  test("redacts the token the read presented, not the one its credential holds now", async () => {
+    const token = fixtureSecret("census");
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => ({ Authorization: `DPoP ${token}` }),
+      secret: () => fixtureSecret("later"),
+    };
+    answer = echoPage;
+    const message = await refusalOf(credential);
+    expect(message).toContain("a body that is not Dispatch's error JSON (");
+    expect(message).not.toContain(token);
+  });
+
+  test("prints Dispatch's own error JSON as Dispatch wrote it", async () => {
+    const refusal = { code: "PROJECT_NOT_FOUND", error: "no project carries the key ACME" };
+    answer = () => Response.json(refusal, { status: 404 });
+    expect(await refusalOf(bearerCredential(fixtureSecret("census")))).toBe(
+      `GET ${path}: 404 ${JSON.stringify(refusal)}`
+    );
+  });
 });

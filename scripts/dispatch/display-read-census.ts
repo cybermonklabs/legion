@@ -85,6 +85,7 @@ import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
+import { bodyForText } from "../../packages/envoy-client/src/excerpt";
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -370,6 +371,25 @@ interface Spend {
   requests: number;
 }
 
+/**
+ * A refused read's body as its error names it. Dispatch's error JSON, an object whose `error` is a
+ * string, is named by its first 200 characters, as Dispatch wrote it. Any other body was written
+ * by something in Dispatch's place, a gateway or a proxy, which can echo the request back, the
+ * token with it: it is named in one line with `sent`, the token and the DPoP proof the read
+ * presented, redacted (`bodyForText`), never whole.
+ */
+function refusedBody(text: string, sent: readonly string[]): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+      if (typeof parsed.error === "string") return text.slice(0, 200);
+    }
+  } catch {
+    // Not JSON, so not Dispatch's: named below.
+  }
+  return bodyForText(text, sent, "Dispatch's error JSON");
+}
+
 /** One read of Dispatch, as JSON: a 5xx or a failed connection tried again, a 4xx answered. */
 export async function get<T>(
   config: DispatchConfig,
@@ -387,12 +407,13 @@ export async function get<T>(
       // process's key per request, and a stale proof is what a retry would otherwise re-send. One
       // deadline bounds both, the one DispatchClient puts on each of its own requests.
       const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-      const response = await fetch(url, {
-        headers: await config.credential.headers("GET", url, undefined, deadline),
-        signal: deadline,
-      });
+      const presented = await config.credential.headers("GET", url, undefined, deadline);
+      const response = await fetch(url, { headers: presented, signal: deadline });
       if (response.ok) return (await response.json()) as T;
-      const body = (await response.text()).slice(0, 200);
+      // The token this attempt presented, after its scheme, and its DPoP proof: a broker
+      // credential can hold another by now, traded for while other units' reads were in flight.
+      const sent = [(presented.Authorization ?? "").replace(/^\S+\s+/, ""), presented.DPoP ?? ""];
+      const body = refusedBody(await response.text(), sent);
       if (response.status < 500) throw new HttpError(response.status, `${response.status} ${body}`);
       last = `${response.status} ${body}`;
     } catch (error) {

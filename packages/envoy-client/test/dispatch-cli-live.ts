@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { bodyForText } from "../src/excerpt";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
 // What every file that proves a clause of a document write's advice over the whole path it is
@@ -99,6 +100,30 @@ export interface DispatchCliLive {
 }
 
 /**
+ * `text`, the body of an answer that refused a write, as the write's error names it. Dispatch's
+ * own refusal, a JSON object with a string `error` (`writeError` in the server), reads as it came.
+ * Any other body did not come from Dispatch: a gateway or a proxy in its place can answer with a
+ * page that echoes the request back, so it reads as `bodyForText` names it, one line with every
+ * run of `identity` (the bearer or the header identity the write carried) redacted.
+ */
+function refusalText(text: string, identity: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    ) {
+      return text;
+    }
+  } catch {
+    // Not JSON, so not Dispatch's refusal.
+  }
+  return bodyForText(text, identity, "Dispatch's error JSON");
+}
+
+/**
  * The harness both live files run their rows on, over the stack the calling file started.
  *
  * A file calls this once, in the body of its `describe`, and keeps for itself the project keys,
@@ -114,11 +139,13 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
     return stack;
   }
 
+  /** One write over the server's own routes under `headers`, whose identity is `identity`. */
   async function request<T>(
     method: string,
     route: string,
     body: unknown,
-    headers: Readonly<Record<string, string>>
+    headers: Readonly<Record<string, string>>,
+    identity: string
   ): Promise<T> {
     const response = await fetch(`${server().url}${route}`, {
       method,
@@ -126,15 +153,19 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text}`);
+    if (!response.ok) {
+      throw new Error(`${method} ${route}: ${response.status} ${refusalText(text, identity)}`);
+    }
     return JSON.parse(text) as T;
   }
 
   const asPerson = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-    request<T>(method, route, body, { "X-Dispatch-User": person });
+    request<T>(method, route, body, { "X-Dispatch-User": person }, person);
 
-  const asMachine = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-    request<T>(method, route, body, { Authorization: `Bearer ${server().token}` });
+  const asMachine = <T>(method: string, route: string, body?: unknown): Promise<T> => {
+    const { token } = server();
+    return request<T>(method, route, body, { Authorization: `Bearer ${token}` }, token);
+  };
 
   const createIssue = async (
     project: string,

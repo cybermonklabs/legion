@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { connect } from "nats";
 import { agentStreamControlSubject } from "../../../packages/contracts/src/agent-stream";
+import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
 import { expect, PERSON, type Rig, sleep, until } from "./session-settings-common";
 
 /** The delivery every client this rig registers asks for: the session consumer a session is
@@ -37,14 +38,38 @@ export class Services {
     this.#rig = rig;
   }
 
-  async #json(url: string, init: RequestInit): Promise<{ status: number; body: unknown }> {
+  /**
+   * `url` fetched with `init`, its body parsed where it is JSON and kept as its text where not.
+   * `carried` is the bearer the request presents and the server it is meant for. An answer that is
+   * not that server's own - JSON on a 2xx, its error JSON (an object whose `error` is a string) on
+   * any other status - was written by something in its place, a gateway or a proxy, which can echo
+   * the request back, the bearer with it: its body is then that page named in one line with the
+   * bearer redacted (`bodyForText`), which is what a check prints of it. No check reads such a body
+   * for more than printing: each looks for the server's own code, which only its own JSON holds.
+   */
+  async #json(
+    url: string,
+    init: RequestInit,
+    carried?: { readonly token: string; readonly server: string }
+  ): Promise<{ status: number; body: unknown }> {
     const response = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
     const raw = await response.text();
     let body: unknown = raw;
+    let own = false;
     try {
       body = JSON.parse(raw);
+      own =
+        response.ok ||
+        (typeof body === "object" &&
+          body !== null &&
+          "error" in body &&
+          typeof body.error === "string");
     } catch {
       // A body that is not JSON is kept as its text.
+    }
+    if (carried !== undefined && !own) {
+      const kind = response.ok ? "JSON" : "error JSON";
+      body = bodyForText(raw, carried.token, `${carried.server}'s ${kind}`);
     }
     return { body, status: response.status };
   }
@@ -79,14 +104,19 @@ export class Services {
     return answer.body as StoredMessage;
   }
 
-  /** `path` posted with the session's own Dispatch bearer, as an agent would post it. */
+  /** `path` posted with the session's own Dispatch bearer, as an agent would post it; a body that
+   *  is not Dispatch's own is named with that bearer redacted (`#json`). */
   async #asAgent(path: string, body: object): Promise<{ status: number; body: unknown }> {
     const token = readFileSync(this.#rig.dispatchTokenFile, "utf8").trim();
-    return this.#json(`${this.#rig.dispatchUrl}${path}`, {
-      body: JSON.stringify(body),
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      method: "POST",
-    });
+    return this.#json(
+      `${this.#rig.dispatchUrl}${path}`,
+      {
+        body: JSON.stringify(body),
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        method: "POST",
+      },
+      { server: "Dispatch", token }
+    );
   }
 
   /** The same Send with the session's own Dispatch bearer, as an agent would make it. */
@@ -104,12 +134,18 @@ export class Services {
     });
   }
 
+  /** `path` asked of the listener with the Envoy token, posting `body` where there is one; a body
+   *  that is not the listener's own is named with that token redacted (`#json`). */
   async #listener(path: string, body?: object): Promise<unknown> {
     const token = readFileSync(this.#rig.envoyTokenFile, "utf8").trim();
-    const answer = await this.#json(`${this.#rig.envoyUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body), method: "POST" }),
-    });
+    const answer = await this.#json(
+      `${this.#rig.envoyUrl}${path}`,
+      {
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body), method: "POST" }),
+      },
+      { server: "the listener", token }
+    );
     expect(
       answer.status === 200,
       `the listener answered ${path} with ${answer.status}: ${JSON.stringify(answer.body)}`

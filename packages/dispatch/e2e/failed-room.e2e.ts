@@ -15,6 +15,7 @@
 
 import {
   baseUrl,
+  bodyForTest,
   createComment,
   createIssue,
   createProject,
@@ -89,9 +90,10 @@ interface Attempt {
 
 async function anchoredComment(issueKey: string, body: string, quote: string): Promise<Attempt> {
   const started = Date.now();
+  const headers = await userHeaders("alice");
   const response = await fetch(`${baseUrl}/api/v1/issues/${issueKey}/comments`, {
     body: JSON.stringify({ anchor: { artifact: "spec", quote }, body }),
-    headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+    headers: { "Content-Type": "application/json", ...headers },
     method: "POST",
     signal: AbortSignal.timeout(30_000),
   });
@@ -100,7 +102,8 @@ async function anchoredComment(issueKey: string, body: string, quote: string): P
   try {
     code = (JSON.parse(text) as { code?: string }).code ?? "";
   } catch {
-    code = text.slice(0, 40);
+    // Not JSON, so not Dispatch's refusal: named, its credential redacted, never as it came.
+    code = bodyForTest(text, headers.Cookie);
   }
   return { code, seconds: (Date.now() - started) / 1000, status: response.status };
 }

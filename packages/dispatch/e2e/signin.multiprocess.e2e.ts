@@ -1,4 +1,4 @@
-import { baseUrl } from "./api";
+import { baseUrl, bodyForTest } from "./api";
 import { type DispatchProcess, pinnedTo, processPinCookie } from "./harness-processes";
 import { oidcSignIn } from "./harness-signin";
 import type { ProxiedRequest } from "./round-robin-proxy";
@@ -51,8 +51,16 @@ test("a sign-in started on Dispatch A completes on Dispatch B", async ({ browser
   await page.goto(`/auth/start?next=${encodeURIComponent(next)}`);
 
   const answered = await callback;
-  // A redirect's body cannot be read; any other answer's body says why the sign-in stopped.
-  const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
+  // A redirect's body cannot be read; any other answer's body says why the sign-in stopped. The
+  // callback carried the issuer's authorization code, the sign-in's state and its cookies, which a
+  // gateway's page can echo back.
+  const callbackUrl = new URL(answered.url());
+  const carried = [
+    callbackUrl.searchParams.get("code") ?? "",
+    callbackUrl.searchParams.get("state") ?? "",
+    (await answered.request().allHeaders()).cookie ?? "",
+  ];
+  const why = answered.status() === 302 ? "" : ` ${bodyForTest(await answered.text(), carried)}`;
   expect(answered.status(), `/auth/callback answered ${answered.status()}${why}`).toBe(302);
   await expect(page).toHaveURL(new URL(next, baseUrl).href);
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();

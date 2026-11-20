@@ -46,7 +46,7 @@ import { existsSync } from "node:fs";
 import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@playwright/test";
 
 import { resetFakeEnvoy, setLiveSessions } from "./agents";
-import { baseUrlOf, devSignInPath, listAgents, sessionCookieFrom } from "./api";
+import { baseUrlOf, bodyForTest, devSignInPath, listAgents, sessionCookieFrom } from "./api";
 import { stubProjectNames } from "./configurations";
 import { type Stack, startStacks } from "./harness-pool";
 import { harnessPorts, refuseStackConflicts, stacksVariable } from "./harness-ports";
@@ -189,8 +189,9 @@ async function checkStack(stack: Stack, count: number): Promise<void> {
 
 /** Signs a person in on A and asks B who they are. The person row it writes is emptied by the
  *  first row's `resetDatabase`, as every row's are. Two-process mode runs one stack, so the URL
- *  is that stack's proxy. */
-async function requireOneCookieKey(url: string): Promise<void> {
+ *  is that stack's proxy. Exported for `e2e/__tests__/proxy-echo.test.ts`, which puts a gateway
+ *  that echoes the request in B's place. */
+export async function requireOneCookieKey(url: string): Promise<void> {
   const refusal = "The Dispatch e2e harness cannot start: Dispatch B";
   const signIn = await fetch(new URL(devSignInPath("alice"), url), {
     headers: pinnedTo("a"),
@@ -207,8 +208,10 @@ async function requireOneCookieKey(url: string): Promise<void> {
     headers: { ...pinnedTo("b"), Cookie: cookie },
   });
   if (whoami.status !== 200) {
+    // The cookie is the request's credential, which a gateway in B's place can echo back.
+    const answer = bodyForTest(await whoami.text(), cookie);
     throw new Error(
-      `${refusal} answered ${whoami.status} ${await whoami.text()} to a session Dispatch A ` +
+      `${refusal} answered ${whoami.status} ${answer} to a session Dispatch A ` +
         "minted, so a person signed in on one process is signed out on the other. Both must sign " +
         "cookies with the key derived from the one DISPATCH_DEV_SIGNIN_SHARED_KEY run-server.sh " +
         "hands them from the harness's DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY (e2e/harness-listeners.ts)."

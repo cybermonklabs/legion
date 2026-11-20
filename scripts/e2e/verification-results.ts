@@ -43,6 +43,13 @@ import { connect, StringCodec } from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+import {
+  dispatchBytes,
+  dispatchCall,
+  dispatchRefusal,
+  type Json,
+  type Refusal,
+} from "./lib/dispatch-driver-calls";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
@@ -152,25 +159,16 @@ const commits = {
   unheld: "a".repeat(40),
 };
 
-type Json = Record<string, unknown>;
-
 const codec = StringCodec();
 const nats = await connect({ name: "verification-results", servers: natsUrl });
 
-async function call(
+function call(
   method: string,
   path: string,
   headers: Record<string, string>,
   body?: Json
 ): Promise<unknown> {
-  const response = await fetch(new URL(path, dispatchUrl), {
-    body: body === undefined ? undefined : JSON.stringify(body),
-    headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
-    method,
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`);
-  return text === "" ? undefined : JSON.parse(text);
+  return dispatchCall(dispatchUrl, method, path, headers, body);
 }
 
 /** The session's request: the shared agent token, and on a write the session as its `actor`. */
@@ -181,32 +179,16 @@ function asSession(method: string, path: string, body?: Json): Promise<unknown> 
   return call(method, path, headers, payload);
 }
 
-/** A write the server refuses, as the case that asserts the refusal reads it: `answer` is its
- *  status and its code, and `error` the words it carries, which a case may read for the commit
- *  and the repository they name. */
-interface Refusal {
-  readonly answer: string;
-  readonly error: string;
-}
-
-async function refusal(method: string, path: string, body: Json): Promise<Refusal> {
-  const response = await fetch(new URL(path, dispatchUrl), {
-    body: JSON.stringify({ ...body, actor: { id: session, kind: "session" } }),
-    headers: { Authorization: `Bearer ${agentToken}`, "Content-Type": "application/json" },
+/** A write the case expects refused, with the session's agent token and the session as its
+ *  `actor`, read as the case that asserts the refusal reads it (`Refusal`). */
+function refusal(method: string, path: string, body: Json): Promise<Refusal> {
+  return dispatchRefusal(
+    dispatchUrl,
     method,
-  });
-  const text = await response.text();
-  if (response.ok) return { answer: `${response.status} (the write was taken)`, error: text };
-  let code = "";
-  let error = text;
-  try {
-    const parsed = JSON.parse(text) as Json;
-    code = String(parsed.code ?? "");
-    error = String(parsed.error ?? text);
-  } catch {
-    code = text;
-  }
-  return { answer: `${response.status} ${code}`, error };
+    path,
+    { Authorization: `Bearer ${agentToken}` },
+    { ...body, actor: { id: session, kind: "session" } }
+  );
 }
 
 async function signIn(login: string): Promise<string> {
@@ -1719,11 +1701,7 @@ async function issueCount(project: string): Promise<number> {
  *  content type, else `application/octet-stream`. `call` parses JSON, so it cannot read them. */
 async function artifactBytes(key: string, slug: string, version: number): Promise<Uint8Array> {
   const path = issuePath(key, `/artifacts/${encodeURIComponent(slug)}/versions/${version}`);
-  const response = await fetch(new URL(path, dispatchUrl), {
-    headers: { Authorization: `Bearer ${agentToken}` },
-  });
-  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
-  return new Uint8Array(await response.arrayBuffer());
+  return dispatchBytes(dispatchUrl, path, { Authorization: `Bearer ${agentToken}` });
 }
 
 // k-refused. The reported call and the other forms of a bare `-` are refused before any request:

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
+  bodyForTest,
   createAgentMessage,
   createArtifactAsk,
   createAsk,
@@ -456,7 +457,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       selected: [],
       text: "Read DISPATCH_INBOX_FLAG.",
     });
-    expect(answered.status, await answered.text()).toBe(200);
+    expect(answered.status, bodyForTest(await answered.text(), token)).toBe(200);
     await expect(card).toContainText(`Answered by ${actingThrough}`);
     await expect(card).toContainText("Read DISPATCH_INBOX_FLAG.");
 
@@ -479,7 +480,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       token,
       { state: "approved" }
     );
-    expect(reviewed.status, await reviewed.text()).toBe(201);
+    expect(reviewed.status, bodyForTest(await reviewed.text(), token)).toBe(201);
     await page.goto(`/issues/${seeded.reviewedIssue}`);
     await page.getByRole("button", { name: "Approved v1" }).click();
     await expect(page.getByRole("dialog", { name: "Reviews" })).toContainText(
@@ -492,7 +493,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       body: "Pause the backfill until the flag lands.",
       delivery: "aside",
     });
-    expect(sent.status, await sent.text()).toBe(201);
+    expect(sent.status, bodyForTest(await sent.text(), token)).toBe(201);
     await page.goto("/agents");
     const workerCard = page
       .getByRole("region", { name: "Agents" })
@@ -545,7 +546,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       token,
       approvalBody
     );
-    expect(approvedNow.status, await approvedNow.text()).toBe(200);
+    expect(approvedNow.status, bodyForTest(await approvedNow.text(), token)).toBe(200);
     await page.goto(`/issues/${seeded.gateIssue}`);
     await expect(page.getByRole("button", { name: "Approved v1" })).toBeVisible();
   } finally {

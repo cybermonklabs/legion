@@ -7,6 +7,7 @@ import {
 } from "./agents";
 import {
   baseUrl,
+  bodyForTest,
   e2eAgentToken,
   listAgentMessages,
   mintAgentToken,
@@ -671,7 +672,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
     headers: { Authorization: `Bearer ${personal}`, "Content-Type": "application/json" },
     method: "POST",
   });
-  expect(sent.status, await sent.text()).toBe(201);
+  expect(sent.status, bodyForTest(await sent.text(), personal)).toBe(201);
   const stored = await storedSwitch(id, "/model anthropic/model-b");
   const read = await listAgentMessages(id);
   expect(read).toHaveLength(1);

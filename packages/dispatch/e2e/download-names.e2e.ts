@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import type { ArtifactUploadResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import {
+  bodyForTest,
+  contextSessionCookie,
   createIssue,
   createIssueArtifact,
   createProject,
@@ -49,7 +51,8 @@ async function upload(
     headers: { Origin: dashboardOrigin },
     multipart: { file, name: file.name },
   });
-  expect(answer.status(), await answer.text()).toBeLessThan(300);
+  const cookie = await contextSessionCookie(page.context());
+  expect(answer.status(), bodyForTest(await answer.text(), cookie)).toBeLessThan(300);
   return ((await answer.json()) as ArtifactUploadResponse).artifact;
 }
 

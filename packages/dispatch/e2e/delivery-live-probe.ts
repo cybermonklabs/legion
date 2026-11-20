@@ -51,6 +51,7 @@
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -147,7 +148,12 @@ export interface ProbeIdsComparison {
 
 /** One GET route read for the last window the probe applied, against the body it holds. `prs`
  *  and `runs` are null for a route that answers neither; `measures` lists the JSON path of every
- *  measure (every card, for the pipeline) whose value differs. A refused read carries its error. */
+ *  measure (every card, for the pipeline) whose value differs. A refused read carries its error:
+ *  Dispatch's own refusal is its code (`HTTP_<status>` where it has none) and its `error` text;
+ *  any other answer is `HTTP_<status>`, or `NOT_JSON` for a 2xx that is not JSON, with the body
+ *  named in one line (`bodyForText`), the bearer and any `Authorization` or `Bearer` value
+ *  redacted, since a gateway in Dispatch's place can answer with a page that echoes the request
+ *  back. */
 export interface ProbeCompareLine {
   readonly at: string;
   readonly type: "compare";
@@ -868,16 +874,28 @@ async function compareRead(
   try {
     answer = JSON.parse(text);
   } catch {
-    return refused(response.ok ? "NOT_JSON" : `HTTP_${response.status}`, text.slice(0, 200));
+    return refused(
+      response.ok ? "NOT_JSON" : `HTTP_${response.status}`,
+      bodyForText(text, token, response.ok ? "JSON" : "Dispatch's error JSON")
+    );
   }
   if (!response.ok) {
-    if (typeof answer !== "object" || answer === null) {
-      return refused(`HTTP_${response.status}`, text.slice(0, 200));
+    // Dispatch's own refusal is a JSON object with a string `error` (`writeError`); no other body
+    // is Dispatch's, so neither its `code` nor its text is printed as it came.
+    if (
+      typeof answer === "object" &&
+      answer !== null &&
+      "error" in answer &&
+      typeof answer.error === "string"
+    ) {
+      return refused(
+        "code" in answer && typeof answer.code === "string"
+          ? answer.code
+          : `HTTP_${response.status}`,
+        answer.error
+      );
     }
-    return refused(
-      "code" in answer && typeof answer.code === "string" ? answer.code : `HTTP_${response.status}`,
-      "error" in answer && typeof answer.error === "string" ? answer.error : text.slice(0, 200)
-    );
+    return refused(`HTTP_${response.status}`, bodyForText(text, token, "Dispatch's error JSON"));
   }
   const checked = route.check(answer);
   const equal = [checked.prs, checked.runs, checked.measures].every(

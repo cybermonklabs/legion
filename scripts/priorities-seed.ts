@@ -33,6 +33,7 @@ import {
 } from "../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../packages/envoy-client/src/dispatch-http";
 import { parseDispatchRef } from "../packages/envoy-client/src/dispatch-owner";
+import { bodyForText } from "../packages/envoy-client/src/excerpt";
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -309,6 +310,15 @@ export function rowMarker(description: string): RowMarker | undefined {
   return { row, document };
 }
 
+/** A request's answer, and the secrets the request presented: the token after the scheme of the
+ *  `Authorization` its credential gave it, and the DPoP proof beside it where the credential is a
+ *  broker's, not what the credential holds by the time the answer is read, since a broker
+ *  credential trades a new token while other requests are in flight. */
+interface Answered {
+  readonly response: Response;
+  readonly sent: readonly string[];
+}
+
 /**
  * A request to Dispatch, presenting the bearer or the access token this machine traded its own
  * identity for, with the proof that goes with it. Two of the four routes it carries have no
@@ -321,7 +331,7 @@ async function request(
   method: string,
   path: string,
   body?: unknown
-): Promise<Response> {
+): Promise<Answered> {
   const url = `${config.url}${path}`;
   // Who the write is by, stated in the body: see `DispatchConfig.session`. A read states
   // nothing, and neither does a run with no session to name.
@@ -335,15 +345,53 @@ async function request(
   // One deadline for the credential and the request, the bound DispatchClient puts on each of
   // its own: a broker credential waiting on a pod's missing registration stops at it.
   const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-  return fetch(url, {
+  const presented = await config.credential.headers(method, url, undefined, deadline);
+  const response = await fetch(url, {
     method,
     headers: {
-      ...(await config.credential.headers(method, url, undefined, deadline)),
+      ...presented,
       ...(stated === undefined ? {} : { "Content-Type": "application/json" }),
     },
     ...(stated === undefined ? {} : { body: JSON.stringify(stated) }),
     signal: deadline,
   });
+  return { response, sent: presentedSecrets(presented) };
+}
+
+/** The secrets `presented`, a request's credential headers, carry: the `Authorization` value
+ *  after its scheme, and the `DPoP` proof where there is one. */
+export function presentedSecrets(presented: Readonly<Record<string, string>>): readonly string[] {
+  return [(presented.Authorization ?? "").replace(/^\S+\s+/, ""), presented.DPoP ?? ""];
+}
+
+/** Whether `text` is Dispatch's error JSON: an object whose `error` is a string, the shape every
+ *  refusal the server writes takes (`writeError`). */
+function isDispatchError(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A refused answer's body, `text`, as the seed's error names it. Dispatch's error JSON is named as
+ * Dispatch wrote it. Any other body was written by something in Dispatch's place, a gateway or a
+ * proxy, which can echo the request back, the credential with it: it is named in one line with
+ * `sent`, the secrets the request presented, redacted (`bodyForText`), never whole.
+ */
+function refusalText(text: string, sent: readonly string[]): string {
+  return isDispatchError(text) ? text : bodyForText(text, sent, "Dispatch's error JSON");
+}
+
+async function refusal({ response, sent }: Answered): Promise<string> {
+  return refusalText(await response.text(), sent);
 }
 
 async function send<T>(
@@ -352,23 +400,27 @@ async function send<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const response = await request(config, method, path, body);
-  if (!response.ok) {
-    throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`);
+  const answered = await request(config, method, path, body);
+  if (!answered.response.ok) {
+    throw new Error(`${method} ${path}: ${answered.response.status} ${await refusal(answered)}`);
   }
-  return (await response.json()) as T;
+  return (await answered.response.json()) as T;
 }
 
-/** The issue `key`, or undefined where no issue carries that key. */
+/** The issue `key`, or undefined where no issue carries that key: Dispatch's own 404, its error
+ *  JSON, says so. A 404 page something else wrote in Dispatch's place is that page's error, not a
+ *  missing issue, which would leave the row's issue unrelated and recorded as missing. */
 async function readIssue(config: DispatchConfig, key: string): Promise<SeedIssue | undefined> {
   const path = `/api/v1/issues/${encodeURIComponent(key)}`;
-  const response = await request(config, "GET", path);
+  const answered = await request(config, "GET", path);
+  const { response } = answered;
   if (response.status === 404) {
-    await response.text();
-    return undefined;
+    const text = await response.text();
+    if (isDispatchError(text)) return undefined;
+    throw new Error(`GET ${path}: 404 ${refusalText(text, answered.sent)}`);
   }
   if (!response.ok) {
-    throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
+    throw new Error(`GET ${path}: ${response.status} ${await refusal(answered)}`);
   }
   return (await response.json()) as SeedIssue;
 }

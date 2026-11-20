@@ -1,8 +1,16 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CommentReply, DispatchRefusedError, dispatchRepliesOf } from "../dispatch-read";
+import * as timers from "node:timers/promises";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  type CommentReply,
+  DispatchRefusedError,
+  DispatchUnreachableError,
+  dispatchRepliesOf,
+  readJson,
+} from "../dispatch-read";
 
 /**
  * `dispatchRepliesOf`, which the one-claim-run rule (`claimRunOf` in `reserve.ts`) reads its
@@ -101,5 +109,78 @@ describe("dispatchRepliesOf", () => {
     await expect(refused).rejects.toThrow(DispatchRefusedError);
     await expect(refused).rejects.toMatchObject({ status: 404 });
     expect(seen).toHaveLength(1);
+  });
+});
+
+// A gateway or a proxy in Dispatch's place can answer a read with a page of its own that echoes
+// the request back, the bearer with it. The read's error names such a page in one line with the
+// bearer redacted, a 4xx at once and a 5xx once every try has failed, and Dispatch's own error
+// JSON as Dispatch wrote it.
+describe("a read a proxy answers", () => {
+  const token = fixtureSecret("eval");
+  let status = 403;
+  /** A gateway's page echoing the read: its bearer bare on a line of its own, first, so only the
+   *  redaction of that very bearer can hide it, then the header as it came. */
+  const echoPage = (request: Request): Response => {
+    const authorization = request.headers.get("authorization") ?? "";
+    return new Response(
+      `<html><body>\n${authorization.replace(/^Bearer /, "")}\n<pre>GET /api/v1/issues\n` +
+        `authorization: ${authorization}</pre></body></html>\n`,
+      { headers: { "Content-Type": "text/html" }, status }
+    );
+  };
+  let answer: (request: Request) => Response = echoPage;
+  const proxy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => answer(request) });
+  afterAll(() => proxy.stop(true));
+  const config = { baseUrl: `http://127.0.0.1:${proxy.port}`, token };
+
+  const refusalOf = (): Promise<unknown> =>
+    readJson("/api/v1/issues", config).then(
+      () => new Error("the read answered"),
+      (error: unknown) => error
+    );
+
+  test("a 4xx page is refused, named in one line, the bearer redacted", async () => {
+    status = 403;
+    answer = echoPage;
+    const refused = await refusalOf();
+    expect(refused).toBeInstanceOf(DispatchRefusedError);
+    const { message, body } = refused as DispatchRefusedError;
+    expect(message).toStartWith(
+      "GET /api/v1/issues: 403 a body that is not Dispatch's error JSON ("
+    );
+    for (const printed of [message, body]) {
+      expect(printed).not.toContain(token);
+      expect(printed).not.toContain("\n");
+    }
+  });
+
+  test("a 5xx page is named in the last failure, the bearer redacted", async () => {
+    status = 502;
+    answer = echoPage;
+    // The waits between the tries are what a 5xx earns; the read's answer is what is held.
+    const sleep = spyOn(timers, "setTimeout").mockResolvedValue(undefined);
+    try {
+      const unreachable = await refusalOf();
+      expect(unreachable).toBeInstanceOf(DispatchUnreachableError);
+      const { message } = unreachable as DispatchUnreachableError;
+      expect(message).toStartWith(
+        "GET /api/v1/issues: 5 tries, last failure 502 a body that is not Dispatch's error JSON ("
+      );
+      expect(message).not.toContain(token);
+      expect(message).not.toContain("\n");
+    } finally {
+      sleep.mockRestore();
+    }
+  });
+
+  test("Dispatch's own error JSON is named as Dispatch wrote it", async () => {
+    const refusal = { code: "NOT_FOUND", error: "not found" };
+    answer = () => Response.json(refusal, { status: 404 });
+    const refused = await refusalOf();
+    expect(refused).toBeInstanceOf(DispatchRefusedError);
+    expect((refused as DispatchRefusedError).message).toBe(
+      `GET /api/v1/issues: 404 ${JSON.stringify(refusal)}`
+    );
   });
 });
