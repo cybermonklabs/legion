@@ -315,16 +315,31 @@ const CountedChangeLimit = 100
 // countedKinds is the order CountedChanges lists the kinds it truncated in.
 var countedKinds = [...]string{"issue", "ask", "artifact", "block"}
 
-// CountedChanges names the changed targets a reader refreshes by name — an issue (its detail and
-// its count), an ask (every list that carries the ask row, plus the human Inbox), a document or
-// file (its Referenced by panel) and a block of a document (its own panel and every link to it,
-// which read one graph read, and its document's panel, which lists the edges at its blocks) — in
-// the shape those readers are keyed by. A part of an ask is named as its ask, whose cards and
-// panel are what a link to one of its parts moves. Comments, messages, their blocks and
-// components are dropped: nothing counts them, and their panels refresh on the graph itself. A
-// kind with more than CountedChangeLimit named targets names none of them and is listed in
-// TruncatedKinds, and the reader falls back to refreshing every read of that kind; the other
-// kinds are still named.
+// CountedChanges names the changed targets a reader refreshes by name — an issue (its detail, its
+// count and its references read), an ask (every list that carries the ask row, plus the human
+// Inbox), a document or file (its Referenced by panel) and a block of a document (its own panel
+// and every link to it, which read one graph read, and its document's panel, which lists the
+// edges at its blocks) — in the shape those readers are keyed by. A part of an ask is named as its
+// ask, whose cards and panel are what a link to one of its parts moves. Comments, messages, their
+// blocks and components are not named themselves: nothing counts them, and their panels refresh
+// on the graph itself.
+//
+// A target that is an issue's own content — a document of the issue or a block of one, an ask of
+// it or a part of one, a comment or a message on it or a block of either — also names that issue:
+// the issue's references read lists what links into its content, so a link added to or removed
+// from that content changes the read, and a page holding it refreshes it on a target of kind issue
+// (dispatch://INFRA-4704, R6). Each such issue is named once, after every target named above, in
+// the order of its first content target, and not where the write names it already. Content no
+// issue owns (a project's or an agent's document, the ask or the comment of a project document, a
+// direct message) names no issue, and nor does a document this transaction has only queued: the
+// write that queues it appends an event of the document's own issue, which refreshes that issue's
+// read. Each target's issue is read by key: a document's and an ask's from the row the target is
+// resolved by, and a comment's and a message's, a block's through the item its node id names, by
+// one primary key read of each kind.
+//
+// A kind with more than CountedChangeLimit named targets, the issues of content targets counted
+// among the issues, names none of them and is listed in TruncatedKinds, and the reader falls back
+// to refreshing every read of that kind; the other kinds are still named.
 //
 // A reference the grammar accepts need not address anything: `dispatch://CORE-1/ask/hello`
 // parses and is stored, so every lookup here compares text and a target that resolves to no
@@ -338,15 +353,16 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 	issueKeys := []string{}
 	askIDs := []string{}
 	artifactKeys := []string{}
+	commentIDs := []string{}
+	messageIDs := []string{}
 	ordered := make([]Target, 0, len(changed))
 	seen := make(map[[2]string]struct{}, len(changed))
 	for _, target := range changed {
-		if target.Kind == ItemAsk.BlockKind() {
-			// A part is counted as its ask, the item its node id names, so two parts of one ask,
-			// or a part and the ask's own row, name that ask once.
-			if kind, askID, _, ok := ParseItemBlockNode(target.ID); ok && kind == ItemAsk {
-				target = Target{Kind: string(ItemAsk), ID: askID}
-			}
+		// A block of an ask, a comment or a message is counted as its item, the one its node id
+		// names, so two blocks of one item, or a block and the item's own row, count that item
+		// once.
+		if kind, itemID, _, ok := ParseItemBlockNode(target.ID); ok && target.Kind == kind.BlockKind() {
+			target = Target{Kind: string(kind), ID: itemID}
 		}
 		if _, duplicate := seen[[2]string{target.Kind, target.ID}]; duplicate {
 			continue
@@ -367,6 +383,12 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 			document, _, _ := strings.Cut(target.ID, "#")
 			artifactKeys = append(artifactKeys, document)
 			ordered = append(ordered, target)
+		case "comment":
+			commentIDs = append(commentIDs, target.ID)
+			ordered = append(ordered, target)
+		case "message":
+			messageIDs = append(messageIDs, target.ID)
+			ordered = append(ordered, target)
 		}
 	}
 	issues, err := resolveIssueTargets(ctx, q, issueKeys)
@@ -381,32 +403,61 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
+	comments, err := resolveItemIssues(ctx, q, ItemComment, commentIDs)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	messages, err := resolveItemIssues(ctx, q, ItemMessage, messageIDs)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
 	references := make([]model.ChangedReference, 0, len(ordered))
+	// owners is the issue of each content target, in the targets' order, an issue as often as
+	// its content is changed and "" for content no issue owns.
+	owners := make([]string, 0, len(ordered))
+	issuesNamed := make(map[string]struct{}, len(ordered))
 	for _, target := range ordered {
 		switch target.Kind {
 		case "issue":
 			if _, found := issues[target.ID]; found {
 				references = append(references, model.ChangedReference{Kind: "issue", ID: target.ID})
+				issuesNamed[target.ID] = struct{}{}
 			}
 		case "ask":
 			if reference, found := asks[target.ID]; found {
 				references = append(references, reference)
+				if reference.IssueKey != nil {
+					owners = append(owners, *reference.IssueKey)
+				}
 			}
 		case "artifact":
-			if reference, found := artifacts[target.ID]; found {
-				references = append(references, reference)
+			if document, found := artifacts[target.ID]; found {
+				references = append(references, document.reference)
+				owners = append(owners, document.issueKey)
 			}
 		case "block":
-			document, blockID, _ := strings.Cut(target.ID, "#")
-			if reference, found := artifacts[document]; found {
+			documentKey, blockID, _ := strings.Cut(target.ID, "#")
+			if document, found := artifacts[documentKey]; found {
 				references = append(references, model.ChangedReference{
 					Kind:       "block",
 					ID:         target.ID,
-					ArtifactID: &reference.ID,
-					Ref:        BlockRef(reference.Ref, blockID),
+					ArtifactID: &document.reference.ID,
+					Ref:        BlockRef(document.reference.Ref, blockID),
 				})
+				owners = append(owners, document.issueKey)
 			}
+		case "comment":
+			owners = append(owners, comments[target.ID])
+		case "message":
+			owners = append(owners, messages[target.ID])
 		}
+	}
+	for _, owner := range owners {
+		if _, named := issuesNamed[owner]; named || owner == "" {
+			continue
+		}
+		issuesNamed[owner] = struct{}{}
+		references = append(references, model.ChangedReference{Kind: "issue", ID: owner})
 	}
 	named := make(map[string]int, len(countedKinds))
 	for _, reference := range references {
@@ -501,14 +552,7 @@ func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[str
 // same edit is stored as the edge of an ask no read of the table answers for.
 func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string]model.ChangedReference, error) {
 	found := map[string]model.ChangedReference{}
-	addressable := make([]uuid.UUID, 0, len(ids))
-	for _, id := range ids {
-		parsed, err := uuid.Parse(id)
-		if err != nil {
-			continue
-		}
-		addressable = append(addressable, parsed)
-	}
+	addressable := uuidsOf(ids)
 	if len(addressable) == 0 {
 		return found, nil
 	}
@@ -538,15 +582,38 @@ func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string
 	return found, nil
 }
 
+// uuidsOf is each of ids that parses as a uuid, the rest skipped: a citation the grammar accepts
+// need not be a uuid (`dispatch://CORE-1/comment/hello`), and a resolver that compares the uuid
+// key column with these, rather than casting the column to text, keeps its primary key.
+func uuidsOf(ids []string) []uuid.UUID {
+	parsed := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if value, err := uuid.Parse(id); err == nil {
+			parsed = append(parsed, value)
+		}
+	}
+	return parsed
+}
+
+// resolvedArtifact is a cited artifact as resolveArtifactTargets answers it: the entry a
+// Referenced by panel is matched by, and the key of the issue that owns the artifact, empty for
+// an artifact no issue owns (a project's, an agent's) and for one the reading transaction has
+// only queued.
+type resolvedArtifact struct {
+	reference model.ChangedReference
+	issueKey  string
+}
+
 // resolveArtifactTargets resolves cited artifacts by the ref_key `refs` stores for them, the
 // address GET /api/v1/references?to= resolves too, into the entry a Referenced by panel is
 // matched by: the artifact's uuid (its node id in that read) and its dispatch:// address (the
-// reference the dashboard opens the panel on, refs.ArtifactRef). Keyed by ref_key. A document
-// whose artifacts row the reading transaction has queued and not written yet is resolved from
-// what that insert writes (Pending): a new issue's spec citing its own address names a row
-// this transaction has only queued.
-func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (map[string]model.ChangedReference, error) {
-	found := map[string]model.ChangedReference{}
+// reference the dashboard opens the panel on, refs.ArtifactRef), beside the issue that owns it
+// (CountedChanges names that issue too). Keyed by ref_key. A document whose artifacts row the
+// reading transaction has queued and not written yet is resolved from what that insert writes
+// (Pending), which names no issue: a new issue's spec citing its own address names a row this
+// transaction has only queued.
+func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (map[string]resolvedArtifact, error) {
+	found := map[string]resolvedArtifact{}
 	if len(refKeys) == 0 {
 		return found, nil
 	}
@@ -566,20 +633,57 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &kind, &primary); err != nil {
 			return nil, fmt.Errorf("scan changed artifact reference: %w", err)
 		}
-		found[refKey] = model.ChangedReference{
+		artifact := resolvedArtifact{reference: model.ChangedReference{
 			Kind: "artifact",
 			ID:   id,
 			Ref:  ArtifactRef(issueKey, project, session, slug, kind, primary),
+		}}
+		if issueKey != nil {
+			artifact.issueKey = *issueKey
 		}
+		found[refKey] = artifact
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	mergePending(ctx, found, refKeys, func(pending Pending, refKey string) (model.ChangedReference, bool) {
+	mergePending(ctx, found, refKeys, func(pending Pending, refKey string) (resolvedArtifact, bool) {
 		id, ref, queued := pending.PendingArtifact(refKey)
-		return model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}, queued
+		return resolvedArtifact{reference: model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}}, queued
 	})
 	return found, nil
+}
+
+// resolveItemIssues is the issue of each of ids that names a comment or a message of kind, keyed
+// by id, read by the items table's primary key in one statement. An id that is no uuid
+// (uuidsOf), names no row, or names a row no issue owns - a comment of a project document, a
+// direct message - answers nothing.
+func resolveItemIssues(ctx context.Context, q Queryer, kind ItemKind, ids []string) (map[string]string, error) {
+	found := map[string]string{}
+	addressable := uuidsOf(ids)
+	if len(addressable) == 0 {
+		return found, nil
+	}
+	tables, err := kind.tables()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `
+		select id::text, issue_key
+		from `+tables.items+`
+		where id = any($1) and issue_key is not null
+	`, addressable)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the issues of changed %s references: %w", kind, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, issueKey string
+		if err := rows.Scan(&id, &issueKey); err != nil {
+			return nil, fmt.Errorf("scan the issue of a changed %s reference: %w", kind, err)
+		}
+		found[id] = issueKey
+	}
+	return found, rows.Err()
 }
 
 // mergePending fills the gaps a read of the stored rows leaves. found is what that read
