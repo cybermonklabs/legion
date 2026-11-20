@@ -7,5 +7,6 @@ body: |-
   whether a head run is open), and `workflow: a checks settlement of the head was not applied`
   (with the fence's classification, stale or conflict). Each line names the settlement's head,
   generation and snapshot, the decoder's line each of them that its payload gives, and the daemon
-  writes each line once for each settlement. A settlement delivered again after it applied logs
+  writes each line once for each settlement while it runs, and again after a restart or once it
+  has kept 4,096 dropped settlements since. A settlement delivered again after it applied logs
   nothing.
