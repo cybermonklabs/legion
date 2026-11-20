@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import {
@@ -9,6 +10,7 @@ import {
   secondaryButtonCompact,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
@@ -53,6 +55,102 @@ export function uploadedPercent(row: Write): number | undefined {
     : undefined;
 }
 
+/** Focuses the first of `candidates` that takes the focus, without scrolling; says whether one
+ *  did. */
+function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
+  for (const candidate of candidates) {
+    candidate?.focus({ preventScroll: true });
+    if (candidate !== null && document.activeElement === candidate) return true;
+  }
+  return false;
+}
+
+/**
+ * Hands on the focus a press in the panel takes away. A press here can take the control it was
+ * made on off the page - Stop trying once its write is refused, Retry or Discard once their row
+ * goes, any of them as the panel goes once nothing is pending - and the browser then leaves the
+ * focus on the page's body, which loses a keyboard reader's place. So the panel notes the row the
+ * focus is in and where the focus came from as it entered the panel, and once the element that
+ * held the focus in the panel has left the page while the focus is on the body, the focus goes to
+ * the first control that takes it: while the panel is still drawn, one in that element's row (the
+ * Retry a stopped write's row offers once Stop trying has gone), else the panel's first; only once
+ * the panel is gone or holds none, the element the focus came from, else the page's main region
+ * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A focus the reader
+ * takes out of the panel, by a Tab or a press elsewhere, is forgotten, so nothing moves a focus
+ * the reader put somewhere else. Returns the panel's ref.
+ */
+function useFocusHandOn(): RefObject<HTMLElement | null> {
+  const panel = useRef<HTMLElement>(null);
+  // The element that holds the focus in the panel, the write whose row it is in, and the element
+  // that held the focus before it came in.
+  const held = useRef<Node | null>(null);
+  const heldRow = useRef<string | null>(null);
+  const from = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const inPanel = (target: EventTarget | null): target is Node =>
+      target instanceof Node && panel.current?.contains(target) === true;
+    const forget = () => {
+      held.current = null;
+      heldRow.current = null;
+      from.current = null;
+    };
+    const focused = (event: FocusEvent) => {
+      const { relatedTarget, target } = event;
+      if (!inPanel(target)) {
+        forget();
+        return;
+      }
+      if (held.current === null) {
+        from.current = relatedTarget instanceof HTMLElement ? relatedTarget : null;
+      }
+      held.current = target;
+      heldRow.current =
+        target instanceof Element
+          ? (target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null)
+          : null;
+    };
+    // A press elsewhere forgets, not a blur: Stop trying turns disabled while its write's last
+    // attempt is out, and Chromium moves its focus to the body then, before the panel takes it.
+    const pressed = (event: PointerEvent) => {
+      if (!inPanel(event.target)) forget();
+    };
+    document.addEventListener("focusin", focused, true);
+    document.addEventListener("pointerdown", pressed, true);
+    return () => {
+      document.removeEventListener("focusin", focused, true);
+      document.removeEventListener("pointerdown", pressed, true);
+    };
+  }, []);
+  // React sends no blur for an element it takes off the page, and the browser moves the focus
+  // with no event, so each commit looks: a layout effect, so the focus moves in the commit that
+  // takes the element away.
+  useLayoutEffect(() => {
+    const left = held.current;
+    if (left === null || left.isConnected) return;
+    const box = panel.current;
+    const id = heldRow.current;
+    const rowSelector = id === null ? null : `[data-pending-write="${CSS.escape(id)}"]`;
+    const row = rowSelector === null ? null : box?.querySelector(rowSelector);
+    const back = from.current;
+    held.current = null;
+    heldRow.current = null;
+    from.current = null;
+    if (document.activeElement !== left && !focusOnDocument()) return;
+    const controls = [
+      ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
+      ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
+    ];
+    if (focusFirst(controls)) {
+      // The focus listener took that move for the focus entering the panel afresh; it came in
+      // from where it did before.
+      from.current = back;
+      return;
+    }
+    focusFirst([back, document.getElementById("main-content")]);
+  });
+  return panel;
+}
+
 /**
  * The shell's one account of the writes no composer shows (`write-store.ts`'s `indicator`
  * writes): chrome, out of the page's flow in the corner the connection pill shares, and gone while
@@ -68,6 +166,8 @@ export function uploadedPercent(row: Write): number | undefined {
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
   const rows = useWriteSelection("indicator", shown);
+  // Before the early return, so it outlives the panel going while nothing is pending.
+  const panel = useFocusHandOn();
   if (rows.length === 0) return null;
   const out = rows.filter(
     (row) => row.status !== "refused" && !waitingToSend(row) && !heldForSignOut(row)
@@ -90,6 +190,7 @@ export function PendingWritesIndicator(): ReactNode {
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
+      ref={panel}
     >
       {out.length === 0 ? null : (
         <p aria-live="polite" className={`font-medium ${textSecondaryOnSurface}`} role="status">
