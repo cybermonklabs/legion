@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
 
@@ -426,8 +426,10 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 // exchangeFailed logs a failed exchange, at most once in exchangeFailureLogInterval: while the
 // service refuses the pod's token every request fails, and one line a minute says so. The reason is
 // the exchange's own error, which names the service's answer and never the token sent, cut to
-// maxFailureReason bytes at a character's start; it is quoted, as are the scopes a client named, so
-// neither can break the line.
+// maxFailureReason bytes at a character's start by redact.Bytes, which reads it whole through the
+// URL rule first, since the answer is the service's and a cut made first could end inside a URL's
+// userinfo, before its "@"; it is quoted, as are the scopes a client named, so neither can break
+// the line.
 func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	s.mu.Lock()
 	now := s.now()
@@ -439,14 +441,7 @@ func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	if quiet {
 		return
 	}
-	reason := err.Error()
-	if len(reason) > maxFailureReason {
-		cut := maxFailureReason
-		for cut > 0 && !utf8.RuneStart(reason[cut]) {
-			cut--
-		}
-		reason = reason[:cut]
-	}
+	reason, _ := redact.Bytes(err.Error(), maxFailureReason)
 	s.logf("launcher: metadata: token exchange failed scopes=%q reason=%q", strings.Join(scopes, ","), reason)
 }
 

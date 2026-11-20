@@ -187,6 +187,57 @@ func TestTheDeletersStandardErrorAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *tes
 	}
 }
 
+// What the deleter said and a reply of it longer than its bound reach the sweep's error through
+// redact.Read, so a cut that falls inside a URL's user name keeps no part of it: the bound of the
+// standard error, a read of the standard error taken while the child is still writing it (ended
+// can read it then, so trailing gives Read every text as cut), and the bound of a reply. The
+// deleter writes paths and its own errors, which hold no "://"; the URL here stands for a text no
+// rule of the deleter's own keeps out. The negative controls are trailing and readReply each
+// without redact.Read, which carried "legion-rea".
+func TestTheDeletersCutTextsKeepNoPartOfAURLTheirCutFallsInside(t *testing.T) {
+	const url = " https://legion-reader@h.example/p?token=planted-query-token-12 and more"
+	const atTheCut = " https://legion-rea"
+	assertNoPart := func(t *testing.T, what, text string) {
+		t.Helper()
+		for _, part := range []string{"legion-rea", "reader@", "planted"} {
+			if strings.Contains(text, part) {
+				t.Errorf("%s holds %q, a part of the URL's user name or query: …%q", what, part, text[max(0, len(text)-80):])
+			}
+		}
+	}
+	t.Run("the standard error at its bound", func(t *testing.T) {
+		said := &saidBuffer{}
+		filler := strings.Repeat("y", volumeDeleteSaidBytes-len(atTheCut))
+		_, _ = said.Write([]byte(filler + url))
+		got := said.trailing()
+		if !strings.HasPrefix(got, " ("+filler) {
+			t.Fatalf("what the child said is carried as %.80q…, want it to start with what came before the URL", got)
+		}
+		assertNoPart(t, "what the child said", got)
+	})
+	t.Run("the standard error read while the child still writes", func(t *testing.T) {
+		said := &saidBuffer{}
+		_, _ = said.Write([]byte("volume-trim-delete: failed at" + atTheCut))
+		got := said.trailing()
+		if !strings.Contains(got, "volume-trim-delete: failed at") {
+			t.Fatalf("what the child said is carried as %q, want its words before the URL", got)
+		}
+		assertNoPart(t, "what the child said", got)
+	})
+	t.Run("a reply at its bound", func(t *testing.T) {
+		filler := strings.Repeat("x", volumeDeleteReplyBytes-len(`failed "`)-len(atTheCut))
+		reply := "failed " + strconv.Quote(filler+url)
+		dir := &sweepDir{}
+		remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader(reply + "\nremoved\n")),
+			at: map[*sweepDir]int{dir: 0}, said: &saidBuffer{}}
+		got := remover.removeAll(dir, "entry")
+		if got == nil || errors.Is(got, errRemoverGone) || !strings.HasSuffix(got.Error(), volumeDeleteReplyCut) {
+			t.Fatalf("the reply was answered %.120v, want a refusal of that entry with the mark %q", got, volumeDeleteReplyCut)
+		}
+		assertNoPart(t, "the refusal", got.Error())
+	})
+}
+
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
 // replies itself.
 type discardRequests struct{}

@@ -331,6 +331,40 @@ html:has([data-issue-page]) {
   scroll-margin-top: calc(-1 * var(--issue-view-row-height, 0px));
 }
 
+/* Each control inside the header's identity block takes a top scroll margin of minus the whole
+   padding above, at every width, and at 760 px and below so does each control of the header, so a
+   focus that enters one while it is on the screen never scrolls the page. From
+   761 px up the block stays at the top of the screen and is the band the padding keeps clear, so
+   without the margin a focus there - Shift+Tab from the properties line under it, or Tab from one
+   control of the block to the next - scrolls the page up to bring the control below the band, and
+   the block, which stays, does not move. At 760 px and below (`identity-block.ts`'s
+   `HEADER_SCROLLS_QUERY`) the whole header scrolls away, and the view row sticks only once the
+   header is above the screen, so nothing that stays ever covers a header control: one lying in
+   the band at the top would scroll the page for nothing. From 761 px up the properties line,
+   outside the block, keeps no margin, so a focus on one of its controls that lies under the stuck
+   block still scrolls it out from under the block. `[data-identity-block]` is the block that
+   `features/issue-page/IssueHeader.tsx` draws, and only the new page draws it, so its rule needs
+   no scope; today's issue page draws `[data-issue-header]` too, so the header's rule names the
+   new page's outermost element, `[data-issue-page]`, as an ancestor, with no `:has()`. Their
+   subjects name the controls rather than every element, as the view row's rule above does: a
+   universal subject under an `html:has()` ancestor made each change of the page recalculate the
+   style of the whole document. */
+[data-identity-block] :is(a[href], button, input, select, textarea, [tabindex]) {
+  scroll-margin-top: calc(
+    -1 *
+    max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+  );
+}
+
+@media (max-width: 760px) {
+  [data-issue-page] [data-issue-header] :is(a[href], button, input, select, textarea, [tabindex]) {
+    scroll-margin-top: calc(
+      -1 *
+      max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+    );
+  }
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {
@@ -338,6 +372,21 @@ html:has([data-issue-page]) {
   select,
   textarea {
     font-size: 1rem;
+  }
+  /* The new issue page's header draws its status and its title's editor in its own type at
+     every width, as the prototype does: the status at 12 px, sized to its value, so the header
+     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
+     waits, and the title's editor at the heading's own size, which it must match so ending an
+     edit moves nothing. This file's rules are in no cascade layer and Tailwind's are, so
+     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields.
+     The rule takes no `html:has()` scope, because under one each change of the page recalculated
+     the style of every control of the page (decision 176); its `[data-issue-page]` ancestor
+     keeps it to the new page. */
+  [data-issue-page]
+    [data-issue-header]
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    font-size: revert-layer;
   }
 }
 
@@ -370,6 +419,21 @@ html:has([data-issue-page]) {
   [data-filter-row] :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
     min-width: 24px;
     min-height: 24px;
+  }
+
+  /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
+     size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
+     target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
+     nine lines and 280 px while an approval request waits. `revert-layer` takes the floor above
+     off and gives back the size the control's own classes set. A menu or a dialog a header
+     control opens keeps the 44 px floor. The rule takes no `html:has()` scope, because under one
+     each change of the page recalculated the style of every control of the page (decision 176);
+     its `[data-issue-page]` ancestor keeps it to the new page. */
+  [data-issue-page]
+    [data-issue-header]
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: revert-layer;
+    min-height: revert-layer;
   }
 
   button,

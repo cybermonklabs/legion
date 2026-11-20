@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // newLauncherCommand is PID 1 of an issue pod's one container, which serves every resident role,
@@ -51,6 +52,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
 	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		cfg := launcher.Config{
 			Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
 			Stdout: stdout, Stderr: stderr, MicroVM: *microVM,
@@ -84,13 +86,15 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			token, err := os.ReadFile(*tokenFile)
 			if err != nil {
-				fmt.Fprintf(stderr, "launcher: token file %s: %v\n", *tokenFile, err)
+				printRefusal(stderr, "launcher", fmt.Errorf("token file %s: %w", *tokenFile, err))
 				return 1
 			}
 			cfg.Token, cfg.PrivateDir = strings.TrimSpace(string(token)), *privateDir
 		}
 		if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
-			fmt.Fprintln(stderr, err)
+			// Run's error names itself (`launcher: …`), so it is written as it is, through the
+			// URL rule.
+			fmt.Fprintln(stderr, redact.URLCredentials(err.Error()))
 			return 1
 		}
 		return 0
