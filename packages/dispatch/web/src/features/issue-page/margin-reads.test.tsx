@@ -100,17 +100,29 @@ async function firstAnswers(
   });
 }
 
+/** What the margin is beside in the cases below: no document, and the issue's spec, shown, beside
+ *  which it reads the spec's decisions too. */
+const BESIDE = [
+  ["no document", undefined],
+  ["the shown spec", specArtifact],
+] as const;
+
 // On the new issue page the outline reads the issue's asks and comments under the margin's keys
 // and keeps them fresh by events (`useIssueTree.ts`), so the margin in the Details drawer holds
-// them the same way: a window focus past the app's 30 s staleness reads neither again. The inbox
-// and the reader's state keep the app's defaults there too, so their second read shows the focus
-// was handled.
-test("in Details, a focus past 30 s sends no read of the margin's asks or comments", async () => {
+// them the same way: a window focus past the app's 30 s staleness reads neither again. Beside the
+// shown spec it reads the decisions too, which the outline also reads under this key and keeps
+// fresh by events, and the same focus reads them again no more than it reads the asks and the
+// comments. The inbox and the reader's state keep the app's defaults there too, so their second
+// read shows the focus was handled.
+test.each(
+  BESIDE
+)("in Details beside %s, a focus past 30 s sends no read of the margin's asks, comments or decisions", async (_beside, spec) => {
   const reads = stubMarginReads();
+  const decisions = spec === undefined ? undefined : stubDecisionsRead();
   const client = appClient();
-  const view = renderMargin(client, drawer);
+  const view = renderMargin(client, drawer, spec);
   try {
-    await firstAnswers(client, reads);
+    await firstAnswers(client, reads, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
       expect(reads.getInbox).toHaveBeenCalledTimes(2);
@@ -118,66 +130,30 @@ test("in Details, a focus past 30 s sends no read of the margin's asks or commen
     });
     expect(reads.listIssueAsks).toHaveBeenCalledTimes(1);
     expect(reads.listComments).toHaveBeenCalledTimes(1);
+    if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
   }
 });
 
 // Every other page has no drawer, and there the margin keeps the app's defaults: the same focus
-// reads the asks and the comments again.
-test("with no drawer, a focus past 30 s reads the margin's asks and comments again", async () => {
+// reads the asks and the comments again, and the decisions beside the shown spec too.
+test.each(
+  BESIDE
+)("with no drawer beside %s, a focus past 30 s reads the margin's asks, comments and decisions again", async (_beside, spec) => {
   const reads = stubMarginReads();
+  const decisions = spec === undefined ? undefined : stubDecisionsRead();
   const client = appClient();
-  const view = renderMargin(client, undefined);
+  const view = renderMargin(client, undefined, spec);
   try {
-    await firstAnswers(client, reads);
+    await firstAnswers(client, reads, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
       expect(reads.getInbox).toHaveBeenCalledTimes(2);
       expect(reads.getMyState).toHaveBeenCalledTimes(2);
       expect(reads.listIssueAsks).toHaveBeenCalledTimes(2);
       expect(reads.listComments).toHaveBeenCalledTimes(2);
-    });
-  } finally {
-    view.unmount();
-  }
-});
-
-// Beside the shown spec the margin reads its decisions too, which the outline also reads under
-// this key and keeps fresh by events (`useIssueTree.ts`): in Details the same focus reads them
-// again no more than it reads the asks and the comments.
-test("in Details, a focus past 30 s sends no read of the decisions beside the shown spec", async () => {
-  const reads = stubMarginReads();
-  const decisions = stubDecisionsRead();
-  const client = appClient();
-  const view = renderMargin(client, drawer, specArtifact);
-  try {
-    await firstAnswers(client, reads, decisions);
-    await focusPastStaleness(client);
-    await waitFor(() => {
-      expect(reads.getInbox).toHaveBeenCalledTimes(2);
-      expect(reads.getMyState).toHaveBeenCalledTimes(2);
-    });
-    expect(decisions).toHaveBeenCalledTimes(1);
-  } finally {
-    view.unmount();
-  }
-});
-
-// With no drawer the decisions keep the app's defaults, as the asks and the comments do: the same
-// focus reads them again.
-test("with no drawer, a focus past 30 s reads the decisions beside the shown spec again", async () => {
-  const reads = stubMarginReads();
-  const decisions = stubDecisionsRead();
-  const client = appClient();
-  const view = renderMargin(client, undefined, specArtifact);
-  try {
-    await firstAnswers(client, reads, decisions);
-    await focusPastStaleness(client);
-    await waitFor(() => {
-      expect(reads.getInbox).toHaveBeenCalledTimes(2);
-      expect(reads.getMyState).toHaveBeenCalledTimes(2);
-      expect(decisions).toHaveBeenCalledTimes(2);
+      if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(2);
     });
   } finally {
     view.unmount();

@@ -30,12 +30,12 @@ const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
   references: [],
 };
 
-/** The issues of a list of them, each its key as a link and its title beside it, folded after
- *  ten behind a count that opens the rest. */
+/** The issues of a list of them, each its key as a link and its title, where it has one, beside
+ *  it, folded after ten behind a count that opens the rest. */
 export function IssueList({
   issues,
 }: {
-  issues: readonly { readonly key: string; readonly title: string }[];
+  issues: readonly { readonly key: string; readonly title: string | undefined }[];
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const list = useRef<HTMLDivElement>(null);

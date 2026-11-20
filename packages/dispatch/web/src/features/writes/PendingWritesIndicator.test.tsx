@@ -334,6 +334,67 @@ test("a press that leaves the indicator drawn keeps the focus in it, in the same
   }
 });
 
+// A focus a pointer press put in the indicator is not handed on: Chromium focuses a pressed
+// button and draws it no focus ring, so moving that focus onto the other row's control would put
+// it, unseen, where the next Space or Enter presses that control. A Discard pressed by pointer
+// that takes its row away leaves the focus where the browser does.
+test("a Discard pressed by pointer that takes its row away moves the focus to no other row's control", async () => {
+  const user = userEvent.setup();
+  const { unmount, writes } = mountOnPage();
+  try {
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+    indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => Promise.reject(verdict));
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+    const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
+    const discard = within(line.closest("li") as HTMLElement).getByRole("button", {
+      name: "Discard",
+    });
+
+    await user.click(discard);
+    await settle();
+    expect(within(indicator).queryByText(/CORE-2/)).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+  } finally {
+    unmount();
+  }
+});
+
+// A press elsewhere that leaves the focus in the indicator - on a control whose `mousedown` is
+// prevented, as a toolbar's button keeps the focus where it was - forgets nothing: the Stop
+// trying the reader then presses by keyboard gives the focus back as the indicator goes.
+test("a press elsewhere that leaves the focus in the indicator keeps where the focus came from", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const stopBlurring = emulateChromiumFocusFixup();
+  const attempt = Promise.withResolvers<never>();
+  const { unmount, writes } = mountOnPage();
+  const other = screen.getByRole("button", { name: "Other" });
+  const keepFocus = (event: MouseEvent) => event.preventDefault();
+  other.addEventListener("mousedown", keepFocus);
+  try {
+    const stop = await lateInlineWrite(writes, attempt.promise);
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    await user.tab();
+    await user.click(other);
+    expect(stop).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await settle();
+    expect(document.body).toHaveFocus();
+
+    attempt.reject(refusal);
+    await jump(30 * 60_000);
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+  } finally {
+    other.removeEventListener("mousedown", keepFocus);
+    unmount();
+    stopBlurring();
+    realClock();
+  }
+});
+
 // A write Dispatch refused says so in its own words, and its Retry asks again - under a key of
 // its own, since Dispatch replays the refusal it stored under the first.
 test("a refused write names Dispatch's reason, and Retry sends it again", async () => {

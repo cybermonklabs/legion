@@ -191,8 +191,11 @@ export function IssueAddMenu({
   // drawn open when the issue reopens or a property loses its value again, with the focus not in
   // it, since the effect above puts the focus on its first entry only as it opens, and its
   // listeners on the document would stay on meanwhile.
-  if (open && (isClosed || entries.length === 0)) setOpen(false);
-  if (isClosed || entries.length === 0) return null;
+  const drawn = !isClosed && entries.length > 0;
+  if (!drawn) {
+    if (open) setOpen(false);
+    return null;
+  }
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button

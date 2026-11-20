@@ -76,10 +76,15 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
  * Retry a stopped write's row offers once Stop trying has gone), else the panel's first; only once
  * the panel is gone or holds none, the element the focus came from, else the page's main region
  * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A focus the reader
- * takes out of the panel, by a Tab or a press elsewhere, is forgotten, so nothing moves a focus
- * the reader put somewhere else. Returns the panel's ref.
+ * takes out of the panel, by a Tab or by a press that leaves the focus outside it, is forgotten,
+ * so nothing moves a focus the reader put somewhere else; a press elsewhere that leaves the focus
+ * in the panel, as on a control whose `mousedown` is prevented or on a scrollbar, forgets nothing.
+ * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
+ * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
+ * another row's control, and the next Space or Enter would press it - Discard, first in a row
+ * waiting to send. Returns the panel's ref.
  */
-function useFocusHandOn(): RefObject<HTMLElement | null> {
+function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   const panel = useRef<HTMLElement>(null);
   // The element that holds the focus in the panel, the write whose row it is in, and the element
   // that held the focus before it came in.
@@ -94,9 +99,12 @@ function useFocusHandOn(): RefObject<HTMLElement | null> {
       heldRow.current = null;
       from.current = null;
     };
+    // Whether a pointer press in the panel is making its focus change: set as it starts, and
+    // cleared once that change is done.
+    let pointerPressing = false;
     const focused = (event: FocusEvent) => {
       const { relatedTarget, target } = event;
-      if (!inPanel(target)) {
+      if (pointerPressing || !inPanel(target)) {
         forget();
         return;
       }
@@ -111,8 +119,19 @@ function useFocusHandOn(): RefObject<HTMLElement | null> {
     };
     // A press elsewhere forgets, not a blur: Stop trying turns disabled while its write's last
     // attempt is out, and Chromium moves its focus to the body then, before the panel takes it.
+    // A press moves the focus only after this listener, so where it left the focus is read, and a
+    // press in the panel stops marking its focus change, once that move is done.
     const pressed = (event: PointerEvent) => {
-      if (!inPanel(event.target)) forget();
+      if (inPanel(event.target)) {
+        pointerPressing = true;
+        setTimeout(() => {
+          pointerPressing = false;
+        });
+        return;
+      }
+      setTimeout(() => {
+        if (!inPanel(document.activeElement)) forget();
+      });
     };
     document.addEventListener("focusin", focused, true);
     document.addEventListener("pointerdown", pressed, true);
@@ -135,7 +154,7 @@ function useFocusHandOn(): RefObject<HTMLElement | null> {
     held.current = null;
     heldRow.current = null;
     from.current = null;
-    if (document.activeElement !== left && !focusOnDocument()) return;
+    if (!focusOnDocument()) return;
     const controls = [
       ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
       ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
@@ -167,7 +186,7 @@ export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
   const rows = useWriteSelection("indicator", shown);
   // Before the early return, so it outlives the panel going while nothing is pending.
-  const panel = useFocusHandOn();
+  const panel = usePanelFocusReturn();
   if (rows.length === 0) return null;
   const out = rows.filter(
     (row) => row.status !== "refused" && !waitingToSend(row) && !heldForSignOut(row)

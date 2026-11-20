@@ -44,10 +44,10 @@ export function useCloseFocusKeeper(
   // listener below never hears the reader leave, and a later close would move the focus to the
   // heading of a section the reader had already left. So an element the focus leaves is
   // forgotten, whether it takes a press or only refuses one while it is busy, unless the close
-  // took it: a control a close disables is `disabled` as Chromium blurs it, and one a close
-  // takes off the page is no longer on it. A switch to another window or tab blurs the control
-  // too while the document itself has no focus, and the focus comes back to the control on
-  // return, so a blur while the document has no focus forgets nothing.
+  // took it: a control a close disables is `disabled` as Chromium blurs it, and React sends no
+  // `onBlur` for one a close takes off the page, so it stays noted. A switch to another window or
+  // tab blurs the control too while the document itself has no focus, and the focus comes back to
+  // the control on return, so a blur while the document has no focus forgets nothing.
   const onBlur: FocusEventHandler<HTMLElement> = (event) => {
     if (document.hasFocus() && !closeTook(event.target)) {
       noted.current = null;

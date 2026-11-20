@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -98,13 +98,25 @@ function closedStoppedNote(
 }
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`: undefined while
- *  that read has not answered, where it failed, and where it names nothing at the issue's address. */
+ *  that read has not answered, where it failed holding no answer, and where it names nothing at
+ *  the issue's address. */
 function issueTitleIn(
   read: { readonly targets: readonly ReferenceTarget[] } | undefined,
   key: string
 ): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets.find((target) => target.ref === reference)?.name;
+}
+
+/** What a names read under `queryKey` draws while it holds no answer (`placeholderData`): the
+ *  answer of the set of issues before (`before`), as a change to the set gives the read a new key,
+ *  so a title drawn stays drawn while the new read is out - until that read first fails. A read
+ *  that failed holding no answer draws the keys with its failure line (`readFailed`), and keeps
+ *  that line while the read its Retry sent is out; drawing the old answer then would take the
+ *  line, and its Retry with a reader's focus, away. */
+function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
+  return <T,>(before: T | undefined): T | undefined =>
+    (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
 }
 
 /**
@@ -251,6 +263,7 @@ export function IssueMarginPanel({
   // issue - to the editor's box, the one box of the row; and where that takes none either, on a
   // closed issue, to Development's heading.
   const fieldFailure = useSaidFailure(writes.updateIssue);
+  const routeStopped = fieldFailure?.error instanceof SendStoppedError;
   const routeRetryLeft = useFocusHandOff(() =>
     firstUsable(
       routeControl.current,
@@ -276,11 +289,17 @@ export function IssueMarginPanel({
   // (`issue.updated` naming `title` among its changes, or naming none, as an older server sends
   // it) reads again every names read whose key holds that issue's address
   // (`api/event-refresh.ts`'s `namesReadsNaming`), so neither is read again by its age, and a
-  // window focus reads one again only while its last read failed (`EVENT_FRESH`).
+  // window focus reads one again only while its last read failed (`EVENT_FRESH`). Each draws the
+  // answer of the set before while the read of a changed set is out (`keptUntilFailed`).
+  const queryClient = useQueryClient();
+  const blockerRead = referenceTargetsQuery(
+    blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))
+  );
   const blockerTitles = useQuery({
-    ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    ...blockerRead,
     ...EVENT_FRESH,
     enabled: readingDevelopment && blockers.length > 0,
+    placeholderData: keptUntilFailed(queryClient, blockerRead.queryKey),
   });
   const titleOf = (key: string) => issueTitleIn(blockerTitles.data, key);
   // What waits on this issue is the other direction of `blocked_by`: the references of that kind
@@ -301,16 +320,17 @@ export function IssueMarginPanel({
   const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
     edge.kind !== "blocked_by" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
   );
+  const waitingRead = referenceTargetsQuery(
+    waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
+  );
   const waitingTitles = useQuery({
-    ...referenceTargetsQuery(waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    ...waitingRead,
     ...EVENT_FRESH,
     enabled: readingDevelopment && waiting.length > 0,
+    placeholderData: keptUntilFailed(queryClient, waitingRead.queryKey),
   });
   // A waiting issue whose title is not read is drawn by its key alone, as Blocked by draws one.
-  const blocks = waiting.map((key) => ({
-    key,
-    title: issueTitleIn(waitingTitles.data, key) ?? "",
-  }));
+  const blocks = waiting.map((key) => ({ key, title: issueTitleIn(waitingTitles.data, key) }));
   // The line of a read that failed goes once the read answers, and the focus its Retry held goes
   // on in the row rather than to the page. In Blocked by it goes to the row's control, found by
   // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
@@ -708,11 +728,11 @@ export function IssueMarginPanel({
               failure={fieldFailure.count}
               message={
                 closedStoppedNote(
-                  { isClosed, stopped: fieldFailure.error instanceof SendStoppedError },
+                  { isClosed, stopped: routeStopped },
                   "this change to the issue",
                   "route"
                 ) ??
-                (fieldFailure.error instanceof SendStoppedError
+                (routeStopped
                   ? stoppedWriteNote("this change to the issue", "saved", {
                       anew: "Retry sends what the field holds now as a new write.",
                     })

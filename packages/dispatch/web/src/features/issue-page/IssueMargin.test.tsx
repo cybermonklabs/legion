@@ -31,6 +31,7 @@ import type {
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
+  GraphEdge,
   GraphReferences,
   Issue,
   IssueDetails,
@@ -272,6 +273,54 @@ function issueNames(
       return refs.includes(ref) ? [{ gone: false, kind: "issue", name, ref }] : [];
     }),
   };
+}
+
+/** The edge by which the issue `key` waits on CORE-1, as the Blocks row's read answers it
+ *  (`getReferences` of kind `blocked_by`): `excerpt` is the title the edge carries. */
+function waitingEdge(key: string, excerpt: string): GraphEdge {
+  return {
+    created_at: "2026-10-26T00:00:00Z",
+    direction: "in",
+    excerpt: { text: excerpt },
+    kind: "blocked_by",
+    node: graphNode({
+      id: key,
+      issue_key: key,
+      kind: "issue",
+      ref: buildDispatchReference({ key, kind: "issue" }),
+    }),
+    source_seq: 4,
+  };
+}
+
+/** The event of `key` starting to wait on CORE-1 (`blocked_by`), as the feed hands it to the
+ *  refresh: the payload as the server writes it - the issue after the write, flat, with what the
+ *  write moved - in the shape the feed's own test builds it (`event-feed.test.ts`'s `issue`). */
+function startsWaiting(key: string, title: string): DispatchEvent {
+  const payload: Record<string, unknown> = {
+    ancestors: [],
+    assignee: null,
+    blocked_by: ["CORE-1"],
+    changed: ["blocked_by"],
+    closed_at: null,
+    key,
+    parent: null,
+    project: "CORE",
+    references_changed: [{ id: "CORE-1", kind: "issue" }],
+    status: "todo",
+    title,
+  };
+  return {
+    actor: { id: "planner", kind: "session" },
+    created_at: "2026-10-26T00:00:00Z",
+    id: 12,
+    issue_key: key,
+    notify: true,
+    payload,
+    project: "CORE",
+    seq: 4,
+    type: "issue.updated",
+  } as DispatchEvent;
 }
 
 /** Every Escape that reaches the window from now on, by whether a control marked it taken: the
@@ -1121,48 +1170,11 @@ test("Details' Blocks is read again when another issue starts waiting on this on
 
     // CORE-5 starts waiting on CORE-1, and its event is what the feed hands the refresh, as
     // `__tests__/event-feed.test.ts` drives a blocker change.
-    edges = [
-      {
-        created_at: "2026-10-26T00:00:00Z",
-        direction: "in",
-        excerpt: { text: "Ship the release" },
-        kind: "blocked_by",
-        node: graphNode({
-          id: "CORE-5",
-          issue_key: "CORE-5",
-          kind: "issue",
-          ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
-        }),
-        source_seq: 4,
-      },
-    ];
-    // The payload as the server writes it - the issue after the write, flat, with what the write
-    // moved - in the shape the feed's own test builds it (`event-feed.test.ts`'s `issue`).
-    const payload: Record<string, unknown> = {
-      ancestors: [],
-      assignee: null,
-      blocked_by: ["CORE-1"],
-      changed: ["blocked_by"],
-      closed_at: null,
-      key: "CORE-5",
-      parent: null,
-      project: "CORE",
-      references_changed: [{ id: "CORE-1", kind: "issue" }],
-      status: "todo",
-      title: "Ship the release",
-    };
-    const waits = {
-      actor: { id: "planner", kind: "session" },
-      created_at: "2026-10-26T00:00:00Z",
-      id: 12,
-      issue_key: "CORE-5",
-      notify: true,
-      payload,
-      project: "CORE",
-      seq: 4,
-      type: "issue.updated",
-    } as DispatchEvent;
-    refreshQueries(queryClient, eventRefreshTargets(waits, "alice"));
+    edges = [waitingEdge("CORE-5", "Ship the release")];
+    refreshQueries(
+      queryClient,
+      eventRefreshTargets(startsWaiting("CORE-5", "Ship the release"), "alice")
+    );
 
     await waitFor(() =>
       expect(
@@ -1196,21 +1208,7 @@ test("Details' Blocks draws the new title of an issue that waits on this one onc
   // CORE-1, and the name the names read gives its address.
   let title = "Ship the release";
   const getReferences = spyOn(api, "getReferences").mockImplementation(async () => ({
-    edges: [
-      {
-        created_at: "2026-10-26T00:00:00Z",
-        direction: "in",
-        excerpt: { text: title },
-        kind: "blocked_by",
-        node: graphNode({
-          id: "CORE-5",
-          issue_key: "CORE-5",
-          kind: "issue",
-          ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
-        }),
-        source_seq: 4,
-      },
-    ],
+    edges: [waitingEdge("CORE-5", title)],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   }));
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
@@ -1257,6 +1255,143 @@ test("Details' Blocks draws the new title of an issue that waits on this one onc
       expect(row, "Blocks keeps the old title of CORE-5 after its rename").toHaveTextContent(
         "Ship the second release"
       )
+    );
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A change to the issues that wait on this one gives the names read of their titles a new key,
+// which holds no answer until that read answers. While it is out, Blocks keeps drawing the titles
+// it drew rather than drawing every issue by its key alone. Once it fails, Blocks draws the keys
+// with its failure line, as it does for a first read that fails, and keeps that line, with its
+// Retry and a reader's focus, while the read Retry sent is out.
+test("Details' Blocks keeps the titles it drew while the names read of a changed set is out, until that read fails", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const waiter = buildDispatchReference({ key: "CORE-5", kind: "issue" });
+  const newcomer = buildDispatchReference({ key: "CORE-6", kind: "issue" });
+  let edges: GraphReferences["edges"] = [waitingEdge("CORE-5", "Ship the release")];
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async () => ({
+    edges,
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  }));
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
+    refs.includes(newcomer) ? held.promise : issueNames(refs, { "CORE-5": "Ship the release" })
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
+    );
+
+    // CORE-6 starts waiting on CORE-1 too, and the names read of the two is held out.
+    edges = [...edges, waitingEdge("CORE-6", "Write the notes")];
+    refreshQueries(
+      queryClient,
+      eventRefreshTargets(startsWaiting("CORE-6", "Write the notes"), "alice")
+    );
+    await blocksRow().findByRole("link", { name: "CORE-6" });
+    await waitFor(() => expect(titleReads(titles, newcomer)).toBe(1));
+    expect(
+      detailsRow(PROPERTY_LABELS.blocks),
+      "Blocks drew CORE-5 by its key alone while the names read of the new set is out"
+    ).toHaveTextContent("Ship the release");
+
+    await act(async () =>
+      held.reject(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
+    );
+    const retry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(blocksRow().getByRole("alert")).toHaveTextContent(
+      "Could not read the titles of these issues."
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.blocks),
+      "Blocks drew a title its failed read holds no answer for"
+    ).not.toHaveTextContent("Ship the release");
+
+    const retried = Promise.withResolvers<ReferenceTargets>();
+    titles.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titleReads(titles, newcomer)).toBe(2));
+    expect(
+      retry,
+      "the line and its Retry went while the read Retry sent is out"
+    ).toBeInTheDocument();
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.blocks),
+      "Blocks drew the titles of the set before while the read Retry sent is out"
+    ).not.toHaveTextContent("Ship the release");
+
+    await act(async () =>
+      retried.resolve(
+        issueNames([waiter, newcomer], {
+          "CORE-5": "Ship the release",
+          "CORE-6": "Write the notes",
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Write the notes")
+    );
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Blocked by draws its titles from a names read of the issues it waits on, which a change to them
+// gives a new key: while that read is out, the titles the row drew stay drawn.
+test("Blocked by keeps the titles it drew while the names read of a changed list is out", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const added = buildDispatchReference({ key: "CORE-4", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
+    refs.includes(added) ? held.promise : issueNames(refs, { "CORE-3": "Fix the build" })
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+    );
+
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3", "CORE-4"] });
+    await blockedBy().findByRole("link", { name: "CORE-4" });
+    await waitFor(() => expect(titleReads(titles, added)).toBe(1));
+    expect(
+      detailsRow(PROPERTY_LABELS.blocked_by),
+      "Blocked by drew CORE-3 by its key alone while the names read of the new list is out"
+    ).toHaveTextContent("Fix the build");
+
+    await act(async () =>
+      held.resolve(
+        issueNames([blocker, added], { "CORE-3": "Fix the build", "CORE-4": "Pin the toolchain" })
+      )
+    );
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Pin the toolchain")
     );
   } finally {
     unmount();
@@ -1502,21 +1637,7 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
     );
     await act(async () =>
       blocksHeld.resolve({
-        edges: [
-          {
-            created_at: "2026-10-26T00:00:00Z",
-            direction: "in",
-            excerpt: { text: "Ship the release" },
-            kind: "blocked_by",
-            node: graphNode({
-              id: "CORE-5",
-              issue_key: "CORE-5",
-              kind: "issue",
-              ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
-            }),
-            source_seq: 4,
-          },
-        ],
+        edges: [waitingEdge("CORE-5", "Ship the release")],
         node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
       })
     );
@@ -1576,16 +1697,7 @@ test("Blocks says the titles it could not read, and its Retry draws them and han
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const waiter = buildDispatchReference({ key: "CORE-5", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [
-      {
-        created_at: "2026-10-26T00:00:00Z",
-        direction: "in",
-        excerpt: { text: "Ship the release" },
-        kind: "blocked_by",
-        node: graphNode({ id: "CORE-5", issue_key: "CORE-5", kind: "issue", ref: waiter }),
-        source_seq: 4,
-      },
-    ],
+    edges: [waitingEdge("CORE-5", "Ship the release")],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
@@ -1858,19 +1970,7 @@ test("Show all gives the focus to the first entry it opens", async () => {
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const waiting = Array.from({ length: 12 }, (_, index) => `CORE-${index + 2}`);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: waiting.map((key) => ({
-      created_at: "2026-10-26T00:00:00Z",
-      direction: "in",
-      excerpt: { text: `Waits for ${key}` },
-      kind: "blocked_by",
-      node: graphNode({
-        id: key,
-        issue_key: key,
-        kind: "issue",
-        ref: buildDispatchReference({ key, kind: "issue" }),
-      }),
-      source_seq: 4,
-    })),
+    edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
@@ -2218,6 +2318,45 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
+/** Opens Add's menu, then draws `away`, the issue as another session changed it, on which Add is
+ *  not drawn, and `back`, the issue as it was (`drawIssue`): fails unless the menu opened, listing
+ *  `entries` where they are given, `away` took Add off the page (`change` names what did), and
+ *  Add came back with its menu closed. */
+async function expectAddMenuShut(
+  user: UserEvent,
+  getIssue: Mock<typeof api.getIssue>,
+  queryClient: QueryClient,
+  {
+    away,
+    back,
+    change,
+    entries,
+  }: {
+    readonly away: IssueDetails;
+    readonly back: IssueDetails;
+    readonly change: string;
+    readonly entries?: readonly string[];
+  }
+): Promise<void> {
+  await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+  const menu = await screen.findByRole("menu", { name: CONTROL_LABELS.add });
+  expect(menu).toBeInTheDocument();
+  if (entries !== undefined) {
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((entry) => entry.textContent),
+      `Add lists other than ${entries.join(", ")}`
+    ).toEqual([...entries]);
+  }
+  drawIssue(getIssue, queryClient, away);
+  await waitFor(() => expect(addMenuControl(), `${change} left Add on the page`).toBeNull());
+  drawIssue(getIssue, queryClient, back);
+  const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
+  expect(add, "Add came back with its menu open").toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("menu"), "Add came back with its menu drawn").not.toBeInTheDocument();
+}
+
 // Add's menu shuts as another session closes the issue, though the reader pressed nothing: left
 // open, it would come back drawn open when the issue reopens, with the focus not in it.
 test("a close made elsewhere shuts Add's open menu, so a reopen draws Add with its menu closed", async () => {
@@ -2226,14 +2365,11 @@ test("a close made elsewhere shuts Add's open menu, so a reopen draws Add with i
   const { queryClient, unmount } = renderDetails();
 
   try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
-    expect(await screen.findByRole("menu", { name: CONTROL_LABELS.add })).toBeInTheDocument();
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() => expect(addMenuControl(), "the close left Add on the page").toBeNull());
-    drawIssue(getIssue, queryClient, issue);
-    const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
-    expect(add, "Add came back with its menu open").toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("menu"), "Add came back with its menu drawn").not.toBeInTheDocument();
+    await expectAddMenuShut(user, getIssue, queryClient, {
+      away: closedIssue,
+      back: issue,
+      change: "the close",
+    });
   } finally {
     unmount();
     restore();
@@ -2273,17 +2409,12 @@ test("a value set elsewhere for Add's last entry shuts its open menu, so Add com
   try {
     await screen.findByRole("link", { name: "CORE-3" });
     await waitFor(() => expect(priorities).toHaveBeenCalled());
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
-    expect(
-      (await screen.findAllByRole("menuitem")).map((entry) => entry.textContent),
-      "Add lists other than Parent"
-    ).toEqual([PROPERTY_LABELS.parent]);
-    drawIssue(getIssue, queryClient, { ...orphan, parent: "CORE-2" });
-    await waitFor(() => expect(addMenuControl(), "the parent left Add on the page").toBeNull());
-    drawIssue(getIssue, queryClient, orphan);
-    const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
-    expect(add, "Add came back with its menu open").toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("menu"), "Add came back with its menu drawn").not.toBeInTheDocument();
+    await expectAddMenuShut(user, getIssue, queryClient, {
+      away: { ...orphan, parent: "CORE-2" },
+      back: orphan,
+      change: "the parent",
+      entries: [PROPERTY_LABELS.parent],
+    });
   } finally {
     unmount();
     priorities.mockRestore();
