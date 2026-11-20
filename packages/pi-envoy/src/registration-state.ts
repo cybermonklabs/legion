@@ -1,5 +1,6 @@
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import type { InboundConnection } from "@legion/envoy-client/listener-relay";
 import {
   EnvoyApiError,
   type EnvoyClient,
@@ -11,7 +12,6 @@ import {
   type SubscribeResult,
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
-import type { NatsConnection } from "nats";
 import { createHandBackLedger } from "./hand-back-ledger";
 
 /**
@@ -21,7 +21,7 @@ import { createHandBackLedger } from "./hand-back-ledger";
  * A queued task never re-checks a fence before a step, and keeps {@link TaskHandle.check} for the
  * two things that are not steps: a catch-all that would otherwise swallow the refusal, and an
  * action outside the handle that a refused task must not take. `run` hands it a
- * {@link TaskHandle}, and every state write, listener request, NATS subscribe and NATS
+ * {@link TaskHandle}, and every state write, listener request, subscribe and inbound
  * connection it makes after a wait is a method of that handle. The handle refuses the step once
  * the task's deadline has fired, and, for a task bound to a session (`actFor`), once that
  * session stopped being the open session. The first refusal latches: a session that closes and
@@ -101,9 +101,11 @@ export interface DialLimit {
 
 /**
  * Everything the module needs from its host, injected so the package's own unit tests exercise it
- * with plain fakes: no Oh My Pi host type is imported here.
+ * with plain fakes: no Oh My Pi host type is imported here. `Connection` is the session's inbound
+ * connection, NATS or the listener's relay socket (`InboundConnection`): the module closes one a
+ * refused task opened, and hands the host's own to a task.
  */
-export interface RegistrationStateDeps {
+export interface RegistrationStateDeps<Connection extends InboundConnection = InboundConnection> {
   /** The listener client, read at each call: it throws while Envoy is off for this session, as
    *  `requireEnvoy()` does, and the queues exist whatever the session resolved. */
   readonly client: () => EnvoyClient;
@@ -124,26 +126,24 @@ export interface RegistrationStateDeps {
     readonly sessionID: string;
     readonly clientInstanceID: string;
   }) => void;
-  /** Opens a NATS connection, storing nothing: this module closes one a refused task opened. A
-   *  queued task's dial is given the task's deadline and whether the task was abandoned, so its
-   *  redials end in time for the rest of the task; a dial outside a task gets no limit. */
-  readonly dial: (limit?: DialLimit) => Promise<NatsConnection>;
+  /** Opens the session's inbound connection, storing nothing: this module closes one a refused
+   *  task opened. A queued task's dial is given the task's deadline and whether the task was
+   *  abandoned, so its redials end in time for the rest of the task; a dial outside a task gets
+   *  no limit. */
+  readonly dial: (limit?: DialLimit) => Promise<Connection>;
   /**
-   * The session's one NATS connection, made with `dial` when it has none and kept by the host.
+   * The session's one inbound connection, made with `dial` when it has none and kept by the host.
    * The whole acquisition is the fenced step, not the dial alone: the host's own waits after the
    * dial (closing a connection another caller won the race with, and taking that caller's
    * connection instead) happen inside this call, and the handle checks the task again after it.
    */
-  readonly connect: (dial: () => Promise<NatsConnection>) => Promise<NatsConnection>;
+  readonly connect: (dial: () => Promise<Connection>) => Promise<Connection>;
   /**
    * Opens `topic`'s subjects over `connect`'s connection; answers whether any subjects were new.
    * A queued task is handed its own fenced `connect`, so a subscribe whose connection outran the
    * task opens nothing: a dial it made is closed and the task ends before any subject opens.
    */
-  readonly subscribeTopic: (
-    topic: string,
-    connect: () => Promise<NatsConnection>
-  ) => Promise<boolean>;
+  readonly subscribeTopic: (topic: string, connect: () => Promise<Connection>) => Promise<boolean>;
   /**
    * Stops following the subjects this module no longer keeps open, the live subscriptions
    * staying with the extension, and takes them out of the listener's registry under
@@ -161,7 +161,7 @@ export interface RegistrationStateDeps {
  * fence before a step. Refusal throws, which ends the task, and latches: once a step refused, so
  * does every step after it, whatever the session does next.
  */
-export interface TaskHandle {
+export interface TaskHandle<Connection extends InboundConnection = InboundConnection> {
   /**
    * Binds this task to the session it acts for, called once as soon as the task learns it. From
    * then on every step refuses after that session stopped being the open session. Binding twice
@@ -251,13 +251,13 @@ export interface TaskHandle {
     warning: string
   ) => Promise<void>;
 
-  // — NATS —
+  // — the inbound connection —
   /**
-   * The session's one NATS connection, dialled if it has none. A connection this task dialled and
-   * was refused while the dial was in flight is closed here and never answered, and so is a step
-   * the acquisition itself outran: the task ends rather than acting on the connection.
+   * The session's one inbound connection, dialled if it has none. A connection this task dialled
+   * and was refused while the dial was in flight is closed here and never answered, and so is a
+   * step the acquisition itself outran: the task ends rather than acting on the connection.
    */
-  readonly connect: () => Promise<NatsConnection>;
+  readonly connect: () => Promise<Connection>;
   /** Opens `topic`'s subjects; answers whether any were new. */
   readonly subscribe: (topic: string) => Promise<boolean>;
 }
@@ -273,7 +273,7 @@ export interface TaskRefusal {
 }
 
 /** One of the module's serial queues. */
-export interface TaskQueue {
+export interface TaskQueue<Connection extends InboundConnection = InboundConnection> {
   /**
    * Runs tasks one at a time, in the order they were queued; a task that fails does not stop the
    * ones after it. Each task gets `deadlineMs()` milliseconds, read when that task starts, after
@@ -283,7 +283,7 @@ export interface TaskQueue {
    * is handed what that task left behind.
    */
   readonly run: <T>(
-    task: (handle: TaskHandle) => Promise<T>,
+    task: (handle: TaskHandle<Connection>) => Promise<T>,
     onRefused?: (refusal: TaskRefusal) => void
   ) => Promise<T | undefined>;
   /** Resolves once every task queued so far has finished. */
@@ -291,7 +291,7 @@ export interface TaskQueue {
 }
 
 /** The module's surface: the two queues, the named operations, and the readers of its state. */
-export interface RegistrationState {
+export interface RegistrationState<Connection extends InboundConnection = InboundConnection> {
   /**
    * This extension instance's client instance id, minted here so an ACP host running several
    * top-level sessions in one process gives each its own. Sent on every registration and on the
@@ -299,9 +299,9 @@ export interface RegistrationState {
    */
   readonly clientInstanceID: string;
   /** Reconcile passes: one at a time, each converging this process to the host's session. */
-  readonly passes: TaskQueue;
+  readonly passes: TaskQueue<Connection>;
   /** Role moves: the model's `envoy_role_set`, a plugin's claim, and each pass's own settle. */
-  readonly roleMoves: TaskQueue;
+  readonly roleMoves: TaskQueue<Connection>;
 
   // — named operations, made on purpose without a live task —
   /**
@@ -379,7 +379,9 @@ export interface RegistrationState {
   readonly roleSettledSession: () => string;
 }
 
-export function createRegistrationState(deps: RegistrationStateDeps): RegistrationState {
+export function createRegistrationState<Connection extends InboundConnection>(
+  deps: RegistrationStateDeps<Connection>
+): RegistrationState<Connection> {
   const clientInstanceID = newClientInstanceID();
 
   // The one role this process holds at the listener, and the session id the listener names for
@@ -490,7 +492,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   /** A task's handle and what the task left behind, which the queue reads when a step refused it.
    */
   interface RunningTask {
-    readonly handle: TaskHandle;
+    readonly handle: TaskHandle<Connection>;
     readonly refusal: TaskRefusal;
   }
 
@@ -735,7 +737,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // The one dial a queued task makes, its own: a connection opened for a task that was refused
     // while the dial was in flight is closed here rather than left dangling, and the task ends.
     // Private: a task asks for the session's connection, not for a dial.
-    const dial = async (): Promise<NatsConnection> => {
+    const dial = async (): Promise<Connection> => {
       guard();
       const dialled = await deps.dial({ deadlineAt, stopped: () => !acting() });
       if (!acting()) {
@@ -754,7 +756,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // answering with theirs, and a deadline or a session move during that wait would otherwise go
     // unseen — the task would open subjects and replace the stream control for a session it no
     // longer decides for. A connection this task did not open is left alone: it is the session's.
-    const connect = async (): Promise<NatsConnection> => {
+    const connect = async (): Promise<Connection> => {
       guard();
       const connected = await deps.connect(dial);
       if (!acting()) {
@@ -767,7 +769,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       return connected;
     };
 
-    const handle: TaskHandle = {
+    const handle: TaskHandle<Connection> = {
       actFor: (id) => {
         if (bound !== undefined) {
           throw new Error(
@@ -863,11 +865,11 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     return { handle, refusal };
   };
 
-  const createQueue = (): TaskQueue => {
+  const createQueue = (): TaskQueue<Connection> => {
     let tail: Promise<unknown> = Promise.resolve();
     return {
       run<T>(
-        task: (handle: TaskHandle) => Promise<T>,
+        task: (handle: TaskHandle<Connection>) => Promise<T>,
         onRefused?: (refusal: TaskRefusal) => void
       ): Promise<T | undefined> {
         // `tail` never rejects (it is always `next.catch(…)`), so a failed task never stops the

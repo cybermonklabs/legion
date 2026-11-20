@@ -25,7 +25,7 @@ import {
   admittingMoves,
   channelReopener,
   closeUnstartedConnection,
-  dialChannelNats,
+  dialChannelInbound,
   sessionAdmission,
 } from "../channel-connection"
 import type { ChannelConnection } from "../channel-topics"
@@ -536,16 +536,19 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if ("off" in inbound) {
       session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
     } else {
-      // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
-      // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
-      // moved to the new session's (`followSession`) before that session's subjects are taken. A
+      // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
+      // seed, no credential, or the session's broker token, which is then kept renewed and, at a
+      // `/new`, moved to the new session's (`followSession`) before that session's subjects are
+      // taken; or the listener's relay socket, opened again for the new session at a `/new`. A
       // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
       // Codex starts no plugin server again for a thread whose server lost its connection.
       const natsName = `codex-envoy-channel-${id.id}`
       // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
       // the process ends as an asked-for stop does, as the Claude Code server's does.
-      const dialled = await dialChannelNats(
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        () => id.id,
         natsName,
         warn,
         connect,
@@ -568,6 +571,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
       const followSession = admitting(dialled.followSession)
       const reopen = channelReopener({
         inbound,
+        listenerUrl: envoy.url,
+        session: () => id.id,
         name: natsName,
         signal: stopping.signal,
         swapKeeper: (stop) => {
@@ -636,6 +641,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       session = started
       stream = startCodexAgentStream({
         connection,
+        liveView: dialled.liveView,
         sessionId: id.id,
         warn,
         ...(admission === undefined

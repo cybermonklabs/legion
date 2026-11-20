@@ -46,6 +46,7 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import { ListenerRelay } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
 import {
   type SessionConfigFile,
@@ -99,7 +100,7 @@ import {
   admittingMoves,
   channelReopener,
   closeUnstartedConnection,
-  dialChannelNats,
+  dialChannelInbound,
   type ReopenConnection,
   type ReopenedConnection,
   START_STOPPING,
@@ -1341,6 +1342,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       })
     },
   )
+  // A relay socket's refused trade is this session's outage too, told once with its
+  // registrations', and the socket that opens again ends it (`ListenerRelay.reportOutagesTo`).
+  if (options.connection instanceof ListenerRelay) options.connection.reportOutagesTo(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -2109,6 +2113,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     connection = live
     followSession = reopened.followSession
+    if (live instanceof ListenerRelay) live.reportOutagesTo(inboundOutage)
     // A handoff that waits for its relay opens it on this connection as it registers.
     if (relay !== undefined && !handoffDeliveryPending) subscribeRelay(relay)
     watchConnection(live)
@@ -2775,12 +2780,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       starting =
-        inbound.natsCredential.kind === "broker"
-          ? "it waits for this session's broker token, and its stderr says what each trade came to"
-          : "it connects to NATS"
+        "relaySetting" in inbound
+          ? "it opens the listener's relay socket for this session, and its stderr says why an open failed"
+          : inbound.natsCredential.kind === "broker"
+            ? "it waits for this session's broker token, and its stderr says what each trade came to"
+            : "it connects to NATS"
       const natsName = `claude-envoy-channel-${identity.id}`
-      const dialled = await dialChannelNats(
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        currentSessionId,
         natsName,
         (text, dialError) => {
           // A redial's warning names what the start waits on; the token keeper warns through the
@@ -2808,6 +2817,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const followSession = admitting(dialled.followSession)
       const reopen = channelReopener({
         inbound,
+        listenerUrl: envoy.url,
+        session: currentSessionId,
         name: natsName,
         signal: booting.signal,
         swapKeeper: (stop) => {
@@ -2859,6 +2870,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         if (stopping || connection === undefined) return
         agentStream = startAgentStream({
           connection,
+          liveView: dialled.liveView,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),
