@@ -34,19 +34,19 @@ const ANSWER = JSON.stringify({
   },
 });
 
-/** A stand-in agent in `directory`: it keeps its standard input and its arguments there. */
-async function standIn(directory: string): Promise<string> {
+/** A stand-in agent in `directory` that runs `lines` as its shell script. */
+async function standIn(directory: string, lines: readonly string[]): Promise<string> {
   const path = join(directory, "omp");
-  await writeFile(
-    path,
-    ["#!/bin/sh", "cat > message", 'printf "%s\\n" "$@" > arguments', `printf '%s\\n' '${ANSWER}'`]
-      .join("\n")
-      .concat("\n"),
-    "utf8"
-  );
+  await writeFile(path, ["#!/bin/sh", ...lines].join("\n").concat("\n"), "utf8");
   await chmod(path, 0o755);
   return path;
 }
+
+/** An agent that keeps its standard input and its arguments in its directory, then answers. */
+const ANSWERS = ["cat > message", 'printf "%s\\n" "$@" > arguments', `printf '%s\\n' '${ANSWER}'`];
+
+/** An agent that exits before it reads its standard input, as one refused at start does. */
+const QUITS = ["echo 'no credential for the model' >&2", "exit 3"];
 
 /** One request of the run, started in `directory`. */
 function request(directory: string, prompt: string): AgentRequest {
@@ -61,7 +61,7 @@ describe("the message the agent is sent", () => {
     const prompt = `${"Évidence du cas, ligne après ligne.\n".repeat(60_000)}\n\n`;
     expect(Buffer.byteLength(prompt)).toBeGreaterThan(2 * 1024 * 1024);
 
-    const answer = await askAgent(await standIn(directory), request(directory, prompt));
+    const answer = await askAgent(await standIn(directory, ANSWERS), request(directory, prompt));
 
     expect(answer.failure).toBeNull();
     expect(answer.text).toBe("Approve");
@@ -81,5 +81,15 @@ describe("the message the agent is sent", () => {
     expect(answer.text).toBe("");
     expect(answer.model).toBeNull();
     expect(answer.failure).toStartWith("the agent could not be started: ");
+  });
+
+  test("an agent that exits before reading a long message is that case's failure", async () => {
+    const directory = await scratch();
+    const prompt = "Évidence.\n".repeat(300_000);
+
+    const answer = await askAgent(await standIn(directory, QUITS), request(directory, prompt));
+
+    expect(answer.text).toBe("");
+    expect(answer.failure).toBe("the agent exited 3 with no answer: no credential for the model");
   });
 });
