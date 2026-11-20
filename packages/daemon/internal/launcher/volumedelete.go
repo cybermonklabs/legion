@@ -320,8 +320,8 @@ func newDeleterReplies(replies io.Reader) *bufio.Reader {
 // and dropped up to its newline, so the reply after it is read from its own start. replies is a
 // reader made by newDeleterReplies, or one with a larger buffer: a smaller one would cut a reply
 // within the bound. The deleter is legion's own volume-trim-delete, whose replies are about the
-// paths it removes, and a path joined from a directory walk holds no "://", so the cut is made
-// here rather than by redact.Read, which would drop a long run that holds no byte ending a URL.
+// paths it removes, and a path joined from a directory walk holds no "://", so no part of a URL's
+// credential is in a reply for the cut to leave, and the cut is made here.
 func readReply(replies *bufio.Reader) (string, bool, error) {
 	chunk, err := replies.ReadSlice('\n')
 	if err == nil && len(chunk) <= volumeDeleteReplyBytes+1 {
@@ -510,8 +510,8 @@ const volumeDeleteFirstFD = 3
 // the child's. The first bytes are the ones kept because they are the ones that say why: the
 // error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. The
 // child is legion's own volume-trim-delete, whose words are about the paths it removes, and a path
-// joined from a directory walk holds no "://", so the cut is made here rather than by redact.Read,
-// which would drop a long run that holds no byte ending a URL.
+// joined from a directory walk holds no "://", so no part of a URL's credential is in them for the
+// cut to leave, and the cut is made here.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

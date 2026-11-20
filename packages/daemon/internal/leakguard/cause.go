@@ -38,6 +38,6 @@ func Cause(what string, err error) string {
 	if err != nil {
 		sentence += ": " + err.Error()
 	}
-	sentence, _ = redact.Bytes(oneLine.Replace(storetext.Text(sentence)), maxCauseBytes)
+	sentence, _ = redact.Bytes(oneLine.Replace(storetext.FarSideText(sentence)), maxCauseBytes)
 	return sentence
 }

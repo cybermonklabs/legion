@@ -266,7 +266,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, body, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
+	status, body, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			return nil, &brokerUnavailableError{err: err}
@@ -274,10 +274,10 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, err
 	}
 	if status >= 500 && status <= 599 {
-		return nil, &brokerUnavailableError{err: refusal(status, body, answerBytes)}
+		return nil, &brokerUnavailableError{err: refusal(status, body, cut)}
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, body, answerBytes)
+		return nil, refusal(status, body, cut)
 	}
 	var answer struct {
 		CredentialID string    `json:"credential_id"`
@@ -450,12 +450,12 @@ func (b enrollmentBody) withoutNewFields() enrollmentBody {
 	return b
 }
 
-// refusesAnUnknownField reports whether a broker answered status and raw the way a broker from
-// before a field refuses a body carrying it: 400 INVALID_ENROLLMENT naming an unknown field, since
-// its readJSON decodes the body with DisallowUnknownFields.
-func refusesAnUnknownField(status int, raw []byte) bool {
+// refusesAnUnknownField reports whether a broker answered status and raw, cut where do's bound cut
+// it, the way a broker from before a field refuses a body carrying it: 400 INVALID_ENROLLMENT
+// naming an unknown field, since its readJSON decodes the body with DisallowUnknownFields.
+func refusesAnUnknownField(status int, raw []byte, cut bool) bool {
 	var api *APIError
-	return status == http.StatusBadRequest && errors.As(refusal(status, raw, answerBytes), &api) &&
+	return status == http.StatusBadRequest && errors.As(refusal(status, raw, cut), &api) &&
 		api.Code == "INVALID_ENROLLMENT" && strings.Contains(api.Message, "unknown field")
 }
 
@@ -486,20 +486,20 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
 	}
-	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw) {
+	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw, cut) {
 		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
 			"pod_uid", e.PodUID, "slot", e.Slot)
-		status, raw, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		status, raw, cut, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
 		if err != nil {
 			return Enrollment{}, err
 		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
-		return Enrollment{}, refusal(status, raw, answerBytes)
+		return Enrollment{}, refusal(status, raw, cut)
 	}
 	var answer enrollmentAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
@@ -514,14 +514,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 // Revoke is DELETE /v1/enrollments/{id}, authenticated with a launcher proof: 204 and 404 are
 // both "revoked" (the route is idempotent).
 func (c *Client) Revoke(ctx context.Context, id string) error {
-	status, raw, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
 	if err != nil {
 		return err
 	}
 	if status == http.StatusNoContent || status == http.StatusNotFound {
 		return nil
 	}
-	return refusal(status, raw, answerBytes)
+	return refusal(status, raw, cut)
 }
 
 // CarriedEnrollment is one enrollment POST /v1/enrollments/carried answers: a pod enrollment this
@@ -571,14 +571,14 @@ func (*CarriedAnswerTooLargeError) UnlistedCarry() bool { return true }
 // CarriedAnswerTooLargeError. With no live launcher credential it answers the non-permanent
 // NO_MACHINE_CREDENTIAL, as Enroll does; any other refusal is an *APIError.
 func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, raw, carriedAnswerBytes)
+		return nil, refusal(status, raw, cut)
 	}
-	if len(raw) > carriedAnswerBytes {
+	if cut {
 		return nil, &CarriedAnswerTooLargeError{Limit: carriedAnswerBytes}
 	}
 	var answer carriedAnswer
@@ -632,14 +632,14 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+	status, raw, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
 		return time.Time{}, err
 	}
 	if status != http.StatusOK {
-		return time.Time{}, refusal(status, raw, answerBytes)
+		return time.Time{}, refusal(status, raw, cut)
 	}
 	var answer struct {
 		PodUID     string    `json:"pod_uid"`
@@ -720,31 +720,31 @@ func (*SupersededError) Permanent() bool { return true }
 // and a proof in flight during one stays valid. With no live credential it wakes the login loop
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
 // wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
-// replaced clears nothing. It reads the answer as do does, up to limit bytes and one more.
-func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, error) {
+// replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
+func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, bool, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, false, c.noCredentialError()
 	}
 	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
-	status, raw, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
+	status, raw, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
 		req.Header.Set("Proof", proof)
 	})
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if status == http.StatusUnauthorized {
 		c.update(func(cur loginState) (loginState, bool) {
 			return loginState{failure: "the broker refused the daemon's launcher credential; logging in again"}, cur.cred == cred
 		})
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, false, c.noCredentialError()
 	}
-	return status, raw, nil
+	return status, raw, cut, nil
 }
 
 // backoff is a wait after failed consecutive logins: initial after the first, doubled for each one
@@ -880,22 +880,23 @@ func (c *Client) noCredentialError() error {
 // their answers comes near it, and a longer one is cut there.
 const answerBytes = 1 << 16
 
-// do sends one broker call and reads its answer: at most limit bytes and one more, so a caller
-// that must tell a whole answer from one cut short (Carried) reads a body longer than limit as
-// one that was, and so does refusal, which quotes a body that is not the contract's shape; every
-// other caller reads the cut body as its contract's shape or not.
-func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, error) {
+// do sends one broker call and reads its answer through redact.ReadBounded: its first limit bytes,
+// and whether the bound cut it, which a caller that must tell a whole answer from one cut short
+// reads (Carried), and so does refusal, which quotes a body that is not the contract's shape;
+// every other caller reads the cut body as its contract's shape or not. A read that fails is an
+// error.
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, false, err
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -909,27 +910,27 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("broker %s %s: %w", method, path, err)
+		return 0, nil, false, fmt.Errorf("broker %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	raw, cut, err := redact.ReadBounded(resp.Body, limit)
 	if err != nil {
-		return 0, nil, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
+		return 0, nil, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
-	return resp.StatusCode, raw, nil
+	return resp.StatusCode, raw, cut, nil
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape
 // still yields one, with the status and the body's text as its message. raw is the body as do read
-// it for a call bounded at limit, so a raw longer than limit is one that bound cut, which can stop
-// inside a URL before its "@": the message is what redact.Read keeps of raw's first limit bytes.
-func refusal(status int, raw []byte, limit int) error {
+// it, and cut whether do's bound cut it, which can stop inside a URL before its "@": the message
+// is what redact.Read keeps of raw.
+func refusal(status int, raw []byte, cut bool) error {
 	var body struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.Code == "" {
-		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(string(raw[:min(len(raw), limit)]), len(raw) > limit)}
+		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(string(raw), cut)}
 	}
 	return &APIError{Status: status, Code: body.Code, Message: body.Error}
 }

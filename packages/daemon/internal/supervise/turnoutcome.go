@@ -60,11 +60,11 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // late report and an in-order one leave the same answer.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
-// (storetext.FarSideText) before it is cut: storetext.Text makes it valid, and redact.Runes gives
-// it whole through the URL rule before the cut, so the window in memory is the window the store
-// holds, and the cut cannot leave half a credential.
+// (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
+// it, so the window in memory is the window the store holds, and the cut cannot leave half a
+// credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
-	o.Message = redact.Runes(storetext.Text(o.Message), maxRefusalMessage)
+	o.Message = redact.Runes(storetext.FarSideText(o.Message), maxRefusalMessage)
 	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
 	if found {
 		m.claim.TurnOutcomes[at] = o
