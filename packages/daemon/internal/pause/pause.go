@@ -100,15 +100,22 @@ func (e *UnavailableError) Error() string {
 
 // Effects is what the daemon does once a pause or a resume has committed: the machines, the pod
 // holds, the outbox lanes and the admission pass are the daemon's, so it supplies these steps, and
-// a test runs the service with a fake of them. Each runs after the flag is set or cleared and
-// before the act is logged, under the service's lock, so the next act, Load and Refresh wait for
-// it: it must call nothing of the Service but Paused. Its context is the act's, never cancelled,
-// because the transaction it follows has committed.
+// a test runs the service with a fake of them. Each runs after the flag is set or cleared, under
+// the service's lock, so the next act, Load and Refresh wait for it: it must call nothing of the
+// Service but Paused. The act's line is a hook of the act's commit, so it is written before them.
+// Its context is never cancelled, because the transaction it follows has committed.
+//
+// Both follow the flag, and so does the work they do: the catch-up must read the machines once the
+// gate holds every launch, and a machine posted the end of a pause must find the flag cleared. So
+// neither is a hook of the act's commit, which may run late, after a later act moved the flag. An
+// act whose outcome the store could not say sets no flag and runs neither; a Refresh, or a later
+// act the store refuses, that then finds the flag behind the store moves the flag and runs them
+// for the move it makes (follow).
 type Effects interface {
 	// Paused runs once pause has committed and the flag is set. asked are the claims the pause's
-	// transaction asked to stop; the daemon asks the stop of every other live role of the project
-	// but the controller, which catches a launch that passed the gate before the flag was set
-	// (decision 3).
+	// transaction asked to stop, none where the flag followed the store (follow); the daemon asks
+	// the stop of every other live role of the project but the controller, which catches a launch
+	// that passed the gate before the flag was set (decision 3).
 	Paused(ctx context.Context, pause store.Pause, asked []store.PauseStopClaim)
 	// Resumed runs once the resume that ended pause has committed and the flag is cleared: the
 	// steps of decision 22 after the transaction, in their order, are the daemon's.
@@ -148,8 +155,8 @@ type Service struct {
 	now         func() time.Time
 
 	// mu serializes Pause, Resume, Load and Refresh, each from before its store read or write to
-	// after its set of the flag, so a Refresh never writes a reading taken before this daemon's
-	// own act over the flag that act set.
+	// after its set of the flag and the Effects that follow it, so a Refresh never writes a reading
+	// taken before this daemon's own act over the flag that act set.
 	mu sync.Mutex
 	// paused is the open pause's id, 0 while the project runs. A pause's id is never 0 (bigserial).
 	paused atomic.Int64
@@ -185,9 +192,12 @@ func (s *Service) Paused() (int64, bool) {
 // Pause pauses the project for reason, by `by` (decisions 3, 20 and 24). It refuses a blank reason
 // (ErrReasonRequired) and a daemon that cannot hold a pause (*UnavailableError), then runs the
 // store's pause transaction, which refuses a second pause with the *store.AlreadyPausedError it
-// returns unchanged. Once that commits it sets the flag, runs Effects.Paused with the claims the
-// transaction asked to stop, and logs the pause. A caller that goes away does not stop an act
-// under way, so no pause commits without its flag and its after-commit steps.
+// returns unchanged. The pause's line is a hook of that commit (logPaused). Once the commit
+// returns, Pause sets the flag and runs Effects.Paused with the claims the transaction asked to
+// stop. A pause whose outcome the store could not say returns that error and does neither: a
+// Refresh, or this daemon's next pause, which the store refuses as already paused, finds the flag
+// behind the store and does both (follow). A caller that goes away does not stop an act under
+// way, so no pause commits without its flag and its after-commit steps.
 func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string) (store.Pause, error) {
 	if strings.TrimSpace(reason) == "" {
 		return store.Pause{}, ErrReasonRequired
@@ -206,11 +216,26 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if tell {
 		req.Notice = pausedNotice
 	}
-	pause, asked, err := s.store.Pause(ctx, req)
+	var (
+		pause store.Pause
+		asked []store.PauseStopClaim
+	)
+	err = store.Transact(ctx, s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if pause, asked, err = s.store.Pause(ctx, req); err != nil {
+			return err
+		}
+		made, stops := pause, asked
+		store.OnCommit(ctx, func() { s.logPaused(made, stops, tell) })
+		return nil
+	})
 	if standing := (*store.AlreadyPausedError)(nil); errors.As(err, &standing) {
 		// The refusal read the pause that stands, which another daemon of a rolling restart may
-		// have made since this one's last Refresh: the flag holds it from now.
-		s.paused.Store(standing.Standing.ID)
+		// have made since this one's last Refresh, or this daemon's own pause whose outcome the
+		// store could not say: the flag holds it from now.
+		if followed := s.follow(ctx, standing.Standing, true); followed != nil {
+			return store.Pause{}, errors.Join(err, followed)
+		}
 	}
 	if err != nil {
 		return store.Pause{}, err
@@ -219,23 +244,32 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if s.effects != nil {
 		s.effects.Paused(ctx, pause, asked)
 	}
+	return pause, nil
+}
+
+// logPaused writes the pause's line: the pause, who made it, why, and how many roles and which
+// claims its transaction asked to stop. It is the hook of the pause's commit, so it states what
+// committed whenever it runs.
+func (s *Service) logPaused(pause store.Pause, asked []store.PauseStopClaim, told bool) {
 	claims := make([]string, len(asked))
 	for i, stop := range asked {
 		claims[i] = string(stop.Claim)
 	}
 	s.log.Info("pause: the project is paused", "pause", pause.ID, "by", string(pause.By.Kind), "by_session", pause.By.Session,
-		"reason", pause.Reason, "stops", len(asked), "claims", claims, "told_controller", tell)
-	return pause, nil
+		"reason", pause.Reason, "stops", len(asked), "claims", claims, "told_controller", told)
 }
 
 // Resume ends the project's pause, by `by` (decisions 22 and 24). The store's resume transaction
 // marks each row the pause holds with the pause, and reads those rows, before it ends the pause
 // (record.Postgres.MarkPauseHeldRows), so a row that runs after the resume and wakes a released
 // role takes that pause's held wake; it refuses a project that is not paused with the
-// *store.NotPausedError it returns unchanged. Once it commits, Resume clears the flag, runs
-// Effects.Resumed, and logs the resume and one line for each held row it released. It answers
-// the ended pause and those rows. Resume is never refused for the daemon's configuration: a pause
-// another daemon made is always this one's to end.
+// *store.NotPausedError it returns unchanged. The resume's line, and one line for each held row
+// it released, are a hook of that commit (logResumed). Once the commit returns, Resume clears the
+// flag and runs Effects.Resumed. A resume whose outcome the store could not say returns that error
+// and does neither: a Refresh, or this daemon's next resume, which the store refuses as not
+// paused, finds the flag behind the store and does both (follow). It answers the ended pause and
+// the rows it released. Resume is never refused for the daemon's configuration: a pause another
+// daemon made is always this one's to end.
 func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause, []record.PauseHeldRow, error) {
 	ctx = context.WithoutCancel(ctx)
 	s.mu.Lock()
@@ -257,11 +291,23 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 	if tell {
 		req.Notice = resumedNotice
 	}
-	resumed, err := s.store.Resume(ctx, req)
+	var resumed store.Resumed
+	err = store.Transact(ctx, s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if resumed, err = s.store.Resume(ctx, req); err != nil {
+			return err
+		}
+		ended, rows := resumed.Pause, held
+		store.OnCommit(ctx, func() { s.logResumed(ended, rows, tell) })
+		return nil
+	})
 	if notPaused := (*store.NotPausedError)(nil); errors.As(err, &notPaused) {
 		// The refusal read no open pause, which another daemon may have ended since this one's
-		// last Refresh: the flag reads none from now.
-		s.paused.Store(0)
+		// last Refresh, or this daemon's own resume whose outcome the store could not say: the
+		// flag reads none from now.
+		if followed := s.follow(ctx, store.Pause{}, false); followed != nil {
+			return store.Pause{}, nil, errors.Join(err, followed)
+		}
 	}
 	if err != nil {
 		return store.Pause{}, nil, err
@@ -271,19 +317,26 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 	if s.effects != nil {
 		s.effects.Resumed(ctx, ended)
 	}
+	return ended, held, nil
+}
+
+// logResumed writes the resume's line, naming the pause, who ended it, who made it and how many
+// rows it held, then one line for each row it held, naming the row, its kind, its issue and its
+// claim. It is the hook of the resume's commit, so it states what committed whenever it runs.
+func (s *Service) logResumed(ended store.Pause, held []record.PauseHeldRow, told bool) {
 	s.log.Info("pause: the project is resumed", "pause", ended.ID, "by", string(ended.EndedBy.Kind), "by_session", ended.EndedBy.Session,
-		"paused_by", string(ended.By.Kind), "paused_by_session", ended.By.Session, "held", len(held), "told_controller", tell)
+		"paused_by", string(ended.By.Kind), "paused_by_session", ended.By.Session, "held", len(held), "told_controller", told)
 	for _, row := range held {
 		s.log.Info(HeldRowReleasedMessage, "pause", ended.ID, "row", row.ID, "kind", string(row.Kind), "issue", row.Issue,
 			"claim", string(row.Claim))
 	}
-	return ended, held, nil
 }
 
 // Load reads the project's open pause and sets the flag from it: the boot calls it before
 // supervision starts, so no launch runs before the flag holds a pause another daemon or an
-// earlier boot made (decision 18). It answers that pause, and whether one is open. A failed read
-// leaves the flag as it was.
+// earlier boot made (decision 18). It runs no Effects: the boot has no machine yet, and its own
+// pass asks the stops of the claims it restores (the daemon's askBootStops). It answers that
+// pause, and whether one is open. A failed read leaves the flag as it was.
 func (s *Service) Load(ctx context.Context) (store.Pause, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,11 +348,52 @@ func (s *Service) Load(ctx context.Context) (store.Pause, bool, error) {
 	return open, found, nil
 }
 
-// Refresh is Load at each outbox sweep, so a pause made or ended through another daemon of a
-// rolling restart reaches this daemon's flag within one sweep (decision 18).
+// Refresh reads the project's open pause at each outbox sweep and follows it (follow), so a pause
+// made or ended through another daemon of a rolling restart, or by this daemon's own act whose
+// outcome the store could not say, reaches this daemon's flag and its Effects within one sweep
+// (decision 18). A failed read leaves the flag as it was.
 func (s *Service) Refresh(ctx context.Context) error {
-	_, _, err := s.Load(ctx)
-	return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	open, found, err := s.store.OpenPause(ctx, s.project)
+	if err != nil {
+		return err
+	}
+	return s.follow(context.WithoutCancel(ctx), open, found)
+}
+
+// follow moves the flag to the store's reading — open, while found — and runs the Effects of the
+// move, under the service's lock: Resumed for the pause the flag held, read back as it ended, and
+// Paused for the open pause, with no claims asked, since the claims its transaction asked are its
+// own. A flag that already holds the reading moves nothing and runs nothing, so a pause whose
+// commit this daemon saw runs its Effects once. A pause the flag held that cannot be read back
+// leaves the flag as it was, and the next Refresh moves it.
+func (s *Service) follow(ctx context.Context, open store.Pause, found bool) error {
+	was, now := s.paused.Load(), int64(0)
+	if found {
+		now = open.ID
+	}
+	if was == now {
+		return nil
+	}
+	var ended store.Pause
+	if was != 0 && s.effects != nil {
+		var err error
+		if ended, err = s.store.PauseByID(ctx, was); err != nil {
+			return fmt.Errorf("pause %s: read the pause the flag held: %w", s.project, err)
+		}
+	}
+	s.paused.Store(now)
+	if s.effects == nil {
+		return nil
+	}
+	if was != 0 {
+		s.effects.Resumed(ctx, ended)
+	}
+	if now != 0 {
+		s.effects.Paused(ctx, open, nil)
+	}
+	return nil
 }
 
 // OpenPause is the project's open pause, and whether one is open, as the store holds it now.
@@ -327,7 +421,7 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 		return false, nil
 	}
 	var registered bool
-	if err := store.Transact(ctx, s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, s.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		registered, err = s.records.ControllerRegistered(ctx, tx, s.project)
 		return err

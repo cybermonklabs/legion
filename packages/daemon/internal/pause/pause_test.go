@@ -306,10 +306,10 @@ func tokens(stops []store.PauseStopClaim) []claim.Token {
 // The controller pauses and resumes the project. The pause's transaction writes one valid
 // pause_stop row for each live role but the controller's; the flag holds the pause from its commit
 // until the resume's; the daemon's after-commit steps get the pause with the claims it asked to
-// stop, after the flag is set and before the pause is logged, and then the ended pause, after the
-// flag is cleared and before the resume is logged; and the store keeps the controller's session as
-// who paused and who resumed. The controller is a registered one, and no notice tells it of its
-// own acts.
+// stop, after the flag is set and after the pause's line, which its commit writes, and then the
+// ended pause, after the flag is cleared and after the resume's line; and the store keeps the
+// controller's session as who paused and who resumed. The controller is a registered one, and no
+// notice tells it of its own acts.
 func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -378,8 +378,8 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 	if calls[0].pause.ID != pause.ID || !slices.Equal(asked, []claim.Token{implementer, tester}) {
 		t.Fatalf("Effects.Paused got pause %d asking %v, want pause %d asking the implementer and the tester", calls[0].pause.ID, asked, pause.ID)
 	}
-	if calls[0].flag != pause.ID || calls[0].logged {
-		t.Fatalf("Effects.Paused found the flag at %d and the pause logged %t, want the flag set and nothing logged yet", calls[0].flag, calls[0].logged)
+	if calls[0].flag != pause.ID || !calls[0].logged {
+		t.Fatalf("Effects.Paused found the flag at %d and the pause logged %t, want the flag set and the pause logged at its commit", calls[0].flag, calls[0].logged)
 	}
 
 	r.clock.Advance(30 * time.Minute)
@@ -397,8 +397,8 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 		t.Fatalf("project_pauses says pause %d was ended by %+v, want the controller's session", pause.ID, endedBy)
 	}
 	resumes := r.effects.resumedCalls()
-	if len(resumes) != 1 || resumes[0].ended.ID != pause.ID || resumes[0].flagged || resumes[0].logged {
-		t.Fatalf("Effects.Resumed calls = %+v, want one for pause %d with the flag cleared and nothing logged yet", resumes, pause.ID)
+	if len(resumes) != 1 || resumes[0].ended.ID != pause.ID || resumes[0].flagged || !resumes[0].logged {
+		t.Fatalf("Effects.Resumed calls = %+v, want one for pause %d with the flag cleared and the resume logged at its commit", resumes, pause.ID)
 	}
 	if _, notices := controllerNotices(t, r.st); len(notices) != 0 {
 		t.Fatalf("controller notices = %+v, want none: the controller's own acts tell it nothing", notices)

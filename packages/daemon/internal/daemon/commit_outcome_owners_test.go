@@ -731,3 +731,131 @@ func TestAnUnownedPassCountsOnlyTheReleasesItsTransactionsAnswered(t *testing.T)
 		t.Errorf("unowned marks = %d, want 2", marks)
 	}
 }
+
+// pauseStopRig is the pause rig's architect stopped once its pause has ended, which owes the role
+// a launch: the stop transaction takes a held wake of the pause with its start row and logs that
+// row as released (TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch). The transaction's
+// store is swapped to faulted, and the issue's lifecycle lane, which the start row's wake reaches,
+// is recorded.
+type pauseStopRig struct {
+	*pauseRig
+	fault *testdb.CommitFault
+	held  store.Pause
+	wakes func() int
+}
+
+func newPauseStopRig(t *testing.T) *pauseStopRig {
+	t.Helper()
+	r := newPauseRig(t, claim.RoleArchitect)
+	held := r.pauseLegion()
+	r.resume()
+	faulted, fault := faultedStoreOf(t, r.st)
+	r.pauses.store = faulted
+	return &pauseStopRig{pauseRig: r, fault: fault, held: held, wakes: recordLaneWakes(r.pauses.workflow, pauseIssue)}
+}
+
+// stop runs the stop transaction as the architect's machine does when it writes its suspension
+// for the pause, and again when it makes a stop whose commit's answer it did not get.
+func (r *pauseStopRig) stop() error {
+	return r.pauses.stopped(r.ctx, r.claim(claim.RoleArchitect, supervise.StateSuspended), supervise.PauseStop{Pause: r.held.ID})
+}
+
+// recorded is whether the stop is on record as the transaction writes it: stopped, owing a launch.
+func (r *pauseStopRig) recorded() bool {
+	stops := r.stops(r.held.ID, claim.RoleArchitect)
+	return len(stops) == 1 && stops[0] == (pauseStopRecord{end: store.PauseStopStopped, owed: true})
+}
+
+func (r *pauseStopRig) work() map[string]int {
+	return map[string]int{"released-row lines": len(r.releasedLines()), "lifecycle lane wakes": r.wakes()}
+}
+
+func (r *pauseStopRig) wantWork(t *testing.T, want int, when string) {
+	t.Helper()
+	counts := r.work()
+	for _, name := range slices.Sorted(maps.Keys(counts)) {
+		if counts[name] != want {
+			t.Errorf("%s %s = %d, want %d", when, name, counts[name], want)
+		}
+	}
+}
+
+const pauseStopMatch = "update project_pause_stops"
+
+// A stop transaction whose commit's reply is lost keeps what its commit owes: the store says it
+// committed, so the released row's line and the wake of its start row's lane come once, and the
+// stop the machine makes again, which writes no second start row, does neither again. A stop whose
+// commit never landed does neither, and the stop made again does. A stop whose outcome the store
+// cannot say fails, so the machine owes it; its line and wake follow the store's answer, and the
+// stop made again then adds nothing.
+func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
+	replyLost := func(t *testing.T, r *pauseStopRig) {
+		t.Helper()
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutAfterCommit)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if err != nil {
+			t.Errorf("the stop whose commit landed and whose reply was lost = %v, want nil", err)
+		}
+		if !r.recorded() {
+			t.Fatalf("the stop whose reply was lost is not on record: the cut came before the commit")
+		}
+		r.wantWork(t, 1, "committed with its reply lost, but")
+	}
+	t.Run("reply_lost", func(t *testing.T) {
+		replyLost(t, newPauseStopRig(t))
+	})
+	t.Run("rollback", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutBeforeCommit)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if err == nil {
+			t.Error("the stop whose commit never landed = nil, want its failure")
+		}
+		if r.recorded() {
+			t.Fatal("the stop of a commit that never landed is on record")
+		}
+		r.wantWork(t, 0, "after a commit that never landed")
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop made again with no fault = %v, want nil", err)
+		}
+		if !r.recorded() {
+			t.Fatal("the stop made again with no fault is not on record")
+		}
+		r.wantWork(t, 1, "after the stop made again")
+	})
+	t.Run("duplicate_retry", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		replyLost(t, r)
+		if err := r.stop(); err != nil {
+			t.Errorf("the stop made again after a committed one = %v, want nil", err)
+		}
+		if !r.recorded() {
+			t.Fatal("the stop is no longer on record as made")
+		}
+		r.wantWork(t, 1, "committed and made again, but")
+	})
+	t.Run("unknown", func(t *testing.T) {
+		r := newPauseStopRig(t)
+		fired := r.fault.Cut(pauseStopMatch, testdb.CutAfterCommitRefusing)
+		err := r.stop()
+		testdb.Met(t, fired)
+		if !errors.Is(err, store.ErrCommitOutcomeUnknown) {
+			t.Fatalf("the stop whose outcome the store cannot say = %v, want ErrCommitOutcomeUnknown", err)
+		}
+		if !r.recorded() {
+			t.Fatal("the direct store holds no record of the stop: the cut came before the commit")
+		}
+		r.wantWork(t, 0, "before the store answers")
+		r.fault.Refuse(false)
+		testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+			"the stop's line and wake once the store says it committed", func() bool {
+				return len(r.releasedLines()) == 1 && r.wakes() == 1
+			})
+		if err := r.stop(); err != nil {
+			t.Fatalf("the stop the machine makes again = %v, want nil", err)
+		}
+		r.wantWork(t, 1, "after the stop made again")
+	})
+}
