@@ -2626,6 +2626,9 @@ jobs:
               - 'packages/envoy/going/testdata/**'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
+              # e2e/acceptance/replace-blocks.sh sources it for proc_group, and
+              # e2e/__tests__/replace-blocks-guard.test.ts, which this job runs, runs that script.
+              - 'scripts/e2e/lib/process-tree.sh'
               # The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
               # helpers' test/fake-dispatch with them, through the workspace's "bun" export
               # condition, so check-ts-filters.sh holds this filter to both. The two suites that
@@ -2933,7 +2936,7 @@ jobs:
               # entry, and its way backs of the step records and of the plan ratings, to the block
               # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:473)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
               # backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
@@ -2947,7 +2950,7 @@ jobs:
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:483; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
               - 'docs/site/src/content/docs/legion/concepts.md'

@@ -5168,8 +5168,9 @@ export default function envoyExtension(hostApi: PiApi): void {
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
           // visible here: a plain topic's answer counts its subscribers and names none, since
-          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
-          // envoy skill carry the general rule. A direct envoy_send is unaffected: the
+          // the stream stores one copy each session's own consumer delivers. The listener's drop
+          // of a role message whose holder is its source is the general rule
+          // (skills/envoy/references/deliveries.md). A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
           // holder it names is the session the resolution read, which never received the message.

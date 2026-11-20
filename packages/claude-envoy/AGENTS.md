@@ -4,7 +4,7 @@
 One MCP stdio server (`src/envoy-channel-server.ts`) is the session's Envoy ingress and serves the `envoy_*` tools; the mod (`hooks/mod.ts`) writes into a terminal session; `bin/dispatch` puts the `dispatch` command on the Bash tool's `PATH`.
 In a pane `legion claude-bridge` launched, the server also runs the Legion phase worker (`src/legion-*.ts`).
 `codex/` and `src/codex/` are the Codex CLI plugin, `@sjawhar/codex-envoy`, built from this source.
-`README.md` has the architecture, the bundle and release, and the manual smokes.
+`README.md` has the architecture, the bundle and release, and the smokes.
 
 ## Commands
 

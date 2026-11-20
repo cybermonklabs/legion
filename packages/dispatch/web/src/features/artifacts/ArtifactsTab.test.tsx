@@ -57,11 +57,16 @@ function Location() {
 
 function renderTab(
   artifacts: Artifact[],
-  references: IssueReferences = noReferences,
+  references: IssueReferences | Error = noReferences,
   isClosed = false
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
-  const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
+  const getIssueReferences = spyOn(api, "getIssueReferences");
+  if (references instanceof Error) {
+    getIssueReferences.mockRejectedValue(references);
+  } else {
+    getIssueReferences.mockResolvedValue(references);
+  }
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -415,6 +420,30 @@ test("References lists closure members with chip, via, and depth, names truncati
     expect(references).toHaveTextContent("via comment");
     expect(references).toHaveTextContent("depth 1");
     expect(references).toHaveTextContent("more references beyond 8 hops");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("a references read cut at its bound says References unavailable with a Retry that reads again", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the issue's reference closure ran past its 2s bound, so no reference was read; try again later";
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact],
+    new ApiError(503, { code: "REFERENCES_TIMEOUT", error: refusal })
+  );
+
+  try {
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(`References unavailable: ${refusal}`);
+    expect(screen.queryByText(/^References \(/)).toBeNull();
+    getIssueReferences.mockResolvedValueOnce(noReferences);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(getIssueReferences).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
