@@ -3701,8 +3701,9 @@ reconnected`, covers that gap: first after 3 minutes down, then every 3 minutes 
 — usually empty during a plain refused dial, since nats.go clears it on every failed attempt, and naming the failure's own cause while a handshake keeps failing, since nats.go leaves that one in place until the connection succeeds.
 At boot an unreachable NATS or Dispatch delays the boot instead of exiting, retried one second doubling to one minute, forever, logged at warn as `boot probe failed
 transiently; waiting to run it again` with its `probe` (naming which:
-`repository mapping read`, the boot's first Dispatch read, `connect Envoy NATS`, or `list Dispatch issues for admission`), `attempt`, `retryIn` and `detail`.
-A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`), at the boot's catch-up of the roots that run or wait on a person too, which refuses the boot as well on a Dispatch certificate it cannot verify or an `https` URL on a plain-HTTP port (`dispatch.TransportRefusal`) rather than skip the root.
+`repository mapping read`, the boot's first Dispatch read, `connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
+A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
+So does a Dispatch certificate the daemon cannot verify or an `https` URL on a plain-HTTP port (`dispatch.TransportRefusal`), at every boot read of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
 
 The store opens outside the 30-second budget the boot's first steps share, and the steps after the open get a budget of their own.
 A connection error the next attempt can clear is tried again (`store.OpenRetryable`): a refused connection, a reset, a connection closed before an answer, a timeout, a host name that does not resolve, and the SQLSTATE codes of class 08, 53300, 57P01, 57P02 and 57P03.

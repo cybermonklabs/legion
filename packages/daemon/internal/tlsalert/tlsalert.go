@@ -22,10 +22,8 @@ import (
 //
 // Three of its callers keep an alert out of the failures they wait out: internal/store's
 // OpenRetryable (the start's attempts to open its store), internal/natsauth's Unreachable (a NATS
-// that is not up yet) and internal/dispatch's TransportRefusal, which transportFailure reads to
-// keep an alert out of a Dispatch outage, on a request or on the read of its answer's body, and
-// the boot's catch-up of the roots that run or wait on a person reads to stop the start rather
-// than skip the root. internal/agentsecrets' daemonSideFault still waits an alert out, but on the
+// that is not up yet) and internal/dispatch's TransportRefusal (a failure of Dispatch's transport
+// no wait fixes). internal/agentsecrets' daemonSideFault still waits an alert out, but on the
 // token login's long schedule, a fault on the daemon's own side, in place of the short one of a
 // broker out of reach.
 func In(err error) bool {

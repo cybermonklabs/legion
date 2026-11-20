@@ -503,8 +503,8 @@ func unknownNewerField(message string) bool {
 // read — rather than anything Dispatch itself answered. request wraps every such failure in it
 // (client.go), the way appauth.TransientError wraps GitHub's, so a caller can tell "Dispatch
 // never answered" from "Dispatch answered and refused" without inspecting the wrapped error's
-// own type. A refusal of the transport no wait fixes (TransportRefusal: a certificate the client
-// does not trust, a TLS alert, an https:// URL on a plain-HTTP port) is deliberately not wrapped.
+// own type. A refusal of the transport no wait fixes (TransportRefusal) is deliberately not
+// wrapped.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }

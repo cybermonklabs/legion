@@ -554,19 +554,18 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // or speaks no TLS version the client does; crypto/tls returns it as a *net.OpError), or an
 // https:// dispatch_url pointed at a plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's
 // scheme check (internal/config) catches a typo in the scheme itself before boot, but not a
-// correct https:// whose port serves plain HTTP. Two rules read it, so it is written once:
-// transportFailure keeps each of these out of TransientError, and the boot's catch-up of the
-// roots that run or wait on a person (internal/daemon's catchUpWithRetries) returns each rather
-// than skip the root, so the start stops on one as it does at every other boot read of Dispatch.
+// correct https:// whose port serves plain HTTP. transportFailure keeps each of these out of
+// TransientError, Unreachable reads it first so it wins over an outage it is joined with, and the
+// boot's catch-up of the roots that run or wait on a person (internal/daemon's
+// catchUpWithRetries) stops the start on one rather than skip the root.
 func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
 	return errors.As(err, &certErr) || tlsalert.In(err) || errors.Is(err, http.ErrSchemeMismatch)
 }
 
 // transportFailure wraps err as a TransientError unless it is a refusal of the transport no wait
-// fixes (TransportRefusal). Left wrapped, such a refusal would satisfy Unreachable exactly like a
-// dial refused or reset would, and a boot gate would retry a certificate, TLS or scheme problem
-// forever instead of refusing loud.
+// fixes (TransportRefusal): TransientError says Dispatch gave no answer a later attempt may get,
+// which no refusal of the transport is.
 func transportFailure(err error) error {
 	if TransportRefusal(err) {
 		return err

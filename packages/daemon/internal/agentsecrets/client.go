@@ -44,9 +44,9 @@ const launcherService = "legion-daemon"
 // loginRetryInitial and loginRetryMax bound the wait after a token login that no wait of seconds
 // changes: one the broker refused (any answer but a 5xx or a 200 with a body of the contract's
 // shape, so every 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake
-// that failed, or a host name that does not resolve — daemonSideFault), and one that could not be
-// made at all (a token file that could not be read or was empty). The first wait is
-// loginRetryInitial, each one after it doubles, up to loginRetryMax.
+// that failed or a TLS alert, or a host name that does not resolve — daemonSideFault), and one
+// that could not be made at all (a token file that could not be read or was empty). The first wait
+// is loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
 // there to decide: one given no HTTP answer at all, or a 5xx answer from the broker or its front
 // door. They bound it the same way and on the pod renewer's schedule: the broker is down, out of

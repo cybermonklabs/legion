@@ -466,8 +466,8 @@ func TestCatchUpAwaitingFailsWhileDispatchIsDown(t *testing.T) {
 }
 
 // refusingEvents is a Dispatch whose event log read fails with refusal, wrapped as the real client
-// wraps a failure of its transport on the read of an answer, and whose approval read fails with
-// approval, when that is set.
+// wraps a failure of its transport on the call, and whose approval read fails with approval, when
+// that is set.
 type refusingEvents struct {
 	awaitingDispatch
 	refusal  error
@@ -475,7 +475,7 @@ type refusingEvents struct {
 }
 
 func (d *refusingEvents) EventsAfter(_ context.Context, key string, _ int64) ([]json.RawMessage, error) {
-	return nil, fmt.Errorf("read Dispatch GET /api/v1/issues/%s/events: %w", key, d.refusal)
+	return nil, fmt.Errorf("call Dispatch GET /api/v1/issues/%s/events: %w", key, d.refusal)
 }
 
 func (d *refusingEvents) Approval(ctx context.Context, artifactID string) (dispatch.Approval, error) {
@@ -489,8 +489,9 @@ func (d *refusingEvents) Approval(ctx context.Context, artifactID string) (dispa
 // it rather than skip the root, and the boot's readiness attempt refuses the start on it, as every
 // other boot read of Dispatch does, rather than wait. The root it could not read stays held, so no
 // admission pass decides it on a mirror of its asks the catch-up never brought up to date. The
-// refusal wins over an outage of another read of the root it is joined with (catchUpRoot joins the
-// gate's approval read and the event log's), so the start stops on it rather than wait.
+// refusal wins over another read of the root it is joined with (catchUpRoot joins the gate's
+// approval read and the event log's), one Dispatch did not answer or one it refused, so the start
+// stops on it rather than wait or skip the root.
 func TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch(t *testing.T) {
 	// The alert as crypto/tls returns one over TCP (crypto/tls/conn.go): a *net.OpError naming no
 	// network.
@@ -506,6 +507,8 @@ func TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch(t *testing.T) {
 		{name: "an https URL on a plain-HTTP port", refusal: http.ErrSchemeMismatch},
 		{name: "a TLS alert joined with an approval read Dispatch never answered", refusal: alert,
 			approval: fmt.Errorf("call Dispatch GET /api/v1/artifacts/artifact-root: %w", &dispatch.TransientError{Err: context.DeadlineExceeded})},
+		{name: "a TLS alert joined with an approval read Dispatch refused with a 503", refusal: alert,
+			approval: fmt.Errorf("call Dispatch GET /api/v1/artifacts/artifact-root: %w", &dispatch.Error{Status: http.StatusServiceUnavailable, Message: "unavailable"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &refusingEvents{awaitingDispatch: awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-2", LastSeq: 9}}, refusal: tc.refusal, approval: tc.approval}
@@ -517,17 +520,12 @@ func TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch(t *testing.T) {
 					return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-2", ArtifactID: "artifact-root", LatestVersion: 2})
 				})
 			}
-			if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
-				t.Fatalf("hold the roots to catch up: %v", err)
+			err := bootCatchUp(t, w)
+			if err == nil || !errors.Is(err, tc.refusal) || dispatch.Unreachable(err) {
+				t.Fatalf("catch up with a TLS failure of Dispatch = %v, want the catch-up's error %v, which the boot refuses rather than wait out", err, tc.refusal)
 			}
-			// The boot's own probe of the catch-up (run's), whose Refusal is the error the catch-up
-			// returned.
-			outcome := readinessAttempt(w.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable)(context.Background())
-			if outcome.Passed || !errors.Is(outcome.Refusal, tc.refusal) || dispatch.Unreachable(outcome.Refusal) {
-				t.Fatalf("the boot's catch-up probe = %+v, want it to refuse the start on the catch-up's error %v", outcome, tc.refusal)
-			}
-			if tc.approval != nil && !errors.Is(outcome.Refusal, tc.approval) {
-				t.Fatalf("the boot's catch-up refusal = %v, want the approval read's outage %v joined in it", outcome.Refusal, tc.approval)
+			if tc.approval != nil && !errors.Is(err, tc.approval) {
+				t.Fatalf("catch up with a TLS failure of Dispatch = %v, want the approval read's failure %v joined in it", err, tc.approval)
 			}
 			if held := w.admission.CatchUpHeld(); !slices.Equal(held, []string{"CAPTURE-2"}) {
 				t.Fatalf("roots still held = %v, want the root it could not read", held)
