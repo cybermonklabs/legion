@@ -109,7 +109,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 // under the App's own JWT, with no owner to mint for.
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("appLoginsAtBoot: %v", err)
 	}

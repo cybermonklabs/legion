@@ -60,13 +60,18 @@ import (
 )
 
 const (
-	// bootTimeout bounds the work between the plugin gate passing and the API listening: an
-	// unreachable Postgres refuses in milliseconds, but a reachable one that never answers must
-	// not leave the daemon hanging with nothing on stderr. The gate is not bounded by it — it waits
-	// out host load for as long as that lasts (pluginGate) — nor are the GitHub App tokens' mint
-	// and the image probe, which wait out GitHub's and the cluster's transient trouble within
-	// retries of their own (appMintRetry, imageProbeRetry); the work after each has a budget anew.
+	// bootTimeout bounds each stretch of the work between the plugin gate passing and the API
+	// listening, so a dependency that takes a connection and never answers does not leave the
+	// daemon hanging with nothing on stderr. The gate is not bounded by it — it waits out host
+	// load for as long as that lasts (pluginGate) — nor are the store's open, the GitHub Apps'
+	// logins and key proof, and the image probe, which wait out a connection error the next attempt
+	// can clear, GitHub's transient trouble and the cluster's within retries of their own
+	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
+	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
+	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
+	// this bound a connection the database takes and never answers would hold the attempt that long.
+	storeOpenAttempt = 10 * time.Second
 	// catchUpAttemptBound bounds one attempt of the boot's catch-up of the roots that run or wait on
 	// a person. Each root has bootTimeout of its own and the roots finished survive a retry, so this
 	// bound is no budget for the work, only the end of an attempt that would otherwise never return.
@@ -136,6 +141,27 @@ const (
 	cleanSessionStopBudget = 5 * time.Second
 )
 
+// storeOpenRetry is the wait between two attempts to open the store whose error the next attempt
+// can clear (store.OpenRetryable): 1 s doubling to 16 s, ten attempts. The waits are 1, 2, 4, 8
+// and five times 16 s, 95 s in all, so with each attempt at its limit (storeOpenAttempt) the start
+// refuses at most 3 min 15 s after its first attempt, naming the last error. The numbers are a
+// choice, not a measurement: no production start has met a connection error on this path, and
+// the bound is longer than the 60 s the Cloud SQL proxy sidecar's startup probe lets a restarted
+// proxy take, and shorter than the 14-minute progress deadline of the daemon's Deployment
+// (dispatch://INFRA-2597/spec R3).
+var storeOpenRetry = bootprobe.Retry{Initial: time.Second, Max: 16 * time.Second, Attempts: 10}
+
+// storeOpenLongest is the longest the store's attempts take under retry: every attempt at its
+// limit (storeOpenAttempt), and every wait between two of them as bootprobe.Run waits it
+// (bootprobe.Retry.Delay).
+func storeOpenLongest(retry bootprobe.Retry) time.Duration {
+	longest := time.Duration(retry.Attempts) * storeOpenAttempt
+	for transients := range retry.Attempts - 1 {
+		longest += retry.Delay(transients)
+	}
+	return longest
+}
+
 // overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
 // the zero value is the real daemon binding its own address.
 type overrides struct {
@@ -180,6 +206,10 @@ type overrides struct {
 	// probe stands in for the worker image probe when runtime is replaced under kubernetes: nil is
 	// none. With the Agent Sandbox runtime, the probe is always the real one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
+	// storeOpenRetry is the policy of the boot's attempts to open the store; nil is the production
+	// storeOpenRetry. A test of the ten attempts shortens the waits between them, so it waits out
+	// milliseconds rather than 95 s.
+	storeOpenRetry *bootprobe.Retry
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Source
@@ -240,25 +270,25 @@ type overrides struct {
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
 // configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
-// pane will load to this daemon's contract — then opens the store (refusing by the host it could
-// not reach), migrates, takes its API listener and its worker stream, builds the runtime (under
-// kubernetes, once Agent Sandbox's install check passes), proves the worker image under
-// kubernetes, records the boot, supervises every claim the store holds, serves the API, and blocks
-// until ctx is done. Then it stops: it says so, cancels the decisions it makes itself, drains the
-// API and the decisions its routes asked for, ends the workflow and supervision, stamps the boot's
-// end and closes the pool, in that order, because the stamp needs the pool. The waits before the
-// stamp share one budget, which a boot that has not finished supervising its claims shares too
-// (stopBudget).
+// pane will load to this daemon's contract — then opens the store (trying again a connection error
+// the next attempt can clear, and refusing by the host it could not reach), migrates, takes its
+// API listener and its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's
+// install check passes), proves the worker image under kubernetes, records the boot, supervises
+// every claim the store holds, serves the API, and blocks until ctx is done. Then it stops: it
+// says so, cancels the decisions it makes itself, drains the API and the decisions its routes
+// asked for, ends the workflow and supervision, stamps the boot's end and closes the pool, in that
+// order, because the stamp needs the pool. The waits before the stamp share one budget, which a
+// boot that has not finished supervising its claims shares too (stopBudget).
 //
 // Everything that can refuse comes before the boot record: a recorded boot is a boot that
 // served, and a daemon whose port, socket, tmux, cluster, or image refused it never ran.
 //
 // ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
 // daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
-// arrives mid-startup still leaves a recorded, stamped boot rather than a row with no end. A
-// signal that arrives while the plugin gate, the GitHub Apps' logins and key proof, or the image
-// probe waits ends the daemon there, cleanly: it has served nothing and records
-// nothing.
+// arrives once the store is open still leaves a recorded, stamped boot rather than a row with no
+// end. A signal that arrives while the plugin gate, the store's attempts to open, the GitHub Apps'
+// logins and key proof, or the image probe waits ends the daemon there, cleanly: it has served
+// nothing and records nothing.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
@@ -278,9 +308,10 @@ func handed(listener net.Listener) func(network, address string) (net.Listener, 
 }
 
 // bootBudget is a budget of bootTimeout for the boot's next steps, on ctx's values but not its
-// cancellation: a signal that arrives mid-startup still leaves a recorded, stamped boot (Run), so
-// the steps that lead to the boot record end on this bound rather than on the signal, and the
-// steps after it end on the signal through starting, which run derives from it. It carries the
+// cancellation: a signal that arrives once the store is open still leaves a recorded, stamped boot
+// (Run), so the steps between the open and the boot record end on this bound rather than on the
+// signal, and the steps after it end on the signal through starting, which run derives from it.
+// The store's open itself runs on ctx and outside any budget (storeOpenRetry). It carries the
 // boot's hold mark (store.WithTransactionTracking), since the boot's steps run one after another
 // on it: a step that asks the pool for a connection while one of its own transactions holds one
 // is refused at that call (store.ErrNestedAcquire) rather than waiting out a boot that can no
@@ -315,25 +346,53 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 
-	// The boot's first budget starts once the plugin gate has passed, which no budget bounds
-	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
-	// other (store.ForConcurrentWorker).
-	boot, cancelBoot := bootBudget(ctx)
-	defer cancelBoot()
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
 	// reconcile: Agent Sandbox must be installed, and no per-claim Sandbox of the layout before issue
 	// pods may remain. The claims' half of that layout fence runs once the store opens, before it
-	// migrates.
+	// migrates. The check has a budget of its own (bootTimeout), which starts once the plugin gate
+	// has passed, since no budget bounds the gate, and ends with the check.
 	if plan.clusterCheck != nil {
-		if err := plan.clusterCheck(boot); err != nil {
+		check, cancelCheck := bootBudget(ctx)
+		err := plan.clusterCheck(check)
+		cancelCheck()
+		if err != nil {
 			return err
 		}
 	}
 
-	st, err := store.Open(boot, cfg.PostgresDSN)
+	// The store opens on ctx, outside the budget the cluster check spent: a connection error the
+	// next attempt can clear (store.OpenRetryable) is tried again within storeOpenRetry, each
+	// attempt bounded by storeOpenAttempt, and a stop ends the attempts at once. The steps after
+	// the open get a budget of their own.
+	openRetry := storeOpenRetry
+	if o.storeOpenRetry != nil {
+		openRetry = *o.storeOpenRetry
+	}
+	log.Info("daemon: opening the store; a connection error that the next attempt can clear is tried again",
+		"attempts", openRetry.Attempts, "attemptLimit", storeOpenAttempt.String(), "firstWait", openRetry.Initial.String(),
+		"longestWait", openRetry.Max.String(), "longestTotal", storeOpenLongest(openRetry).String())
+	var st *store.Store
+	err = bootprobe.Run(store.WithTransactionTracking(ctx), "Postgres store", openRetry, log,
+		readinessAttempt(func(attempt context.Context) error {
+			var err error
+			st, err = store.Open(attempt, cfg.PostgresDSN)
+			return err
+		}, storeOpenAttempt, store.OpenRetryable))
 	if err != nil {
+		if st != nil {
+			// The stop came as the attempt that opened the store returned.
+			st.Close()
+		}
+		if ctx.Err() != nil {
+			log.Info("legion daemon stopped before it opened its store", "project", cfg.Project)
+			return nil
+		}
 		return err
 	}
+	// The boot's budget for the steps after the open. The loops the boot starts take marks of their
+	// own, since they run beside each other (store.ForConcurrentWorker).
+	boot, cancelBoot := bootBudget(ctx)
+	defer cancelBoot()
 	if plan.claimsCheck != nil {
 		if err := plan.claimsCheck(boot, st); err != nil {
 			st.Close()
@@ -369,14 +428,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The Apps' logins and the proof of each App's key wait out GitHub's transient failures within
-	// appMintRetry, and the boot budget bounds neither, as it does not bound the plugin gate or the
-	// image probe: the work after them has a budget of its own. The key proof under the App's JWT
-	// mints no token for an owner (proveAppKeys); every other step of the boot that reads GitHub or
-	// writes a cache's credential mints the token that step needs. The fill of a record that lacks
-	// its repository columns (backfillRepositories) makes one read per such record, bounded by
-	// installReadAttempt, and a read that fails leaves the record for the refresher rather than
-	// refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for a
-	// configured pair only while a stored row still names the pair's `from` (renamePass.run). The
+	// appMintRetry and its rate limit until the time GitHub names, within the start's own bound
+	// (startRateLimits), and the boot budget bounds neither, as it does not bound the plugin gate
+	// or the image probe: the work after them has a budget of its own. The key proof under the
+	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
+	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
+	// that lacks its repository columns (backfillRepositories) makes one read per such record,
+	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
+	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
 	// the boot.
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
@@ -534,9 +594,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// with Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
 		// judge their own dependency; their own docs are the record of what each one waits on and
 		// what it still refuses loud. reconcile's own Postgres transaction is judged by neither: a
-		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — an
-		// unreachable Postgres refuses earlier, at store.Open
-		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
+		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — the
+		// start judges a Postgres it cannot reach earlier, where it opens the store: it tries again
+		// a connection error the next attempt can clear and refuses the rest (store.OpenRetryable,
+		// TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets,
+		// TestRunExitsAtOnceWhenPostgresRefusesThePassword,
+		// TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword).
 		plan.nats.log(log)
 		// The open of the uncounted runs, the three probes and the cutover repair after them run
 		// one after another on this goroutine, so they share one hold mark (a sequential flow);

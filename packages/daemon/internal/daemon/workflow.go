@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -179,6 +180,11 @@ type workflowRuntime struct {
 	// the asked-for one as (repositories.serving), so a name recorded before a configured rename's
 	// transfer is read on the installation that holds the repository now.
 	defaultBranches *defaultBranches
+	// startWaits is the start's waits for GitHub's rate limit, one policy and one clock for every
+	// App call of the start (startRateLimits), which openWorkflow makes.
+	// A runtime a test builds as a literal leaves it nil: each wait then has the maximum and no
+	// end (startWaits.orUnbounded).
+	startWaits *startWaits
 	// repositories is the repository state: what GitHub answered for each repository the daemon
 	// prepared, and the repositories the live records name. installs answers each App's
 	// installation on a repository (prepareName). recovering is each repository,
@@ -315,16 +321,19 @@ type workflowRuntime struct {
 // it is logged, and the notices it would have released still go on their schedule.
 const readyReleaseTimeout = 30 * time.Second
 
-// appMintAttempt bounds one attempt at the boot's App tokens, both Apps' mints: installation
-// discovery, the exchange and the bot identity lookups each answer in well under a second, so an
-// attempt that runs this long holds a request GitHub never answered.
+// appMintAttempt bounds one attempt at the boot's App calls, the logins read (appLoginsAtBoot) and
+// the key proof (proveAppKeys): the bot identity lookups and each App's read of its installations
+// under its JWT answer in well under a second, so an attempt that runs this long holds a request
+// GitHub never answered.
 var appMintAttempt = 15 * time.Second
 
 // appMintRetry is the wait between attempts that failed transiently: 5 s doubling to 30 s, five
 // attempts. At worst the boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it
-// refuses, naming the last failure. The API listens only after the mint, so /healthz is refused
-// meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on the last
-// attempt inside the 180 s Stage 3 gives a daemon to answer /healthz.
+// refuses, naming the last failure. The API listens only after the key proof, so /healthz is
+// refused meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on
+// the last attempt inside the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's
+// rate limit is none of these attempts: it lasts until the time GitHub names, within the start's
+// own bound (appAttempt, startRateLimits).
 var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
 
 // appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
@@ -333,11 +342,13 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, bounded by appMintAttempt: passed, refused,
-// transient (appTransient), or pending when a token_command is still running past the bound
-// (appauth.ErrCommandPending, most often a grant that waits on a person's approval). A pending
-// attempt spends no retry: the command goes on, and the next attempt joins it, so the boot waits
-// for the grant with one request and never kills it.
+// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: pending when a
+// token_command is still running past the bound (appauth.ErrCommandPending, most often a grant
+// that waits on a person's approval), and otherwise startOutcome's, appTransient or the attempt's
+// own bound ended (below) its transient. A pending attempt spends no retry: the command goes on,
+// and the next attempt joins it, so the boot waits for the grant with one request and never kills
+// it. A rate limit spends none either: it says nothing about the App, and the start waits until
+// the time GitHub names, within the start's bound on such waits.
 //
 // An attempt that failed because its own bound ended while the boot's ctx is still alive is
 // transient too: a request GitHub has not answered is GitHub's trouble, not the App's, and is
@@ -345,35 +356,76 @@ func appTransient(err error) bool {
 // App's installation read joins the shared read still in flight (appauth.Manager.InstalledOwners),
 // which appauth drops at its installationReadLimit (1 min) when GitHub never answers it, inside
 // appMintRetry's worst case of 2 min 20 s, so an attempt after that asks GitHub afresh.
-func appAttempt(attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
+func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
-		switch {
-		case err == nil:
-			return bootprobe.Outcome{Passed: true}
-		case errors.Is(err, appauth.ErrCommandPending):
+		if errors.Is(err, appauth.ErrCommandPending) {
 			return bootprobe.Outcome{Pending: err.Error()}
-		case appTransient(err), errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
-			return bootprobe.Outcome{Detail: err.Error()}
-		default:
-			return bootprobe.Outcome{Refusal: err}
 		}
+		return startOutcome(err, func(err error) bool {
+			return appTransient(err) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
+		}, waits, call)
 	}
+}
+
+// startOutcome is the outcome of an attempt at the start's call that returned err: passed on nil;
+// a wait for GitHub's rate limit on the start's waits, or the refusal once they have ended
+// (limitOutcome); transient when transient recognizes err; refused otherwise.
+func startOutcome(err error, transient func(error) bool, waits *startWaits, call string) bootprobe.Outcome {
+	if err == nil {
+		return bootprobe.Outcome{Passed: true}
+	}
+	if outcome, limited := limitOutcome(err, waits, call); limited {
+		return outcome
+	}
+	if transient(err) {
+		return bootprobe.Outcome{Detail: err.Error()}
+	}
+	return bootprobe.Outcome{Refusal: err}
+}
+
+// limitOutcome is the outcome of an attempt at the start's call that failed with err, when err is
+// GitHub's rate limit on an App call (bootLimit): a wait until the time the start's waits give
+// (startWaits.wait), with the limit as GitHub's answer gave it (limitSummary), or, once those waits
+// have reached their end, a refusal naming the call, the time the start waited, and GitHub's last
+// answer with its message. limited is false for every other err.
+func limitOutcome(err error, waits *startWaits, call string) (outcome bootprobe.Outcome, limited bool) {
+	answer, githubWait, limited := bootLimit(err)
+	if !limited {
+		return bootprobe.Outcome{}, false
+	}
+	until, waited, ended := waits.wait(call, answer, githubWait)
+	if ended {
+		return bootprobe.Outcome{Refusal: fmt.Errorf("the %s waited %s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: GitHub answered %s %s with %s: %s: %w",
+			call, bootprobe.ShownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
+	}
+	return bootprobe.Outcome{RateLimit: limitSummary(answer), Until: until, Waited: waited, Detail: err.Error()}, true
+}
+
+// limitSummary is what an answer that refused a start's call for GitHub's rate limit says of the
+// limit: its status and the rate-limit headers that decide a wait, as GitHub sent them ("" for
+// each it did not send), as limitAttributes gives them on the default-branch read's lines.
+func limitSummary(answer *githubrest.Answer) string {
+	limit := answer.Limit
+	return fmt.Sprintf("%d (Retry-After %q, X-RateLimit-Remaining %q, X-RateLimit-Reset %q, X-RateLimit-Resource %q)",
+		answer.Status, limit.RetryAfter, limit.Remaining, limit.Reset, limit.Resource)
 }
 
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
-// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine tells the review
-// App's reviews from every other account's by the login that authored them, and the reviewer's own
-// among those by the session their Legion footer names, which must be the one the reviewer's claim
-// records (workflow's byReviewer), so one App configured for both roles would submit every role's
-// review under the one login, and is refused, as is a review App that names no login.
-func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError) and
+// after GitHub's rate limit, waited out on the start's waits (appAttempt); any other failure is
+// refused at once. It returns the review App's login: the engine tells the review App's reviews
+// from every other account's by the login that authored them, and the reviewer's own among those
+// by the session their Legion footer names, which must be the one the reviewer's claim records
+// (workflow's byReviewer), so one App configured for both roles would submit every role's review
+// under the one login, and is refused, as is a review App that names no login.
+func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
+	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			login, err := apps.AppLogin(ctx, role)
 			if err != nil {
@@ -397,20 +449,24 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // an App on token_command, the command's release of every installation), one App after the other,
 // both reads as one attempt run again after a failure GitHub reports as its own trouble
 // (appauth.TransientError), with a pending command spending no attempt (appAttempt): the two Apps
-// share one retry budget, so the boot waits at most appMintRetry however the failures fall between
-// them, and an attempt after one App's read answered reads only the other's. Any other failure
-// stops the boot with a refusal that names the App. A key GitHub takes is the whole proof: an App
-// with no installation boots, and one WARN line names it, since a project works in each repository
-// both role Apps reach and an operator may install an App after the daemon is up. The owners each
-// read answers are recorded as the boot's read of that App's installations
-// (appauth.Installed.RecordProof) once both are proved, so every launch's addressing names its
-// App's own owners from the first launch on (plan.appOwners). That read is kept apart from a
-// bundle's: the drift check never compares a pod against it (appauth.GitHubDirs), since no mint
-// has run at boot to say which of those owners a bundle leaves out. Nothing of the boot mints a
-// token for an owner.
-func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, log *slog.Logger) error {
+// share one retry budget, so the boot spends at most appMintRetry on GitHub's trouble however the
+// failures fall between them, and an attempt after one App's read answered reads only the other's.
+// GitHub's rate limit on either read spends no attempt either: it is waited out on the start's
+// waits until the time GitHub names (appAttempt), and a read GitHub still refuses for it once
+// those waits have reached the start's end stops the boot, naming the call, the time waited,
+// GitHub's answer and the App (limitOutcome). Any other failure stops the boot with a refusal that
+// names the App. A key GitHub takes is the whole proof: an App with no installation boots, and one
+// WARN line names it, since a project works in each repository both role Apps reach and an
+// operator may install an App after the daemon is up. The owners each read answers are recorded
+// as the boot's read of that App's installations (appauth.Installed.RecordProof) once both are
+// proved, so every launch's addressing names its App's own owners from the first launch on
+// (plan.appOwners). That read is kept apart from a bundle's: the drift check never compares a pod
+// against it (appauth.GitHubDirs), since no mint has run at boot to say which of those owners a
+// bundle leaves out. Nothing of the boot mints a token for an owner.
+func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
+	const call = "GitHub App key proof"
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
-	err := bootprobe.Run(ctx, "GitHub App key proof", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, proved := owners[role]; proved {
 				continue
@@ -509,16 +565,19 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
+		// One policy and one clock for every wait of the start for GitHub's rate limit: the App
+		// logins read and the key proof (startRateLimits).
+		startWaits: newStartWaits(startRateLimits, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
 	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "appauth")
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, log)
+	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, w.startWaits, log)
 	if err != nil {
 		return nil, err
 	}
-	if err := proveAppKeys(ctx, tokens, installed, log); err != nil {
+	if err := proveAppKeys(ctx, tokens, installed, w.startWaits, log); err != nil {
 		return nil, err
 	}
 	// The database is shared by every project's daemon: the workflow reads this project's issues.

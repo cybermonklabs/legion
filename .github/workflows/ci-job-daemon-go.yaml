@@ -133,7 +133,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 

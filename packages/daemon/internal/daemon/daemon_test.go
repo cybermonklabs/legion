@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +27,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -340,14 +343,15 @@ func boots(t *testing.T, cfg config.Config) (int, time.Time) {
 	return count, firstBootAt
 }
 
-// A daemon told to stop still owes its store a recorded, stamped boot: the restart count and the
-// first boot time are what `legion state` answers from.
+// A daemon told to stop once its store is open still owes the store a recorded, stamped boot: the
+// restart count and the first boot time are what `legion state` answers from. The stop arrives as
+// the runtime is built, after the store opened and before the boot is recorded; a stop that
+// arrives before the store opens ends the start with nothing recorded
+// (TestRunStopsAtOnceWhileItWaitsToOpenItsStore).
 func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	cfg := testConfig(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
-	if err := run(ctx, cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
+	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	count, firstBootAt := boots(t, cfg)
@@ -359,7 +363,7 @@ func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	}
 
 	rebindHeldPorts(t, &cfg)
-	if err := run(ctx, cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
+	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	countAgain, firstBootAgain := boots(t, cfg)
@@ -371,15 +375,35 @@ func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 	}
 }
 
-// The refusal an operator reads when Postgres is not there names where the daemon went, and
-// never how it would have got in.
+// runStoppedOnceItsStoreIsOpen runs the daemon on cfg with a stop that arrives as its runtime is
+// built (openSupervision): after the store opened and migrated, before the boot is recorded.
+func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	build := o.runtime
+	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		cancel()
+		return build(buildCtx, listener, address, apps, repository, st, mapped)
+	}
+	return run(ctx, cfg, quietLogger(), o)
+}
+
+// The refusal an operator reads when Postgres is never there comes after the start's ten attempts,
+// each wait logged, and names where the daemon went and never how it would have got in
+// (c-boot-db-retry case 5). The waits between the attempts are a millisecond here; the number of
+// attempts is the production policy's.
 func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.PostgresDSN = "postgres://legion:hunter2@127.0.0.1:1/legion"
+	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.storeOpenRetry = &bootprobe.Retry{Initial: time.Millisecond, Max: time.Millisecond, Attempts: storeOpenRetry.Attempts}
+	var logs syncBuffer
 
 	refused := make(chan error, 1)
 	go func() {
-		refused <- run(context.Background(), cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
+		refused <- run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logs, nil)), o)
 	}()
 
 	select {
@@ -387,14 +411,308 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		if err == nil {
 			t.Fatal("run started without a Postgres to start against")
 		}
-		if !strings.Contains(err.Error(), "127.0.0.1:1") {
-			t.Errorf("the refusal does not name the host it could not reach: %v", err)
+		if want := fmt.Sprintf("within its retry budget (%d attempts): connect to Postgres at 127.0.0.1:1: ", storeOpenRetry.Attempts); !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal = %v, want it to hold %q", err, want)
 		}
 		if strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("the refusal leaks the DSN password: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not refuse an unreachable Postgres within one second")
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not refuse an unreachable Postgres within 10s")
+	}
+	waits := storeOpenWaits(t, logs.String())
+	if len(waits) != storeOpenRetry.Attempts-1 {
+		t.Fatalf("the start logged %d waits between its %d attempts, want %d; the log holds:\n%s", len(waits), storeOpenRetry.Attempts, storeOpenRetry.Attempts-1, logs.String())
+	}
+	for n, wait := range waits {
+		if want := fmt.Sprintf("%d/%d", n+1, storeOpenRetry.Attempts); wait["attempt"] != want {
+			t.Errorf("wait %d is attempt %v, want %s", n+1, wait["attempt"], want)
+		}
+		detail, _ := wait["detail"].(string)
+		if !strings.Contains(detail, "127.0.0.1:1") || strings.Contains(detail, "hunter2") {
+			t.Errorf("wait %d's detail = %q, want the host it could not reach and not the password", n+1, detail)
+		}
+	}
+}
+
+// secretDSN is a DSN for a Postgres at address whose password, hunter2, a refusal must never
+// print. It is built from its parts rather than written as one literal, because the pre-push leak
+// guard refuses a URL that holds a password in its userinfo.
+func secretDSN(address string) string {
+	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
+}
+
+// pgConnection is what pgProxy does with one connection it accepts.
+type pgConnection int
+
+const (
+	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
+	forwardConnection pgConnection = iota
+	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
+	resetConnection
+	// silentConnection holds the connection open and never answers it.
+	silentConnection
+)
+
+// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
+// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
+// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
+// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
+// test of the attempts counts one connection to each. The proxy and every connection through it
+// close when the test ends.
+func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
+	t.Helper()
+	upstream, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
+	}
+	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
+	proxied, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the Postgres proxy: %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	closed := false
+	// hold keeps conns until the test ends, or closes them at once when it has.
+	hold := func(conns ...net.Conn) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			for _, conn := range conns {
+				_ = conn.Close()
+			}
+			return false
+		}
+		held = append(held, conns...)
+		return true
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+	go func() {
+		for n := 0; ; n++ {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			handling := forwardConnection
+			if n < len(plan) {
+				handling = plan[n]
+			}
+			switch handling {
+			case resetConnection:
+				_ = client.(*net.TCPConn).SetLinger(0)
+				_ = client.Close()
+			case silentConnection:
+				hold(client)
+			default:
+				go func() {
+					postgres, err := net.Dial("tcp", server)
+					if err != nil {
+						_ = client.Close()
+						return
+					}
+					if !hold(client, postgres) {
+						return
+					}
+					go func() {
+						_, _ = io.Copy(postgres, client)
+						_ = postgres.Close()
+						_ = client.Close()
+					}()
+					_, _ = io.Copy(client, postgres)
+					_ = postgres.Close()
+					_ = client.Close()
+				}()
+			}
+		}
+	}()
+	proxied.Host = listener.Addr().String()
+	query := proxied.Query()
+	query.Set("sslmode", "disable")
+	proxied.RawQuery = query.Encode()
+	return proxied.String()
+}
+
+// refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
+// and message, as a Postgres that refuses the connection answers it, and returns its address and
+// the count of the connections it has accepted.
+func refusingPostgres(t *testing.T, code, message string) (string, *atomic.Int32) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := &atomic.Int32{}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			go func() {
+				defer conn.Close()
+				backend := pgproto3.NewBackend(conn, conn)
+				if _, err := backend.ReceiveStartupMessage(); err != nil {
+					return
+				}
+				backend.Send(&pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message})
+				_ = backend.Flush()
+			}()
+		}
+	}()
+	return listener.Addr().String(), accepted
+}
+
+// storeOpenWaits is each wait the daemon logged between two attempts to open its store.
+func storeOpenWaits(t *testing.T, logs string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedMessages(t, logs, "boot probe failed transiently; waiting to run it again"), func(line map[string]any) bool {
+		return line["probe"] != "Postgres store"
+	})
+}
+
+// A Postgres whose first two connections are reset opens on the third attempt, and the daemon
+// serves (c-boot-db-retry case 1). Each wait is logged with its attempt, its wait and the reset,
+// after one line that names the bound of the attempts.
+func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	proxy, err := url.Parse(cfg.PostgresDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuffer
+	startDaemonLogging(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}), slog.New(slog.NewJSONHandler(&logs, nil)))
+
+	waits := storeOpenWaits(t, logs.String())
+	if len(waits) != 2 {
+		t.Fatalf("the start logged %d waits to open its store, want 2, one after each reset; the log holds:\n%s", len(waits), logs.String())
+	}
+	for n, want := range []struct{ attempt, retryIn string }{{"1/10", "1s"}, {"2/10", "2s"}} {
+		wait := waits[n]
+		if wait["attempt"] != want.attempt || wait["retryIn"] != want.retryIn {
+			t.Errorf("wait %d is attempt %v, retryIn %v; want attempt %s, retryIn %s", n+1, wait["attempt"], wait["retryIn"], want.attempt, want.retryIn)
+		}
+		detail, _ := wait["detail"].(string)
+		if !strings.Contains(detail, "connect to Postgres at "+proxy.Host) || !strings.Contains(detail, "reset by peer") {
+			t.Errorf("wait %d's detail = %q, want the reset at %s", n+1, detail, proxy.Host)
+		}
+	}
+	bound := loggedMessages(t, logs.String(), "daemon: opening the store; a connection error that the next attempt can clear is tried again")
+	if len(bound) != 1 {
+		t.Fatalf("the start logged %d lines naming the bound of its attempts, want 1; the log holds:\n%s", len(bound), logs.String())
+	}
+	for key, want := range map[string]any{"attempts": float64(10), "attemptLimit": "10s", "firstWait": "1s", "longestWait": "16s", "longestTotal": "3m15s"} {
+		if bound[0][key] != want {
+			t.Errorf("the bound's %s = %v, want %v", key, bound[0][key], want)
+		}
+	}
+}
+
+// A Postgres that refuses the daemon's password answers the same at every attempt, so the start
+// exits at its first refusal (c-boot-db-retry case 3): one connection and no wait, and the
+// refusal names the host and not the password.
+func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
+	address, connections := refusingPostgres(t, "28P01", `password authentication failed for user "legion"`)
+	cfg := testConfig(t)
+	cfg.PostgresDSN = secretDSN(address)
+	var logs syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	refused := make(chan error, 1)
+	go func() {
+		refused <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), fakeRuntime(fake.NewRuntime(), &built{}))
+	}()
+
+	select {
+	case err := <-refused:
+		if err == nil {
+			t.Fatal("run started against a Postgres that refuses its password")
+		}
+		if !strings.Contains(err.Error(), address) || !strings.Contains(err.Error(), "SQLSTATE 28P01") {
+			t.Errorf("the refusal = %v, want it to name %s and the server's 28P01", err, address)
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("the refusal leaks the DSN password: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-refused
+		t.Errorf("run did not exit within 5s of a refused password")
+	}
+	if n := connections.Load(); n != 1 {
+		t.Errorf("the start made %d connections to a Postgres that refused its password, want 1", n)
+	}
+	if waits := storeOpenWaits(t, logs.String()); len(waits) != 0 {
+		t.Errorf("the start waited to try a refused password again: %v", waits)
+	}
+}
+
+// A stop that arrives while the start waits to open its store again ends the start at once and
+// cleanly (c-boot-db-retry case 6): run returns nil, names the stop in its log, and records no
+// boot.
+func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
+	cfg := testConfig(t)
+	// The store the start would have recorded its boot in, which boots reads.
+	recorded := cfg
+	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
+	var logs syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), fakeRuntime(fake.NewRuntime(), &built{}))
+	}()
+
+	var ended error
+	returned := false
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		select {
+		case ended = <-done:
+			returned = true
+			return true
+		default:
+		}
+		return strings.Contains(logs.String(), `"attempt":"2/10"`)
+	}) {
+		t.Fatalf("the start logged no second wait to open its store within 10s; the log holds:\n%s", logs.String())
+	}
+	if returned {
+		t.Fatalf("run returned %v before its second wait to open its store; the log holds:\n%s", ended, logs.String())
+	}
+	cancel()
+	stopped := time.Now()
+	select {
+	case err := <-done:
+		took := time.Since(stopped)
+		if err != nil {
+			t.Fatalf("run stopped during its wait = %v, want a clean stop", err)
+		}
+		if took > 200*time.Millisecond {
+			t.Errorf("run returned %s after its stop, want within 200ms", took)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return within 30s of its stop")
+	}
+	if lines := loggedMessages(t, logs.String(), "legion daemon stopped before it opened its store"); len(lines) != 1 || lines[0]["project"] != cfg.Project {
+		t.Errorf("the stop's lines = %v, want one naming project %s", lines, cfg.Project)
+	}
+	if count, _ := boots(t, recorded); count != 0 {
+		t.Errorf("boots after a start stopped before its store opened = %d, want 0", count)
 	}
 }
 
