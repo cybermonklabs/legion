@@ -397,6 +397,13 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
+// costs the database the whole bound each time, so an automatic retry only multiplies that cost
+// and shows nothing more. The page offers its own Retry instead.
+export function isReferencesTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
 /** The words the document service's refusal of a write at the decode cap carries when a rebuild
  *  would take that write (`refuseUndecodable`, `packages/envoy/internal/dispatch/docs/growth.go`),
  *  and that no other `CAP_EXCEEDED` refusal holds: it says them only once the rebuild route's own
@@ -457,10 +464,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
+// definitive or too costly to send again at once; any other failure (dropped connection, a read
+// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
+// couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -468,7 +475,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
-    !isDocumentUnloadable(error)
+    !isDocumentUnloadable(error) &&
+    !isReferencesTimeout(error)
   );
 }
 
