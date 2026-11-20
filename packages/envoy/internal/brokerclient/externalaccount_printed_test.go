@@ -92,3 +92,61 @@ func TestAnExternalAccountIdentityPrintsItsAudienceAndAccountOnlyWhereTheyAreWha
 		})
 	}
 }
+
+// TestAnExternalAccountMintsFailureSaysWhatFailed: an external_account credential whose exchange
+// fails says which step failed in words of this client's own: a subject token file its
+// credential_source names that cannot be read prints the file call's reason, never its path; a
+// refusal of the token service names that service and the registered code its answer carried,
+// never the rest of the body. Control: the registered code prints, so the check sees the answer.
+func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
+	const secret = "hunter2pw-externalmint-62c0"
+	sts := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"echo: ` + secret + `"}`))
+	})
+	credential := func(t *testing.T, subject string) []byte {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{
+			"type":               "external_account",
+			"audience":           "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
+			"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+			"token_url":          sts + "/v1/token",
+			"credential_source":  map[string]any{"file": subject},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	for _, row := range []struct {
+		name    string
+		subject func(t *testing.T) string
+		want    string
+	}{
+		{"a subject token file that is not there", func(t *testing.T) string { return filepath.Join(t.TempDir(), secret) },
+			"read the subject token file its credential_source names: open: no such file or directory"},
+		{"control: the token service refuses the exchange", func(t *testing.T) string {
+			subject := filepath.Join(t.TempDir(), "subject")
+			if err := os.WriteFile(subject, []byte("the.workload.credential"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return subject
+		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			identity := &ExternalAccountIdentity{CredentialsJSON: credential(t, row.subject(t)), ServiceAccount: "deploy-bot@example-project.iam.gserviceaccount.com",
+				Audience: "https://aud.example", HTTP: HTTPClient()}
+			_, _, err := identity.Token(context.Background())
+			if err == nil {
+				t.Fatal("the exchange minted a token")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "error_description") {
+				t.Errorf("the error %q holds the path or the answer's body", err)
+			}
+			if !strings.Contains(err.Error(), row.want) {
+				t.Errorf("the error %q does not say %q", err, row.want)
+			}
+		})
+	}
+}

@@ -167,8 +167,7 @@ func (e *ExternalAccountIdentity) account() string {
 // Token mints the service account's access token with the credentials file's own exchange and
 // spends it on one generateIdToken. Every error names the step that failed and never a token, a
 // part of the file or a library's text: x/oauth2's errors quote the file's fields and the body of
-// the security token service's answer, so a refusal prints as the status that answer came with
-// (redact.Answered) and any other failure as its class (redact.Class).
+// the security token service's answer (externalAccountFailure).
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
@@ -183,15 +182,43 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	}
 	access, err := creds.TokenSource.Token()
 	if err != nil {
-		cause := redact.Class(err).Error()
-		if answered.status/100 > 2 {
-			cause = redact.Answered(answered.status, nil)
-		}
-		return "", "", fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, cause)
+		return "", "", fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, externalAccountFailure(e.CredentialsJSON, answered, err))
 	}
 	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, access.AccessToken)
 	if err != nil {
 		return "", "", err
 	}
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
+}
+
+// externalAccountFailure is why an external_account credential's token source failed, err, in
+// words of this client's own: x/oauth2 quotes the credential file's fields, the path its
+// credential_source names (without wrapping the file call's error) and the body of a refusal. A
+// subject token file the credential names that cannot be read prints as the file call's reason
+// (redact.File), the file read again here for it; a refusal names the service that answered - the
+// security token service, IAM Credentials, or the token service the credential names - and the
+// status and registered code its answer carried (redact.Answered); any other failure prints as its
+// class (redact.Class).
+func externalAccountFailure(credential []byte, answered *statusOf, err error) string {
+	var file struct {
+		Source struct {
+			File string `json:"file"`
+		} `json:"credential_source"`
+	}
+	if json.Unmarshal(credential, &file) == nil && file.Source.File != "" {
+		if _, readErr := os.ReadFile(file.Source.File); readErr != nil {
+			return "read the subject token file its credential_source names: " + redact.File(readErr).Error()
+		}
+	}
+	if answered.status/100 <= 2 {
+		return redact.Class(err).Error()
+	}
+	service := "the token service the credential names"
+	switch answered.host {
+	case "sts.googleapis.com":
+		service = "Google's security token service"
+	case "iamcredentials.googleapis.com":
+		service = "IAM Credentials"
+	}
+	return service + ": " + redact.Answered(answered.status, answered.answer())
 }
