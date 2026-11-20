@@ -27,8 +27,12 @@ OUTCOME_FILE = "outcome.json"
 # Where the frozen `run_judges` writes a request's bundles, through the link `WORK/bundles`, before
 # they are kept under `requests/<ask id>/`: so every byte it writes lands under `--out`.
 BUILDING_DIRECTORY = "building"
-# The file that marks a request started: committed before S10's code runs on it.
+# The file that marks a request started: committed before S10's code runs on it; and the reason a
+# request started and not finished is a `started` deviation, which `s10-judged-io.ts` gives too.
 STARTED_FILE = "started.json"
+STARTED_REASON = "a run started the request and stopped before its outcome; it is never judged again"
+# Where an outcome the analysis's parser refuses is kept, beside the `shape` deviation in its place.
+UNREAD_FILE = "unread-outcome.json"
 # Where each run's preflight keeps its sandbox's result, `preflights/<n>/`, before any request starts.
 PREFLIGHT_DIRECTORY = "preflights"
 

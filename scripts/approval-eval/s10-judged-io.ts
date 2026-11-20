@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CorpusError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
-import type { InventoryLine } from "./s10-inputs-io";
+import { CorpusError, listOf, numberOf, recordOf } from "./corpus-io";
+import { countAt, type InventoryLine, parsed, sha256At, textAt } from "./s10-inputs-io";
 
 /**
  * The files the claim's judging stage (`s10_judge.py`) writes under its `--out`, which the
@@ -26,6 +26,9 @@ export const OUTCOMES_FILE = "outcomes.jsonl";
 export const OUTCOME_FILE = "outcome.json";
 /** The file that marks a request started (`s10_store.py`'s `STARTED_FILE`). */
 export const STARTED_FILE = "started.json";
+/** Why a request started and not finished is a `started` deviation (`s10_store.py`'s `STARTED_REASON`). */
+export const STARTED_REASON =
+  "a run started the request and stopped before its outcome; it is never judged again";
 
 /** The version of the stage's shapes, which every reader checks. */
 export const JUDGED_VERSION = 4;
@@ -43,6 +46,7 @@ export const DEVIATION_KINDS = [
   "model",
   "answers",
   "verdict",
+  "shape",
   "started",
 ] as const;
 
@@ -258,41 +262,15 @@ function sha256Of(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function parsed(text: string, where: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new CorpusError(`${where} is not JSON`);
-  }
-  const record = recordOf(value);
+/** A JSON object read back, refused where it is no JSON or no object. */
+function parsedRecord(text: string, where: string): Record<string, unknown> {
+  const record = recordOf(parsed(text, where));
   if (record === null) throw new CorpusError(`${where} is no object`);
   return record;
 }
 
-function textAt(value: unknown, where: string, field: string): string {
-  const text = stringOf(value);
-  if (text === null) throw new CorpusError(`${where} holds a ${field} that is no text`);
-  return text;
-}
-
 function textOrNull(value: unknown, where: string, field: string): string | null {
   return value === null ? null : textAt(value, where, field);
-}
-
-function sha256At(value: unknown, where: string, field: string): string {
-  const text = textAt(value, where, field);
-  if (!/^[0-9a-f]{64}$/.test(text))
-    throw new CorpusError(`${where} holds a ${field} that is no sha256`);
-  return text;
-}
-
-function countAt(value: unknown, where: string, field: string): number {
-  const count = numberOf(value);
-  if (count === null || !Number.isSafeInteger(count) || count < 0) {
-    throw new CorpusError(`${where} holds a ${field} that is no count`);
-  }
-  return count;
 }
 
 function objectOrNull(
@@ -625,7 +603,7 @@ function countsOf(value: unknown, where: string): JudgedCounts | null {
 
 /** `requests/<ask id>/outcome.json` read back, refused in any other shape. */
 export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
-  const record = parsed(text, path);
+  const record = parsedRecord(text, path);
   const keys = [
     "askId",
     "issueKey",
@@ -684,7 +662,7 @@ export function outcomeLinesOf(text: string, path: string): OutcomeLine[] {
   if (lines.pop() !== "") throw new CorpusError(`${path} does not end its last line`);
   return lines.map((line, at) => {
     const where = `${path} line ${at + 1}`;
-    const record = parsed(line, where);
+    const record = parsedRecord(line, where);
     const outcome = outcomeKindAt(record.outcome, where);
     const verdict = textOrNull(record.verdict, where, "verdict");
     const deviation = record.deviation === null ? null : deviationKindAt(record.deviation, where);
@@ -705,7 +683,7 @@ export function outcomeLinesOf(text: string, path: string): OutcomeLine[] {
 
 /** `s10-judged.json` read back, refused unless it is a record of this version in the stage's shape. */
 export function judgedRecordOf(text: string, path: string): JudgedRecord {
-  const record = parsed(text, path);
+  const record = parsedRecord(text, path);
   if (record.stage !== "s10-judged" || record.version !== JUDGED_VERSION) {
     throw new CorpusError(`${path} is no record of version ${JUDGED_VERSION} of the judged stage`);
   }
@@ -833,9 +811,7 @@ export function reportedOutcomesOf(
     if (found !== undefined) return found;
     const started = Object.hasOwn(stage.record.files, `requests/${line.askId}/${STARTED_FILE}`);
     const kind = started ? "started" : UNJUDGED;
-    const reason = started
-      ? "a run started the request and stopped before its outcome; it is never judged again"
-      : "no run of the judging stage reached the request";
+    const reason = started ? STARTED_REASON : "no run of the judging stage reached the request";
     return {
       askId: line.askId,
       issueKey: line.issueKey,

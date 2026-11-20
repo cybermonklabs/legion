@@ -45,6 +45,7 @@ from unittest import mock  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
+import s10_frozen as F  # noqa: E402
 import s10_job as JOB  # noqa: E402
 import s10_judge as J  # noqa: E402
 import s10_sandbox as SANDBOX  # noqa: E402
@@ -93,16 +94,16 @@ def pins_for(path, work):
     with tempfile.TemporaryDirectory() as scratch:
         source = os.path.join(scratch, "shadow.py")
         put(source, files["shadow.py"])
-        os.environ.update(J.UNREACHABLE)
+        os.environ.update(F.UNREACHABLE)
         try:
             spec = importlib.util.spec_from_file_location("s10_pins_shadow", source)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         finally:
-            for name in J.UNREACHABLE:
+            for name in F.UNREACHABLE:
                 os.environ.pop(name, None)
         prompt, bundle = sha(module.JUDGE_PROMPT), sha(inspect.getsource(module.build_bundle))
-    return J.Pins(code_sha256=sha(text), files={name: sha(data)[:8] for name, data in files.items()},
+    return F.Pins(code_sha256=sha(text), files={name: sha(data)[:8] for name, data in files.items()},
                   prompt_sha256=prompt, bundle_code_sha256=bundle, skill_sha256=dict(module.SKILL_SHA),
                   asked=module.ASKED, model=module.MODEL, work=work)
 
@@ -230,14 +231,11 @@ def tool_entries(calls, upstream=None):
     return entries
 
 
-def listing_answer(entries):
-    """A `read`'s answer that lists a directory as omp prints one: its root, then each entry (one
-    written with its own indentation and `- ` kept so), with a size and an age."""
-    lines = ["."]
-    for entry in entries:
-        line = entry if entry.lstrip().startswith("- ") else f" - {entry}"
-        lines.append(f"{line} 26.5KB just now")
-    return "\n".join(lines) + "\n"
+def listing_answer(lines):
+    """A `read`'s answer that lists a directory as omp 18.16.0 prints one: its root `.`, then each
+    line as given (indentation, `- `, name, and a file's size and age, or none where the age is
+    empty)."""
+    return "\n".join([".", *lines])
 
 
 # The manifests a fake sandbox records unless a test hands it others: the ones its request requires.
@@ -246,8 +244,9 @@ REQUIRED = "required"
 
 class FakeSandbox:
     """The sandbox, as a fake: `judge_tools`, `answers`, `model_changes`, `served`, `resolved`,
-    `top_calls`, `record`, `manifests`, `drop`, `failure`, `listing`, `files` and `key` change
-    what it gives back or holds; `preflight_record` and `preflight_failure` change its preflight.
+    `top_calls`, `record`, `manifests`, `drop`, `failure`, `listing`, `copied`, `files` and `key`
+    change what it gives back or holds; `preflight_record` and `preflight_failure` change its
+    preflight. `copied` names a path outside the work tree that holds the first bundle's bytes.
     Its layout puts the emptyDir at the test's own root, where the driver's bundles and calls are.
     Each run records where the driver's `WORK/bundles` led while it ran; `during` is called in the
     middle of a run."""
@@ -275,6 +274,7 @@ class FakeSandbox:
         self.raise_on = None
         self.during = None
         self.files = {}
+        self.copied = None
         self.key = None
         for name, value in changes.items():
             setattr(self, name, value)
@@ -294,15 +294,18 @@ class FakeSandbox:
             while STORE.under(parent, self.test.work):
                 directories.add(parent)
                 parent = os.path.dirname(parent)
+        bundles = sorted(path for path in files if path.endswith(".md"))
+        copies = [f"f 644 {len(files[bundles[0]])} {self.copied}"] if self.copied and bundles else []
         listing = sorted([f"f 644 10 {HARNESS}/{name}" for name in SANDBOX.SKILL_FILES]
                          + [f"d 755 4096 {path}" for path in directories]
                          + [f"f 644 {len(data)} {path}" for path, data in files.items()]
-                         + (self.preflight_listing if preflight else self.listing))
+                         + copies + (self.preflight_listing if preflight else self.listing))
         record = {"refused": None, "preflight": preflight, "layout": layout, "payload": {
                       path: sha(data) for path, data in files.items()},
-                  "environment": ["HOME", "PATH", "S10_SANDBOX"],
+                  "environment": ["HOME", "PATH", "S10_SANDBOX", "S10_SANDBOX_MODE"],
                   "mounts": ["/", "/proc", layout["key"], layout["models"], layout["overlay"], layout["work"]],
                   "listing": {"lines": len(listing), "sha256": sha("\n".join(listing) + "\n")},
+                  "sameSize": {self.copied: sha(files[bundles[0]])} if copies else {},
                   "runtime": dict(SANDBOX.RUNTIME, piConfigFiles=SANDBOX.OVERLAY_FILE),
                   "metadata": [{"url": url, "connected": True, "status": 403} for url in SANDBOX.METADATA_REQUESTS],
                   "keyFound": []}
@@ -405,7 +408,10 @@ class Base(unittest.TestCase):
         return ["--inputs", self.inputs, "--out", self.out, "--code", code, "--skill", self.skill,
                 "--never-decide", self.never, "--image", image, *more]
 
-    def judge(self, admission, sandbox, pins=None, code=CODE, more=()):
+    def judge(self, admission, sandbox, pins=None, code=CODE, more=(), read_back_of=None):
+        """One run of the driver over `admission` and `sandbox`: its exit status. Each outcome is
+        read back by `read_back_of`, by default one that refuses none; `s10-judge.test.ts` reads
+        every stage a run here judges whole with the analysis's own parser after."""
         stdout, stderr = io.StringIO(), io.StringIO()
         self.runners = []
 
@@ -415,7 +421,7 @@ class Base(unittest.TestCase):
 
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = J.main(self.argv(code, more=more), pins=pins or self.pins, admit=lambda argv, environ: admission,
-                            runner_of=runner_of)
+                            runner_of=runner_of, read_back_of=read_back_of or (lambda text, path: None))
         self.stderr = stderr.getvalue()
         if status == 0:
             self.keep_for_typescript()
@@ -438,6 +444,7 @@ class Base(unittest.TestCase):
             "countingRule": f"v{CHECKS.COUNTING_RULE}",
             "stageVersion": STORE.STAGE_VERSION,
             "startedFile": STORE.STARTED_FILE,
+            "startedReason": STORE.STARTED_REASON,
         }))
 
     def outcome(self, tail):
@@ -472,16 +479,16 @@ class Base(unittest.TestCase):
 def shadow_of(test):
     """The stand-in `shadow.py`, loaded as the driver loads the frozen one."""
     path = os.path.join(test.root, "shadow.py")
-    data = J.frozen_files(CODE, test.pins)["shadow.py"]
+    data = F.frozen_files(CODE, test.pins)["shadow.py"]
     put(path, data)
-    return J.load_shadow(path, test.pins, data)
+    return F.load_shadow(path, test.pins, data)
 
 
-# ---------- the frozen code ----------
+# ---------- the frozen code (`s10_frozen.py`) ----------
 
 class FrozenCodeTest(Base):
     def test_takes_the_code_txt_whose_every_part_is_pinned(self):
-        files = J.frozen_files(CODE, self.pins)
+        files = F.frozen_files(CODE, self.pins)
         self.assertEqual(list(files), ["shadow.py", "render.py", "round.py", "kernel_round.py", "tick.sh"])
         self.assertEqual(shadow_of(self).WORK, self.work)
 
@@ -489,54 +496,54 @@ class FrozenCodeTest(Base):
         changed = os.path.join(self.root, "code.txt")
         put(changed, got(CODE).replace(b"A test judge.", b"A test judge!"))
         with self.assertRaisesRegex(STORE.CannotRun, "point 2 fixes"):
-            J.frozen_files(changed, self.pins)
+            F.frozen_files(changed, self.pins)
 
     def test_refuses_a_file_a_prompt_or_a_bundle_code_not_the_pinned(self):
         with self.assertRaisesRegex(STORE.CannotRun, "tick.sh"):
-            J.frozen_files(CODE, J.Pins(**{**self.pins.__dict__, "files": {**self.pins.files, "tick.sh": "00000000"}}))
+            F.frozen_files(CODE, F.Pins(**{**self.pins.__dict__, "files": {**self.pins.files, "tick.sh": "00000000"}}))
         path = os.path.join(self.root, "shadow.py")
-        data = J.frozen_files(CODE, self.pins)["shadow.py"]
+        data = F.frozen_files(CODE, self.pins)["shadow.py"]
         put(path, data)
         for field, name in (("prompt_sha256", "JUDGE_PROMPT"), ("bundle_code_sha256", "build_bundle"),
                             ("asked", "ASKED"), ("work", "WORK")):
             with self.subTest(field=field), self.assertRaisesRegex(STORE.CannotRun, name):
-                J.load_shadow(path, J.Pins(**{**self.pins.__dict__, field: "other"}), data)
+                F.load_shadow(path, F.Pins(**{**self.pins.__dict__, field: "other"}), data)
 
     def test_shadow_py_runs_only_as_pinned_and_as_kept(self):
         path = os.path.join(self.root, "shadow.py")
-        data = J.frozen_files(CODE, self.pins)["shadow.py"]
+        data = F.frozen_files(CODE, self.pins)["shadow.py"]
         put(path, data + b"\n# changed after it was kept\n")
         with self.assertRaisesRegex(STORE.CannotRun, "not the shadow.py"):
-            J.load_shadow(path, self.pins, data)
+            F.load_shadow(path, self.pins, data)
         put(path, data)
         with self.assertRaisesRegex(STORE.CannotRun, "point 2 gives"):
-            J.load_shadow(path, self.pins, data + b"\n")
+            F.load_shadow(path, self.pins, data + b"\n")
 
     def test_every_way_out_of_the_process_raises_while_s10_runs_and_is_restored_after(self):
         shadow = shadow_of(self)
-        self.assertEqual(shadow.DISPATCH, (J.UNREACHABLE["DISPATCH_URL"], J.UNREACHABLE["DISPATCH_TOKEN_FILE"]))
-        self.assertFalse([name for name in os.environ if name in J.UNREACHABLE])
-        with self.assertRaises(J.InputsGap):
+        self.assertEqual(shadow.DISPATCH, (F.UNREACHABLE["DISPATCH_URL"], F.UNREACHABLE["DISPATCH_TOKEN_FILE"]))
+        self.assertFalse([name for name in os.environ if name in F.UNREACHABLE])
+        with self.assertRaises(F.InputsGap):
             shadow.configuration()
-        with self.assertRaises(J.InputsGap):
+        with self.assertRaises(F.InputsGap):
             shadow.reserved_neighbour(ask_id("c1"), "ACME-9", EARLIER, [])
         originals = (socket.socket, socket.create_connection, subprocess.Popen, os.system)
         aliased = importlib.import_module("subprocess")
-        with J.sealed():
+        with F.sealed():
             for reach in (lambda: os.system("true"), lambda: socket.socket(),
                           lambda: socket.create_connection(("192.0.2.1", 80)),
                           lambda: aliased.run(["true"]), lambda: subprocess.check_output(["true"]),
                           lambda: os.posix_spawn("/bin/true", ["true"], {}), lambda: socket.getaddrinfo("x", 80)):
-                with self.assertRaises(J.InputsGap):
+                with self.assertRaises(F.InputsGap):
                     reach()
             self.assertEqual(shadow.os.path.join("a", "b"), "a/b")
         self.assertEqual((socket.socket, socket.create_connection, subprocess.Popen, os.system), originals)
         self.assertEqual(subprocess.run(["true"]).returncode, 0)
         # A name S10 takes from `socket` while it loads is the sealed one for good.
         frozen = types.ModuleType("frozen_alias")
-        with J.sealed():
+        with F.sealed():
             exec("from socket import socket as taken", frozen.__dict__)  # noqa: S102 - a test of the seal
-        with self.assertRaises(J.InputsGap):
+        with self.assertRaises(F.InputsGap):
             frozen.taken()
         # Its own read stops at the token file that is not there, before any request is made.
         with self.assertRaises(OSError):
@@ -557,18 +564,18 @@ class FrozenCodeTest(Base):
         code = os.path.join(self.root, "code.txt")
         put(code, got(CODE).replace(b'"reason": TEXT}', b'"reason": dict(TEXT, minLength=1)}'))
         path = os.path.join(self.root, "shadow.py")
-        data = J.frozen_files(code, pins_for(code, self.work))["shadow.py"]
+        data = F.frozen_files(code, pins_for(code, self.work))["shadow.py"]
         put(path, data)
         with self.assertRaisesRegex(STORE.CannotRun, "minLength"):
-            J.load_shadow(path, pins_for(code, self.work), data)
+            F.load_shadow(path, pins_for(code, self.work), data)
 
     def test_puts_the_pinned_skill_where_s10_reads_it_and_refuses_another(self):
         shadow = shadow_of(self)
-        J.place_skill(shadow, J.skill_files(self.skill, self.never, self.pins))
+        F.place_skill(shadow, F.skill_files(self.skill, self.never, self.pins))
         self.assertEqual(shadow.skill_bytes()["SKILL.md"], SKILL.decode())
         put(self.never, NEVER + b"\nOne more line.\n")
         with self.assertRaisesRegex(STORE.CannotRun, "never-decide"):
-            J.skill_files(self.skill, self.never, self.pins)
+            F.skill_files(self.skill, self.never, self.pins)
         self.assertEqual(self.judge(self.one_request(), FakeSandbox(self)), 2)
         self.assertFalse(os.path.exists(self.out))
 
@@ -606,7 +613,7 @@ class ReaderTest(Base):
         self.assertEqual(shadow.doc_version("doc-a1", 2)[0], "# The spec of ACME-1\n")
         for path in ("/api/v1/issues/ACME-2", "/api/v1/artifacts/doc-a1/versions/1", f"/api/v1/asks/{ask_id('c2')}",
                      "/api/v1/events/log"):
-            with self.subTest(path=path), self.assertRaises(J.InputsGap):
+            with self.subTest(path=path), self.assertRaises(F.InputsGap):
                 shadow.api(path)
 
     def test_a_held_or_dropped_mark_comes_before_any_field_and_both_at_once_is_a_gap(self):
@@ -773,13 +780,17 @@ class JudgingTest(Base):
                 ("read", {"path": "skill://approval-review/references/never-decide.md:raw"},
                  {"resolvedPath": HARNESS + "/references/never-decide.md"}),
                 ("read", {"path": HARNESS + "/references/reviewer-principles.md"}, None),
-                # Directory reads whose answers are listings: its bundle directory, the skill tree, references/.
-                ("read", {"path": relative}, {"isDirectory": True, "resolvedPath": directory}, listing_answer(names)),
+                # Directory reads whose answers are listings, in omp's own format: its bundle directory
+                # (ages empty), the skill tree two levels deep, references/.
+                ("read", {"path": relative}, {"isDirectory": True, "resolvedPath": directory},
+                 listing_answer([f"  - {name}" for name in names])),
                 ("read", {"path": HARNESS}, {"isDirectory": True, "resolvedPath": HARNESS},
-                 listing_answer(["SKILL.md", "references/", "  - never-decide.md"])),
+                 listing_answer(["  - SKILL.md 10B just now", "  - references/ 3m ago",
+                                 "    - never-decide.md 10B 2h ago", "    - reviewer-principles.md 10B 5d ago"])),
                 ("read", {"path": "skill://approval-review/references"},
                  {"isDirectory": True, "resolvedPath": HARNESS + "/references"},
-                 listing_answer(["never-decide.md", "reviewer-principles.md"])),
+                 listing_answer(["  - never-decide.md 10B just now", "  - reviewer-principles.md 10B 1mo ago",
+                                 "[2 more lines in listing. Use :4 to continue]"])),
                 # Version 6's: any listing inside the work tree or the skill tree, and a grep of the skill tree.
                 ("glob", {"path": "."}, {"scopePath": ".", "cwd": self.work,
                                          "files": ["bundles/", f"bundles/{ask}/", f"bundles/{ask}/judge-1.md"]}),
@@ -789,7 +800,7 @@ class JudgingTest(Base):
                 ("grep", {"pattern": "never", "path": HARNESS},
                  {"searchPath": HARNESS, "fileMatches": [{"path": HARNESS + "/references/never-decide.md"}]}),
                 ("read", {"path": self.work}, {"isDirectory": True, "resolvedPath": self.work},
-                 listing_answer(["bundles/", f"  - {ask}/"])),
+                 listing_answer(["  - bundles/ just now", f"    - {ask}/ just now"])),
                 ("glob", {}, {"scopePath": ".", "cwd": self.work, "files": ["bundles/"]}),
                 ("yield", {"data": json.dumps({"path": "/etc/passwd"})}, None)]
         self.assertEqual(self.judged_kind(judge_tools=allowed), "approve")
@@ -822,14 +833,34 @@ class JudgingTest(Base):
         cases = {
             "a read of another bundle": own(lambda bundle, directory: [("read", {"path": other(bundle, directory)}, None)]),
             "a read of no file": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
+            "a read reporting another bundle": own(lambda bundle, directory: [
+                ("read", {"path": bundle}, {"resolvedPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
+            "a grep reporting another bundle": own(lambda bundle, directory: [
+                ("grep", {"pattern": "x", "path": bundle},
+                 {"searchPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
+            "a grep of the skill tree reporting a bundle": own(lambda bundle, directory: [
+                ("grep", {"pattern": "x", "path": HARNESS}, {"searchPath": HARNESS, "files": [other(bundle, directory)]})]),
             "a directory read no answer establishes": own(lambda bundle, directory: [
                 ("read", {"path": os.path.dirname(directory)}, None)]),
             "a directory read with an empty answer": directory_read(lambda bundle, directory: directory, ""),
             "a directory read naming an entry no manifest holds": directory_read(
-                lambda bundle, directory: directory, listing_answer(["judge-1.md", "secret.md"])),
+                lambda bundle, directory: directory, listing_answer(["  - judge-1.md", "  - secret.md"])),
+            "a directory read placing an entry at the wrong path": directory_read(
+                lambda bundle, directory: self.work, listing_answer(["  - judge-1.md 1KB just now"])),
+            "a directory read giving a directory as a file": directory_read(
+                lambda bundle, directory: self.work, listing_answer(["  - bundles just now"])),
+            "a directory read with text for its size and age": directory_read(
+                lambda bundle, directory: self.work, listing_answer(["  - bundles/ THIS IS FILE TEXT, NOT SIZES OR AGES"])),
+            "a directory read with a size not the file's": directory_read(
+                lambda bundle, directory: HARNESS, listing_answer(["  - SKILL.md 26.5KB just now"])),
+            "a directory read with a size but no age": directory_read(
+                lambda bundle, directory: HARNESS, listing_answer(["  - SKILL.md 10B"])),
+            "a directory read without its root": directory_read(
+                lambda bundle, directory: directory, "  - judge-1.md\n  - judge-2.md"),
+            "a directory read one space off": directory_read(lambda bundle, directory: directory, ".\n - judge-1.md"),
             "a directory read answering a file's text": directory_read(lambda bundle, directory: directory, "# The spec\n"),
             "a directory read outside the trees": directory_read(lambda bundle, directory: self.root,
-                                                                 listing_answer(["shadow/"])),
+                                                                 listing_answer(["  - shadow/"])),
             "a grep of the bundle directory": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": directory}, None)]),
             "a grep of the work tree": own(lambda bundle, directory: [("grep", {"pattern": "x", "path": self.work}, None)]),
@@ -895,6 +926,17 @@ class JudgingTest(Base):
                 shutil.rmtree(self.out, ignore_errors=True)
                 self.assertEqual(self.judged_kind(judge_tools=tools), "tool-call")
 
+    def test_a_listings_sizes_are_printed_as_omp_prints_them(self):
+        cases = {0: "0B", 10: "10B", 1023: "1023B", 1024: "1.0KB", 1280: "1.3KB", 27156: "26.5KB",
+                 1024 ** 2: "1.0MB", 5 * 1024 ** 3 // 2: "2.5GB"}
+        for size, printed in cases.items():
+            with self.subTest(size=size):
+                self.assertEqual(CHECKS.listing_size(size), printed)
+        # Lines as omp 18.16.0 prints them, the first byte for byte as a judge's read of its bundle
+        # directory answered it in a smoke.
+        self.assertTrue(all(CHECKS.LISTING_ENTRY.fullmatch(line) for line in [
+            "  - judge-3.md 26.5KB just now", "  - references/ 3m ago", "    - never-decide.md 1.2KB 2h ago"]))
+
     def test_a_link_the_listing_records_is_followed_before_the_scope_is_read(self):
         def through_link(index, bundle):
             return [("read", {"path": HARNESS + "/references/never-decide.md"}, None)]
@@ -920,6 +962,32 @@ class JudgingTest(Base):
             with self.subTest(name=name):
                 self.assertEqual(self.judged_kind(manifests=manifests), "manifest")
                 shutil.rmtree(self.out)
+        # Versions 4 and 5 hold the bundle directory and the skill tree; a stray file beside
+        # `bundles/` breaks version 6's manifest alone.
+        stray = dict(wanted, work=sorted(work + [["notes.txt", "f"]]))
+        self.assertEqual(self.judged_kind(manifests={"before": stray, "after": stray}), "manifest")
+        by_rule = self.outcome("a1")["byRule"]
+        self.assertEqual({version: by_rule[version]["deviation"] or by_rule[version]["verdict"]
+                          for version in ("v4", "v5", "v6")}, {"v4": "approve", "v5": "approve", "v6": "manifest"})
+        shutil.rmtree(self.out)
+
+        # A sandbox that started no judge, its manifest refused before them: no version has a judge.
+        class NoJudge(FakeSandbox):
+            def run(self, ask, files, extra_env=None):
+                result = super().run(ask, files, extra_env)
+                record = json.loads(result.files["record.json"])
+                del record["omp"]
+                result.files["record.json"] = json.dumps(record).encode()
+                return result
+
+        self.assertEqual(self.judge(self.one_request(), NoJudge(self, manifests={"before": stray})), 0, self.stderr)
+        by_rule = self.outcome("a1")["byRule"]
+        # Version 3 holds no manifest, so its outcome is the missing transcripts; versions 4 and 5
+        # find no manifest after the judges, and version 6 a stray file before them.
+        self.assertEqual({version: one["deviation"] for version, one in by_rule.items()},
+                         {"v3": "transcript", "v4": "manifest", "v5": "manifest", "v6": "manifest"})
+        self.assertIn("the sandbox started no judge, so no judge has a transcript",
+                      self.outcome("a1")["deviation"]["problems"])
 
     def test_the_gateway_key_is_kept_in_no_file_and_a_request_whose_files_held_it_is_a_deviation(self):
         leaked = {"sessions/top/judge2.jsonl.extra": b"read " + KEY + b" here\n"}
@@ -1032,9 +1100,16 @@ class JudgingTest(Base):
         self.assertEqual(self.judged_kind(listing=stray), "sandbox")
         self.assertIn("outside the bundles", self.outcome("a1")["deviation"]["reason"])
         shutil.rmtree(self.out)
-        # Admission: the five sent are the only evidence bundles anywhere in the sandbox.
+        # Admission: the five sent are the only evidence bundles anywhere in the sandbox, by name and
+        # by bytes.
         self.assertEqual(self.judged_kind(listing=["f 644 1 /opt/legion/examples/judge-1.md"]), "sandbox")
-        self.assertIn("evidence bundle", self.outcome("a1")["deviation"]["reason"])
+        self.assertIn("evidence bundle's name", self.outcome("a1")["deviation"]["reason"])
+        shutil.rmtree(self.out)
+        self.assertEqual(self.judged_kind(copied="/opt/legion/examples/copy.txt"), "sandbox")
+        self.assertIn("holds the bytes of an evidence bundle", self.outcome("a1")["deviation"]["reason"])
+        shutil.rmtree(self.out)
+        self.assertEqual(self.judged_kind(copied="/opt/legion/examples/copy.txt", record={"sameSize": {}}), "sandbox")
+        self.assertIn("recorded no sha256", self.outcome("a1")["deviation"]["reason"])
         shutil.rmtree(self.out)
         self.assertEqual(self.judged_kind(record={"mounts": ["/", "/proc", "/elsewhere"]}), "sandbox")
         shutil.rmtree(self.out)
@@ -1127,6 +1202,75 @@ class StageTest(Base):
         self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
         self.assertEqual([run["ask"] for run in resumed.runs], [ask_id("a2")])
         self.assertEqual(self.outcome("a1")["deviation"]["kind"], "started")
+        self.assertEqual(self.outcome("a1")["deviation"]["reason"], STORE.STARTED_REASON)
+
+    def test_an_outcome_the_analysis_cannot_read_is_a_shape_deviation_kept_beside_its_place(self):
+        admission = self.two_requests()
+        refused = []
+
+        def read_back(text, path):
+            if ask_id("a1") in path and '"shape"' not in text:
+                refused.append(text)
+                return "CorpusError: a judged document holds no sha256"
+            return None
+
+        self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=read_back), 0, self.stderr)
+        found = self.outcome("a1")
+        self.assertEqual((found["outcome"], found["deviation"]["kind"], found["judgement"]), ("deviation", "shape", None))
+        self.assertIn("a judged document holds no sha256", found["deviation"]["reason"])
+        self.assertEqual({one["deviation"] for one in found["byRule"].values()}, {"shape"})
+        unread = os.path.join(self.out, "requests", ask_id("a1"), STORE.UNREAD_FILE)
+        self.assertEqual(got(unread).decode(), refused[0])
+        self.assertEqual(json.loads(refused[0])["verdict"], "approve")
+        self.assertIn(f"requests/{ask_id('a1')}/{STORE.UNREAD_FILE}", self.record()["files"])
+        self.assertEqual(self.outcome("a2")["verdict"], "approve")
+
+    def test_a_read_back_that_cannot_run_stops_the_run(self):
+        def read_back(text, path):
+            raise J.Stopped("bun could not run")
+
+        self.assertEqual(self.judge(self.one_request(), FakeSandbox(self), read_back_of=read_back), 2)
+        self.assertFalse(self.has_outcome("a1"))
+        self.assertIn("bun could not run", self.record()["stops"][0]["reason"])
+        with mock.patch.object(J, "BUN", os.path.join(self.root, "no-bun")):
+            with self.assertRaisesRegex(J.Stopped, "could not read back"):
+                J.read_back_with_bun("{}", "requests/a/outcome.json")
+
+    def test_the_analysis_parser_reads_each_outcome_back_through_bun(self):
+        bun = os.environ.get("S10_BUN")
+        if not bun:
+            self.skipTest("s10-judge.test.ts runs this with its own Bun (S10_BUN)")
+        admission = self.one_request()
+        with mock.patch.object(J, "BUN", bun):
+            self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=J.read_back_with_bun), 0,
+                             self.stderr)
+            self.assertEqual(self.outcome("a1")["verdict"], "approve")
+            self.assertIn("outcome.json", J.read_back_with_bun("{}", "requests/a/outcome.json"))
+            # S10's code returning a judgement the parser refuses: a document with no sha256.
+            shutil.rmtree(self.out)
+            load = J.load_shadow
+
+            def without_sha256(*arguments):
+                shadow = load(*arguments)
+                finish = shadow.finish_judgement
+
+                def finish_judgement(*inner):
+                    judgement = finish(*inner)
+                    for document in judgement["documents"]:
+                        document.pop("sha256")
+                    return judgement
+
+                shadow.finish_judgement = finish_judgement
+                return shadow
+
+            with mock.patch.object(J, "load_shadow", without_sha256):
+                self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=J.read_back_with_bun), 0,
+                                 self.stderr)
+        found = self.outcome("a1")
+        self.assertEqual(found["deviation"]["kind"], "shape")
+        self.assertIn("sha256", found["deviation"]["reason"])
+        unread = json.loads(got(os.path.join(self.out, "requests", ask_id("a1"), STORE.UNREAD_FILE)))
+        self.assertNotIn("sha256", unread["judgement"]["documents"][0])
 
     def test_a_kill_leaves_the_stage_started_and_its_request_started(self):
         admission = self.two_requests()
@@ -1299,15 +1443,35 @@ class SandboxTest(unittest.TestCase):
                  "f 600 10 /run/agent-secrets/key": "credential",
                  "f 644 10 /work/shadow/notes.txt": "outside the bundles",
                  "f 644 10 /run/model-gateway-key/..2026_11_20_15_47_29.1/token": "one item",
-                 "f 644 10 /opt/legion/examples/judge-1.md": "evidence bundle",
-                 "f 644 10 /tmp/judge-6.md": "evidence bundle",
-                 "f 644 10 /var/tmp/bundles/abc/notes.md": "evidence bundle",
-                 "l 777 9 /usr/share/judge-2.md -> /dev/null": "evidence bundle"}
+                 "f 644 10 /opt/legion/examples/judge-1.md": "evidence bundle's name",
+                 "f 644 10 /tmp/JUDGE-3.MD": "evidence bundle's name",
+                 "l 777 9 /usr/share/judge-2.md -> /dev/null": "evidence bundle's name"}
         for line, reason in cases.items():
             with self.subTest(line=line):
                 self.assertIn(reason, SANDBOX.listing_refusal(LISTING + [line], PAYLOAD, LAYOUT))
         self.assertIn("not there", SANDBOX.listing_refusal([one for one in LISTING if "judge-1" not in one],
                                                            PAYLOAD, LAYOUT))
+
+    def test_a_bundle_is_held_by_its_name_and_its_bytes_and_a_bundles_path_in_the_image_is_none(self):
+        image = ["d 755 0 /usr/lib/node_modules/x/bundles", "f 644 10 /usr/lib/node_modules/x/bundles/a/judge.js",
+                 "f 644 10 /opt/legion/bundles/index.md", "f 644 10 /usr/share/judge-6.md"]
+        self.assertIsNone(SANDBOX.listing_refusal(LISTING + image, PAYLOAD, LAYOUT))
+        same = "f 644 3 /usr/share/doc/same-size.txt"
+        self.assertIsNone(SANDBOX.listing_refusal(LISTING + [same], PAYLOAD, LAYOUT,
+                                                  {"/usr/share/doc/same-size.txt": sha(b"two")}))
+        # One the program cannot read, as no judge running as its user can.
+        self.assertIsNone(SANDBOX.listing_refusal(LISTING + [same], PAYLOAD, LAYOUT, {"/usr/share/doc/same-size.txt": None}))
+        self.assertIn("holds the bytes", SANDBOX.listing_refusal(LISTING + [same], PAYLOAD, LAYOUT,
+                                                                  {"/usr/share/doc/same-size.txt": sha(b"one")}))
+        self.assertIn("recorded no sha256", SANDBOX.listing_refusal(LISTING + [same], PAYLOAD, LAYOUT, {}))
+        # The sandbox's own digests: every file of a sent bundle's size outside the work tree.
+        with tempfile.TemporaryDirectory() as root:
+            put(os.path.join(root, "copy.txt"), b"one")
+            put(os.path.join(root, "other.txt"), b"four")
+            lines = [f"f 644 3 {root}/copy.txt", f"f 644 4 {root}/other.txt", f"f 644 3 {root}/gone.txt",
+                     "f 644 3 /work/shadow/bundles/a/judge-1.md"]
+            self.assertEqual(SANDBOX.same_size_digests(lines, PAYLOAD, dict(LAYOUT, work="/work/shadow")),
+                             {f"{root}/copy.txt": sha(b"one"), f"{root}/gone.txt": None})
 
     def test_a_root_a_run_can_write_holds_only_its_own_the_mounts_and_the_images_runtime(self):
         allowed = ["f 600 10 /home/legion/.omp/profiles/legion/agent/agent.db", f"f 444 10 {SANDBOX.MODELS_FILE}",
@@ -1428,6 +1592,15 @@ class SandboxTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "emptyDir"):
             SANDBOX.place({"/etc/judge-1.md": b"x"}, LAYOUT)
 
+    def test_the_mode_is_named_and_must_match_the_payload(self):
+        files = {"/work/shadow/bundles/a/judge-1.md": b"one"}
+        cases = {"no mode": ({}, files, "none of"), "another mode": ({SANDBOX.MODE_VARIABLE: "judge"}, files, "none of"),
+                 "a preflight sent files": ({SANDBOX.MODE_VARIABLE: "preflight"}, files, "a preflight was sent 1"),
+                 "a request sent none": ({SANDBOX.MODE_VARIABLE: "request"}, {}, "a request was sent 0")}
+        for name, (mode, sent, reason) in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, reason):
+                SANDBOX.checked({**mode, **JOB.payload_variables(sent)}, LAYOUT, {})
+
     def test_the_listing_names_every_entry_without_following_a_link(self):
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, "a"))
@@ -1463,6 +1636,18 @@ class SandboxTest(unittest.TestCase):
         self.assertIn("skill tree", SANDBOX.manifest_problem({"before": dict(wanted, skill=wanted["skill"][:3])}, "a1x"))
         self.assertIn("after the last judge",
                       SANDBOX.manifest_problem({"before": wanted, "after": dict(wanted, skill=[])}, "a1x"))
+        # Versions 4 and 5: the bundle directory, taken from the work tree's manifest, and the skill tree.
+        stray = dict(wanted, work=sorted(wanted["work"] + [["notes.txt", "f"]]))
+        self.assertEqual(SANDBOX.bundle_manifest_of(stray["work"], "a1x"), [[name, "f"] for name in SANDBOX.BUNDLE_NAMES])
+        self.assertIsNone(SANDBOX.manifest_problem({"before": stray, "after": wanted}, "a1x", trees="bundle"))
+        self.assertIn("work tree", SANDBOX.manifest_problem({"before": stray, "after": stray}, "a1x"))
+        self.assertIn("bundle directory", SANDBOX.manifest_problem({"before": wanted}, "a2x", finished=False,
+                                                                   trees="bundle"))
+        sixth = dict(wanted, work=sorted(wanted["work"] + [["bundles/a1x/judge-6.md", "f"]]))
+        self.assertIn("bundle directory", SANDBOX.manifest_problem({"before": sixth, "after": sixth}, "a1x",
+                                                                   trees="bundle"))
+        self.assertIn("after the last judge", SANDBOX.manifest_problem({"before": wanted, "after": sixth}, "a1x",
+                                                                       trees="bundle"))
 
     def test_the_one_cell_makes_the_recorded_calls_and_waits_as_s10_waits(self):
         calls = [{"prompt": f"p{index}", "agent": "scout", "label": f"l{index}", "schema": {"type": "object"},
@@ -1667,6 +1852,23 @@ class KubeRunnerTest(unittest.TestCase):
         self.assertEqual(spec["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
         env = {one["name"]: one["value"] for one in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         self.assertEqual(SANDBOX.payload_of(env), {})
+        self.assertEqual(env[SANDBOX.MODE_VARIABLE], "preflight")
+
+    def test_a_requests_job_names_its_mode(self):
+        created = []
+        runner = self.runner({"get job": [(0, json.dumps({"status": {"succeeded": 1}}))],
+                              "get pods": [(0, self.pods())], "logs": [(0, self.log({}))]})
+        original = runner.invoke
+
+        def invoke(arguments, stdin):
+            if arguments[0] == "create":
+                created.append(json.loads(stdin))
+            return original(arguments, stdin)
+
+        runner.invoke = invoke
+        runner.run("a1", {"/work/s10/calls.json": b"[]"})
+        env = {one["name"]: one["value"] for one in created[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env[SANDBOX.MODE_VARIABLE], "request")
 
 
 if __name__ == "__main__":

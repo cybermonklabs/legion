@@ -16,6 +16,7 @@ import {
   RULE_VERSIONS,
   reportedOutcomesOf,
   STARTED_FILE,
+  STARTED_REASON,
   UNJUDGED,
 } from "../s10-judged-io";
 
@@ -25,9 +26,10 @@ import {
  * directory's one `bun test` runs them: over an inputs stage written here and read back through
  * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and every stage that
  * suite judges whole, that one among them, is read back here through `s10-judged-io.ts`, with the
- * constants both sides hold equal. The rest test the admission the driver asks before it reads
- * anything (`s10-judge-admit.ts`), with a registration made for this test's own digest over a
- * bundle root of its own, as `s10-inputs.test.ts` makes one.
+ * constants both sides hold equal. That suite is handed this test's own Bun (`S10_BUN`), so its
+ * read-back test runs `s10-judged-check.ts`. The rest test the admission the driver asks before it
+ * reads anything (`s10-judge-admit.ts`), with a registration made for this test's own digest over
+ * a bundle root of its own, as `s10-inputs.test.ts` makes one.
  */
 
 const DIRECTORY = join(import.meta.dir, "..");
@@ -225,6 +227,7 @@ describe("s10_judge.py and the modules beside it", () => {
           PYTHONDONTWRITEBYTECODE: "1",
           S10_INPUTS_FIXTURE: inputs,
           S10_JUDGED_KEEP: keep,
+          S10_BUN: process.execPath,
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -243,6 +246,7 @@ describe("s10_judge.py and the modules beside it", () => {
       countingRule: COUNTING_RULE,
       stageVersion: JUDGED_VERSION,
       startedFile: STARTED_FILE,
+      startedReason: STARTED_REASON,
     });
     // Every stage the suite judged whole reads back, and between them every kind of outcome it writes.
     const stages = new Map<string, JudgedStage>();

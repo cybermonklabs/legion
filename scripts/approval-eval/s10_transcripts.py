@@ -4,25 +4,28 @@ before any answer is compared ("The claim's bundle and its arguments", version 6
 - The session's own transcript holds the one `eval` call of the sandbox's `CELL` and nothing else
   (`session_problems`); each recorded `agent()` call has one judge transcript (`judge_transcripts`).
 - No judge made a tool call, attempted, failed, denied or answered, but what point 5's tool rule
-  allows (`tool_call_problems`). The rule is applied as each of its versions writes it
-  (`RULE_VERSIONS`), over the same transcripts, and version 6's is the one that counts:
+  allows (`tool_call_problems`). The rule is applied as each of its versions writes it, over the
+  same transcripts, one row of `RULES` a version, and version 6's is the one that counts:
   - version 3: a `read`, `grep` or `glob` of its own bundle file or of a `skill://approval-review`
-    file, and nothing else, its `yield` answer included;
+    file, and nothing else, its `yield` answer included; no manifest;
   - version 4: a `read` or `grep` of its own bundle file or of a skill file; a `glob` whose scope
     is exactly one of four, its own bundle file, the bundle directory, a skill file or the skill
-    directory; and its `yield` answer, exempt from the path check;
+    directory; and its `yield` answer, exempt from the path check; the bundle directory and the
+    skill tree the same before the first judge and after the last;
   - version 5: version 4's, and a `read` of the bundle directory, of the skill directory or of its
     `references/`, which answers the names, sizes and ages of a directory's entries and no text;
-  - version 6: a text read (a `read` of a file, any `grep`) whose every target is its own bundle
-    file or a skill file, a `grep` of a directory being a text read of every file in it; a listing
-    (any `glob`, and a `read` that the checker establishes resolves to a directory of the two
-    trees and answers only names, sizes and ages, `listed_directory`) whose whole scope lies inside
-    the work tree, the judges' working directory, or the skill tree, every entry it returns one
-    its tree's manifest recorded before the first judge holds; and its `yield` answer
-    (`text_or_listing_problem`).
+  - version 6: a text read (a `read` of a file, any `grep`) whose every target, and every path its
+    result returns, is its own bundle file or a skill file, a `grep` of a directory being a text
+    read of every file in it; a listing (any `glob`, and a `read` that the checker establishes
+    resolves to a directory of the two trees and answers only names, sizes and ages, in omp's own
+    listing format, each entry at the relative path and of the type its tree's manifest holds,
+    `listed_directory`) whose whole scope lies inside the work tree, the judges' working
+    directory, or the skill tree, every entry it returns one its tree's manifest recorded before
+    the first judge holds; and its `yield` answer (`text_or_listing_problem`); the work tree and
+    the skill tree the same before the first judge and after the last.
   Each target is checked as given, as the tool's default fills it, and normalized as it resolves
   on the sandbox's file system (`target_of`, `resolved`), and so is every scope the tool's result
-  says it read; every path the result returns must lie inside the manifested trees
+  says it read; every path the result returns must lie inside the trees its version manifests
   (`detail_paths`, `in_trees`). A target is read in the grammar this check models of omp
   18.16.0's path and glob syntax (`expansions`, `SELECTOR`); one that holds any other syntax, or
   brace alternatives or a character class that could spell a parent step, a `/` or an absolute
@@ -43,20 +46,25 @@ import os  # noqa: E402
 import re  # noqa: E402
 from collections import Counter  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
+from decimal import ROUND_HALF_UP, Decimal  # noqa: E402
 
 import s10_sandbox as SANDBOX  # noqa: E402
 from s10_store import under  # noqa: E402
 
-# Point 5's tool rule, by the versions of the section that wrote it, and the one that counts.
-RULE_VERSIONS = (3, 4, 5, 6)
+# The version of point 5's tool rule that counts, of those `RULES` (below) holds.
 COUNTING_RULE = 6
 
-# A `read` of a directory answers a listing (omp 18.16.0's read tool, two levels deep): lines that
-# name no entry (the root, an empty directory, a continuation, a line asked past the end), and one
-# line an entry, indented, `- `, its name (a directory's with a trailing `/`), then its size and age.
-LISTING_NOTE = re.compile(r"\.|\(empty directory\)|\[\d+ more lines in listing\.[^\]]*\]|"
-                          r"Line \d+ is beyond end of listing .*")
-LISTING_ENTRY = re.compile(r"\s*- (?P<name>[^\s/]+)/?(?: .*)?")
+# A `read` of a directory answers a listing, as omp 18.16.0's read tool prints one
+# (`workspace-tree.ts`, two levels deep, compact metadata): the root `.` first; then each entry on
+# its own line, indented two spaces a level, `- `, its name, `/` after a directory's, then a file's
+# size (`U`: bytes, or KB, MB, GB to one decimal) and the entry's age (`hs`: `just now`, or a count
+# of minutes, hours, days, weeks or months `ago`), neither where the age is empty, a directory with
+# its age alone; and last, where a line selector cut it, the continuation note.
+LISTING_ROOT = "."
+LISTING_ENTRY = re.compile(r"(?P<indent>(?:  )+)- (?P<name>[^\s/]+)(?P<directory>/)?"
+                           r"(?: (?P<size>\d+B|\d+\.\dKB|\d+\.\dMB|\d+\.\dGB))?"
+                           r"(?: (?P<age>just now|\d+(?:m|h|d|w|mo) ago))?")
+LISTING_CONTINUATION = re.compile(r"\[\d+ more lines in listing\. Use :\d+ to continue\]")
 
 # The tool omp's subagents return their schema's answer by, exempt from the path check from version
 # 4; the tools a judge may call on a file system target; and, by tool, the arguments that name no
@@ -159,8 +167,9 @@ class Scope:
     it, the skill directory that `skill://approval-review` resolves to (the skill tree) and its three
     files, the working directory a path is relative to (the work tree, from version 6), the links
     the sandbox's listing records; each entry of the two trees that listing records, by its path,
-    with its kind (`d`, `f`, `l` or `o`); and each entry the two trees' manifests recorded before
-    the first judge hold, the trees themselves among them, by its path, with its kind."""
+    with its kind (`d`, `f`, `l` or `o`), and each file's size in bytes; and each entry the two
+    trees' manifests recorded before the first judge hold, the trees themselves among them, by its
+    path, with its kind."""
 
     work: str
     bundle: str
@@ -171,6 +180,7 @@ class Scope:
     work_tree: str = ""
     tree_entries: dict = None
     manifested: dict = None
+    tree_sizes: dict = None
 
 
 def links_of(listing):
@@ -215,11 +225,13 @@ def scope_of(bundle, work, listing, manifests=None):
     skill_dir = resolved(SANDBOX.SKILL_DIR, links)
     own = resolved(bundle, links)
     work_tree = resolved(work, links)
-    entries = {}
+    entries, sizes = {}, {}
     for line in listing:
         path = SANDBOX.listed_path(line)
         if under(path, work_tree) or under(path, skill_dir):
             entries[path] = line[0]
+            if line[0] == "f" and SANDBOX.listed_size(line) is not None:
+                sizes[path] = SANDBOX.listed_size(line)
     before = (manifests or {}).get("before") if isinstance(manifests, dict) else None
     manifested = {}
     for name, tree in (("work", work_tree), ("skill", skill_dir)):
@@ -231,7 +243,7 @@ def scope_of(bundle, work, listing, manifests=None):
                     manifested[os.path.join(tree, one[0])] = one[1]
     return Scope(work=work, bundle=own, bundle_dir=os.path.dirname(own), skill_dir=skill_dir,
                  skill_files=frozenset(os.path.join(skill_dir, name) for name in SANDBOX.SKILL_FILES),
-                 links=links, work_tree=work_tree, tree_entries=entries, manifested=manifested)
+                 links=links, work_tree=work_tree, tree_entries=entries, manifested=manifested, tree_sizes=sizes)
 
 
 def class_taken(content):
@@ -334,44 +346,56 @@ def target_of(raw, tool, scope):
     return resolved("/".join(parts[:first]) or "/", scope.links), pattern
 
 
-def in_scope(tool, target, scope, version=COUNTING_RULE):
+def in_scope(tool, target, scope, globs, directory_reads):
     """Whether one target a call names, an argument as given or as the tool's default fills it, or
-    the scope its result says it read, is one version `version` of point 5's rule lets `tool` name:
-    under every version, exactly its own bundle file or one of the skill's files, with no pattern;
-    from version 4, a `glob` whose scope is exactly one of four, its own bundle file, the bundle
-    directory, a skill file or the skill directory, with no `.` or `..` part in any expansion of
-    its pattern; from version 5, a `read` of the bundle directory, the skill directory or its
-    `references/` itself."""
+    the scope its result says it read, is one versions 3 to 5 of point 5's rule let `tool` name:
+    under each, exactly its own bundle file or one of the skill's files, with no pattern; where
+    the version allows `globs` (4 and 5), a `glob` whose scope is exactly one of four, its own
+    bundle file, the bundle directory, a skill file or the skill directory, with no `.` or `..`
+    part in any expansion of its pattern; where it allows `directory_reads` (5), a `read` of the
+    bundle directory, the skill directory or its `references/` itself."""
     if target is None or target[0] is None:
         return False
     literal, pattern = target
     files = {scope.bundle, *scope.skill_files}
     if not pattern and literal in files:
         return True
-    if version >= 4 and tool == "glob":
+    if globs and tool == "glob":
         return not {".", ".."} & set(pattern) and literal in files | {scope.bundle_dir, scope.skill_dir}
     directories = (scope.bundle_dir, scope.skill_dir, os.path.join(scope.skill_dir, "references"))
-    return version >= 5 and tool == "read" and not pattern and literal in directories
+    return directory_reads and tool == "read" and not pattern and literal in directories
 
 
-def in_trees(target, scope, version=COUNTING_RULE):
-    """Whether a path a call's result returns lies inside the trees the sandbox manifests, with no
-    pattern: up to version 5 the bundle directory's and the skill directory's, from version 6 the
-    work tree's and the skill tree's. A glob of the bundle directory returns the other judges' file
-    names, and that is all a result may name."""
+def in_trees(target, trees):
+    """Whether a path a call's result returns lies inside one of `trees`, the trees a version of
+    the rule manifests, with no pattern. A glob of the bundle directory returns the other judges'
+    file names, and that is all a result may name."""
     if target is None or target[0] is None or target[1]:
         return False
-    trees = (scope.work_tree, scope.skill_dir) if version >= 6 else (scope.bundle_dir, scope.skill_dir)
     return any(under(target[0], tree) for tree in trees)
+
+
+def listing_size(size):
+    """A file's size as omp 18.16.0 prints it in a listing (`U`): its bytes below 1 KiB, else KB, MB
+    or GB to one decimal, a half rounded up as JavaScript's `toFixed` rounds it."""
+    if size < 1024:
+        return f"{size}B"
+    for unit, scale in (("KB", 1024), ("MB", 1024 ** 2), ("GB", 1024 ** 3)):
+        if size < scale * 1024 or unit == "GB":
+            return f"{(Decimal(size) / Decimal(scale)).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}{unit}"
 
 
 def listed_directory(answer, scope):
     """The directory of the two trees a `read`'s answer lists, or None where the answer does not
-    establish one: its details mark a directory and name it (`resolvedPath`); that path, resolved,
+    establish one. Its details mark a directory and name it (`resolvedPath`); that path, resolved,
     is a directory of the work tree or the skill tree both in the listing taken before the first
-    judge and in its tree's manifest recorded then; and every line of its text is a note of the
-    listing or an entry that names, with its size and age, an entry that manifest holds below that
-    directory (version 6: every entry a listing returns is compared with its tree's manifest)."""
+    judge and in its tree's manifest recorded then; and its text is that directory's listing in
+    omp 18.16.0's own format (`LISTING_ROOT`, `LISTING_ENTRY`, `LISTING_CONTINUATION`), every line
+    after the root an entry placed by its indentation under the directory entry above it, whose
+    relative path and type the manifest holds (version 6: every entry a listing returns is compared
+    with its tree's manifest), and whose size, for a file, is the one the listing records. Any
+    other line, an entry at another path or of another type, or a size or age field in a form omp
+    does not print, leaves the answer establishing nothing."""
     details = answer.get("details") if isinstance(answer, dict) else None
     if not isinstance(details, dict) or details.get("isDirectory") is not True:
         return None
@@ -381,15 +405,35 @@ def listed_directory(answer, scope):
     path = resolved(path if path.startswith("/") else os.path.join(scope.work, path), scope.links)
     if path is None or scope.tree_entries.get(path) != "d" or scope.manifested.get(path) != "d":
         return None
-    names = {os.path.basename(one) for one in scope.manifested if one != path and under(one, path)}
-    lines = [line for line in str(answer.get("text") or "").splitlines() if line.strip()]
-    if not lines:
+    lines = str(answer.get("text") or "").split("\n")
+    while lines and lines[-1] == "":
+        lines.pop()
+    if lines and LISTING_CONTINUATION.fullmatch(lines[-1]):
+        lines.pop()
+    if len(lines) < 2 or lines[0] != LISTING_ROOT:
         return None
-    for line in lines:
-        if LISTING_NOTE.fullmatch(line.strip()):
-            continue
+    parents = {0: path}
+    for line in lines[1:]:
         entry = LISTING_ENTRY.fullmatch(line)
-        if entry is None or entry.group("name") not in names:
+        if entry is None:
+            return None
+        depth = len(entry.group("indent")) // 2
+        parent = parents.get(depth - 1)
+        if parent is None:
+            return None
+        child = os.path.join(parent, entry.group("name"))
+        kind = "d" if entry.group("directory") else "f"
+        size, age = entry.group("size"), entry.group("age")
+        if scope.manifested.get(child) != kind:
+            return None
+        for deeper in [one for one in parents if one >= depth]:
+            del parents[deeper]
+        if kind == "d":
+            if size is not None:
+                return None
+            parents[depth] = child
+        elif (size is None) != (age is None) or (
+                size is not None and (child not in scope.tree_sizes or size != listing_size(scope.tree_sizes[child]))):
             return None
     return path
 
@@ -397,32 +441,43 @@ def listed_directory(answer, scope):
 def text_or_listing_problem(tool, call, targets, returned, scope):
     """Version 6's rule on one `read`, `grep` or `glob` call, or None where it passes. A listing (a
     `glob`, or a `read` whose answer `listed_directory` establishes) passes where its whole scope,
-    base and pattern, lies inside the work tree or the skill tree. A text read (a `read` of a file,
-    any `grep`) passes where its every target is its own bundle file or a skill file; a `grep` of a
-    directory reads every file in it, which passes only for a directory the skill tree's manifest
-    holds, whose files are the skill's. A `read` whose type the answer does not establish is a
-    deviation. Every path a result returns must be an entry its tree's manifest holds."""
+    base and pattern, lies inside the work tree or the skill tree, and every path it returns is an
+    entry its tree's manifest holds. A text read (a `read` of a file, any `grep`) passes where its
+    every target, and every path its result returns, is its own bundle file or a skill file; a
+    `grep` of a directory reads every file in it, which passes only for a directory the skill
+    tree's manifest holds, whose files are the skill's. A `read` whose type the answer does not
+    establish is a deviation."""
     files = {scope.bundle, *scope.skill_files}
     trees = (scope.work_tree, scope.skill_dir)
     listed = {one for one in (listed_directory(answer, scope) for answer in call.get("answers") or []) if one}
     skill_directories = {path for path, kind in scope.manifested.items() if kind == "d" and under(path, scope.skill_dir)}
+    kinds = set()
     for raw in targets:
         target = target_of(raw, tool, scope)
         if target is None or target[0] is None:
             return repr(raw)
         literal, pattern = target
         if tool == "glob":
+            kinds.add("listing")
             if {".", ".."} & set(pattern) or not any(under(literal, tree) for tree in trees):
                 return f"{raw!r}, a listing whose scope leaves the work tree and the skill tree"
         elif pattern:
             return f"{raw!r}, a pattern where a {tool} names one file"
-        elif not (literal in files or (tool == "grep" and literal in skill_directories)
-                  or (tool == "read" and literal in listed)):
+        elif literal in files or (tool == "grep" and literal in skill_directories):
+            kinds.add("text")
+        elif tool == "read" and literal in listed:
+            kinds.add("listing")
+        else:
             what = "a listing its answer does not establish" if tool == "read" else "a text read"
             return f"{raw!r}, {what} of neither its own bundle file nor a skill file"
+    listing = tool == "glob" or kinds == {"listing"}
     for raw in returned:
         target = target_of(raw, tool, scope)
-        if not in_trees(target, scope, 6):
+        if not listing:
+            if target is None or target[1] or target[0] not in files:
+                return f"{raw!r}, a path a text read's result returns that is neither its own bundle file nor a skill file"
+            continue
+        if not in_trees(target, (scope.work_tree, scope.skill_dir)):
             return f"{raw!r}, a path its result returns outside the manifested trees"
         if target[0] not in scope.manifested:
             return f"{raw!r}, an entry its result returns that its tree's manifest does not hold"
@@ -454,10 +509,51 @@ def detail_paths(details, work):
     return placed(scopes), placed(found)
 
 
+def scoped_problem(globs, directory_reads):
+    """Versions 3 to 5's check of one `read`, `grep` or `glob` call, or None where it passes: every
+    target and every scope its result says it read in that version's scope (`in_scope`), and every
+    path its result returns inside the bundle directory or the skill tree (`in_trees`)."""
+    def problem(tool, call, targets, returned, scope):
+        for raw in targets:
+            if not in_scope(tool, target_of(raw, tool, scope), scope, globs, directory_reads):
+                return repr(raw)
+        for raw in returned:
+            if not in_trees(target_of(raw, tool, scope), (scope.bundle_dir, scope.skill_dir)):
+                return f"{raw!r}, a path its result returns outside the manifested trees"
+        return None
+    return problem
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One version of point 5's tool rule, as that version of the section writes it: whether a
+    judge's `yield` answer is exempt from the path check; the check of one `read`, `grep` or `glob`
+    call, over the targets it names and the paths its result returns; and the trees whose manifests
+    the sandbox must hold the same before the first judge and after the last
+    (`s10_sandbox.manifest_problem`): none, `bundle` (the bundle directory and the skill tree) or
+    `work` (the work tree and the skill tree)."""
+
+    answer_exempt: bool
+    call_problem: object
+    manifests: str = None
+
+
+# Point 5's tool rule, by the versions of the section that wrote it: the one model each outcome is
+# recorded under (`byRule`), version 6's the one that counts.
+RULES = {
+    3: Rule(answer_exempt=False, call_problem=scoped_problem(globs=False, directory_reads=False)),
+    4: Rule(answer_exempt=True, call_problem=scoped_problem(globs=True, directory_reads=False), manifests="bundle"),
+    5: Rule(answer_exempt=True, call_problem=scoped_problem(globs=True, directory_reads=True), manifests="bundle"),
+    6: Rule(answer_exempt=True, call_problem=text_or_listing_problem, manifests="work"),
+}
+RULE_VERSIONS = tuple(RULES)
+
+
 def call_problem(tool, call, scope, version=COUNTING_RULE):
     """Why one `read`, `grep` or `glob` call reaches outside version `version`'s scope, or None:
-    every target it names as given, the tool's default where it names none, and every scope its
-    result says it read (`in_scope`); and every path its result returns (`in_trees`)."""
+    its targets (every one it names as given, the tool's default where it names none, and every
+    scope its result says it read) and every path its result returns, held by that version's
+    check (`RULES`)."""
     targets, returned = [], []
     for arguments in call["arguments"] or [{}]:
         if not isinstance(arguments, dict):
@@ -478,27 +574,20 @@ def call_problem(tool, call, scope, version=COUNTING_RULE):
         scopes, found = detail_paths(details, scope.work)
         targets.extend(scopes)
         returned.extend(found)
-    if version >= 6:
-        return text_or_listing_problem(tool, call, targets, returned, scope)
-    for raw in targets:
-        if not in_scope(tool, target_of(raw, tool, scope), scope, version):
-            return repr(raw)
-    for raw in returned:
-        if not in_trees(target_of(raw, tool, scope), scope, version):
-            return f"{raw!r}, a path its result returns outside the manifested trees"
-    return None
+    return RULES[version].call_problem(tool, call, targets, returned, scope)
 
 
 def tool_call_problems(label, calls, scope, version=COUNTING_RULE):
     """The tool calls of one judge that version `version` of point 5's rule makes a deviation,
     attempted, failed, denied or answered, each as `{judge, callId, tools, reason, problem}`: its
-    `yield` answer is exempt from version 4; a `read`, `grep` or `glob` is held to that version's
-    scope (`in_scope`); every other call is one."""
+    `yield` answer where that version exempts it passes; a `read`, `grep` or `glob` is held by
+    that version's check (`call_problem`); every other call is one."""
+    rule = RULES[version]
     problems = []
     for call_id, call in sorted(calls.items()):
         names = sorted(call["names"])
         found = {"judge": label, "callId": call_id, "tools": names}
-        if names == [ANSWER_TOOL] and version >= 4:
+        if names == [ANSWER_TOOL] and rule.answer_exempt:
             continue
         if len(names) != 1 or names[0] not in READ_TOOLS:
             problems.append({**found, "reason": "no file system tool the rule allows",

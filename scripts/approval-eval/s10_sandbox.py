@@ -19,9 +19,11 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
    the `emptyDir`. In the roots a run can write (`WRITABLE_ROOTS`), every file, link or other
    entry but a directory must be this program's own, a mount's own, or under a path of the
    image's own runtime that `IMAGE_OWN` names (omp's profile and native module, the shell's own
-   files, the caches the image's tools left); and no file anywhere may bear the name of a file a
-   claim stage writes (`CLAIM_FILE_NAMES`, `CLAIM_FILE_PATTERN`). A directory the run cannot read
-   is recorded as such: nothing in it can reach a judge, which runs as the same user.
+   files, the caches the image's tools left); no file anywhere may bear the name of a file a
+   claim stage writes (`CLAIM_FILE_NAMES`, `CLAIM_FILE_PATTERN`); and outside the work tree no
+   file may bear an evidence bundle's name or hold a sent bundle's bytes (`BUNDLE_NAME`,
+   `same_size_digests`). A directory the run cannot read is recorded as such: nothing in it can
+   reach a judge, which runs as the same user.
 3. It measures point 2's runtime by content (`measure_runtime`) and refuses on any difference.
 4. It asks each node metadata server for the pod's credential, with the header they require
    (`METADATA_REQUESTS`), and refuses unless every request fails to connect or is refused in the
@@ -29,9 +31,9 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
    connection and gives no answer in time is no proof of that, and is refused too. It records
    each status, and never a body.
 
-Each of those refusals stops the run, since every later request would meet the same sandbox. A
-payload of no file is the driver's preflight, made once a run before any request starts: every
-check above, and no judge (`main`).
+Each of those refusals stops the run, since every later request would meet the same sandbox. The
+driver's preflight, made once a run before any request starts, is named so (`MODE_VARIABLE`) and
+sends no file: every check above, and no judge (`main`).
 
 Then, as point 5 has it (version 6), it records the recursive relative-path and type manifests of
 the work tree, `WORK`, and the skill tree (`manifests_now`): the first must hold exactly
@@ -112,9 +114,11 @@ def work_manifest(ask_id):
                   + [[f"bundles/{ask_id}/{name}", "f"] for name in BUNDLE_NAMES])
 
 
-# A file shaped as an evidence bundle: one named as a judge's bundle, or one under a directory named
-# `bundles`. Admission holds that the five the driver sent are the only such files in the sandbox.
-BUNDLE_SHAPED = re.compile(r"(^|/)bundles/|(^|/)judge-[^/]*\.md$", re.IGNORECASE)
+# A file outside the work tree that could be an evidence bundle: one bearing a bundle's name, in
+# any case, or one of a sent bundle's size whose bytes are a sent bundle's (`same_size_digests`).
+# The work tree holds only what the driver sent, so the five are the only bundles in the sandbox
+# (point 5, version 6); a `bundles` directory elsewhere in the image is no bundle.
+BUNDLE_NAME = re.compile(r"judge-[1-5]\.md", re.IGNORECASE)
 
 # The mounts the kernel and the kubelet make in every container, which hold no file of a run.
 SYSTEM_TREES = ("/proc", "/dev", "/sys")
@@ -203,10 +207,13 @@ PROMPT = (
 # How long omp may run, in seconds: the judges' own 1500 and the session around them.
 OMP_TIMEOUT = 3300
 
-# The environment variables the driver sends this program and its payload in.
+# The environment variables the driver sends this program and its payload in, and the run's mode:
+# the preflight, with no file and no judge, or a request's.
 PROGRAM_VARIABLE = "S10_SANDBOX"
 PAYLOAD_VARIABLE = "S10_PAYLOAD_"
 PAYLOAD_SHA256_VARIABLE = "S10_PAYLOAD_SHA256"
+MODE_VARIABLE = "S10_SANDBOX_MODE"
+MODES = ("preflight", "request")
 
 # The lines the result is printed in, on the pod's log.
 RESULT_LINE = "s10-sandbox"
@@ -318,27 +325,54 @@ def listed_path(line):
     return path.split(" -> ", 1)[0] if line.startswith("l ") else path
 
 
+def listed_size(line):
+    """The size in bytes one line of `listing_of` gives, or None where it gives none."""
+    fields = line.split(" ", 3)
+    return int(fields[2]) if len(fields) == 4 and fields[2].isdigit() else None
+
+
 def image_own(path, layout):
     """Whether a file under a root a run can write is a mount's own or the image's own runtime."""
     return path in (layout["models"], layout["overlay"]) or path.startswith(IMAGE_OWN)
 
 
-def listing_refusal(lines, payload, layout):
+def same_size_digests(lines, payload, layout):
+    """The sha256 of every regular file outside the work tree with the size of a bundle sent, by
+    its path, or None for one this program, which runs as the judges' user, cannot read: what
+    `listing_refusal` holds to the bundles' own."""
+    sizes = {len(data) for path, data in payload.items() if BUNDLE_NAME.fullmatch(os.path.basename(path))}
+    digests = {}
+    for line in lines:
+        path = listed_path(line)
+        if line.startswith("f ") and listed_size(line) in sizes and not under(path, layout["work"]):
+            try:
+                digests[path] = file_sha256(path)
+            except OSError:
+                digests[path] = None
+    return digests
+
+
+def listing_refusal(lines, payload, layout, same_size=None):
     """Why the listing holds a credential, a claim stage's file, an evidence bundle but the five
     sent, or a file outside the bundles, the calls and the runtime.
 
-    `payload` names the files the driver sent, by path. Under the `emptyDir` only those, and the
+    `payload` holds the files the driver sent, by path. Under the `emptyDir` only those, and the
     directories that hold them, may be there; under the gateway key's mount only the key, by
     Kubernetes' own `..data` links to it; under every other root a run can write, only directories
-    and the image's own runtime (`image_own`). Anywhere, a file shaped as an evidence bundle
-    (`BUNDLE_SHAPED`) must be one sent: the five bundles are the only ones in the sandbox (point 5,
-    version 6). Every other file is the image's own, whose digest the driver checks."""
+    and the image's own runtime (`image_own`). Outside the `emptyDir`, no file may bear a bundle's
+    name (`BUNDLE_NAME`), and none of a sent bundle's size may hold its bytes, by the sha256 the
+    sandbox recorded of each (`same_size`, `same_size_digests`): the five bundles are the only ones
+    in the sandbox (point 5, version 6). Every other file is the image's own, whose digest the
+    driver checks."""
     wanted_directories = {layout["work"]}
     for path in payload:
         parent = os.path.dirname(path)
         while under(parent, layout["work"]) and parent not in wanted_directories:
             wanted_directories.add(parent)
             parent = os.path.dirname(parent)
+    bundles = {path: data for path, data in payload.items() if BUNDLE_NAME.fullmatch(os.path.basename(path))}
+    sizes = {len(data) for data in bundles.values()}
+    digests = {sha256_of(data) for data in bundles.values()}
     placed = set()
     for line in lines:
         path = listed_path(line)
@@ -347,8 +381,14 @@ def listing_refusal(lines, payload, layout):
         entry = line[0] in "flo"
         if entry and (os.path.basename(path) in CLAIM_FILE_NAMES or CLAIM_FILE_PATTERN.search(path)):
             return f"{path} bears the name of a file a claim stage writes"
-        if entry and BUNDLE_SHAPED.search(path) and path not in payload:
-            return f"{path} is shaped as an evidence bundle and is none of the five sent"
+        if entry and not under(path, layout["work"]):
+            if BUNDLE_NAME.fullmatch(os.path.basename(path)):
+                return f"{path} bears an evidence bundle's name and is none of the five sent"
+            if line.startswith("f ") and listed_size(line) in sizes:
+                if path not in (same_size or {}):
+                    return f"{path} has a sent bundle's size, and the sandbox recorded no sha256 of it"
+                if same_size[path] in digests:
+                    return f"{path} holds the bytes of an evidence bundle sent"
         if under(path, layout["work"]):
             if path in payload and line.startswith("f "):
                 placed.add(path)
@@ -396,27 +436,54 @@ def manifests_now():
     return {"work": manifest_of(WORK), "skill": manifest_of(os.path.realpath(SKILL_DIR))}
 
 
-def manifest_problem(manifests, ask_id, finished=True):
-    """Why the manifests recorded around the judges of `ask_id` break point 5 (version 6), or
-    None: before the first judge, the work tree holds exactly `bundles/`, holding exactly the
-    ask-id directory, holding exactly `judge-1.md` to `judge-5.md`, and the skill tree exactly
-    `SKILL.md` and `references/` with its two files, each file regular, and no link or other entry
-    in either; once the last judge has returned, the same manifests. `finished` is a result's
+def bundle_manifest_of(work, ask_id):
+    """The bundle directory's manifest, taken from the work tree's: each entry below
+    `bundles/<ask id>/`, by its path from there. None where the work tree's holds no such
+    directory."""
+    if not isinstance(work, list) or [f"bundles/{ask_id}", "d"] not in work:
+        return None
+    prefix = f"bundles/{ask_id}/"
+    return sorted([one[0][len(prefix):], one[1]] for one in work
+                  if isinstance(one, list) and len(one) == 2 and isinstance(one[0], str) and one[0].startswith(prefix))
+
+
+# The trees whose manifests a version of point 5's rule holds (`s10_transcripts.RULES`), by the
+# name it gives them: from version 4 the bundle directory and the skill tree, from version 6 the
+# work tree and the skill tree.
+MANIFESTED_TREES = {"bundle": ("bundle directory", "skill tree"), "work": ("work tree", "skill tree")}
+
+
+def manifest_problem(manifests, ask_id, finished=True, trees="work"):
+    """Why the manifests recorded around the judges of `ask_id` break the manifest rule of point 5
+    the version naming `trees` writes, or None. Before the first judge: the work tree holds exactly
+    `bundles/`, holding exactly the ask-id directory, holding exactly `judge-1.md` to `judge-5.md`
+    (`work`), or that directory holds exactly the five (`bundle`); and the skill tree exactly
+    `SKILL.md` and `references/` with its two files; each file regular, and no link or other entry
+    in either. Once the last judge has returned, the same manifests. `finished` is a result's
     check, which needs both: a result whose manifests before the judges pass and that holds none
     after them broke the rule. Only the check before the first judge, where no judge has run yet,
     passes `finished=False`."""
     if not isinstance(manifests, dict) or not isinstance(manifests.get("before"), dict):
         return "the sandbox recorded no manifests of the work and skill trees before the judges"
-    before = manifests["before"]
-    for name, wanted in (("work", work_manifest(ask_id)), ("skill", SKILL_MANIFEST)):
-        if before.get(name) != wanted:
-            return f"before the first judge the {name} tree's manifest is {before.get(name)}, not {wanted}"
+    wanted = {"work tree": work_manifest(ask_id), "bundle directory": [[name, "f"] for name in BUNDLE_NAMES],
+              "skill tree": SKILL_MANIFEST}
+
+    def held(recorded):
+        found = {"work tree": recorded.get("work"), "bundle directory": bundle_manifest_of(recorded.get("work"), ask_id),
+                 "skill tree": recorded.get("skill")}
+        return {name: found[name] for name in MANIFESTED_TREES[trees]}
+
+    before = held(manifests["before"])
+    for name, found in before.items():
+        if found != wanted[name]:
+            return f"before the first judge the {name}'s manifest is {found}, not {wanted[name]}"
     if not finished:
         return None
     if not isinstance(manifests.get("after"), dict):
         return "the sandbox recorded no manifests of the work and skill trees after the last judge"
-    if manifests["after"] != before:
-        return f"after the last judge the manifests are {manifests['after']}, not the ones recorded before"
+    after = held(manifests["after"])
+    if after != before:
+        return f"after the last judge the manifests are {after}, not the ones recorded before"
     return None
 
 
@@ -595,8 +662,14 @@ def print_result(files):
 def checked(environ, layout, record):
     """Places the payload and makes every check before any judge, into `record`, the layout the
     checks held the mounts and files to among it, so the driver makes them again; returns the
-    listing and the reason the sandbox refuses to start a judge, or None."""
+    listing and the reason the sandbox refuses to start a judge, or None. The mode its variable
+    names must be one of `MODES`, and a preflight's payload holds no file and a request's some."""
+    mode = environ.get(MODE_VARIABLE)
+    if mode not in MODES:
+        raise ValueError(f"{MODE_VARIABLE} names the mode {mode!r}, none of {list(MODES)}")
     files = payload_of(environ)
+    if (mode == "preflight") != (not files):
+        raise ValueError(f"a {mode} was sent {len(files)} files")
     place(files, layout)
     record["layout"] = layout
     record["payload"] = {path: sha256_of(data) for path, data in sorted(files.items())}
@@ -610,7 +683,8 @@ def checked(environ, layout, record):
     named = credential_variables(environ)
     if named:
         return listing, f"the variable {named[0]} names a credential"
-    refusal = mount_refusal(record["mounts"], layout) or listing_refusal(listing, files, layout)
+    record["sameSize"] = same_size_digests(listing, files, layout)
+    refusal = mount_refusal(record["mounts"], layout) or listing_refusal(listing, files, layout, record["sameSize"])
     if refusal is not None:
         return listing, refusal
     record["runtime"] = measure_runtime()
@@ -629,8 +703,8 @@ def main():
         listing, record["refused"] = checked(environ, layout_of(), record)
     except Exception as error:  # noqa: BLE001 - any failure before a judge is a refusal, reported
         record["refused"] = f"the sandbox failed before any judge: {type(error).__name__}: {error}"
-    # A payload of no file is the driver's preflight: the checks above, and no judge.
-    record["preflight"] = record.get("payload") == {}
+    # The driver's preflight, as its mode names it: the checks above, and no judge.
+    record["preflight"] = environ.get(MODE_VARIABLE) == "preflight"
     omp_output = None
     if record["refused"] is None and not record["preflight"]:
         ask_id = os.path.basename(record["bundleDirectory"]) if record.get("bundleDirectory") else None

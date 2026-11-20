@@ -279,18 +279,21 @@ class KubeRunner:
 
     def run(self, ask_id, files, extra_env=None):
         """One request's sandbox, with its bundles and calls."""
-        return self.run_job("s10-judge-" + sha256_of(f"{ask_id} {time.time()} {os.getpid()}")[:16], files, extra_env)
+        return self.run_job("s10-judge-" + sha256_of(f"{ask_id} {time.time()} {os.getpid()}")[:16], files, "request",
+                            extra_env)
 
     def preflight(self):
         """The sandbox with no bundle and no call, which makes every check and starts no judge."""
-        return self.run_job("s10-judge-preflight-" + sha256_of(f"{time.time()} {os.getpid()}")[:16], {},
+        return self.run_job("s10-judge-preflight-" + sha256_of(f"{time.time()} {os.getpid()}")[:16], {}, "preflight",
                             deadline=PREFLIGHT_DEADLINE)
 
-    def run_job(self, name, files, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
-        """One Job: created, waited for, its one pod's log read, deleted. `KubeUnavailable` where
-        the API fails; `failure` where the Job ran and gave no readable result."""
+    def run_job(self, name, files, mode, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
+        """One Job in `mode` (`SANDBOX.MODES`): created, waited for, its one pod's log read,
+        deleted. `KubeUnavailable` where the API fails; `failure` where the Job ran and gave no
+        readable result."""
         pod = self.own_pod()
-        variables = {SANDBOX.PROGRAM_VARIABLE: self.program, **payload_variables(files), **(extra_env or {})}
+        variables = {SANDBOX.PROGRAM_VARIABLE: self.program, SANDBOX.MODE_VARIABLE: mode, **payload_variables(files),
+                     **(extra_env or {})}
         run = SandboxRun(job=name)
         try:
             try:
