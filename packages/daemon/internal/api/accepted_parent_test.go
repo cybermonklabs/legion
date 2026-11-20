@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // acceptPhase moves the root of the status harness's tree into at, the phase that makes it an
@@ -146,7 +147,7 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 		Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "C", LastDispatchSeq: 7})
 
 	var ancestor string
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, statusRoot, "LEGION-300", "")
 		return err

@@ -345,7 +345,7 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		line  []record.LineEntry
 		facts record.LineFacts
 	)
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := records.Issues(h.ctx, tx)
 		if err != nil {
 			return err

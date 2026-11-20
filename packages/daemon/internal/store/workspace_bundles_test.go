@@ -332,7 +332,7 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	unrestored := func() bool {
 		t.Helper()
 		var held bool
-		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			held, err = workspaceBundleUnrestored(ctx, tx, "INFRA-945")
 			return err

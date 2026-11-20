@@ -40,13 +40,16 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
-	_, err = s.pool.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
-			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-			tips = excluded.tips, bookmarks = excluded.bookmarks,
-			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-		issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
+				bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
+				tips = excluded.tips, bookmarks = excluded.bookmarks,
+				attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
+			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
@@ -105,19 +108,29 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	if podCreated.IsZero() {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs when the pod %s it is sent to was created", issue, podUID)
 	}
-	var b runtime.WorkspaceBundle
-	var outcome string
-	var tips, bookmarks []byte
+	var (
+		b               runtime.WorkspaceBundle
+		outcome         string
+		tips, bookmarks []byte
+		found           bool
+	)
 	// The body is read back only when it is being sent: a refusal records the attempt and
 	// answers the row's facts alone, and a bundle runs to tens of megabytes.
-	err := s.pool.QueryRow(ctx, `update workspace_bundles
-		set attempt_pod_uid = $2, attempt_at = now(),
-			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
-		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-		returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
-			at, head, tips, bookmarks, release_id, source_pod_uid`,
-		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `update workspace_bundles
+			set attempt_pod_uid = $2, attempt_at = now(),
+				attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
+			where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
+			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
+				at, head, tips, bookmarks, release_id, source_pod_uid`,
+			issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		found = err == nil
+		return err
+	})
+	if !found && err == nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 	}
 	if err != nil {
@@ -143,7 +156,9 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 // of the pool and out of the daemon's memory.
 func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error) {
 	var size int
-	err := s.pool.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -158,7 +173,11 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 // own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
 // does not hold is success, so a retried delete finishes.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
-	if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue); err != nil {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("delete the workspace bundle of %s: %w", issue, err)
 	}
 	return nil
@@ -173,7 +192,11 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // for the issue's next pod. Deleting a row the table no longer holds is success, so a
 // confirmation the daemon read twice finishes.
 func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string, release int64) error {
-	if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("delete the restored workspace bundle of %s saved by release %d: %w", issue, release, err)
 	}
 	return nil

@@ -470,7 +470,7 @@ func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION")
 		return err
 	}); err != nil {
@@ -491,7 +491,7 @@ func TestTxRollsBackWhatTheFunctionWroteBeforeFailing(t *testing.T) {
 	store := migratedStore(t)
 	failure := errors.New("the phase gave up")
 
-	err := store.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "insert into daemon_boot (project, started_at) values ($1, now())", "LEGION"); err != nil {
 			return err
 		}
@@ -536,7 +536,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 	t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(ctx, tx, issue)
 		return err

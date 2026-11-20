@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -49,19 +50,12 @@ const readHeaderTimeout = 10 * time.Second
 // today's healthy read.
 const stateReadBound = 60 * time.Second
 
-// stateRollbackBound is what the state route gives the rollback that ends its transaction once
-// the read is over, on a context of its own (stateRoute). Five seconds: the rollback is one
-// round trip to a server that just answered, so the only thing this waits out is a server that
-// has stopped answering altogether, and waiting longer on one of those would hold the very
-// connection the rollback is there to give back.
-const stateRollbackBound = 5 * time.Second
-
 // Options are what the routes answer from.
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
 	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
-	StateTransactions StateTransactions
+	StateTransactions store.TxPool
 	// StateReadBound is how long the state route's read may take before it answers a failure and
 	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
 	// test sets a smaller one so it need not wait out a minute.
@@ -312,7 +306,7 @@ type ClaimActivityStore interface {
 
 type server struct {
 	state             StateSource
-	stateTransactions StateTransactions
+	stateTransactions store.TxPool
 	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
 	stateBound  time.Duration
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
@@ -745,38 +739,23 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
 	defer cancel()
-	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
+	var state State
+	var claims []supervise.Claim
+	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
+	}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
+			return fmt.Errorf("bound the state transaction's statements: %w", err)
+		}
+		var err error
+		state, claims, err = s.state.State(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("read the state source: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
-		s.logRequestFailure(r, err, "api: begin state transaction failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
-	}
-	defer func() {
-		// The rollback runs on a context detached from the read's, with a little budget of its
-		// own: the moment the read's deadline passes is exactly the moment this has to reach the
-		// server, and a rollback asked for on the context that just expired is never sent at all,
-		// which gives the pool back a connection to throw away rather than one with its
-		// transaction ended.
-		ending, endRollback := context.WithTimeout(context.WithoutCancel(r.Context()), stateRollbackBound)
-		defer endRollback()
-		_ = tx.Rollback(ending)
-	}()
-
-	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
-		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
-	}
-	state, claims, err := s.state.State(reading, tx)
-	if err != nil {
-		s.logRequestFailure(r, err, "api: state source failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
-	}
-	if err := tx.Commit(reading); err != nil {
-		s.logRequestFailure(r, err, "api: commit state transaction failed")
+		s.logRequestFailure(r, err, "api: state transaction failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}

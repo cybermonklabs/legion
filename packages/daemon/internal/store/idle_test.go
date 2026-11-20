@@ -147,7 +147,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 	t.Helper()
 	ctx := context.Background()
 	var view pods.IdleView
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		view, err = readIdleView(ctx, tx, "legion", issue)
 		return err

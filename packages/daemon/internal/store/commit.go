@@ -418,3 +418,56 @@ func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) 
 		}
 	}
 }
+
+// transactUntilCommitted runs write in Transact until one run commits, and returns nil then. A run
+// whose outcome is unknown is waited for and taken as that outcome; one that did not commit runs
+// again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax. write must be safe to run
+// again after a run that did not commit.
+func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
+		err := Transact(ctx, pool, write)
+		if err == nil {
+			return nil
+		}
+		var unknown *outcomeUnknownError
+		if errors.As(err, &unknown) {
+			committed, outcomeErr := awaitOutcome(ctx, pool, unknown.xid)
+			if outcomeErr != nil {
+				return outcomeErr
+			}
+			if committed {
+				return nil
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+}
+
+// awaitOutcome reads xid's status at the watcher's pace, each read bounded by outcomeReadBound,
+// until the store says committed (true) or aborted (false), or ctx ends.
+func awaitOutcome(ctx context.Context, pool TxPool, xid string) (bool, error) {
+	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
+		reading, cancel := context.WithTimeout(ForConcurrentWorker(ctx), outcomeReadBound)
+		result, _ := readOutcome(reading, pool, xid)
+		cancel()
+		switch result {
+		case outcomeCommitted:
+			return true, nil
+		case outcomeAborted:
+			return false, nil
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}

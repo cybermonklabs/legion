@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -211,7 +212,7 @@ func seedIssueAt(t *testing.T, h *harness, key string, at phase.Phase) {
 // seedIssueOn records key as a root at the given phase on repo, the repository its record names.
 func seedIssueOn(t *testing.T, h *harness, key string, at phase.Phase, repo string) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: testProject, Title: key, Phase: at, Generation: 1, Status: "in_progress",
 		})
@@ -231,7 +232,7 @@ func seedPullRequest(t *testing.T, h *harness, key, head string) {
 // request's updated_at at.
 func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{
 			State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key, HeadSHA: head, HeadUpdatedAt: at,
 		})
@@ -245,7 +246,7 @@ func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time)
 // approval names the head the round approved, and nil is a round that recorded none.
 func seedReviewDecision(t *testing.T, h *harness, key string, decision *record.ReviewDecision) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Decision: decision})
 	})
 	if err != nil {
@@ -332,7 +333,7 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 	var at phase.Phase
 	var pr *record.PullRequest
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(context.Background(), tx, key)
 		if err != nil {
 			return err
@@ -350,7 +351,7 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.PhaseRow {
 	t.Helper()
 	var found *record.PhaseRow
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(context.Background(), tx, key)
 		for _, row := range rows {
 			if row.Role == role {
@@ -489,7 +490,7 @@ func TestHandoffCompleteAppliesTheCompletionWhenGitHubFailsTheRead(t *testing.T)
 func recordPullRequest(t *testing.T, h *harness, state record.PullRequestState) {
 	t.Helper()
 	recorded := record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, Failing: []string{}}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, recorded)
 	}); err != nil {
 		t.Fatalf("record the %s pull request: %v", state, err)
@@ -925,7 +926,7 @@ func seedCheck(t *testing.T, h *harness, key string, role claim.Role, closed, la
 	if closed {
 		check.LookOpen, check.ClosedAt, check.Outcome = false, &woke, record.CheckRecorded
 	}
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutProductionCheck(context.Background(), tx, check)
 	})
 	if err != nil {
@@ -1064,7 +1065,7 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	put := func(check record.ProductionCheck) {
 		t.Helper()
-		if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutProductionCheck(context.Background(), tx, check)
 		}); err != nil {
 			t.Fatalf("put the production check: %v", err)
@@ -1111,7 +1112,7 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 func recordedCheck(t *testing.T, h *harness, key string) record.ProductionCheck {
 	t.Helper()
 	var check *record.ProductionCheck
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = record.NewStore().ProductionCheck(context.Background(), tx, key)
 		return err
@@ -1456,7 +1457,7 @@ func TestAMoveBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "LEGION-208",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
 	h.recordIssue(issue)
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208",
 			Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
 	}); err != nil {

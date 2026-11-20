@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -334,7 +335,7 @@ func (r *stepRecordsRig) phaseOf(role claim.Role) record.PhaseRow {
 	r.t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.Phases(ctx, tx, r.key)
 		return err
@@ -618,7 +619,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	number := r.number + 1
 	parent := r.key
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
 			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",

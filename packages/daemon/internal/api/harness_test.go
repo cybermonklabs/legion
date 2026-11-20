@@ -427,7 +427,7 @@ func (h *harness) stored(token claim.Token) supervise.Claim {
 // recordIssue writes a workflow issue, as admission would have.
 func (h *harness) recordIssue(issue record.Issue) {
 	h.t.Helper()
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutIssue(h.ctx, tx, issue) }); err != nil {
 		h.t.Fatalf("record issue %s: %v", issue.Key, err)
 	}
 }
@@ -562,7 +562,7 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 	if err != nil {
 		t.Fatalf("project token of %s: %v", project, err)
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, tree, treelifecycle.AuthorityWorkflow)
 		return err
 	}); err != nil {
