@@ -1,7 +1,9 @@
 package cireconcile
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -270,5 +272,56 @@ func TestNoBucketYetNoPass(t *testing.T) {
 
 	if binds != 3 {
 		t.Fatalf("Open was called %d times over three passes, want once a pass: a pass that kept the writer it bound would write through a connection the client may have replaced", binds)
+	}
+}
+
+// A mapped name no repository GitHub could hold is skipped, counted and named at WARN, with the
+// fields Reconciler.MappingRepairs answers for that name beside it. In cmd/dispatch those fields
+// name the settings route's request that mends the mapping (api.MappingRepairs), and that
+// function's own test (api/repo_project_repairs_test.go) sends each request it names through the
+// route. Here a stand-in answers fields that name the row it was asked about, so this test holds
+// what the pass does with them: it asks once about each refused mapped name, under the name the
+// pass reads, which for the mapping `oldco/tools` is its renamed_to `acme/...git`, and each WARN
+// carries the fields answered for its own name.
+//
+// The negative control is a pass that asks MappingRepairs nothing, whose WARNs carry neither
+// field.
+func TestARefusedMappedNameIsNamedWithItsMappingRepairs(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	var asked []string
+	h.reconciler.MappingRepairs = func(_ context.Context, row string) []any {
+		asked = append(asked, row)
+		return []any{"removed_by", "the removal of " + row, "mended_by", "the rename of " + row}
+	}
+	h.mapRepository("acme/..")
+	h.mapRepository("acme/.git")
+	h.mapRepository("acme/")
+	h.mapRepository("Zeta/..")
+	h.mapRenamedRepository("oldco/tools", "acme/...git")
+
+	h.pass()
+
+	refused := []string{"acme/..", "acme/.git", "acme/", "Zeta/..", "acme/...git"}
+	skipped := map[string]map[string]any{}
+	for _, line := range h.lines("ci reconcile skipped a repository whose name is not an owner/name GitHub allows") {
+		skipped[fmt.Sprint(line["repository"])] = line
+	}
+	if len(skipped) != len(refused) {
+		t.Fatalf("the pass named %d refused names, want %q:\n%s", len(skipped), refused, h.logs.String())
+	}
+	for _, row := range refused {
+		line := skipped[row]
+		for field, want := range map[string]string{"removed_by": "the removal of " + row, "mended_by": "the rename of " + row} {
+			if got := line[field]; got != want {
+				t.Errorf("the WARN for %s names %s %v, want %q: %v", row, field, got, want, line)
+			}
+		}
+	}
+	slices.Sort(asked)
+	if want := slices.Sorted(slices.Values(refused)); !slices.Equal(asked, want) {
+		t.Errorf("MappingRepairs was asked about %q, want each refused mapped name once: %q", asked, want)
+	}
+	if got := number(t, h.passLine(), "mappings_skipped"); got != len(refused) {
+		t.Errorf("the pass line reports %d mappings skipped, want %d", got, len(refused))
 	}
 }
