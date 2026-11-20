@@ -569,11 +569,9 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 }
 
 // StoredClaimMayRunIn is whether the stored claim of token stands in tree and may still hold a
-// process. A stop of a tree its issue has left that finds no machine for the claim is a wait while
-// it does (the daemon outbox's stopInLeftTree): the supervisor persists a claim before it
-// publishes its machine, and a daemon of a rolling restart holds no machine for a claim the other
-// daemon created after it booted. It has no start-row term, unlike StoredClaimMayRun: no start of
-// the issue's new tree runs against a claim that still stands in the old one.
+// process. Its caller can wait for the supervising machine rather than treating no machine as no
+// process. Unlike StoredClaimMayRun, it has no start-row term: no start of another tree runs
+// against a claim still standing in this tree.
 func (s *Store) StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error) {
 	var may bool
 	err := s.pool.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and tree = $2 and `+claimMayRun+`)`,

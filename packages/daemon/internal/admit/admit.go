@@ -1319,20 +1319,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
-	// A member leaving another tree leaves behind every claim of it still standing there, any of
-	// which still running holds that tree's cleanup; the move queues that tree's stop of each of its
-	// roles (workflow.LeftTreeStops) before anything of the new generation, since no stop the old
-	// tree still has queued is sure to reach such a claim and the new tree's start waits on its
-	// admission.
+	// A member leaving another tree gets that tree's suspend for every role before the member's new
+	// generation is written. The outbox decides whether each claim still stands in the old tree.
 	if oldTree != stored.Key {
-		stops, err := workflow.LeftTreeStops(ctx, tx, a.store, a.project, stored)
-		if err != nil {
+		if err := a.engine.StopLeftTree(ctx, tx, stored); err != nil {
 			return err
-		}
-		for _, stop := range stops {
-			if err := a.enqueue(ctx, tx, stored.Key, stop, a.now()); err != nil {
-				return err
-			}
 		}
 	}
 	var gates map[record.DesignStep]record.DesignGate

@@ -14,13 +14,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An adoption moves a member of a closed tree into a live one (AdoptMember, moveIntoTree), and the
-// member can leave a claim still running in the tree it left, which that tree's cleanup waits on,
-// or a start of the old tree already past its fences can create or relaunch one there after the
-// move has read the claims. The move queues the old tree's suspend of every role of the member, at
-// the member's old generation, a role with no claim and a retired one's included, and of no role
-// whose claim already stands in another tree. The daemon's outbox runs such a row as a stop of a
-// tree its issue has left.
+// An adoption moves a member of a closed tree into a live one. The move queues the old tree's
+// suspend of every role at the member's old generation. The outbox decides whether each role's
+// claim still stands in that tree when its row runs.
 func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 	const closedRoot, member, liveRoot = "LEGION-207", "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
@@ -54,28 +50,17 @@ func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 	}
 
 	stored := issueRecord(t, pool, member)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.AdoptMember(ctx, tx, *stored, root, intake.AdoptedChild{Issue: member, Parent: liveRoot, Status: "done"})
 	})
 	if got := issueRecord(t, pool, member); got.Tree != liveRoot || got.Generation != 4 {
 		t.Fatalf("the adopted member stands in tree %s at generation %d, want %s at generation 4", got.Tree, got.Generation, liveRoot)
 	}
 
-	rows, err := pool.Query(t.Context(), `select payload from outbox where issue = $1 and kind = 'supervise' order by id`, member)
-	if err != nil {
-		t.Fatalf("read the member's supervise rows: %v", err)
-	}
-	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
-	if err != nil {
-		t.Fatalf("read the member's supervise rows: %v", err)
-	}
-	var got []record.SuperviseRequest
-	for _, payload := range payloads {
-		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindSupervise, Payload: payload})
-		if err != nil {
-			t.Fatalf("decode a supervise row of %s: %v", member, err)
-		}
-		got = append(got, decoded.(record.SuperviseRequest))
+	rows := issueOutboxOf(t, pool, member, "supervise")
+	got := make([]record.SuperviseRequest, 0, len(rows))
+	for _, row := range rows {
+		got = append(got, decodeSupervise(t, row))
 	}
 	reason := member + " left tree " + closedRoot
 	want := []record.SuperviseRequest{
@@ -83,10 +68,11 @@ func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 		{Op: "suspend", Tree: closedRoot, Role: claim.RolePlanner, Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleImplementer, Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleTester, Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleReviewer, Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleMerger, Generation: 3, Reason: reason},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("the adoption queued the supervise rows %+v for %s; want the old tree's suspend of every role but its reviewer, "+
-			"whose claim stands in another tree: %+v", got, member, want)
+		t.Fatalf("the adoption queued supervise rows %+v for %s; want the old tree's suspend of every role, including the reviewer already in another tree: %+v",
+			got, member, want)
 	}
 }

@@ -2254,9 +2254,9 @@ type Store interface {
 	PutHandedOverRoot(ctx context.Context, tx pgx.Tx, root HandedOverRoot) error
 	// WaitingNotices is every notice row of project's issues not yet due at now, oldest first.
 	WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)
-	// ExpediteOutbox makes row due at now if it was due later. It takes the row, not its id, so a
-	// caller that then wakes the row's lane has its issue and kind.
-	ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) error
+	// ExpediteOutbox makes row due at now if it was due later, returning whether it moved the row.
+	// It takes the row, not its id, so a caller that wakes the row's lane has its issue and kind.
+	ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) (bool, error)
 	// DropCatchUps deletes every catch-up notice row of issue the outbox still holds, a re-held copy
 	// and a row the runner has leased included, but for two a drop would lose a person's decision
 	// from. The first is a row whose publish told the decisions it named (KeptToldSource) and whose
@@ -2301,11 +2301,8 @@ type Store interface {
 	// waits behind is due rather than climb a backoff to it (the daemon's deliverNotice, whose
 	// fence waits with wait.Until for a catch-up the wake pacing holds).
 	EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, id int64) ([]OutboxRow, error)
-	// TreeCloses is every tree close row (SuperviseRequest's "tree_close") queued for tree on an
-	// issue that still stands in tree, oldest first: the rows that hold the tree's cleanup
-	// reservation and confirm it (a close of a tree its issue has left only stops a claim, and is
-	// not listed). The outbox makes them due at once when a claim their cleanup waits on stops (the
-	// daemon outbox's wakeTreeCloses).
+	// TreeCloses is every tree-close row (SuperviseRequest's "tree_close") queued for tree on an
+	// issue that still stands in tree, oldest first.
 	TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error)
 	// RoleRun reads one role's run of an issue generation: its queued supervise rows and the claim
 	// with token.

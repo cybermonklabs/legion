@@ -195,7 +195,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	run("the carry's rows while the implementer's turn runs")
 	// Every suspend of the old tree for the implementer waits on it while its turn runs there: the
 	// close's own row, where the close held its suspension first, and the one the carry queued for
-	// the claim it left standing in the old tree (workflow.LeftTreeStops).
+	// the claim it left standing in the old tree (workflow.Engine.StopLeftTree).
 	wantStops := 1
 	if closeHeld {
 		wantStops = 2

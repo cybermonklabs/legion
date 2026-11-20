@@ -238,14 +238,12 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // (Adopt), and the closed tree's member's, for the one issue a release names (AdoptMember). It
 // is written once here, so that the two routes cannot come to record one issue differently.
 //
-// The record takes its next generation, the fence every row of the old tree already checks (its
-// linger's close, its supervise rows, its issue suspend; a stop row still stops a claim that stands
-// in the old tree, the daemon outbox's stopInLeftTree), with its hand-over fence deleted and
-// its generation's facts cleared. The move queues a suspend of the old tree for each role of the
-// member whose claim does not already stand in another tree (LeftTreeStops), so none runs on there
-// and holds the old tree's cleanup. A todo record enters the tree admitted on the repository it
-// was first recorded with (enterChild, RecordedFact, recordedResolution), as an unrecorded todo
-// child does, so it starts its first phase at the slot the waiting line gives it, or is held at
+// The record takes its next generation, the fence every row of the old tree already checks, with
+// its hand-over fence deleted and its generation's facts cleared. Before that generation is
+// written, StopLeftTree queues the old tree's suspend for every role. A todo record enters the tree
+// admitted on the repository it was first recorded with (enterChild, RecordedFact,
+// recordedResolution), as an unrecorded todo child does, so it starts its first phase at the slot
+// the waiting line gives it, or is held at
 // admitted while an unfinished Dispatch issue holds it. Any other status is written as a parked
 // child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
 // (record.Issue.Ancestry: a member waits in no line).
@@ -267,14 +265,8 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	}
 	next := member.Generation + 1
 	if member.Tree != root.Tree {
-		stops, err := LeftTreeStops(ctx, tx, e.store, e.cfg.Project, member)
-		if err != nil {
+		if err := e.StopLeftTree(ctx, tx, member); err != nil {
 			return err
-		}
-		for _, stop := range stops {
-			if err := e.enqueue(ctx, tx, member.Key, stop); err != nil {
-				return err
-			}
 		}
 	}
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
@@ -291,53 +283,11 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	return e.store.PutIssue(ctx, tx, member)
 }
 
-// LeftTreeStops is the stop a move queues for the tree it takes an issue out of: a suspend of that
-// tree for each role of left, the issue's record as the move found it, but a role whose stored
-// claim already stands in another tree. Every move queues it, whatever stop rows of the old tree
-// are still queued: admission's re-admission of a member as a root of its own (a hand-over, an
-// orphan carry) and adoption into a live tree (moveIntoTree). Nothing else is sure to reach the
-// claim: a stop of the old tree can have finished before the move, superseded by a newer start, as
-// a production check's look start supersedes the linger's suspend, or fall to the new generation's
-// fence, as an issue close still queued does; and the new tree's start, which re-points the claim,
-// runs only once the issue is admitted, which a blocker or the admission cap can hold off for as
-// long as they stand. The old tree's cleanup waits on every claim still running in it
-// (store.CleanupReservedTree), and the old root's next run waits on that cleanup.
-//
-// It is queued for every role, as everyClaim queues a tree's own stops, and not only for the
-// claims the move's transaction reads: a start of the old tree already past its fences when the
-// move commits (a production check's look) creates or relaunches its claim after that read, in
-// the old tree. A row for a role with no claim, or one that runs nothing, finishes with nothing
-// to stop. Only a claim already standing in another tree is left out: it is that tree's.
-//
-// The daemon outbox runs the row as a stop of a tree its issue has left (stopInLeftTree): it
-// suspends the claim while the claim still stands in the old tree, as the daemon and keeping its
-// session, and leaves one the new tree has re-pointed, so the row stops only what the move left
-// behind. It is queued at the old generation, which no run of the new tree reads (RoleRuns keys
-// by generation), so no start of the new tree waits on it or counts it.
-func LeftTreeStops(ctx context.Context, tx pgx.Tx, store record.Store, project string, left record.Issue) ([]record.SuperviseRequest, error) {
-	projectToken, err := claim.ProjectToken(project)
-	if err != nil {
-		return nil, fmt.Errorf("derive the claims %s leaves in tree %s: %w", left.Key, left.Tree, err)
-	}
-	tokens := make([]claim.Token, len(claim.Roles))
-	for i, role := range claim.Roles {
-		if tokens[i], err = claim.NewToken(projectToken, left.Key, role); err != nil {
-			return nil, fmt.Errorf("derive the %s claim %s leaves in tree %s: %w", role, left.Key, left.Tree, err)
-		}
-	}
-	claims, err := store.RoleClaims(ctx, tx, tokens)
-	if err != nil {
-		return nil, fmt.Errorf("read the claims %s leaves in tree %s: %w", left.Key, left.Tree, err)
-	}
-	var stops []record.SuperviseRequest
-	for i, role := range claim.Roles {
-		if held := claims[tokens[i]]; held != nil && held.Tree != left.Tree {
-			continue
-		}
-		stops = append(stops, record.SuperviseRequest{Op: "suspend", Tree: left.Tree, Role: role, Generation: left.Generation,
-			Reason: fmt.Sprintf("%s left tree %s", left.Key, left.Tree)})
-	}
-	return stops, nil
+// StopLeftTree queues the old tree's suspend of every role left can hold. Every request names
+// left's tree and generation, so a run of the tree it enters does not read it. The outbox decides
+// whether a claim still stands in that tree when it executes the request.
+func (e *Engine) StopLeftTree(ctx context.Context, tx pgx.Tx, left record.Issue) error {
+	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree), "")
 }
 
 // joinedTheTree is the child-status notice an adoption sends about an issue a tree takes: the owner

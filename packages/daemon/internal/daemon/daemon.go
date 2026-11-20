@@ -2871,12 +2871,15 @@ func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.Out
 	return id, nil
 }
 
-func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row record.OutboxRow, now time.Time) error {
-	if err := s.Store.ExpediteOutbox(ctx, tx, row, now); err != nil {
-		return err
+func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row record.OutboxRow, now time.Time) (bool, error) {
+	moved, err := s.Store.ExpediteOutbox(ctx, tx, row, now)
+	if err != nil {
+		return false, err
 	}
-	s.wakeOnCommit(ctx, row)
-	return nil
+	if moved {
+		s.wakeOnCommit(ctx, row)
+	}
+	return moved, nil
 }
 
 // EnqueueDesignGates wakes the issue's board lane as Enqueue does. The enqueue writes its row

@@ -395,13 +395,9 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name. Deadline, when set, is when a suspension held for a turn stops the process
-// mid-turn if the turn has not ended by then (holdSuspension); a daemon's suspension without one
-// waits for the turn however long it takes. The daemon sets one for a carried child's role still
-// running in its old tree, at the old root's linger expiry, where that tree's close would have
-// ended it (the daemon's outbox, stopCarried, which the new tree's start, the old tree's own stop
-// rows and the stop the move queued all ask). The operator's suspension sets none: it is bounded
-// at the stop timeout from its arrival.
+// suspension must name. Deadline, when set, ends a suspension held for a turn if the turn has not
+// ended by then (holdSuspension); without one, the hold waits for the turn's end. A later request
+// can only move a deadline earlier, and an operator's suspension takes the hold over.
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A

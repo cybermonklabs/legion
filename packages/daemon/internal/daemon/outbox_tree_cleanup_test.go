@@ -310,6 +310,56 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	}
 }
 
+type carryFixture struct {
+	ctx       context.Context
+	pool      *store.Pool
+	records   record.Store
+	trees     *store.Store
+	sup       *supervisor
+	rt        *fake.Runtime
+	engine    *workflow.Engine
+	admission *admit.Admission
+	runner    *outbox
+	clock     time.Time
+}
+
+func newCarryFixture(t *testing.T, now time.Time, root, child record.Issue, roots ...string) *carryFixture {
+	t.Helper()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, root)
+	putOutboxIssue(t, pool, records, child)
+	trees := outboxTreeStore(t, pool, roots...)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.Store = trees
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+	admission := admit.New(records, engine, 2, "legion", quietLogger())
+	fixture := &carryFixture{ctx: ctx, pool: pool, records: records, trees: trees, sup: sup, rt: rt, engine: engine, admission: admission, clock: now}
+	fixture.runner = &outbox{
+		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
+		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: child.Key, Status: "todo", HandedOver: true, Labels: []string{"legion"}}},
+		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return fixture.clock }, log: quietLogger(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + child.Key}, nil
+		},
+		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
+	}
+	return fixture
+}
+
+func (f *carryFixture) run(t *testing.T, what string, attempts int) {
+	t.Helper()
+	for range attempts {
+		if err := f.runner.RunOnce(f.ctx); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		f.clock = f.clock.Add(5 * time.Minute)
+	}
+}
+
 // A done root's linger suspends every claim of its tree, and the hand-over at the linger's expiry
 // carries an unfinished child into a tree of its own at its next generation, which every row of
 // the old tree then serves an earlier one of. The child's own suspend can run only after the
@@ -338,14 +388,10 @@ func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
 		{name: "a role its new tree re-pointed", op: "tree_close", repointed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
-			st := outboxTreeStore(t, pool, rootKey, childKey)
-			records := record.NewStore()
 			clock := time.Now().UTC().Truncate(time.Second)
 			until := clock.Add(-time.Minute)
-			putOutboxIssue(t, pool, records, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until})
+			root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
 			// The hand-over carried the child: a tree of its own at generation 2, held at admitted,
 			// or, where its new tree starts it, planning.
 			carried := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
@@ -353,21 +399,14 @@ func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
 			if tc.op == "start" {
 				carried.Phase, carried.Status = phase.Planning, "in_progress"
 			}
-			putOutboxIssue(t, pool, records, carried)
-			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-			sup.deps.Store = st
+			fixture := newCarryFixture(t, clock, root, carried, rootKey, childKey)
+			ctx, pool, st, records, sup, rt, runner := fixture.ctx, fixture.pool, fixture.trees, fixture.records, fixture.sup, fixture.rt, fixture.runner
 			architect := launchedClaim(t, sup, rootKey, rootKey, claim.RoleArchitect)
 			plannerTree := rootKey
 			if tc.repointed {
 				plannerTree = childKey
 			}
 			planner := launchedClaim(t, sup, plannerTree, childKey, claim.RolePlanner)
-			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
-				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: func() time.Time { return clock },
-				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + childKey}, nil
-				},
-			}
 			cleaned := func() bool {
 				t.Helper()
 				live, err := st.TreeLive(ctx, "legion", rootKey)
@@ -466,35 +505,66 @@ func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
 	}
 }
 
-// A stop of a tree its issue has left that finds no machine for its claim is a wait while the
-// stored claim stands in that tree and may still hold a process, as the plain suspend's is: the
-// supervisor persists a claim before it publishes its machine, and in a rolling restart the daemon
-// that runs the row holds no machine for a claim the other daemon created after it booted. A stored
-// claim that runs nothing, one the new tree has re-pointed, and no claim at all leave the row
-// nothing to stop, and it finishes.
-func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
+func TestAStartThatFindsAnAlreadySuspendedCarriedClaimDoesNotWakeAnOldTreeClose(t *testing.T) {
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	until := now.Add(-time.Minute)
+	root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
+	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: childKey, Title: "child", Phase: phase.Planning, Generation: 2, Status: "in_progress", Rank: "B", HandedOver: true}
+	fixture := newCarryFixture(t, now, root, child, rootKey, childKey)
+	planner := launchedClaim(t, fixture.sup, rootKey, childKey, claim.RolePlanner)
+	machine, _ := fixture.sup.Machine(planner)
+	if err := machine.Handle(fixture.ctx, supervise.RequestSuspend{Claim: planner, By: supervise.SuspendedByDaemon}); err != nil {
+		t.Fatalf("suspend the old-tree planner: %v", err)
+	}
+	future := now.Add(time.Hour)
+	enqueueOutbox(t, fixture.pool, fixture.records, mustOutboxRow(t, rootKey, record.SuperviseRequest{Op: "tree_close", Tree: rootKey,
+		Role: claim.RoleArchitect, Generation: 1, Linger: 1}, future))
+	start := mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "start", Tree: childKey, Role: claim.RolePlanner,
+		Generation: 2, Phase: phase.Planning, Task: "Plan it."}, now)
+	if err := fixture.runner.execute(fixture.ctx, start); err != nil {
+		t.Fatalf("start the child with its planner already suspended in the old tree: %v", err)
+	}
+	var nextAt time.Time
+	if err := fixture.pool.QueryRow(fixture.ctx, `select next_at from outbox where issue = $1 and kind = 'supervise'`, rootKey).Scan(&nextAt); err != nil {
+		t.Fatalf("read the future close: %v", err)
+	}
+	if !nextAt.Equal(future) {
+		t.Fatalf("the start moved the future old-tree close from %s to %s, want it left at %s", future, nextAt, future)
+	}
+}
+
+// A left-tree stop waits only when its claim still may run in that tree. A stored claim with no
+// machine can belong to another daemon during a rolling restart, a machine can already stand in a
+// third tree, and an old close with no claim has nothing to stop.
+func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
+	const rootKey, childKey, thirdTree = "LEGION-207", "LEGION-208", "LEGION-999"
 	for _, tc := range []struct {
 		name string
-		// tree and state are the stored claim's; an empty tree stores none.
-		tree, state string
-		waits       bool
+		// tree and state are the stored claim's; machineTree launches its claim here instead.
+		tree, state, machineTree string
+		op                       record.SuperviseOp
+		waits, closeUnmoved      bool
 	}{
-		{name: "a claim that may still run in the old tree", tree: rootKey, state: "ready", waits: true},
-		{name: "a claim that runs nothing in the old tree", tree: rootKey, state: "suspended"},
-		{name: "a claim its new tree re-pointed", tree: childKey, state: "ready"},
-		{name: "no claim"},
+		{name: "a claim that may still run in the old tree", tree: rootKey, state: "ready", op: "suspend", waits: true},
+		{name: "a claim that runs nothing in the old tree", tree: rootKey, state: "suspended", op: "suspend"},
+		{name: "a claim its new tree re-pointed", tree: childKey, state: "ready", op: "suspend"},
+		{name: "a machine in a third tree", machineTree: thirdTree, op: "suspend"},
+		{name: "a machine already suspended in the old tree", machineTree: rootKey, op: "suspend", closeUnmoved: true},
+		{name: "a close with no claim", op: "tree_close"},
+		{name: "no claim", op: "suspend"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
-			st := outboxTreeStore(t, pool, rootKey, childKey)
-			records := record.NewStore()
-			until := time.Now().Add(-time.Minute)
-			putOutboxIssue(t, pool, records, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until})
-			putOutboxIssue(t, pool, records, record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-				Tree: childKey, Title: "child", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true})
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			until := now.Add(-time.Minute)
+			root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until}
+			child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: childKey, Title: "child", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true}
+			fixture := newCarryFixture(t, now, root, child, rootKey, childKey, thirdTree)
+			ctx, pool, records, sup, rt, runner := fixture.ctx, fixture.pool, fixture.records, fixture.sup, fixture.rt, fixture.runner
 			planner := mustClaimToken(t, childKey, claim.RolePlanner)
 			if tc.tree != "" {
 				// Stored, as another daemon of a rolling restart stored it, with no machine here.
@@ -505,21 +575,60 @@ func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
 					t.Fatalf("store the planner's claim: %v", err)
 				}
 			}
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			sup.deps.Store = st
-			if _, found := sup.Machine(planner); found {
-				t.Fatalf("the supervisor holds a machine for %s; want none", planner)
+			if tc.machineTree == "" {
+				if _, found := sup.Machine(planner); found {
+					t.Fatalf("the supervisor holds a machine for %s; want none", planner)
+				}
+			} else {
+				planner = launchedClaim(t, sup, tc.machineTree, childKey, claim.RolePlanner)
+				if tc.closeUnmoved {
+					machine, _ := sup.Machine(planner)
+					if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: planner, By: supervise.SuspendedByDaemon}); err != nil {
+						t.Fatalf("suspend the old-tree planner before its stale stop: %v", err)
+					}
+				}
 			}
-			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
-				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now}
-			err := runner.execute(ctx, mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "suspend", Tree: rootKey, Role: claim.RolePlanner,
-				Generation: 1, Reason: childKey + " left tree " + rootKey}, time.Now()))
+			payload := record.SuperviseRequest{Op: tc.op, Tree: rootKey, Role: claim.RolePlanner, Generation: 1,
+				Reason: childKey + " left tree " + rootKey}
+			if tc.op == "tree_close" {
+				payload.Linger = 1
+			}
+			var futureClose time.Time
+			if tc.closeUnmoved {
+				futureClose = now.Add(time.Hour)
+				enqueueOutbox(t, pool, records, mustOutboxRow(t, rootKey, record.SuperviseRequest{Op: "tree_close", Tree: rootKey,
+					Role: claim.RoleArchitect, Generation: 1, Linger: 1}, futureClose))
+			}
+			err := runner.execute(ctx, mustOutboxRow(t, childKey, payload, time.Now()))
 			if tc.waits {
 				if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "supervising machine of its stored claim "+string(planner)) {
 					t.Fatalf("the old tree's suspend with no machine for the stored %s claim in %s = %v; want a wait for its machine", tc.state, tc.tree, err)
 				}
 			} else if err != nil {
-				t.Fatalf("the old tree's suspend with the stored claim %q in %q = %v; want it finished, with nothing to stop", tc.state, tc.tree, err)
+				t.Fatalf("the old tree's %s with the stored claim %q in %q = %v; want it finished, with nothing to stop", tc.op, tc.state, tc.tree, err)
+			}
+			if tc.machineTree == thirdTree {
+				machine, found := sup.Machine(planner)
+				if !found {
+					t.Fatalf("the supervisor holds no machine for the third-tree planner")
+				}
+				if got := machine.Claim(); got.Tree != thirdTree || got.State != supervise.StateReady {
+					t.Fatalf("the third-tree planner after the old tree's stop = %+v; want it ready in %s", got, thirdTree)
+				}
+				for _, call := range rt.CallsOf("Suspend") {
+					if call.Locator.Claim == planner {
+						t.Fatalf("the old tree's stop suspended the third-tree planner")
+					}
+				}
+			}
+			if tc.closeUnmoved {
+				var nextAt time.Time
+				if err := pool.QueryRow(ctx, `select next_at from outbox where issue = $1 and kind = 'supervise'`, rootKey).Scan(&nextAt); err != nil {
+					t.Fatalf("read the future close: %v", err)
+				}
+				if !nextAt.Equal(futureClose) {
+					t.Fatalf("the stale stop moved the future close from %s to %s, want it left at %s", futureClose, nextAt, futureClose)
+				}
 			}
 		})
 	}
@@ -554,18 +663,17 @@ func TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches(t *testing.T)
 // movedCarriedRole runs one case of TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches.
 func movedCarriedRole(t *testing.T, afterMove bool) {
 	const rootKey, childKey, blockerKey = "LEGION-207", "LEGION-208", "LEGION-300"
-	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
 	start := time.Now().UTC().Truncate(time.Second)
 	until := start.Add(time.Hour)
 	parent := rootKey
+	root := record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
+		Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}
+	child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
+		Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 1}
+	fixture := newCarryFixture(t, start, root, child, rootKey)
+	ctx, pool, records, trees, sup, rt, engine, admission := fixture.ctx, fixture.pool, fixture.records, fixture.trees, fixture.sup, fixture.rt, fixture.engine, fixture.admission
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, put := range []error{
-			records.PutIssue(ctx, tx, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
-				Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}),
-			records.PutIssue(ctx, tx, record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
-				Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 1}),
 			records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: childKey, Project: "LEGION", Status: "done", Blockers: []string{blockerKey}, Seq: 1}),
 			records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: blockerKey, Project: "LEGION", Status: "todo", Seq: 1}),
 		} {
@@ -575,34 +683,9 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed the lingering root, its merged child and the child's blocker: %v", err)
+		t.Fatalf("seed the child's blocker: %v", err)
 	}
-	trees := outboxTreeStore(t, pool, rootKey)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Store = trees
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
-	admission := admit.New(records, engine, 2, "legion", quietLogger())
-	clock := start
-	runner := &outbox{
-		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
-		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: childKey, Status: "todo", HandedOver: true, Labels: []string{"legion"}}},
-		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return clock }, log: quietLogger(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + childKey}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
-	}
-	run := func(what string) {
-		t.Helper()
-		for range 4 {
-			if err := runner.RunOnce(ctx); err != nil {
-				t.Fatalf("%s: %v", what, err)
-			}
-			clock = clock.Add(5 * time.Minute)
-		}
-	}
+	run := func(what string) { fixture.run(t, what, 4) }
 
 	var machine *supervise.Machine
 	if !afterMove {
@@ -610,7 +693,7 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		tester := launchedClaim(t, sup, rootKey, childKey, claim.RoleTester)
 		machine, _ = sup.Machine(tester)
 		enqueueOutbox(t, pool, records, mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "suspend", Tree: rootKey, Role: claim.RoleTester,
-			Generation: 1, Reason: "the tree of " + rootKey + " lingers"}, clock))
+			Generation: 1, Reason: "the tree of " + rootKey + " lingers"}, fixture.clock))
 		var suspendRow int64
 		if err := pool.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, childKey).Scan(&suspendRow); err != nil {
 			t.Fatalf("read the linger's suspend row: %v", err)
@@ -646,7 +729,7 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 	run("the carry's rows while the child waits on its blocker")
 
 	// The old root's linger expires, and its close reserves the old tree's cleanup.
-	clock = until.Add(time.Minute)
+	fixture.clock = until.Add(time.Minute)
 	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger-expired", intake.LingerExpired{Issue: rootKey, Generation: 1}, engine, admission); err != nil {
 		t.Fatalf("expire the old root's linger: %v", err)
 	}
