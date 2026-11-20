@@ -569,9 +569,10 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 }
 
 // TestTheMachineCacheIsNamedByWhereItIsNeverItsPath: the machine cache holds key.pem, so the source
-// `identity --source` names, an enrollment file there that cannot be read or is empty, and a cached
-// session the broker no longer holds with no identity to register it again each name the cache by
-// where it is, never by its path.
+// `identity --source` names, a key.pem there that is no PEM file, an enrollment file there that
+// cannot be read or is empty, a lock there that cannot be opened, and a cached session the broker
+// no longer holds with no identity to register it again each name the cache by where it is, never
+// by its path.
 func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	const secret = "hunter2pw-cachename-c4a917"
 	useCache := func(t *testing.T) string {
@@ -592,10 +593,16 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	})
 	for _, row := range []struct {
 		name  string
+		file  string
 		write func(t *testing.T, path string)
 		want  string
 	}{
-		{"the enrollment file is a directory", func(t *testing.T, path string) {
+		{"key.pem is no PEM file", keyFile, func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("no key here\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, machineCacheKeyFile + ": not a PEM file"},
+		{"the enrollment file is a directory", enrollmentFile, func(t *testing.T, path string) {
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
@@ -603,7 +610,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "read the enrollment file in " + machineCacheWords + ": read: is a directory"},
-		{"the enrollment file is empty", func(t *testing.T, path string) {
+		{"the enrollment file is empty", enrollmentFile, func(t *testing.T, path string) {
 			if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -611,7 +618,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			dir := useCache(t)
-			row.write(t, filepath.Join(dir, enrollmentFile))
+			row.write(t, filepath.Join(dir, row.file))
 			stdout, stderr, code := runIn(signArgs...)
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
