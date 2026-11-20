@@ -1,8 +1,8 @@
 // Package testtmp is a temporary directory for a test that binds a unix socket under it, short
 // enough that the socket's path fits what the system holds. It is an ordinary package rather than a
 // _test.go file because a command is package main and can import no other package's test helpers,
-// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/agent-secrets and
-// cmd/agent-secrets-helper bind sockets too.
+// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/cipher and
+// cmd/cipher-helper bind sockets too.
 //
 // The daemon module keeps the same file at packages/daemon/internal/testtmp/testtmp.go. The two
 // are copies, not one package imported twice, because Go's internal rule reads a path prefix:
@@ -64,7 +64,7 @@ const fallbackBase = "/tmp"
 //
 // One kind of site keeps a directory of its own on purpose and does not come here: the
 // once-per-binary directories a package's TestMain owns, the sign-in secret directory of
-// packages/envoy/internal/broker/config/config_test.go and the certificate directory of
+// packages/envoy/internal/cipher/config/config_test.go and the certificate directory of
 // packages/envoy/infra/seed/main_test.go. They bind no socket, so they need no byte budget, and
 // no *testing.T outlives them, so they keep os.MkdirTemp("", …) and a removal of their own. The
 // daemon copy of this file names that module's sites.

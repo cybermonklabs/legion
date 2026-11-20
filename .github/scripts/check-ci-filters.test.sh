@@ -2908,10 +2908,10 @@ uncovered=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$scrip
 import re, sys, tempfile, yaml, workflow_paths as wp
 from pathlib import Path
 
-SOURCE = "packages/broker-client/src/token-client.ts"
+SOURCE = "packages/cipher-client/src/token-client.ts"
 
 # Each job's own tsc program, or the runtime closure of the entry it runs, holds the seven
-# sources of packages/broker-client, which packages/envoy-client/src/broker-credential.ts
+# sources of packages/cipher-client, which packages/envoy-client/src/broker-credential.ts
 # imports (brokerTokenClient from its /environment module) and whose exports map every entry to
 # ./src/<module>.ts.
 COMPILERS = (
@@ -2930,8 +2930,8 @@ COMPILERS = (
 # (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
 # cannot hold the filter to it.
 READS = (
-    ("broker_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
-     "packages/broker-client/src/__tests__/wire.test.ts:25-26"),
+    ("broker_client", "packages/envoy/internal/cipherclient/testdata/wire.json",
+     "packages/cipher-client/src/__tests__/wire.test.ts:25-26"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
      "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),
     ("contracts", "packages/daemon/internal/intake/testdata/dispatch/server-started.json",

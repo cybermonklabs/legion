@@ -28,15 +28,16 @@ type Member struct {
 
 // GitHubTarball is a gzipped tarball shaped as GitHub's tarball of the check's repository: under
 // TarballPrefix, the leak-check directory's own entry, one file of the repository outside that
-// directory (README.md), and every member of check under the directory at its path, in path
-// order. A path that leaves the directory is written as it is, so a test can hand the pack one.
+// directory (CONTRIBUTING.md, a name the check's own directory does not hold), and every member of
+// check under the directory at its path, in path order. A path that leaves the directory is written
+// as it is, so a test can hand the pack one.
 func GitHubTarball(t testing.TB, check map[string]Member) []byte {
 	t.Helper()
 	return gzipTar(t, func(archive *tar.Writer) {
 		if err := archive.WriteHeader(&tar.Header{Name: TarballPrefix + checkDirectory + "/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
 			t.Fatal(err)
 		}
-		writeMember(t, archive, TarballPrefix+"README.md", Member{Body: "the rest of the repository\n", Mode: 0o644})
+		writeMember(t, archive, TarballPrefix+"CONTRIBUTING.md", Member{Body: "the rest of the repository\n", Mode: 0o644})
 		for _, name := range slices.Sorted(maps.Keys(check)) {
 			writeMember(t, archive, TarballPrefix+checkDirectory+"/"+name, check[name])
 		}

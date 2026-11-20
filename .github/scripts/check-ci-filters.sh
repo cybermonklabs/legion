@@ -200,7 +200,7 @@
 #      every Bun job and this check holds every filter gating such a job to all of them. What the
 #      rule prevents is exactly that: a workspace missing from the table is a manifest no filter
 #      has to select, so a change to it starts no job. It prevents nothing else, and
-#      packages/broker-client is the case that shows the difference - it was outside the table
+#      packages/cipher-client is the case that shows the difference - it was outside the table
 #      from the day it was added, and its own typecheck and tests ran in no job for a second
 #      reason no rule reads, that no step ran them. The other way round is a read every Bun job
 #      declares of a manifest no install reads. The manifest is read as
@@ -213,7 +213,7 @@
 #      sources are another matter, which this rule says nothing about either: a job can compile a
 #      package whose filter never selects it, which is why ci_job_reads.py's envoy_client_dep
 #      declares, in one place for every gate whose job compiles @legion/envoy-client, that it
-#      compiles @legion/broker-client with it.
+#      compiles @legion/cipher-client with it.
 #  14. a workflow of .github/workflows other than ci.yaml that runs on `merge_group`, naming the
 #      file: ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's
 #      own result decides, so the queue learns a group is doomed without waiting for the ci-ok
