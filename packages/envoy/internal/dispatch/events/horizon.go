@@ -649,18 +649,22 @@ func (h *Horizon) Reset() {
 
 // observe returns once an observation numbered above after has ended, recorded or failed: it
 // joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next; so
-// does one abandoned by its runner's context while the caller's is live. The next is the one in
-// flight when the caller is back at h.mu or, when that one has already ended, that one as it
-// ended: it started after the one waited out had ended, so after the call. Callers that wait out
-// the same observation therefore share the next however the scheduler wakes them, where each
-// that found it ended would otherwise run one more.
+// after started before the caller needed it, so the caller waits it out and takes a later one; so
+// does one abandoned by its runner's context while the caller's is live. Back at h.mu, the caller
+// first takes the newest ended observation (h.ended) when it is numbered above the one it waited
+// out, and only otherwise joins the one in flight or runs one: observations run one at a time, so
+// one numbered above the one waited out started after that one had ended, so after the call.
+// Callers that wait out the same observation therefore run at most one more between them, unless
+// that one is abandoned, however the scheduler wakes them; each that found the next one already
+// ended would otherwise run one of its own.
 func (h *Horizon) observe(ctx context.Context, after uint64) error {
 	takes := func(flight *horizonFlight) bool {
 		return flight.number > after && !(flight.abandoned && ctx.Err() == nil)
 	}
 	// waitedOut is the number of the last observation this call waited out, 0 before it has
-	// waited one out; that one has ended, so h.ended is set once it is above 0.
+	// waited one out. That one has ended, so h.ended is set once it is above 0. It stands above
+	// after when the one waited out was abandoned, so h.ended must stand above it, and not only
+	// above after.
 	var waitedOut uint64
 	for {
 		h.mu.Lock()
