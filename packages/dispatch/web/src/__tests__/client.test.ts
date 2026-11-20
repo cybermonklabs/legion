@@ -1395,10 +1395,11 @@ const CLIENT_PLUMBING = new Set([
 ]);
 
 /** The writes Dispatch's keyed layer does not take, and so the ones the page makes outside the
- *  write path: `/auth/logout` is the same however often it is made, ends a session rather than
- *  writing anything a reload should resume, and sits outside the layer; and the four steps of a
- *  passkey ceremony at the outside origin, which sit outside it too, each step's state the
- *  ceremony's own cookie, and a repeat after a lost answer a new ceremony rather than a second
+ *  write path. `/auth/logout` is the same however often it is made, ends a session rather than
+ *  writing anything a reload should resume, and sits outside the layer. The four steps of a
+ *  passkey ceremony at the outside origin are sign-in calls of the same class: each is made
+ *  before any session exists, so no login could own a kept write of it, and its state is the
+ *  ceremony's own cookie, so a repeat after a lost answer is a new ceremony rather than a second
  *  write of one. */
 const UNKEYED_POSTS = new Set([
   "/auth/logout",
