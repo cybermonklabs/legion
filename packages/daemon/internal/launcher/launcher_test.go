@@ -867,12 +867,16 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // and then waits for the case to let it finish, and the case lets them only once both have said
 // so. A launcher that stopped the roles one after another would leave the second without its
 // SIGTERM while the first waits, so the first would be killed at the end of its grace and never
-// finish. The case once held the stop to 2.5 s for two handlers of 1.5 s each, which a loaded
-// machine broke with the roles stopped together: the handlers ended 1.5 s after the stop, and the
-// roles' teardown after them took the rest (3.4 s in all on a loaded dev box).
+// finish. The launcher must then leave within one stop grace of the moment the case lets the
+// handlers finish: all that is left by then is the roles' teardown, under a second even on a
+// loaded machine, so a launcher that waits a grace on anything past its roles fails here. The case
+// once held the whole stop to 2.5 s for two handlers of 1.5 s each, which a loaded machine broke
+// with the roles stopped together: the handlers ended 1.5 s after the stop, and the roles'
+// teardown after them took the rest (3.4 s in all on a loaded dev box).
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
 	requireRoleNamespaces(t)
-	f := newFleet(t, 6*time.Second, "tester", "reviewer")
+	const grace = 6 * time.Second
+	f := newFleet(t, grace, "tester", "reviewer")
 	const handler = `trap 'printf termed > /tmp/termed; while [ ! -e /tmp/go ]; do /bin/sleep 0.01; done; printf done > /tmp/finished; exit 0' TERM
 printf ready > /tmp/ready
 while :; do /bin/sleep 600 & wait; done
@@ -897,13 +901,20 @@ while :; do /bin/sleep 600 & wait; done
 		}
 		return true
 	})
+	released := time.Now()
 	for _, role := range roles {
 		if err := os.WriteFile(f.roleTmp(role, "go"), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	err := <-f.result
-	f.result <- err
+	var err error
+	select {
+	case err = <-f.result:
+		f.result <- err
+	case <-time.After(grace - time.Since(released)):
+		t.Fatalf("the launcher had not left %s after the case let both roles finish their handlers, one stop grace: it waits on something past its roles; its log: %s",
+			grace, f.stderr.String())
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("the launcher returned %v, want its context's end", err)
 	}
