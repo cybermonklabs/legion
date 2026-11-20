@@ -1057,8 +1057,8 @@ moment, its pod's restart, with every connection's timer started fresh. The rout
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
 as they were, and the reloader applies it. A
 `gcp:NatsHub` needs none of this: its configuration is the instance template's `user-data`
-(`gcp/natshub.go:795`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
-`RECREATE`: `gcp/natshub.go:822-828`), so any configuration change restarts its server already.
+(`gcp/natshub.go:807`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
+`RECREATE`: `gcp/natshub.go:834-840`), so any configuration change restarts its server already.
 
 <a id="two-ports-guarded-by-the-networkpolicy-alone"></a>
 
