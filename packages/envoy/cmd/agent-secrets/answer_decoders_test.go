@@ -100,13 +100,7 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 			if err == nil {
 				t.Fatal("the answer was read")
 			}
-			text := err.Error()
-			if strings.Contains(text, password) || strings.Contains(text, "demouser7q") {
-				t.Errorf("the error %q prints the address's credential", text)
-			}
-			if !strings.Contains(text, decoder.call+": "+brokeraddr.WordsNotPrinted) {
-				t.Errorf("the error %q does not say %q", text, decoder.call+": "+brokeraddr.WordsNotPrinted)
-			}
+			wantNamedNotPrinted(t, "the error", err.Error(), []string{decoder.call + ": " + brokeraddr.WordsNotPrinted}, password, "demouser7q")
 		})
 		t.Run("control: "+decoder.call+", beside a clean address", func(t *testing.T) {
 			err := decoder.run(newClient(brokeraddr.New(answer.URL)))

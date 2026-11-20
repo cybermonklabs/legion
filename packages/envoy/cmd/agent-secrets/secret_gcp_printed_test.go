@@ -124,14 +124,7 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
-			if strings.Contains(stderr, secret) {
-				t.Errorf("stderr %q holds the secret", stderr)
-			}
-			for _, want := range append(row.want, "--owner <email>") {
-				if !strings.Contains(stderr, want) {
-					t.Errorf("stderr %q does not say %q", stderr, want)
-				}
-			}
+			wantNamedNotPrinted(t, "stderr", stderr, append(row.want, "--owner <email>"), secret)
 			requireNothingWritten(t, fake, broker)
 		})
 	}
@@ -216,16 +209,7 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			for _, leaked := range []string{secret, "unknown credential type", "invalid character"} {
-				if strings.Contains(stderr, leaked) {
-					t.Errorf("stderr %q holds %q", stderr, leaked)
-				}
-			}
-			for _, want := range row.want {
-				if !strings.Contains(stderr, want) {
-					t.Errorf("stderr %q does not say %q", stderr, want)
-				}
-			}
+			wantNamedNotPrinted(t, "stderr", stderr, row.want, secret, "unknown credential type", "invalid character")
 			if _, calls := fake.calledUnder(); calls != 0 {
 				t.Errorf("Secret Manager saw %d calls, want none", calls)
 			}
@@ -250,12 +234,7 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 		if got, calls := fake.calledUnder(); got != "Bearer not-a-secret-for-"+gac || calls == 0 {
 			t.Fatalf("Secret Manager calls ran under %q (%d calls), want only the key's", got, calls)
 		}
-		if want := "using the credentials file GOOGLE_APPLICATION_CREDENTIALS names: " + gac + "\n"; !strings.Contains(stderr, want) {
-			t.Errorf("stderr %q does not say %q", stderr, want)
-		}
-		if strings.Contains(stderr, secret) {
-			t.Errorf("stderr %q holds the file's path", stderr)
-		}
+		wantNamedNotPrinted(t, "stderr", stderr, []string{"using the credentials file GOOGLE_APPLICATION_CREDENTIALS names: " + gac + "\n"}, secret)
 	})
 }
 

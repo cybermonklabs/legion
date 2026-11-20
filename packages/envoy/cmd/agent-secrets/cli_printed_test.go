@@ -4,9 +4,10 @@
 // the default a flag reads from AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_ENROLL_WAIT, and key.pem, the
 // file that holds a session key. Each names the flag, the variable or the setting that names the
 // file, and never the value or the path: a URL flag's value can carry a credential, and a setting
-// meant for a path is where a person who pasted the credential itself puts it. Each test runs the
-// form in-process with a made-up secret where a person could put one, and a control row that
-// shows the clean case still works.
+// meant for a path is where a person who pasted the credential itself puts it. Each test runs a
+// form in-process (runIn), or the function that words the line where no form reaches it alone
+// (keyDirName, lockFile, keepGoogleAudience, the client's revoke calls), with a made-up secret
+// where a person could put one, and a control row that shows the clean case still works.
 package main
 
 import (
@@ -76,17 +77,19 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 		name string
 		args []string
 		want []string
+		// parses is a row whose values all parse, which no line may refuse as invalid.
+		parses bool
 	}{
-		{"a duration given as the next argument", []string{"request", "GRANT_ME", "--ttl", secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
-		{"a duration given after =", []string{"request", "GRANT_ME", "--ttl=" + secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
-		{"a boolean", []string{"request", "GRANT_ME", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets request"}},
-		{"a boolean of machine list", []string{"machine", "list", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets machine list"}},
-		{"a number", []string{"register", "--wait=" + secret}, []string{"invalid value for flag -wait", "usage: agent-secrets register"}},
-		{"a URL flag of three dashes", []string{"sign", "---url=https://tokuser9f3:" + secret + "@broker.example/v1/x"}, []string{"bad flag syntax: a flag that does not parse", "usage: agent-secrets sign"}},
-		{"an argument that is no flag", []string{"request", "GRANT_ME", "--" + secret}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets request"}},
-		{"an argument that is no flag, with a value", []string{"secret", "list", "-" + secret + "=x"}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets secret list"}},
-		{"control: a flag given no value", []string{"request", "GRANT_ME", "--ttl"}, []string{"flag needs an argument: -ttl"}},
-		{"control: values that parse", []string{"request", "GRANT_ME", "--ttl", "1h", "--json=true"}, []string{"AGENT_SECRETS_URL is required"}},
+		{"a duration given as the next argument", []string{"request", "GRANT_ME", "--ttl", secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}, false},
+		{"a duration given after =", []string{"request", "GRANT_ME", "--ttl=" + secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}, false},
+		{"a boolean", []string{"request", "GRANT_ME", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets request"}, false},
+		{"a boolean of machine list", []string{"machine", "list", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets machine list"}, false},
+		{"a number", []string{"register", "--wait=" + secret}, []string{"invalid value for flag -wait", "usage: agent-secrets register"}, false},
+		{"a URL flag of three dashes", []string{"sign", "---url=https://tokuser9f3:" + secret + "@broker.example/v1/x"}, []string{"bad flag syntax: a flag that does not parse", "usage: agent-secrets sign"}, false},
+		{"an argument that is no flag", []string{"request", "GRANT_ME", "--" + secret}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets request"}, false},
+		{"an argument that is no flag, with a value", []string{"secret", "list", "-" + secret + "=x"}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets secret list"}, false},
+		{"control: a flag given no value", []string{"request", "GRANT_ME", "--ttl"}, []string{"flag needs an argument: -ttl"}, false},
+		{"control: values that parse", []string{"request", "GRANT_ME", "--ttl", "1h", "--json=true"}, []string{"AGENT_SECRETS_URL is required"}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			useBareEnvironment(t)
@@ -95,7 +98,7 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
 			wantNamedNotPrinted(t, "stderr", stdout+stderr, row.want, []string{secret, "tokuser9f3"}...)
-			if strings.HasPrefix(row.name, "control: values") && strings.Contains(stderr, "invalid") {
+			if row.parses && strings.Contains(stderr, "invalid") {
 				t.Errorf("stderr %q refuses a value that parses", stderr)
 			}
 		})
@@ -384,8 +387,12 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		}
 		started := time.Now()
 		stdout, stderr, code := runIn(signArgs...)
-		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 || time.Since(started) > 10*time.Second {
+		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
+		}
+		// A cached session signs with no network call, so the sign is quick.
+		if took := time.Since(started); took > 10*time.Second {
+			t.Fatalf("the sign took %s, more than the 10 s bound a cached session's sign, which makes no network call, is held to", took)
 		}
 	})
 }
@@ -518,27 +525,30 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 		name string
 		fill func(t *testing.T, keyDir, cache string)
 		want []string
+		// moves is a row whose move can be made, so the command signs and the session is in the
+		// cache.
+		moves bool
 	}{
 		{"the cache's key.pem cannot be put in place", func(t *testing.T, _, cache string) {
 			blockWithADirectory(t, filepath.Join(cache, keyFile))
-		}, []string{"move this machine's session from AGENT_SECRETS_KEY_DIR to " + machineCacheWords + ": rename: "}},
+		}, []string{"move this machine's session from AGENT_SECRETS_KEY_DIR to " + machineCacheWords + ": rename: "}, false},
 		{"the key dir's copy cannot be removed", func(t *testing.T, keyDir, cache string) {
 			writeSessionFiles(t, cache, "enr-cache")
 			blockWithADirectory(t, filepath.Join(keyDir, keyFile))
-		}, []string{"remove the machine session AGENT_SECRETS_KEY_DIR held, which " + machineCacheWords + " replaces: remove: directory not empty"}},
+		}, []string{"remove the machine session AGENT_SECRETS_KEY_DIR held, which " + machineCacheWords + " replaces: remove: directory not empty"}, false},
 		{"the marker cannot be removed", func(t *testing.T, keyDir, _ string) {
 			blockWithADirectory(t, filepath.Join(keyDir, machineSessionMarker))
-		}, []string{"remove the machine-session marker in AGENT_SECRETS_KEY_DIR: remove: directory not empty"}},
+		}, []string{"remove the machine-session marker in AGENT_SECRETS_KEY_DIR: remove: directory not empty"}, false},
 		{"the cache cannot be made", func(t *testing.T, _, cache string) {
 			if err := os.WriteFile(filepath.Dir(cache), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, []string{"make " + machineCacheWords + ": mkdir: not a directory"}},
+		}, []string{"make " + machineCacheWords + ": mkdir: not a directory"}, false},
 		{"no directory for the cache", func(t *testing.T, _, _ string) {
 			t.Setenv("XDG_STATE_HOME", "")
 			t.Setenv("HOME", "")
-		}, []string{"AGENT_SECRETS_KEY_DIR holds a machine session to move to the machine cache, and neither XDG_STATE_HOME nor HOME names a directory for it, nor does the password database give this user a home"}},
-		{"control: a move that can be made", func(*testing.T, string, string) {}, []string{"."}},
+		}, []string{"AGENT_SECRETS_KEY_DIR holds a machine session to move to the machine cache, and neither XDG_STATE_HOME nor HOME names a directory for it, nor does the password database give this user a home"}, false},
+		{"control: a move that can be made", func(*testing.T, string, string) {}, []string{"."}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			useBareEnvironment(t)
@@ -556,12 +566,11 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 			}
 			row.fill(t, keyDir, cache)
 			stdout, stderr, code := runIn(signArgs...)
-			control := strings.HasPrefix(row.name, "control: ")
-			if want := map[bool]int{true: 0, false: 1}[control]; code != want {
+			if want := map[bool]int{true: 0, false: 1}[row.moves]; code != want {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want %d", code, stdout, stderr, want)
 			}
 			wantNamedNotPrinted(t, "the output", stdout+stderr, row.want, []string{secret}...)
-			if control && (!machineCacheHolds(cache) || exists(filepath.Join(keyDir, keyFile))) {
+			if row.moves && (!machineCacheHolds(cache) || exists(filepath.Join(keyDir, keyFile))) {
 				t.Fatal("the move left the session where it was")
 			}
 		})
@@ -569,10 +578,10 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 }
 
 // TestTheMachineCacheIsNamedByWhereItIsNeverItsPath: the machine cache holds key.pem, so the source
-// `identity --source` names, a key.pem there that is no PEM file, an enrollment file there that
-// cannot be read or is empty, a lock there that cannot be opened, and a cached session the broker
-// no longer holds with no identity to register it again each name the cache by where it is, never
-// by its path.
+// `identity --source` names, an enrollment file there that cannot be read or is empty, a lock
+// there that cannot be opened, and a cached session the broker no longer holds with no identity to
+// register it again each name the cache by where it is, never by its path. A key.pem there that
+// is no PEM file is TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath's (keyPemFaults).
 func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	const secret = "hunter2pw-cachename-c4a917"
 	useCache := func(t *testing.T) string {
@@ -597,11 +606,6 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		write func(t *testing.T, path string)
 		want  string
 	}{
-		{"key.pem is no PEM file", keyFile, func(t *testing.T, path string) {
-			if err := os.WriteFile(path, []byte("no key here\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}, machineCacheKeyFile + ": not a PEM file"},
 		{"the enrollment file is a directory", enrollmentFile, func(t *testing.T, path string) {
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
@@ -774,26 +778,32 @@ const wantUnexpectedArgument = "unexpected argument (not printed: an argument th
 // place lands. Each form run without it goes on past the check (the control).
 func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
 	const secret = "hunter2pw-positional-4e7a19"
-	for _, form := range [][]string{
-		{"grant", "list"}, {"identity"}, {"login"}, {"keygen"}, {"self"}, {"whoami"}, {"register"}, {"secret", "list"}, {"sign"},
+	for _, form := range []struct {
+		args []string
+		// waits is a form that, with nothing after it, waits on the helper, so it has no control
+		// row: its refusal row above is the check.
+		waits bool
+	}{
+		{args: []string{"grant", "list"}}, {args: []string{"identity"}}, {args: []string{"login"}}, {args: []string{"keygen"}}, {args: []string{"self"}},
+		{args: []string{"whoami"}}, {args: []string{"register"}, waits: true}, {args: []string{"secret", "list"}}, {args: []string{"sign"}},
 	} {
-		name := strings.Join(form, " ")
+		name := strings.Join(form.args, " ")
 		t.Run(name, func(t *testing.T) {
 			useBareEnvironment(t)
 			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "none.sock"))
-			stdout, stderr, code := runIn(append(append([]string{}, form...), secret)...)
+			stdout, stderr, code := runIn(append(append([]string{}, form.args...), secret)...)
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
 			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"agent-secrets " + name + ": " + wantUnexpectedArgument}, []string{secret}...)
 		})
-		if name == "register" {
-			continue // register with nothing after it waits on the helper; its row above is the check
+		if form.waits {
+			continue
 		}
 		t.Run("control: "+name+" with no such argument", func(t *testing.T) {
 			useBareEnvironment(t)
 			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "none.sock"))
-			stdout, stderr, _ := runIn(form...)
+			stdout, stderr, _ := runIn(form.args...)
 			if strings.Contains(stdout+stderr, "unexpected argument") {
 				t.Errorf("the output %q refuses an argument it was not given", stdout+stderr)
 			}
@@ -845,10 +855,13 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 		{[]string{"machine", "revoke", secret}, "a machine id"},
 		{[]string{"grant", "revoke", secret}, "a grant id"},
 	} {
-		for _, id := range []string{secret, "plain-id-0001"} {
-			args := append(append([]string{}, row.args[:len(row.args)-1]...), id)
+		for _, id := range []struct {
+			value   string
+			refused bool
+		}{{secret, true}, {"plain-id-0001", false}} {
+			args := append(append([]string{}, row.args[:len(row.args)-1]...), id.value)
 			name := strings.Join(args, " ")
-			if id != secret {
+			if !id.refused {
 				name = "control: " + name
 			}
 			t.Run(name, func(t *testing.T) {
@@ -865,7 +878,7 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 					t.Fatalf("exit 0, stdout %q; want a failure", stdout)
 				}
 				refusal := "not " + row.kind + " (the argument is not printed: it holds a character a call's path would change)"
-				if id != secret {
+				if !id.refused {
 					if strings.Contains(stderr, "not "+row.kind) {
 						t.Errorf("stderr %q refuses an id that can be in a path", stderr)
 					}
