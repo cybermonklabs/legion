@@ -1515,14 +1515,15 @@ jobs:
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
       # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
       # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-      # digest the browser step below exports, and a pull the runner had not made yet counts
-      # inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
-      # 120 s before the stack's first output, where five green visual jobs (134499880849,
+      # digest the browser steps below export, and a pull the runner had not made yet counts
+      # inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+      # spent 120 s before the stack's first output, where five green visual jobs (134499880849,
       # 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
       # past its budget at 250 s. Its log does not time the pull apart from the rest of that
       # start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-      # digest is the browser step's, written twice, and the two must stay the same: a pull of
-      # another digest here leaves that step to pull its own inside its budget again.
+      # digest is written three times, here and in the two browser steps (the normal order and
+      # the reverse), and the three must stay the same: a pull of another digest here leaves the
+      # browser steps to pull their own inside their budgets again.
       - name: Pull the stack's Postgres image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       # The stack's connection limit, read outside the browser step's budget, where
@@ -1598,9 +1599,9 @@ jobs:
           # is ever created. upload-artifact takes the archive root from the least common
           # ancestor of its patterns' search paths, so this `${{ runner.temp }}` pattern is what
           # keeps that root at the runner's work directory and the repository path inside the
-          # archive - which is what packages/dispatch/AGENTS.md's step 3 tells a reader to look
-          # for when it takes a changed baseline out of this artifact. Delete it as unused and
-          # `test-results` moves to the top of the archive and that step goes wrong.
+          # archive. That path is the one e2e/visual-run.sh prints on a failed run, and the one
+          # packages/dispatch/AGENTS.md ("Accessibility and visual review") sends a reader to.
+          # Delete it as unused and `test-results` moves to the top of the archive, off that path.
           path: |
             packages/dispatch/e2e/test-results
             packages/dispatch/e2e/test-results-reverse

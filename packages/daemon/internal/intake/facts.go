@@ -650,8 +650,8 @@ func (r PullRequestReview) Decides() bool {
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
 // a JSON object naming the session and phase that wrote it and the head it read, and in the
-// reviewer's review the entry of the round it is of (skills/legion-worker/SKILL.md, the reviewer
-// template prompts/roles/reviewer.md).
+// reviewer's review the entry of the round it is of (the reviewer template and its footer,
+// prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
 // legionFooter is what the daemon reads out of that JSON object: the session that submitted the

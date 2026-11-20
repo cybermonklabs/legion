@@ -346,8 +346,8 @@ func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
 // whose launcher states no claim, which is every pod while the broker runs this code and the
 // daemon does not yet send one, is its own pod's, and each slot of it is its own slot's, so one
 // role of the pod is refused NOT_YOURS on the other's request on both routes, as each slot of a
-// pod holds its own requests (packages/envoy/AGENTS.md). A second enrollment of the same slot,
-// the role process enrolled again, reads its slot's request.
+// pod holds its own requests (docs/site/src/content/docs/broker/concepts.md). A second
+// enrollment of the same slot, the role process enrolled again, reads its slot's request.
 func TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther(t *testing.T) {
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)

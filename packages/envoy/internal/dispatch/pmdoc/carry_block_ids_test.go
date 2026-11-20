@@ -13,14 +13,20 @@ import (
 )
 
 // An upload writes the whole document's markdown over the live one, and that markdown names no
-// untyped block's id (GET /text renders none). The blocks it leaves unchanged keep the ids live
-// gave them, so the write tombstones no blockId attribute it did not change, and an anchor or a
-// reference keyed on such a block's id stays on it. Only a changed block, and every block holding
-// it, takes a fresh id; an id never moves onto other content (a swapped, retyped or replaced
-// block), a typed block's id is the one its markdown names, and a repeat live carries is kept for
-// its first holder alone.
+// untyped block's id (GET /text renders none), nor any id at all in a body an agent composed. The
+// blocks it leaves unchanged keep the ids live gave them, so the write tombstones no blockId
+// attribute it did not change, and an anchor or a reference keyed on such a block's id stays on
+// it; an ask keeping its id is what keeps the row holding a person's answer on the question it
+// answers. Only a changed block, and every block holding it, takes a fresh id; an id never moves
+// onto other content (a swapped, retyped, moved or replaced block), a typed block whose markdown
+// names an id holds the one it names, and a repeat live carries is kept for its first holder
+// alone.
 func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 	spec, _, _ := docstest.LoadSpec(rand.New(rand.NewPCG(715, 1)), "LOAD-1", 25_000)
+
+	// The ask each case below starts from, as the document holds it before the upload: the id is
+	// the document's, and state is the only server attribute it names.
+	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
 
 	oneToken := func(t *testing.T, old, replacement string, wantTypes []string) {
 		t.Helper()
@@ -48,12 +54,12 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 	})
 
 	t.Run("an ask replaced by one naming no id", func(t *testing.T) {
-		const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
 		for _, test := range []struct {
-			name string
-			edit func(string) string
+			name  string
+			edit  func(string) string
+			keeps bool
 		}{
-			{name: "with the same content", edit: func(markdown string) string { return markdown }},
+			{name: "with the same content", edit: func(markdown string) string { return markdown }, keeps: true},
 			{name: "with another question", edit: func(markdown string) string {
 				return strings.Replace(markdown, "Which transport should we expose?", "Which transport should we drop?", 1)
 			}},
@@ -78,16 +84,187 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 				if newAsk.Type != "ask" {
 					t.Fatalf("block 1 after the upload is a %s, want the ask", newAsk.Type)
 				}
-				if id, _ := storedBlockID(newAsk); id == "ask-1" || slices.Contains(blockIDsOf(live), id) {
-					t.Fatalf("the ask naming no id has id %q, a live block's; want a fresh one", id)
-				}
+				oldID, _ := storedBlockID(oldAsk)
+				newID, _ := storedBlockID(newAsk)
 				oldInner := blockIDsOf(&Node{Type: "doc", Children: oldAsk.Children})
-				for _, id := range blockIDsOf(&Node{Type: "doc", Children: newAsk.Children}) {
+				newInner := blockIDsOf(&Node{Type: "doc", Children: newAsk.Children})
+				if test.keeps {
+					if newID != oldID {
+						t.Errorf("the unchanged ask naming no id has id %q, want the live ask's %q", newID, oldID)
+					}
+					if !slices.Equal(newInner, oldInner) {
+						t.Errorf("the blocks inside the unchanged ask have ids %q, want live's %q", newInner, oldInner)
+					}
+					return
+				}
+				if newID == "ask-1" || slices.Contains(blockIDsOf(live), newID) {
+					t.Fatalf("the ask naming no id has id %q, a live block's; want a fresh one", newID)
+				}
+				for _, id := range newInner {
 					if slices.Contains(oldInner, id) {
 						t.Fatalf("a block inside the new ask took id %q from inside the replaced ask (%q)", id, oldInner)
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("two asks of one question, both naming no id", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n" + ask + "\n" + strings.Replace(ask, "{#ask-1 ", "{#ask-2 ", 1) + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unnamed := strings.NewReplacer("{#ask-1 ", "{", "{#ask-2 ", "{").Replace(markdown)
+		if strings.Contains(unnamed, "#ask-") {
+			t.Fatalf("the upload still names an ask id:\n%s", unnamed)
+		}
+		after, diff := uploadOver(t, doc, frag, live, unnamed)
+		t.Logf("diff update %d bytes", diff)
+		for _, index := range []int{1, 2} {
+			got, _ := storedBlockID(after.Children[index])
+			want, _ := storedBlockID(live.Children[index])
+			if after.Children[index].Type != "ask" || got != want {
+				t.Errorf("block %d after the upload is a %s with id %q, want the ask holding live's %q; the document's ids are now %q, live's were %q", index, after.Children[index].Type, got, want, blockIDsOf(after), blockIDsOf(live))
+			}
+		}
+	})
+
+	t.Run("an unchanged ask the upload moves", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n" + ask + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(markdown, ":::ask{")
+		if start < 0 {
+			t.Fatalf("the rendered document holds no ask block:\n%s", markdown)
+		}
+		end := strings.Index(markdown[start:], "\n:::\n")
+		if end < 0 {
+			t.Fatalf("the ask block of the rendered document does not close:\n%s", markdown)
+		}
+		block := markdown[start : start+end+len("\n:::\n")]
+		moved := strings.Replace(markdown, block, "", 1) + "\n" + strings.Replace(block, "{#ask-1 ", "{", 1)
+		after, diff := uploadOver(t, doc, frag, live, moved)
+		t.Logf("diff update %d bytes", diff)
+		last := after.Children[len(after.Children)-1]
+		if last.Type != "ask" {
+			t.Fatalf("the last block after the upload is a %s, want the ask the upload moved there", last.Type)
+		}
+		if id, _ := storedBlockID(last); slices.Contains(blockIDsOf(live), id) {
+			t.Fatalf("the moved ask has id %q, a live block's; want a fresh one, since live's ids are %q", id, blockIDsOf(live))
+		}
+	})
+
+	t.Run("an uploaded ask naming an id of its own", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			named   string
+			carried bool
+		}{
+			{name: "the id the live ask carries", named: "ask-1", carried: true},
+			{name: "an id the live ask does not carry", named: "ask-9"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				parsed, err := Parse("Opening paragraph.\n\n" + ask + "\nClosing paragraph.\n")
+				if err != nil {
+					t.Fatal(err)
+				}
+				doc, frag, live := writeLiveDocument(t, parsed)
+				markdown, err := Render(live)
+				if err != nil {
+					t.Fatal(err)
+				}
+				renamed := strings.Replace(markdown, "{#ask-1 ", "{#"+test.named+" ", 1)
+				if !strings.Contains(renamed, "{#"+test.named+" ") {
+					t.Fatalf("the upload names no ask %s:\n%s", test.named, renamed)
+				}
+				after, diff := uploadOver(t, doc, frag, live, renamed)
+				t.Logf("diff update %d bytes", diff)
+				newAsk := after.Children[1]
+				id, _ := storedBlockID(newAsk)
+				if newAsk.Type != "ask" || id != test.named {
+					t.Fatalf("block 1 after the upload is a %s with id %q, want the ask holding the id its markdown names, %q", newAsk.Type, id, test.named)
+				}
+				oldInner := blockIDsOf(&Node{Type: "doc", Children: live.Children[1].Children})
+				newInner := blockIDsOf(&Node{Type: "doc", Children: newAsk.Children})
+				if test.carried {
+					if !slices.Equal(newInner, oldInner) {
+						t.Errorf("the blocks inside the ask naming its own id have ids %q, want live's %q", newInner, oldInner)
+					}
+					return
+				}
+				for _, inner := range newInner {
+					if slices.Contains(oldInner, inner) {
+						t.Errorf("a block inside the ask naming %q took id %q from inside the live ask (%q)", test.named, inner, oldInner)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("an answered ask re-uploaded with no id and no server state", func(t *testing.T) {
+		const answered = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-12T13:20:00Z\" selected=\"[&#x22;REST&#x22;]\" answer=\"Ship REST first.\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
+		parsed, err := Parse("Opening paragraph.\n\n" + answered + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		if got := fmt.Sprint(live.Children[1].Attrs["answer"]); got != "Ship REST first." {
+			t.Fatalf("the live ask holds answer %q, want the one it was written with", got)
+		}
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(markdown, ":::ask{")
+		if start < 0 {
+			t.Fatalf("the rendered document holds no ask block:\n%s", markdown)
+		}
+		opening, _, _ := strings.Cut(markdown[start:], "\n")
+		if !strings.Contains(opening, `state="answered"`) {
+			t.Fatalf("the rendered ask opens with %q, want the answered one", opening)
+		}
+		composed := strings.Replace(markdown, opening, `:::ask{urgency="med" multiple="false"}`, 1)
+		after, diff := uploadOver(t, doc, frag, live, composed)
+		t.Logf("diff update %d bytes", diff)
+		newAsk := after.Children[1]
+		got, _ := storedBlockID(newAsk)
+		want, _ := storedBlockID(live.Children[1])
+		if newAsk.Type != "ask" || got != want {
+			t.Fatalf("the answered ask after the upload is a %s with id %q, want the ask holding live's %q; the document's ids are now %q", newAsk.Type, got, want, blockIDsOf(after))
+		}
+	})
+
+	t.Run("a callout re-uploaded with no id", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n:::callout{#note kind=\"warning\" title=\"Heads up\"}\nA note.\n:::\n\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unnamed := strings.Replace(markdown, "{#note ", "{", 1)
+		if unnamed == markdown {
+			t.Fatalf("the rendered document names no callout note:\n%s", markdown)
+		}
+		after, diff := uploadOver(t, doc, frag, live, unnamed)
+		t.Logf("diff update %d bytes", diff)
+		newCallout := after.Children[1]
+		got, _ := storedBlockID(newCallout)
+		if want, _ := storedBlockID(live.Children[1]); newCallout.Type != "callout" || got != want {
+			t.Fatalf("block 1 after the upload is a %s with id %q, want the callout holding live's %q; the document's ids are now %q", newCallout.Type, got, want, blockIDsOf(after))
 		}
 	})
 

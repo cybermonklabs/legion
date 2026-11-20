@@ -24,6 +24,13 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
+It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
+That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
+Every attempt of one press sends that one token, because the idempotency key covers the whole request body.
+A first upload of a name replaces no version and names no token, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+Any other failure of that read ends the upload and says so, rather than uploading with no token: the page does not know what it would be replacing.
+
 ## Development
 
 Run commands from this package:
@@ -549,6 +556,27 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   bash packages/dispatch/e2e/acceptance/verification.sh
 ```
 
+`e2e/acceptance/write-guards.sh` drives the three guards on a write the same way, through the
+real CLI and the HTTP API beside it. A person approves an issue's specification and the question
+`dispatch ask` opens on that issue names the review: who gave it, when, that they approved, their
+reason, and the line asking the sender to say what changed since it. An agent uploads a document
+holding a question, the person answers it, and the agent uploads the body it composed again,
+writing the same question with no `#id`: the uploaded block takes the live block's id, so the
+issue still holds that one answered ask and the settlement writes the answer onto the block
+again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
+whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
+non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
+taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
+server, under no setting, so that check runs against the one server the rest of the script
+drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
+required here because the review and the answer are a person's writes. It writes three issues in
+`PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/write-guards.sh
+```
+
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
 proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
@@ -713,6 +741,17 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
   in the line's comment, where it would be lost. The script reads the list once, to its end, with
   the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
   the end refuses the run.
+
+Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
+`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
+`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a whole number of seconds from 2 to
+999999, in digits; any other value refuses the run, naming the setting. A curl built with the
+synchronous resolver (neither threaded nor c-ares) gives up before it resolves a name, 127.0.0.1
+included, with under 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed;
+curl reads 0 as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+bits. They do not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules
+count on. The script's tests set both to twice their longest row's timeout, so a fake Dispatch that
+a loaded host keeps off the CPU makes a read late, never a verdict wrong.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \

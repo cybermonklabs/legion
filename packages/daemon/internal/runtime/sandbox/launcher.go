@@ -889,11 +889,13 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // (shim.ReadAgentSecretsFlags), and a live pod a launch keeps may have been built before the
 // runtime enrolled, so it carries neither. Such a role is started without them and runs without
 // the broker until the update round replaces its pod (INFRA-484, keptPod) — once every worker of
-// the pod has pushed its work and answered, or at the round's bound — and a process that refused
-// to start would push nothing and answer nothing. The environment that start carries says the
-// same thing: the AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a
-// broker are set from this one decision too (mainEnvironment, enrollsIn), so such a role reports
-// a resource it cannot reach rather than a secrets problem it does not have.
+// the pod has done the steps of its update message (supervise.UpdateTask) and answered, no turn
+// runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or at the
+// round's bound — and a process that refused to start would push nothing and answer nothing.
+// The environment that start carries says the same thing: the AGENT_SECRETS_URL and
+// AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a broker are set from this one decision
+// too (mainEnvironment, enrollsIn), so such a role reports a resource it cannot reach rather than
+// a secrets problem it does not have.
 func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	dir := generationDir(l.spec.Generation)
 	shim := []string{r.tools.Legion, "worker-shim", connectFlag, r.streamURL, "--boot-token-file", dir + "/" + bootTokenKey, "--pod-safety", "--stop-grace", r.terminationGrace.String()}

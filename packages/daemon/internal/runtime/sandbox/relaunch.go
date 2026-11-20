@@ -68,18 +68,18 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
 // and this role is started in it.
-// Such a pod is replaced by an update round, which first asks every role in it to push its work
-// and answer, and then ends the pod (ReplacePod): replacing it at a launch would end every role's
-// turn in it and delete the issue's disk with everything unpushed on it (INFRA-484). A launch into
-// a drifted pod is therefore an ordinary launch, the install of a stale-plugin pair (spec.Plugins,
-// LEGION-164) included, which brings this launch's agent onto the current plugin without a fresh
-// pod. Its role is started as the kept pod was built, from the volumes and mounts of that pod's
-// own stored template (keptBy, keptPod) and not from the configuration as it now reads: two of
-// those drift facets, the broker's enrollment and the role's overlays, are named in the role's own
-// start command, and a process started against what its pod cannot carry refuses to run, never
-// registers, and so never answers the round that is to replace that pod. A pod whose template says
-// nothing this daemon can read is replaced at the launch instead, as every drifted pod was before
-// the round.
+// Such a pod is replaced by an update round, which first asks every role in it to do the steps
+// of its update message (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod):
+// replacing it at a launch would end every role's turn in it and delete the issue's disk with
+// everything unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary
+// launch, the install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings
+// this launch's agent onto the current plugin without a fresh pod. Its role is started as the
+// kept pod was built, from the volumes and mounts of that pod's own stored template (keptBy,
+// keptPod) and not from the configuration as it now reads: two of those drift facets, the
+// broker's enrollment and the role's overlays, are named in the role's own start command, and a
+// process started against what its pod cannot carry refuses to run, never registers, and so
+// never answers the round that is to replace that pod. A pod whose template says nothing this
+// daemon can read is replaced at the launch instead, as every drifted pod was before the round.
 //
 // A live pod no round covers is replaced here for every kind of drift instead, as every launch did
 // before the round existed: no round is ever opened over such a pod, so a launch that kept it
@@ -103,11 +103,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // A ServiceAccount other than the configured one (accountDrift) is answered by whoever answers
 // the pod's other drift. A launch into a pod a round covers keeps it for the account as for every
-// other drift, and leaves it to that pod's round, which has every worker in it push its work
-// before the pod is ended. A launch into a pod no round covers replaces it for the account
-// whatever it is installing, since no round will ever come for such a pod: the account is fixed
-// for the pod's life, and until the pod is created afresh its agents go on holding the identity
-// the old account grants, so an old account can be deleted only once every pod of it has gone.
+// other drift, and leaves it to that pod's round, which has every worker in it do the steps of its
+// update message (supervise.UpdateTask) before the pod is ended. A launch into a pod no round
+// covers replaces it for the account whatever it is installing, since no round will ever come for
+// such a pod: the account is fixed for the pod's life, and until the pod is created afresh its
+// agents go on holding the identity the old account grants, so an old account can be deleted only
+// once every pod of it has gone.
 //
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
 // passed, and not a pod its node never started (neverStarted) — ends the process of every role
@@ -204,8 +205,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// the launch is installing: no round will ever come for such a pod, the account is fixed for
 	// the pod's life, and until the pod is created afresh its agents go on holding the identity
 	// the old account grants. A pod a round covers is kept for the account as for its other
-	// drift, and that round, which has every worker in it push its work first, is what replaces
-	// it.
+	// drift, and that round, which first has every worker in it do the steps of its update
+	// message (supervise.UpdateTask), is what replaces it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
 		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0) ||
@@ -338,9 +339,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
-// runs degraded until the update round replaces the pod — able to push its work and answer that
-// round, where a start naming what its pod cannot carry would refuse to run at all (keptPod,
-// INFRA-484).
+// runs degraded until the update round replaces the pod — able to do the steps of that round's
+// update message (supervise.UpdateTask) and answer it, where a start naming what its pod cannot
+// carry would refuse to run at all (keptPod, INFRA-484).
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //
