@@ -1957,7 +1957,6 @@ Each item below names a check, then what it does and what it requires.
   `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`;
   and the request a `git push` there opens with, `GET https://github.com/sjawhar/legion-smoke.git/info/refs?service=git-receive-pack` sent with the credential that same helper gives for it, answers `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
   The role of an issue on one owner's repository writes another owner's: what it reaches is the accounts its App is installed on.
-  The run maps both repositories, so the check shows reach across owners and nothing about a repository no mapping names.
   Negative control: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it.
   Nothing is pushed to either repository: the advertisement request is the read a push opens with, and writes no ref
 
@@ -3782,7 +3781,6 @@ Each item below names an observation, then what it judges; an item that names no
   for each of them, `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
   O, the issue's own repository, is the control that the network, the helper and the token are sound;
   T is a repository of another owner, so its `200` is the reach the App's installations give across owners.
-  The observation reads no repository mapping, so it says nothing of whether a mapping names T.
   A `403` for either, a `404`, any other status, no answer or any other content type is a FAIL.
   The request writes nothing: it is the read a push opens with, and no ref of either repository changes.
   No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;

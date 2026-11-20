@@ -7063,7 +7063,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **A change of `runtime.kubernetes.pod.service_account`** reaches a running pod only by replacing it ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)):
   an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream;
-  the sweep does not replace the pod of the cache of a repository that neither the mapping nor a live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
+  the sweep does not replace the pod of the cache of a repository no live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
   An issue pod's disk goes with its pod.
   Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
   the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
