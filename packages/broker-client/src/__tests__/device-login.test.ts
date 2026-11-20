@@ -166,6 +166,22 @@ test("the poll proves the login's key, waits out a pending code and keeps the lo
   expect(Number.isNaN(Date.parse(file.expires_at as string))).toBe(false);
 });
 
+test("a poll the broker refuses with an error it does not expect stops at once, naming it", async () => {
+  const stub = broker({ polls: ["invalid_client"] });
+  const path = loginPath();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const refusal = await finishDeviceLogin(started, { path, sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  // One poll, not one every interval until the code lapses and a refusal that says it expired.
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain("invalid_client");
+  expect(refusal?.message).not.toContain("expired");
+  expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
+  expect(await stat(path).catch(() => null)).toBeNull();
+});
+
 test("a login nobody approves is refused, and writes no file", async () => {
   for (const answer of ["deny", "expired"] as const) {
     const stub = broker({ polls: [answer] });
@@ -194,7 +210,7 @@ test("the identity trades the login's access token with no actor, proved with th
       [BROKER_URL_VAR]: stub.url,
       [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
       [DEVICE_LOGIN_FILE_VAR]: path,
-      [PROJECTS_VAR]: "OEDGE",
+      [PROJECTS_VAR]: "EXAMPLE",
     },
     "ses-laptop-1"
   );
@@ -213,7 +229,7 @@ test("the identity trades the login's access token with no actor, proved with th
     subject_token: cached,
     subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
     session: "ses-laptop-1",
-    projects: "OEDGE",
+    projects: "EXAMPLE",
   });
   // The library binds a trade of a machine login's token to that token's key.
   expect(trade.proofThumbprint).toBe(written.thumbprint);
@@ -355,6 +371,112 @@ test("the login's lock waits for a live holder and takes a stale one", async () 
   // The holder's lock is the holder's: a caller that gave up leaves it where it was.
   expect(await readFile(lock, "utf8")).toBe("another process");
   await Bun.file(lock).delete();
+});
+
+test("of two callers that find one stale lock, exactly one takes it", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that died holding it");
+  const old = new Date(Date.now() - 31_000);
+  await utimes(lock, old, old);
+
+  // B finds the lock stale and is held there, between its look and its take-over, while A finds
+  // it stale too, takes it and starts its work. Then B goes on. B must find A's lock live and
+  // wait for it, never take it from A: two holders would spend one refresh token twice.
+  const events: string[] = [];
+  let holders = 0;
+  let most = 0;
+  const work = (name: string, until: Promise<void>) => async () => {
+    holders += 1;
+    most = Math.max(most, holders);
+    events.push(`${name} starts`);
+    await until;
+    events.push(`${name} ends`);
+    holders -= 1;
+  };
+  const bFound = Promise.withResolvers<void>();
+  const bGoes = Promise.withResolvers<void>();
+  const aWorking = Promise.withResolvers<void>();
+  const aEnds = Promise.withResolvers<void>();
+  // B has decided once it either waits for A's lock or runs its own work.
+  const bDecided = Promise.withResolvers<void>();
+  const b = withDeviceLoginLock(
+    path,
+    async () => {
+      bDecided.resolve();
+      await work("B", Promise.resolve())();
+    },
+    {
+      foundStale: async () => {
+        bFound.resolve();
+        await bGoes.promise;
+      },
+      sleep: async () => {
+        bDecided.resolve();
+        await aEnds.promise;
+      },
+    }
+  );
+  await bFound.promise;
+  const a = withDeviceLoginLock(path, async () => {
+    aWorking.resolve();
+    await work("A", aEnds.promise)();
+  });
+  await aWorking.promise;
+  bGoes.resolve();
+  await bDecided.promise;
+  aEnds.resolve();
+  await Promise.all([a, b]);
+  expect(most, events.join(", ")).toBe(1);
+  expect(events).toEqual(["A starts", "A ends", "B starts", "B ends"]);
+  expect(await stat(lock).catch(() => null)).toBeNull();
+  expect(await stat(`${lock}.steal`).catch(() => null)).toBeNull();
+});
+
+test("a take-over waits while another caller takes over, and not for one that died doing so", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = new Date(Date.now() - 31_000);
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+
+  // Another caller is taking the stale lock over: this one waits, and runs once that caller's
+  // take-over lock is gone, at its third wait.
+  await writeFile(steal, "another caller taking over");
+  let waits = 0;
+  let ranAfter = -1;
+  await withDeviceLoginLock(
+    path,
+    async () => {
+      ranAfter = waits;
+    },
+    {
+      sleep: async () => {
+        waits += 1;
+        if (waits === 3) await Bun.file(steal).delete();
+      },
+    }
+  );
+  expect(ranAfter).toBe(3);
+
+  // A take-over lock 6 s old is one whose caller died inside its take-over: it is removed, and
+  // the stale lock taken, after one wait.
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+  await writeFile(steal, "a caller that died taking over");
+  const stealOld = new Date(Date.now() - 6_000);
+  await utimes(steal, stealOld, stealOld);
+  let deadWaits = 0;
+  await withDeviceLoginLock(path, async () => {}, {
+    sleep: async () => {
+      deadWaits += 1;
+    },
+  });
+  expect(deadWaits).toBe(1);
+  expect(await stat(steal).catch(() => null)).toBeNull();
 });
 
 test("device-login is an identity of its own, named with its variables", () => {

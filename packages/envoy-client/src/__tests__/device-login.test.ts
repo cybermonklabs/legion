@@ -63,6 +63,30 @@ test("dispatch login --device prints the code and where to type it, and keeps th
   expect(statSync(file).mode & 0o777).toBe(0o600);
 });
 
+test("a second dispatch login --device names the earlier login's credential, which stays live", async () => {
+  const stub = broker();
+  const earlier = await loginFile(stub.url, { credential_id: "cred-earlier-1" });
+  const env = {
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: stub.url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: earlier.path,
+  };
+  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], env);
+  expect(code, stdout).toBe(0);
+  // The new login replaces the file; the earlier credential lives on at the broker until it is
+  // revoked or lapses, so a copy of the old file still works. The command says which to revoke,
+  // and where: the machine logins listed on the page the code was typed into.
+  expect(stdout).toContain("cred-earlier-1");
+  expect(stdout).toContain(`Machine logins on ${stub.url}/credentials/machine`);
+  // A first login has nothing earlier to name.
+  const first = await dispatch(["login", "--device", "--person", PERSON], {
+    ...env,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: path.join(tempDir(), "legion", "device-login.json"),
+  });
+  expect(first.code, first.stdout).toBe(0);
+  expect(first.stdout).not.toContain("Machine logins on");
+});
+
 test("dispatch --help names dispatch login, and dispatch login --help says what it reads", async () => {
   const all = await dispatch(["--help"], { HOME: tempDir() });
   expect(all.code).toBe(0);
@@ -153,14 +177,20 @@ const TOKEN_CLIENT_MODULE = path.resolve(
 /**
  * Two processes on one laptop that each trade the device login at `file` at the same moment, as
  * two sessions starting together do: each says it is ready, waits for the parent's line, trades,
- * and prints the token it got. With `lock` "none" they trade through a lock that holds nothing,
- * which is the control: the code is otherwise the same.
+ * and prints the token it got. The lock is the controls' one difference: "file" is the login's
+ * own, which covers the whole trade; "none" holds nothing; "refresh-only" covers the read and the
+ * refresh of the login and leaves its trade outside, built from the module's own read, refresh
+ * and lock with the same one-minute rule.
  */
-async function tradeTwiceAtOnce(brokerUrl: string, file: string, lock: "file" | "none") {
+async function tradeTwiceAtOnce(
+  brokerUrl: string,
+  file: string,
+  lock: "file" | "none" | "refresh-only"
+) {
   const child = path.join(tempDir(), "trade.ts");
   writeFileSync(
     child,
-    `import { DeviceLoginIdentity } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
+    `import { DeviceLoginIdentity, readDeviceLogin, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
 import { BrokerTokenClient } from ${JSON.stringify(TOKEN_CLIENT_MODULE)};
 const [file, brokerUrl, session, lock] = process.argv.slice(2);
 const identity = new DeviceLoginIdentity({
@@ -168,7 +198,20 @@ const identity = new DeviceLoginIdentity({
   brokerUrl,
   ...(lock === "none" ? { lock: (_path, work) => work() } : {}),
 });
-const client = new BrokerTokenClient({ brokerUrl, key: await identity.key(), subject: identity, session, log: () => {} });
+const refreshOnly = {
+  describe: () => "a device login whose lock covers its refresh alone",
+  async read() {
+    const login = await withDeviceLoginLock(file, async () => {
+      const kept = await readDeviceLogin(file);
+      const left = (kept.accessExpiresAt?.getTime() ?? 0) - Date.now();
+      if (kept.accessToken !== "" && left >= 60_000) return kept;
+      return await refreshDeviceLogin(file, kept, { describe: "the control's login" });
+    });
+    return { token: login.accessToken, tokenType: "urn:ietf:params:oauth:token-type:access_token" };
+  },
+};
+const subject = lock === "refresh-only" ? refreshOnly : identity;
+const client = new BrokerTokenClient({ brokerUrl, key: await identity.key(), subject, session, log: () => {} });
 const stdin = Bun.stdin.stream().getReader();
 console.log("ready");
 await stdin.read();
@@ -246,4 +289,26 @@ test("control: with no lock, the two processes spend one refresh token twice", a
   const written = await loginFile(stub.url);
   await tradeTwiceAtOnce(stub.url, written.path, "none");
   expect(presented(stub.refreshes).get(written.refreshToken)).toBe(2);
+}, 30_000);
+
+test("a process refreshes the login only once another's trade of it is answered", async () => {
+  // Access tokens of 30 s, under the one-minute margin, so each process refreshes before its
+  // trade, and the broker holds each trade's answer for up to 2 s, until a refresh arrives: a
+  // refresh while a trade is out revokes that trade's token. Under the login's lock the second
+  // process refreshes only after the first one's trade is answered.
+  const stub = broker({ accessSeconds: 30, tradeHoldMs: 2_000 });
+  const written = await loginFile(stub.url);
+  const outcomes = await tradeTwiceAtOnce(stub.url, written.path, "file");
+  expect(outcomes.map((outcome) => outcome.error)).toEqual([undefined, undefined]);
+  expect(stub.revokedTrades).toHaveLength(0);
+  expect(stub.refreshes).toHaveLength(2);
+  expect([...presented(stub.refreshes).values()]).toEqual([1, 1]);
+}, 30_000);
+
+test("control: with a lock around the refresh alone, the second refresh revokes the first trade's token", async () => {
+  const stub = broker({ accessSeconds: 30, tradeHoldMs: 2_000 });
+  const written = await loginFile(stub.url);
+  const outcomes = await tradeTwiceAtOnce(stub.url, written.path, "refresh-only");
+  expect(stub.revokedTrades).toHaveLength(1);
+  expect(outcomes.filter((outcome) => outcome.error?.includes("invalid_grant"))).toHaveLength(1);
 }, 30_000);
