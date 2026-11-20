@@ -12,6 +12,16 @@ log="$root/compose.log"
 argv="$root/argv.log"
 schema="$root/schema"
 mkdir -p "$compose" "$backups" "$bin" "$tools"
+# The deployer reads Dispatch's settings from Compose's own resolution (`docker compose config`), so
+# the fake docker below hands `compose version` and `compose ... config` to the real binary, run on
+# the real compose file. A run without it fails here, by name: it never skips.
+real_docker=$(command -v docker || true)
+[[ -n "$real_docker" ]] || { printf 'autodeploy_test: docker is not on PATH; this test reads the resolution of docker compose config\n' >&2; exit 1; }
+"$real_docker" compose version >&2 || { printf 'autodeploy_test: docker compose version failed with %s; this test needs Docker Compose\n' "$real_docker" >&2; exit 1; }
+cp "$(dirname "$0")/../compose/dispatch.compose.yml" "$compose/dispatch.compose.yml"
+# Compose takes the shell's value of a setting over the .env's: only a row that means to set one does.
+unset ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DISPATCH_SERVER_URL DATABASE_URL \
+  DISPATCH_AGENT_TOKEN NATS_URLS ENVOY_IMAGE_TAG AUTODEPLOY_TEST_UNSET
 # The database password, percent-encoded in DATABASE_URL as s%40cret-canary. Neither spelling may
 # appear in the deployer's output or in any process's arguments.
 password='s@cret-canary'
@@ -29,6 +39,9 @@ fresh_env() {
 ENVOY_IMAGE_TAG=old-image
 DATABASE_URL=${1:-postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?sslmode=require}
 DISPATCH_SERVER_URL=http://browser.test:8766
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
+DISPATCH_AGENT_TOKEN=agent-token
+NATS_URLS=nats://nats.test:4222
 EOF
   # The versions schema_migrations holds, one per line, as the deployer reads them: a set, not a
   # level. A migration applied below the highest one changes the set and leaves max(version) where
@@ -89,6 +102,16 @@ case "$1" in
     exec env -i "${container_env[@]}" "$@"
     ;;
   compose)
+    # Compose's own reading of the file: the real binary, and no line of the compose log.
+    # With AUTODEPLOY_TEST_ENV_READ_FAIL=1, a read of the env file's variables alone fails: the
+    # deployer's reader document on standard input (`-f -`), or `config --environment`.
+    if [[ "${AUTODEPLOY_TEST_ENV_READ_FAIL:-}" == 1 && (" $* " == *" -f - "* || " $* " == *" --environment "*) ]]; then
+      printf 'the env read failed\n' >&2
+      exit 1
+    fi
+    case "$*" in
+      "compose version"* | *" config "*) exec "$AUTODEPLOY_TEST_REAL_DOCKER" "$@" ;;
+    esac
     printf '%s\n' "$*" >>"$AUTODEPLOY_TEST_LOG"
     case "$*" in
       *" pull "*)
@@ -130,10 +153,17 @@ case "$1" in
     ;;
 esac
 EOF
-# curl answers /healthz 200 with NATS connected, but for new-image with
-# AUTODEPLOY_TEST_CANDIDATE_NATS set, which it reports as `nats`.
+# curl answers on Dispatch's port alone, AUTODEPLOY_TEST_PORT (default 8766): a check that dials
+# another, a quoted port among them, gets nothing, as from a port no process listens on. /healthz
+# answers 200 with NATS connected, but for new-image with AUTODEPLOY_TEST_CANDIDATE_NATS set, which
+# it reports as `nats`. /auth/start redirects to AUTODEPLOY_TEST_REDIRECT, the callback a good
+# deploy's login check expects, and to a wrong host when that is unset.
 cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+  *"http://127.0.0.1:${AUTODEPLOY_TEST_PORT:-8766}/"*) ;;
+  *) exit 7 ;;
+esac
 case "$*" in
   *"/healthz"*)
     nats=true
@@ -143,7 +173,12 @@ case "$*" in
     printf '{"ok":true,"db":true,"nats":%s}' "$nats"
     ;;
   *"/auth/start"*)
-    printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2Fwrong.test%%3A8766%%2Fauth%%2Fcallback'
+    if [[ -n "${AUTODEPLOY_TEST_REDIRECT:-}" ]]; then
+      printf 'https://github.com/login/oauth/authorize?redirect_uri=%s' \
+        "$(python3 -c 'import sys, urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$AUTODEPLOY_TEST_REDIRECT")"
+    else
+      printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2Fwrong.test%%3A8766%%2Fauth%%2Fcallback'
+    fi
     ;;
 esac
 EOF
@@ -162,13 +197,50 @@ EOF
 # duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
 # runs as it did before this stand-in existed. Only a container run is recorded, because the
 # deployer also bounds its compose and manifest runs this way, and a case that reaches no client
-# reads an empty argument log as proof that nothing ran.
+# reads an empty argument log as proof that nothing ran. With AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 a
+# `docker compose ... config` run ends as a timeout ends it, status 124, without running.
 cat >"$bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$2 $3" == "docker run" ]]; then
   printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
 fi
+if [[ "${AUTODEPLOY_TEST_CONFIG_TIMEOUT:-}" == 1 && "$2 $3" == "docker compose" && " $* " == *" config "* ]]; then
+  exit 124
+fi
 exec "${@:2}"
+EOF
+# python3 is the real one, but for a run with AUTODEPLOY_TEST_PYTHON_FAIL=1, where it exits 3 having
+# read its input and printed nothing, as an interpreter that cannot run does. The real one is named
+# by the interpreter's own path (sys.executable), not looked up on PATH again, where a shim (mise's)
+# would find this fake and recurse.
+real_python3=$(python3 -c 'import sys; print(sys.executable)')
+cat >"$bin/python3" <<EOF
+#!/usr/bin/env bash
+if [[ "\${AUTODEPLOY_TEST_PYTHON_FAIL:-}" == 1 ]]; then
+  cat >/dev/null
+  exit 3
+fi
+exec "$real_python3" "\$@"
+EOF
+# mv is the real one, but a move onto the env file records its source and the source's mode, and,
+# for a run with AUTODEPLOY_TEST_KILL_AT_ENV_MV=1, kills the deployer there with SIGKILL, which no
+# trap sees, or, with AUTODEPLOY_TEST_TERM_AT_ENV_MV=1, sends it TERM, as a deployer stopped between
+# its write and its rename is.
+cat >"$bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${*: -1}" == */.env ]]; then
+  source=${*: -2:1}
+  printf 'mv-source %s %s\n' "$source" "$(stat -c %a "$source")" >>"$AUTODEPLOY_TEST_ARGV"
+  if [[ "${AUTODEPLOY_TEST_KILL_AT_ENV_MV:-}" == 1 ]]; then
+    kill -9 "$PPID"
+    exit 137
+  fi
+  if [[ "${AUTODEPLOY_TEST_TERM_AT_ENV_MV:-}" == 1 ]]; then
+    kill -TERM "$PPID"
+    exit 1
+  fi
+fi
+exec /bin/mv "$@"
 EOF
 # The fake libpq, which splits a URL as libpq does rather than as the deployer does: the
 # credentials run to the first @ before the first /, a raw ? included, and a query key or value is
@@ -328,13 +400,22 @@ source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$bin/python3" "$bin/mv" "$tools/psql" "$tools/pg_dump"
+# The python3 fake runs the real interpreter, on any PATH this box has (a mise shim included).
+PATH="$bin:$PATH" python3 -c 'import sys' ||
+  { printf 'autodeploy_test: the python3 stand-in cannot run the real python3 (%s)\n' "$real_python3" >&2; exit 1; }
 
-deploy_once() {
+# run_deployer ARG... runs the deployer with ARGs against the fakes, its standard error on its
+# standard output, or on the descriptor test_stderr_fd names.
+run_deployer() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
-    BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
-    "$(dirname "$0")/autodeploy.sh" --once 2>&1
+    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$real_docker}" \
+    BACKUPS="${test_backups-$backups}" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
+    "$(dirname "$0")/autodeploy.sh" "$@" 2>&"${test_stderr_fd:-1}"
+}
+deploy_once() {
+  run_deployer --once
 }
 fail() {
   printf '%s\n' "$1" >&2
@@ -357,6 +438,9 @@ schema_value() {
     "$(printf '%s\n' "$versions" | sha256sum | cut -d' ' -f1)"
 }
 
+# The .env scenarios: how the deployer reads and writes compose/.env, in a file of their own.
+# shellcheck source=SCRIPTDIR/autodeploy_test_env.sh
+. "$(dirname "$0")/autodeploy_test_env.sh"
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
 # it stopped, reads the schema, and rolls back. Every database client gets the URL without its
 # password and the password as PGPASSWORD.
@@ -724,6 +808,16 @@ for case in \
     fail "deployer did not hand the clients $case_client_url, with the password as PGPASSWORD alone"
   fi
 done
+
+# Compose prints a value's `$` doubled in `config --format json`; the deployer halves it back. An
+# origin written `x$$y` in the .env, which Compose reads as `x$y`, is the origin the login check
+# expects, with one `$`.
+fresh_env
+# shellcheck disable=SC2016
+with_line DISPATCH_SERVER_URL 'DISPATCH_SERVER_URL=http://browser.test:8766/x$$y'
+output=$(deploy_once) || true
+[[ "$output" == *"expected 'http://browser.test:8766/x\$y/auth/callback'"* ]] ||
+  fail 'deployer did not read a $ in DISPATCH_SERVER_URL as Compose gives it to the container'
 
 # A failed pull changes nothing: the previous image still serves, so there is nothing to stop or
 # restart, and the next pass tries the pull again.
