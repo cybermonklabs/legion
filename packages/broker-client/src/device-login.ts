@@ -347,10 +347,18 @@ export interface DeviceLoginLockOptions {
   readonly signal?: AbortSignal | undefined;
   /** Waits between two tries of a held lock; a timer unless a test replaces it. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
-  /** Runs after this caller finds the lock stale and before it takes it over: the window in
-   *  which another caller can take the same stale lock. Only a test holds a caller there. */
-  readonly foundStale?: (() => Promise<void>) | undefined;
+  /** Runs at each step of a take-over where another caller can act between this caller's look
+   *  and what it does next ({@link TakeOverStep}). Only a test holds a caller there. */
+  readonly at?: ((step: TakeOverStep) => Promise<void>) | undefined;
 }
+
+/**
+ * The windows of a take-over in which another caller can act: `lock-stale`, after this caller
+ * finds the lock stale and before it tries `<lock>.steal`; `steal-stale`, after it finds another
+ * caller's `<lock>.steal` stale and before it removes it; `taking`, under its own
+ * `<lock>.steal`, after it finds the lock still stale and before it moves it aside.
+ */
+export type TakeOverStep = "lock-stale" | "steal-stale" | "taking";
 
 /** How long a take-over's own lock (`<lock>.steal`) may stand before it is one whose taker
  *  died: a take-over is a look, a rename and a removal, so this is far longer than one takes. */
@@ -391,6 +399,50 @@ async function removeOwn(path: string, value: string): Promise<void> {
   if (held === value) await rm(path, { force: true });
 }
 
+/** A lock file as a caller looked at it: its status and the holder value written in it. */
+interface Seen {
+  readonly stats: Stats;
+  readonly value: string;
+}
+
+/** `path` as it is now ({@link Seen}), or null where nothing is there. */
+async function look(path: string): Promise<Seen | null> {
+  const stats = await statOrNone(path);
+  if (stats === null) return null;
+  const value = await readFile(path, "utf8").catch(() => "");
+  return { stats, value };
+}
+
+/**
+ * Removes `path` where it is still the file `was` names, and says whether the caller may go on:
+ * true where it removed that file or nothing was there. It moves the file aside first, and then
+ * compares what it moved with `was`: the device, the inode, the modification time and the holder
+ * value. The inode alone tells nothing, since a filesystem can give a new file the number of one
+ * removed a moment before (XFS does at once), and another caller's fresh file carries a fresh
+ * modification time and a holder value of its own. A file that is not the one `was` names is
+ * linked back in place, unless a file is there again, and the answer is false. `what` names the
+ * file in an error.
+ */
+async function removeIfStill(path: string, was: Seen, what: string): Promise<boolean> {
+  const moved = `${path}.stale-${randomUUID()}`;
+  try {
+    await rename(path, moved);
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return true;
+    throw new Error(`take ${what} beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+  }
+  const took = await look(moved);
+  const same =
+    took !== null &&
+    took.stats.dev === was.stats.dev &&
+    took.stats.ino === was.stats.ino &&
+    took.stats.mtimeMs === was.stats.mtimeMs &&
+    took.value === was.value;
+  if (!same) await link(moved, path).catch(() => {});
+  await rm(moved, { force: true });
+  return same;
+}
+
 /**
  * Takes the lock at `lock` where its holder has not touched it for
  * {@link DEVICE_LOGIN_STALE_LOCK_MS}, and says whether the caller should try to create it again
@@ -398,12 +450,15 @@ async function removeOwn(path: string, value: string): Promise<void> {
  * callers that both find one lock stale could otherwise both take it: the second would take the
  * first's fresh lock in the gap. So only the caller that creates the take-over's own lock,
  * `<lock>.steal`, takes over, and it looks at the lock again under it first: a caller that comes
- * second finds the first's fresh lock and waits for it. A steal lock left by a caller that died
- * taking over is removed once it is {@link STEAL_STALE_MS} old. Where two callers share that
- * window too, the lock's inode says whether what one moved is the stale lock it looked at; where
- * it is not, the moved lock is linked back in place. Only a third caller creating a lock in the
- * instant between that move and that link, after a caller died inside a take-over, can still
- * leave two holders.
+ * second finds the first's fresh lock and waits for it.
+ *
+ * A take-over lock left {@link STEAL_STALE_MS} by a caller that died or stopped inside its
+ * take-over is removed, so two callers can then be inside one take-over, and two callers can find
+ * one dead take-over lock. Each removal is therefore of the very file the caller looked at
+ * ({@link removeIfStill}: device, inode, modification time and holder value), and a file another
+ * caller made in its place since is put back: a caller that comes second waits. Only a file made
+ * in the instant between a move aside and its link back, after a caller stopped inside a
+ * take-over for over 5 s, can still leave two callers in a take-over or two holders.
  */
 async function takeStale(
   lock: string,
@@ -413,37 +468,22 @@ async function takeStale(
   const found = await statOrNone(lock);
   if (found === null) return true;
   if (Date.now() - found.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
-  await options.foundStale?.();
+  await options.at?.("lock-stale");
   const steal = `${lock}.steal`;
   if (!(await createOwn(steal, mine))) {
-    const taking = await statOrNone(steal);
-    if (taking !== null && Date.now() - taking.mtimeMs > STEAL_STALE_MS) {
-      await rm(steal, { force: true });
+    const taking = await look(steal);
+    if (taking !== null && Date.now() - taking.stats.mtimeMs > STEAL_STALE_MS) {
+      await options.at?.("steal-stale");
+      await removeIfStill(steal, taking, "the dead take-over lock");
     }
     return false;
   }
   try {
-    const again = await statOrNone(lock);
+    const again = await look(lock);
     if (again === null) return true;
-    if (Date.now() - again.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
-    const moved = `${lock}.stale-${randomUUID()}`;
-    try {
-      await rename(lock, moved);
-    } catch (error) {
-      if (codeOf(error) === "ENOENT") return true;
-      throw new Error(
-        `take the stale lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`
-      );
-    }
-    const took = await stat(moved);
-    if (took.ino !== again.ino || took.dev !== again.dev) {
-      // Another caller's fresh lock, moved in the gap: put back, unless a lock is there again.
-      await link(moved, lock).catch(() => {});
-      await rm(moved, { force: true });
-      return false;
-    }
-    await rm(moved, { force: true });
-    return true;
+    if (Date.now() - again.stats.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
+    await options.at?.("taking");
+    return await removeIfStill(lock, again, "the stale lock");
   } finally {
     await removeOwn(steal, mine);
   }
