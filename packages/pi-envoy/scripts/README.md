@@ -106,6 +106,8 @@ Cleanup (`tmux kill-session`, `rm -rf` the temp dir) runs in an exit trap on
 every exit path, so a failed run leaves nothing behind either. Both smokes run
 their tmux on a private socket in their temp dir, so the kill can end only the
 session the smoke started; on the shared default server it could end anyone's.
+Every tmux call in either script goes through the script's `tmux` function,
+which names that socket, and a new call goes through it too.
 
 ## smoke-role-takeover.sh
 

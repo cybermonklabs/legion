@@ -123,6 +123,9 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
+	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
+	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
+	keptVolumeBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -283,6 +286,14 @@ func configureProber(opts Options) (*Runtime, error) {
 	// which its stream from the repository cache runs outside of, the shared clone's own, and the
 	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
+	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
+	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
+	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
+	// timeout otherwise.
+	longestStart := opts.BootTimeout
+	if keptVolume(issuePod{}, opts.Sandbox.MicroVM) {
+		longestStart = max(longestStart, keptVolumeAttachWait)
+	}
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
@@ -404,9 +415,9 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
@@ -430,8 +441,8 @@ func configureProber(opts Options) (*Runtime, error) {
 	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
 	// sweep reports, and log what they could not carry or record, so they are built once the
 	// runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
+		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -768,11 +779,12 @@ func terminal(p *corev1.Pod) bool {
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
-// once every role in it has answered the update message and no turn runs, or at the round's
-// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
-// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
-// one it finds. A nil pod holds no drift: it is replaced for being absent.
+// once every role in it has answered the update message, no turn runs and no claim's activity
+// report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
+// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it
+// that installs nothing (roundCovers), and the repository cache's own pod, which holds no worker,
+// by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod
+// holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -813,10 +825,11 @@ func serviceAccountOr(name string) string {
 // daemon writes to the Sandbox moves it — so an operator who changes service_account reaches a
 // running pod only by replacing it: until then its agents hold the identity the old account
 // grants, whatever the configuration now says they may reach. Such a pod is replaced by its own
-// update round, which asks every worker in it to push first, where a round covers its kind
-// (roundCovers, PodDrift), by the next launch of one of its roles where no round does (relaunch),
-// and by reconcileCachePod at the next ensure of a cache's (a sweep, or a new issue pod of its
-// repository); ReconcileOrphans warns of each one it finds, as all of them do for imageDrift.
+// update round, which first asks every worker in it to do the steps of its update message
+// (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
+// launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
+// ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
+// each one it finds, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon
@@ -892,7 +905,8 @@ func (r *Runtime) checkLocator(loc runtime.Locator) error {
 }
 
 // ProvisionsWorkspaces is true: every pod's init containers provision its claim's workspace on the
-// issue's disk, the pod's own ephemeral volume, which goes with the pod.
+// issue's disk: the pod's own ephemeral volume, which goes with the pod, or a kept volume
+// (keptVolume), which the issue's Sandbox owns and which outlives the pod.
 func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 
 // Suspend ends only the recorded role process. It never changes the issue Sandbox operating mode:

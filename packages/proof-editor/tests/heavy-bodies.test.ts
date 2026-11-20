@@ -14,7 +14,7 @@
  *    than its growing dimension does: a row reads the shape at its full size and at an eighth of
  *    that dimension, in CPU time rather than wall time (tests/cpu-time.ts). The one shape the
  *    default mode refuses is read the same way and then asked for its refusal. Which dependency
- *    patch holds which shape is in packages/proof-editor/AGENTS.md, "Parser patches and bounds".
+ *    patch holds which shape is in packages/proof-editor/docs/upstream.md, "Parser patches".
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and

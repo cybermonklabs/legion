@@ -1074,7 +1074,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		githubRepos = append(githubRepos, name)
 		return nil
 	})
-	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents: read, metadata: read, pull_requests: read and actions: read")
+	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents, metadata, pull_requests, actions, checks and statuses, each at read (the last three where the App's installation holds them)")
 	githubToken := flags.Bool("github-token", false, "hand over each GitHub App token alone, in place of the JSON object of installations the release carries: the form a command that sends the token to GitHub needs, and it needs --github-owner")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
