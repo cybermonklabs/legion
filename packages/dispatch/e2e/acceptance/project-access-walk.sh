@@ -424,8 +424,9 @@ logs_hold_own_writes() {
 # keeps, each with what its Probe (RouteProbe, read once from probes.json) says of it, one line a
 # row and its fields joined by the unit separator (\x1f), a byte no compact JSON holds: the method;
 # the path; 1 when a Probe names the row; its test_hook; its no_project; its body as compact JSON;
-# 1 when its Probe map is not null; and that map, each wildcard and its kind joined by \x1d and the
-# pairs by \x1e (read_probe). A field the Probe does not hold is empty.
+# 1 when its Probe map is not null; that map, each wildcard and its kind joined by \x1d and the
+# pairs by \x1e (read_probe); and its read classes, joined by commas. A field the Probe does not
+# hold is empty.
 route_rows() {
   jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
     | (first($probes[0][] | select(.method == $row.method and .pattern == $row.path)) // null) as $entry
@@ -435,11 +436,13 @@ route_rows() {
        ($entry.no_project // ""),
        ((($entry.body // empty) | tojson) // ""),
        (if $entry.probe == null then "" else "1" end),
-       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e"))]
+       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e")),
+       ($entry.classes // [] | join(","))]
     | join("\u001f")' "$work/routes"
 }
 
-# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' last field).
+# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' eighth
+# field).
 declare -A probe_kind=()
 read_probe() {
   local pair
@@ -458,14 +461,19 @@ read_probe() {
 # A person, a personal token and a priority are no-project nodes, which spec v34 (Design, "A node
 # of no project") shows to an open viewer as it does today, and both servers hold the same ones: a
 # row whose every wildcard is one of them is filled alike on both servers and answered as the twin
-# answers it. The rows whose object no project owns (RouteProbe's no_project) are walked first:
-# each must be refused, which changes nothing, and a write walked before them would change the
-# callers they are refused to, as DELETE /api/v1/me/agent-tokens/{id} does, which carol's token
-# walks on carol's PRIV token.
+# answers it. A GET row whose only read class is none (RouteProbe's classes) reads no row a
+# caller's access decides, so it answers every caller alike, and its answer for PRIV's object can
+# rightly differ from its answer for a missing one, as GET
+# /api/v1/github/app-installation/{owner}/{repo} answers installed:true for PRIV's repository, the
+# App's, whoever asks: it is filled with PRIV's objects on both servers and answered as the twin,
+# which never held PRIV, answers it. The rows whose object no project owns (RouteProbe's
+# no_project) are walked first: each must be refused, which changes nothing, and a write walked
+# before them would change the callers they are refused to, as DELETE /api/v1/me/agent-tokens/{id}
+# does, which carol's token walks on carol's PRIV token.
 walk_rows() {
-  local method pattern has_entry test_hook no_project body has_probe pairs wildcards hidden none skip wildcard kind object caller target
+  local method pattern has_entry test_hook no_project body has_probe pairs classes wildcards hidden none skip wildcard kind object caller target
   walked=0 lists=0 refused=0
-  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs; do
+  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs classes; do
     if [ "$test_hook" = true ]; then
       note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
       continue
@@ -539,8 +547,9 @@ walk_rows() {
       fi
     done
     [ -z "$skip" ] || continue
-    if [ "$hidden" = "$none" ]; then
-      # Every wildcard is a no-project node: the path is the same on both servers.
+    if [ "$hidden" = "$none" ] || [ "$classes" = none ]; then
+      # Every wildcard is a no-project node, so the path is the same on both servers; or the row
+      # reads no row a caller's access decides, and both servers are read with PRIV's objects.
       for caller in "${unseeing_callers[@]}"; do
         compare_twin "$caller" "$hidden" "$method" "$body"
       done
@@ -563,7 +572,7 @@ walk_rows() {
 walk_pub_rows() {
   local pattern test_hook pairs wildcards wildcard kind object path of_project caller
   pub_walked=0
-  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs _; do
     [ "$test_hook" != true ] || continue
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
     [ -n "$wildcards" ] || continue
@@ -663,7 +672,7 @@ walk_queries() {
     query_params[$pattern]+=$param$'\n'
   done < <(jq -r '.paths | to_entries[] | .key as $p | .value.get.parameters[]? | select(.in == "query") | [$p, .name] | join("\u001f")' \
     "$root/packages/contracts/schemas/dispatch-openapi.json")
-  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs _; do
     [ "$test_hook" != true ] || continue
     read_probe "$pairs"
     path=$pattern
