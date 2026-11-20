@@ -1389,12 +1389,24 @@ const CLIENT_PLUMBING = new Set([
   "remove",
   "read",
   "patch",
+  // The one request every passkey ceremony step makes, its path its caller's; each of the four
+  // steps is in the census by its own name.
+  "passkeyStep",
 ]);
 
-/** The one write Dispatch's keyed layer does not take, and so the one the page makes outside the
+/** The writes Dispatch's keyed layer does not take, and so the ones the page makes outside the
  *  write path: `/auth/logout` is the same however often it is made, ends a session rather than
- *  writing anything a reload should resume, and sits outside the layer. */
-const UNKEYED_POSTS = new Set(["/auth/logout"]);
+ *  writing anything a reload should resume, and sits outside the layer; and the four steps of a
+ *  passkey ceremony at the outside origin, which sit outside it too, each step's state the
+ *  ceremony's own cookie, and a repeat after a lost answer a new ceremony rather than a second
+ *  write of one. */
+const UNKEYED_POSTS = new Set([
+  "/auth/logout",
+  "/auth/passkey/register/begin",
+  "/auth/passkey/register/finish",
+  "/auth/passkey/login/begin",
+  "/auth/passkey/login/finish",
+]);
 
 /**
  * The one keyed write path, over every method the client has, found from the client itself rather

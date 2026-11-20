@@ -98,6 +98,7 @@ export type {
   APIResponse,
   Browser,
   BrowserContext,
+  CDPSession,
   Locator,
   Page,
   Request,

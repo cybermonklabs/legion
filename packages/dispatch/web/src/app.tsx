@@ -76,6 +76,7 @@ import {
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
+import { ShellMessagePage } from "./features/shell/ShellMessagePage";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -93,6 +94,8 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
+import { ENROLL_PATH, Enroll } from "./features/signin/Enroll";
+import { PasskeySignIn } from "./features/signin/PasskeySignIn";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
@@ -110,7 +113,6 @@ import {
   calloutDangerBorder,
   calloutWarningBorder,
   canvasText,
-  card,
   linkHoverText,
   linkText,
   pagePaperBg,
@@ -131,7 +133,6 @@ import {
   railText,
   skeletonBg,
   statusConnecting,
-  textMutedOnSurface,
   textSecondaryOnSurface,
   textTransparent,
 } from "./theme/classes";
@@ -286,20 +287,6 @@ function IssueFrameFallback(): ReactNode {
   );
 }
 
-function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
-  return (
-    <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
-      <section className={`w-full max-w-md rounded-2xl p-8 shadow-sm ${card}`}>
-        <p className={`text-sm font-medium tracking-wide uppercase ${textMutedOnSurface}`}>
-          Dispatch
-        </p>
-        <h1 className="mt-3 text-2xl font-semibold">{title}</h1>
-        {children}
-      </section>
-    </main>
-  );
-}
-
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
   // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
@@ -323,28 +310,42 @@ function InboxPage(): ReactNode {
  *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
  *  write resumes (`Writes.leavingToSignIn`). A sign-in Dispatch ended says why first
  *  (`signedOut`, from its `401`); a sign-out, a lapsed cookie and a deployment that gives no
- *  reason show the page as it always read. */
-function SignInPage({ signedOut }: { signedOut: SignedOut | undefined }): ReactNode {
+ *  reason show the page as it always read. Where the origin's one sign-in is a passkey
+ *  (`passkey`, the outside origin's `401`), the page offers the passkey in place of the Google
+ *  link, which that origin does not serve. */
+function SignInPage({
+  passkey,
+  signedOut,
+}: {
+  passkey: boolean;
+  signedOut: SignedOut | undefined;
+}): ReactNode {
   const queryClient = useQueryClient();
   return (
     <ShellMessagePage title="Make the next decision clear.">
       {signedOut === undefined ? null : (
         <p className={`mt-3 font-medium ${textSecondaryOnSurface}`}>{signedOutWords(signedOut)}</p>
       )}
-      <p className={`mt-3 ${textSecondaryOnSurface}`}>
-        Sign in to review your team&apos;s open decisions.
-      </p>
-      <a
-        className={`mt-8 inline-flex rounded-lg px-4 py-2 font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
-        href="/auth/start"
-        onClick={(event) => {
-          // A press that opens the link elsewhere leaves this page in place.
-          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          writesOf(queryClient).leavingToSignIn();
-        }}
-      >
-        Sign in with Google
-      </a>
+      {passkey ? (
+        <PasskeySignIn />
+      ) : (
+        <>
+          <p className={`mt-3 ${textSecondaryOnSurface}`}>
+            Sign in to review your team&apos;s open decisions.
+          </p>
+          <a
+            className={`mt-8 inline-flex rounded-lg px-4 py-2 font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
+            href="/auth/start"
+            onClick={(event) => {
+              // A press that opens the link elsewhere leaves this page in place.
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              writesOf(queryClient).leavingToSignIn();
+            }}
+          >
+            Sign in with Google
+          </a>
+        </>
+      )}
       <KeptWrites />
     </ShellMessagePage>
   );
@@ -1300,11 +1301,8 @@ export function AuthGate(): ReactNode {
   // A definitive auth outcome always wins, even over stale "signed in" data from before a
   // session expired or was revoked — otherwise a revoked user keeps the authenticated shell.
   if (signedOut) {
-    return (
-      <SignInPage
-        signedOut={whoAmI.error instanceof ApiError ? whoAmI.error.signedOut : undefined}
-      />
-    );
+    const refusal = whoAmI.error instanceof ApiError ? whoAmI.error : undefined;
+    return <SignInPage passkey={refusal?.passkeySignIn === true} signedOut={refusal?.signedOut} />;
   }
   if (whoAmI.data !== undefined) {
     return <AuthenticatedApp user={whoAmI.data} />;
@@ -1312,6 +1310,8 @@ export function AuthGate(): ReactNode {
   return <ConnectionErrorPage onRetry={() => void whoAmI.refetch()} />;
 }
 
+/** The app: the owner's enrollment link opens its page whoever is signed in, since the person it
+ *  was made for has no session yet; every other address goes through the sign-in gate. */
 export function App(): ReactNode {
-  return <AuthGate />;
+  return useLocation().pathname === ENROLL_PATH ? <Enroll /> : <AuthGate />;
 }

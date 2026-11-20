@@ -1,5 +1,6 @@
 import {
   AUTH_NO_IDENTITY,
+  AUTH_SIGN_IN_PASSKEY,
   AUTH_SIGNED_OUT_REASONS,
   type AuthSignedOutReason,
   answerNotKept,
@@ -14,6 +15,12 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  type PasskeyAssertion,
+  type PasskeyCreationOptions,
+  type PasskeyEnrollmentStart,
+  type PasskeyRegistration,
+  type PasskeyRequestOptions,
+  type PasskeySignedIn,
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
@@ -94,6 +101,7 @@ interface ErrorPayload {
   candidates?: readonly ErrorCandidate[];
   reason?: string;
   login?: string;
+  sign_in?: string;
 }
 
 /** Why Dispatch signed the person out, and the address it signed out, as its `401
@@ -119,6 +127,10 @@ export class ApiError extends Error {
    *  page knows and the address; undefined for every other answer, a sign-out's and an expired
    *  cookie's 401 among them. */
   readonly signedOut: SignedOut | undefined;
+  /** Whether this is Dispatch's own `401 AUTH_NO_IDENTITY` at an origin whose one sign-in is a
+   *  passkey (`sign_in: AUTH_SIGN_IN_PASSKEY`, the outside origin's), so the sign-in page offers
+   *  the passkey and no Google link. */
+  readonly passkeySignIn: boolean;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -129,6 +141,10 @@ export class ApiError extends Error {
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
     this.signedOut = signedOutOf(status, payload);
+    this.passkeySignIn =
+      status === 401 &&
+      payload.code === AUTH_NO_IDENTITY &&
+      payload.sign_in === AUTH_SIGN_IN_PASSKEY;
   }
 }
 
@@ -1100,6 +1116,33 @@ export class DispatchApiClient {
     );
   }
 
+  /** Makes a person from outside the link that enrolls their passkey: `{url, expires_at}`, the
+   *  outside origin's `/enroll#<token>` and the moment 24 hours on when it stops, and it ends any
+   *  earlier unused link of theirs for the project. The owner's alone, from a browser session
+   *  (`403 BROWSER_SESSION_REQUIRED` for a token). The answer holds the token, so Dispatch keeps
+   *  none of it under the write's key: a repeat is `409 KEY_COMMITTED`, a link made whose answer
+   *  is gone, and a new press makes a new link. */
+  createProjectInvitation(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/invitations",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** The owner's Reset of a person from outside: deletes their passkeys and their unused links
+   *  for the project, ends their sign-in and revokes the device logins they approved, at once.
+   *  Answers the project's access as the write left it. */
+  resetProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/reset",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
   /** Names a group on the project's access list (`404 GROUP_NOT_FOUND` for none of that name);
    *  the owner's alone. */
   putProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
@@ -1941,6 +1984,46 @@ export class DispatchApiClient {
    *  same however often it is made, so it goes with no key. */
   logout(): Promise<{ ok: true }> {
     return this.json<{ ok: true }>("/auth/logout", { method: "POST" });
+  }
+
+  /** One step of a passkey ceremony at the outside origin (`@legion/contracts`' `PasskeyRefusal`
+   *  for its refusals). `/auth/passkey/*` sits outside the route table and the keyed layer, as
+   *  `/auth/logout` does: each step's state is the ceremony's own cookie, and a repeat after a
+   *  lost answer is a new ceremony, not a second write of one. It goes under the read deadline,
+   *  so a step Dispatch never answers ends in a refusal the person can try again. */
+  private passkeyStep<T>(path: string, body: unknown): Promise<T> {
+    return this.json<T>(
+      path,
+      {
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+      REQUEST_DEADLINE_MS
+    );
+  }
+
+  /** The enrollment's options for the link whose fragment is `token`, which it checks and leaves
+   *  unused. */
+  passkeyEnrollmentOptions(token: string): Promise<PasskeyCreationOptions> {
+    return this.passkeyStep("/auth/passkey/register/begin", {
+      token,
+    } satisfies PasskeyEnrollmentStart);
+  }
+
+  /** Stores the passkey the browser made, uses the link, and signs its person in. */
+  passkeyEnroll(registration: PasskeyRegistration): Promise<PasskeySignedIn> {
+    return this.passkeyStep("/auth/passkey/register/finish", registration);
+  }
+
+  /** A sign-in's options, for any passkey Dispatch holds. */
+  passkeySignInOptions(): Promise<PasskeyRequestOptions> {
+    return this.passkeyStep("/auth/passkey/login/begin", {});
+  }
+
+  /** Signs the passkey's person in from the signature the browser made. */
+  passkeySignIn(assertion: PasskeyAssertion): Promise<PasskeySignedIn> {
+    return this.passkeyStep("/auth/passkey/login/finish", assertion);
   }
 
   /** A read through Dispatch's GitHub proxy; it makes no write. The proxy carries any GitHub path
