@@ -297,8 +297,8 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 	}
 }
 
-// sendReplayedEvents writes each replayed event's frame on sub, in order; false once the
-// subscription has ended.
+// sendReplayedEvents writes each event's frame on sub, in order, every one of events to be sent: a
+// replay, or a run read as its reader reads it (sendRun); false once the subscription has ended.
 func sendReplayedEvents(ctx context.Context, stream liveStreamer, sub string, events []relayedEvent) bool {
 	for _, event := range events {
 		if stream.SendWait(ctx, liveEventFrame(sub, event)) != nil {
@@ -420,12 +420,7 @@ func (s *server) sendRun(ctx context.Context, stream liveStreamer, sub string, r
 			endEventsAfterFailure(ctx, stream, sub, "read the events as the caller reads them", err)
 			return false
 		}
-		for _, event := range readable {
-			if stream.SendWait(ctx, liveEventFrame(sub, event)) != nil {
-				return false
-			}
-		}
-		return true
+		return sendReplayedEvents(ctx, stream, sub, readable)
 	}
 	readable, err := s.readableEventIDs(ctx, reader, run)
 	if err != nil {
@@ -573,6 +568,9 @@ func sightMoved(held, next model.Actor, event model.Event) bool {
 // two viewers see, or the projects and the scopes two resolutions of one credential grant
 // (sameCredentialGrant).
 func sameSet(a, b []string) bool {
+	if slices.Equal(a, b) {
+		return true
+	}
 	return len(a) == len(b) && slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
