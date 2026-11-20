@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -36,19 +37,35 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 	}
 	approval := intake.DispatchArtifact{Key: key, ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 1, Actor: person,
 		Mark: record.EventMark{Seq: 9, At: approved}}
+	// logEvent is an event of the root's Dispatch event log as EventsAfter serves it, by the
+	// person, and issueEvent an issue event of it that leaves the labelled root in status under
+	// title.
+	logEvent := func(seq int64, typ, payload string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":%q,"actor":{"kind":%q,"id":%q},"payload":%s}`,
+			seq, key, seq, typ, person.Kind, person.ID, payload))
+	}
+	issueEvent := func(seq int64, typ, status, title string) json.RawMessage {
+		return logEvent(seq, typ, fmt.Sprintf(`{"key":%q,"status":%q,"title":%q,"labels":[%q]}`, key, status, title, dispatch.LegionLabel))
+	}
+	approvalEvent := logEvent(9, "artifact.approved", `{"artifact_id":"art-1","version":1}`)
+	parkedAgain := []json.RawMessage{issueEvent(1, "issue.created", "triage", key), issueEvent(5, "issue.updated", "icebox", key), approvalEvent,
+		issueEvent(10, "issue.updated", "todo", key), issueEvent(11, "issue.updated", "icebox", key)}
 	for _, tc := range []struct {
 		name  string
 		order []intake.Fact
+		log   []json.RawMessage
 		want  int
 	}{
 		// The control: with no change of the root's status after the approval, the same
 		// preparation and apply queue the person's handover once.
 		{name: "no change of status after the approval queues the handover",
-			order: []intake.Fact{event(5, "icebox"), approval}, want: 1},
+			order: []intake.Fact{event(5, "icebox"), approval}, want: 1,
+			log: []json.RawMessage{issueEvent(1, "issue.created", "triage", key), issueEvent(5, "issue.updated", "icebox", key), approvalEvent,
+				issueEvent(11, "issue.updated", "icebox", key+", renamed")}},
 		{name: "the todo applies after the second park, then the approval",
-			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), event(10, "todo"), approval}},
+			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), event(10, "todo"), approval}, log: parkedAgain},
 		{name: "the replay applies the approval, then the todo",
-			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), approval, event(10, "todo")}},
+			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), approval, event(10, "todo")}, log: parkedAgain},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -62,6 +79,7 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 			shown.PrimaryArtifactID, shown.LastSeq = "art-1", 11
 			client := &eventLogDispatch{}
 			client.issues = map[string]dispatch.Issue{key: shown}
+			client.logs = map[string][]json.RawMessage{key: tc.log}
 			w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: quietLogger()}
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
