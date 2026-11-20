@@ -63,21 +63,6 @@ func runIn(args ...string) (stdout, stderr string, code int) {
 	return out.String(), errOut.String(), code
 }
 
-// requireSays fails t where text holds any of leaked or lacks any of want.
-func requireSays(t *testing.T, what, text string, leaked, want []string) {
-	t.Helper()
-	for _, l := range leaked {
-		if strings.Contains(text, l) {
-			t.Errorf("%s %q holds %q", what, text, l)
-		}
-	}
-	for _, w := range want {
-		if !strings.Contains(text, w) {
-			t.Errorf("%s %q does not say %q", what, text, w)
-		}
-	}
-}
-
 // TestAFlagValueThatDoesNotParseIsNotPrinted: a flag whose value does not parse is refused naming
 // the flag, and an argument whose flag syntax does not parse, or that is no flag of the form, is
 // refused as one, never quoting the value or the argument, which Go's flag package does: an
@@ -108,7 +93,7 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
-			requireSays(t, "stderr", stdout+stderr, []string{secret, "tokuser9f3"}, row.want)
+			wantNamedNotPrinted(t, "stderr", stdout+stderr, row.want, []string{secret, "tokuser9f3"}...)
 			if strings.HasPrefix(row.name, "control: values") && strings.Contains(stderr, "invalid") {
 				t.Errorf("stderr %q refuses a value that parses", stderr)
 			}
@@ -156,7 +141,7 @@ func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
 			if code != row.code {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
 			}
-			requireSays(t, "the help", stdout+stderr, []string{secret}, row.want)
+			wantNamedNotPrinted(t, "the help", stdout+stderr, row.want, []string{secret}...)
 		})
 	}
 }
@@ -189,7 +174,7 @@ func TestEnrollWaitRefusalNamesTheRuleNotTheValue(t *testing.T) {
 				}
 				return
 			}
-			requireSays(t, "stderr", stderr, []string{secret}, []string{"AGENT_SECRETS_ENROLL_WAIT", "Go duration"})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"AGENT_SECRETS_ENROLL_WAIT", "Go duration"}, []string{secret}...)
 		})
 	}
 }
@@ -251,7 +236,7 @@ func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 				if code != form.code {
 					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, form.code)
 				}
-				requireSays(t, "the output", stdout+stderr, append([]string{secret}, keyPemLeaks...), []string{"key.pem in AGENT_SECRETS_KEY_DIR", fault.want})
+				wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"key.pem in AGENT_SECRETS_KEY_DIR", fault.want}, append([]string{secret}, keyPemLeaks...)...)
 			})
 		}
 	}
@@ -309,7 +294,7 @@ func TestKeygenNamesKeyPemByItsFlagNeverItsPath(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, row.want)
+			wantNamedNotPrinted(t, "the output", stdout+stderr, row.want, []string{secret}...)
 		})
 	}
 	t.Run("control: a directory keygen can write into", func(t *testing.T) {
@@ -369,7 +354,7 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "the output", stdout+stderr, append([]string{secret}, keyPemLeaks...), []string{"key.pem in the machine cache", fault.want})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"key.pem in the machine cache", fault.want}, append([]string{secret}, keyPemLeaks...)...)
 		})
 	}
 	t.Run("write: key.pem cannot be put in place", func(t *testing.T) {
@@ -385,7 +370,7 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("writeMachineCache put a key where a directory is")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"write key.pem in the machine cache", "rename: "})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"write key.pem in the machine cache", "rename: "}, []string{secret}...)
 	})
 	t.Run("control: a cache that holds a session", func(t *testing.T) {
 		useCache(t)
@@ -485,7 +470,7 @@ func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 			if code != row.code {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want %d", code, stdout, stderr, row.code)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, row.want)
+			wantNamedNotPrinted(t, "the output", stdout+stderr, row.want, []string{secret}...)
 		})
 	}
 }
@@ -553,7 +538,7 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 			if want := map[bool]int{true: 0, false: 1}[control]; code != want {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want %d", code, stdout, stderr, want)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, row.want)
+			wantNamedNotPrinted(t, "the output", stdout+stderr, row.want, []string{secret}...)
 			if control && (!machineCacheHolds(cache) || exists(filepath.Join(keyDir, keyFile))) {
 				t.Fatal("the move left the session where it was")
 			}
@@ -581,7 +566,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 		}
-		requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"machine: the cached enrollment in " + machineCacheWords + "\n"})
+		wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"machine: the cached enrollment in " + machineCacheWords + "\n"}, []string{secret}...)
 	})
 	for _, row := range []struct {
 		name  string
@@ -609,7 +594,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{row.want})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{row.want}, []string{secret}...)
 		})
 	}
 	t.Run("a session the broker no longer holds, and no identity to register it again", func(t *testing.T) {
@@ -618,7 +603,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("the session was registered again with no identity to register it under")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"this machine's session in " + machineCacheWords + " is not live"})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"this machine's session in " + machineCacheWords + " is not live"}, []string{secret}...)
 	})
 	t.Run("an enrollment file that cannot be put in place", func(t *testing.T) {
 		dir := useCache(t)
@@ -637,7 +622,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("writeMachineCache put an enrollment where a directory is")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"write the enrollment file in " + machineCacheWords + ": rename: "})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"write the enrollment file in " + machineCacheWords + ": rename: "}, []string{secret}...)
 	})
 	t.Run("the cache's lock cannot be opened", func(t *testing.T) {
 		dir := useCache(t)
@@ -648,7 +633,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 		}
-		requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"open a lock in " + machineCacheWords + ": open: is a directory"})
+		wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"open a lock in " + machineCacheWords + ": open: is a directory"}, []string{secret}...)
 	})
 	t.Run("the kept Google audience cannot be read", func(t *testing.T) {
 		dir := useCache(t)
@@ -659,7 +644,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("checkGoogleAudience read an audience from a directory")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"read google-exchange-audience in " + machineCacheWords + ": read: is a directory"})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"read google-exchange-audience in " + machineCacheWords + ": read: is a directory"}, []string{secret}...)
 	})
 	t.Run("the Google audience cannot be kept", func(t *testing.T) {
 		dir := useCache(t)
@@ -670,7 +655,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("keepGoogleAudience kept an audience under a lock it could not open")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"keep the broker's Google exchange audience in google-exchange-audience in " + machineCacheWords + ": open: is a directory"})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"keep the broker's Google exchange audience in google-exchange-audience in " + machineCacheWords + ": open: is a directory"}, []string{secret}...)
 	})
 	t.Run("another Google audience than the one kept", func(t *testing.T) {
 		useCache(t)
@@ -682,7 +667,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("checkGoogleAudience passed an audience other than the one kept")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret}, []string{"(kept in google-exchange-audience in " + machineCacheWords + ")", "remove google-exchange-audience in " + machineCacheWords + " and run"})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"(kept in google-exchange-audience in " + machineCacheWords + ")", "remove google-exchange-audience in " + machineCacheWords + " and run"}, []string{secret}...)
 	})
 	t.Run("control: a kept Google audience the broker still names", func(t *testing.T) {
 		useCache(t)
@@ -724,7 +709,7 @@ func TestTheSignInStoreIsNamedByItsSettingNeverItsPath(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"sign-in: nobody has signed in on this machine with `agent-secrets login`", store})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"sign-in: nobody has signed in on this machine with `agent-secrets login`", store}, []string{secret}...)
 		})
 	}
 	t.Run("control: a store that holds a sign-in", func(t *testing.T) {
@@ -771,7 +756,7 @@ func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"agent-secrets " + name + ": " + wantUnexpectedArgument})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"agent-secrets " + name + ": " + wantUnexpectedArgument}, []string{secret}...)
 		})
 		if name == "register" {
 			continue // register with nothing after it waits on the helper; its row above is the check
@@ -800,7 +785,7 @@ func TestASettingsFileKeyItDoesNotTakeIsNotPrinted(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{"hunter2pw-settingsline"}, []string{path + " line 3 sets a key this file does not take (not printed)"})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{path + " line 3 sets a key this file does not take (not printed)"}, []string{"hunter2pw-settingsline"}...)
 		})
 	}
 	t.Run("control: a key the file takes", func(t *testing.T) {
@@ -857,7 +842,7 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 					}
 					return
 				}
-				requireSays(t, "the output", stdout+stderr, []string{"hunter2pw"}, []string{refusal})
+				wantNamedNotPrinted(t, "the output", stdout+stderr, []string{refusal}, []string{"hunter2pw"}...)
 			})
 		}
 	}
@@ -879,7 +864,7 @@ func TestAnUnknownFormIsNotPrinted(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
 			}
-			requireSays(t, "the output", stdout+stderr, []string{secret}, []string{"agent-secrets " + row.group + ": unknown form (not printed); the forms are " + row.forms})
+			wantNamedNotPrinted(t, "the output", stdout+stderr, []string{"agent-secrets " + row.group + ": unknown form (not printed); the forms are " + row.forms}, []string{secret}...)
 		})
 		t.Run("control: "+row.group+" with no form", func(t *testing.T) {
 			useBareEnvironment(t)
@@ -938,7 +923,7 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 				if code == 0 {
 					t.Fatalf("exit 0, stdout %q; want a failure", stdout)
 				}
-				requireSays(t, "the output", stdout+stderr, []string{secret}, []string{fmt.Sprintf(form.route, broker.url), broker.says})
+				wantNamedNotPrinted(t, "the output", stdout+stderr, []string{fmt.Sprintf(form.route, broker.url), broker.says}, []string{secret}...)
 			})
 		}
 	}
@@ -964,7 +949,7 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 			if !errors.Is(err, syscall.ECONNREFUSED) || !errors.As(err, &unreachable) {
 				t.Fatalf("%s = %v; want an unreachableError that is ECONNREFUSED", route, err)
 			}
-			requireSays(t, "the error", err.Error(), []string{secret}, []string{route})
+			wantNamedNotPrinted(t, "the error", err.Error(), []string{route}, []string{secret}...)
 		}
 	})
 }

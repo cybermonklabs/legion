@@ -48,7 +48,7 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 			if err == nil {
 				t.Fatal("the rule took the secret")
 			}
-			requireSays(t, "the refusal", err.Error(), []string{secret, "hunter2pw", "7c3e91"}, []string{row.says})
+			wantNamedNotPrinted(t, "the refusal", err.Error(), []string{row.says}, []string{secret, "hunter2pw", "7c3e91"}...)
 		})
 	}
 	t.Run("control: each rule takes a value it accepts", func(t *testing.T) {

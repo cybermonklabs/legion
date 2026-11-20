@@ -336,7 +336,7 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 				if code != 1 {
 					t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 				}
-				requireSays(t, "stderr", stderr, mode.absent, scenario.want(agent, gcloud))
+				wantNamedNotPrinted(t, "stderr", stderr, scenario.want(agent, gcloud), mode.absent...)
 			})
 		}
 	}
@@ -415,8 +415,7 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "stderr", stderr, []string{secret, "Response:", "error_description"},
-				[]string{"code = Unauthenticated", "the server answered HTTP 400"})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"code = Unauthenticated", "the server answered HTTP 400"}, []string{secret, "Response:", "error_description"}...)
 		})
 	}
 	t.Run("control: a token endpoint that answers, the real dial", func(t *testing.T) {
@@ -458,7 +457,7 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 		}
-		requireSays(t, "stderr", stderr, []string{secret}, []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds ada@example.com, grace@example.com)"})
+		wantNamedNotPrinted(t, "stderr", stderr, []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds ada@example.com, grace@example.com)"}, []string{secret}...)
 	})
 	t.Run("control: CLOUDSDK_CORE_ACCOUNT naming a login gcloud holds", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -488,7 +487,7 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "stderr", stderr, []string{secret}, []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"}, []string{secret}...)
 		})
 	}
 	t.Run("control: CLOUDSDK_ACTIVE_CONFIG_NAME naming a configuration this machine holds", func(t *testing.T) {
@@ -551,7 +550,7 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 			if code != row.code {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
 			}
-			requireSays(t, "stderr", stderr, []string{secret, "error_description"}, []string{row.want})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, []string{secret, "error_description"}...)
 		})
 	}
 }

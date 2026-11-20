@@ -102,7 +102,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "stderr", stderr, []string{secret, "unable to read file at"}, []string{row.want})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, []string{secret, "unable to read file at"}...)
 			if got := sent(); len(got) != 0 {
 				t.Errorf("STS was sent %d tokens for a file that cannot be read, want none", len(got))
 			}
@@ -148,7 +148,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 		if err == nil {
 			t.Fatal("the SDK signed in with a token file that is gone")
 		}
-		requireSays(t, "the error", err.Error(), []string{secret, "unable to read file at"}, []string{"read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"})
+		wantNamedNotPrinted(t, "the error", err.Error(), []string{"read the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"}, []string{secret, "unable to read file at"}...)
 	})
 }
 
@@ -192,7 +192,7 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			requireSays(t, "stderr", stderr, []string{secret}, []string{"load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed)"})
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed)"}, []string{secret}...)
 		})
 		t.Run("control: "+variable+" naming a profile the files hold", func(t *testing.T) {
 			useProfiles(t)
