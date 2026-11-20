@@ -19,9 +19,9 @@ const (
 	outsideOrigin   = "https://outside.test"
 )
 
-// outsideRuleListingEveryone signs rigDomain's people in as full members, and every verified
-// Google account outside it as a restricted member: its lister names every address, since these
-// tests are about which origin answers, not about who is listed.
+// outsideRuleListingEveryone signs rigDomain's people in as full members, and admits every address
+// as a restricted member: its lister names every address, since these tests are about which origin
+// answers, not about who is listed.
 func outsideRuleListingEveryone() identity.OutsideRule {
 	return identity.OutsideRule{
 		DomainRule: identity.DomainRule{Domain: rigDomain},
@@ -45,9 +45,10 @@ func newOriginRig(t *testing.T, rule identity.SignInRule, outside string) *signI
 	return rig
 }
 
-// With outside sign-in on, a sign-in started on the outside origin's Host comes back to that
-// origin's callback, and one started on the canonical Host to the canonical callback; neither asks
-// Google for hd. With it off, the canonical Host's redirect is byte for byte today's, hd included.
+// A sign-in started on the outside origin's Host comes back to that origin's callback, and one
+// started on the canonical Host to the canonical callback; each asks Google for hd, the domain whose
+// people alone sign in with Google. With no outside origin, the canonical Host's redirect is byte
+// for byte today's.
 func TestOutsideSignInStartsAtTheOriginOfItsOwnHost(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
 	for target, want := range map[string]string{
@@ -59,8 +60,8 @@ func TestOutsideSignInStartsAtTheOriginOfItsOwnHost(t *testing.T) {
 		if got := location.Query().Get("redirect_uri"); got != want {
 			t.Errorf("GET %s: redirect_uri %q, want %q", target, got, want)
 		}
-		if location.Query().Has("hd") {
-			t.Errorf("GET %s with outside sign-in on: the issuer is asked for hd %q, want no hd on any origin", target, location.Query().Get("hd"))
+		if got := location.Query().Get("hd"); got != rigDomain {
+			t.Errorf("GET %s: the issuer is asked for hd %q, want %q", target, got, rigDomain)
 		}
 	}
 
@@ -71,7 +72,7 @@ func TestOutsideSignInStartsAtTheOriginOfItsOwnHost(t *testing.T) {
 		"&nonce=" + url.QueryEscape(query.Get("nonce")) + "&prompt=consent&redirect_uri=" + url.QueryEscape(canonicalOrigin+"/auth/callback") +
 		"&response_type=code&scope=openid+email+profile&state=" + url.QueryEscape(query.Get("state"))
 	if got := location.String(); got != want {
-		t.Errorf("GET /auth/start with outside sign-in off: Location\n%s\nwant today's\n%s", got, want)
+		t.Errorf("GET /auth/start with no outside origin: Location\n%s\nwant today's\n%s", got, want)
 	}
 }
 
@@ -146,47 +147,39 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 	}
 }
 
-// A refused outside sign-in offers a link that asks Google for its account chooser, so a browser
-// holding one Google session is not sent straight back with the account just refused; the
-// sign-in a person starts any other way asks for consent alone, and a refusal under the domain
-// rule alone keeps today's plain link.
-func TestOutsideSignInRefusalOffersGooglesAccountChooser(t *testing.T) {
-	unlisted := identity.OutsideRule{
-		DomainRule: identity.DomainRule{Domain: rigDomain},
-		People:     identity.ListerFunc(func(context.Context, string) (bool, error) { return false, nil }),
-	}
-	outsider := map[string]any{"sub": "outside-subject", "email": "stranger@other.example", "email_verified": true}
-	refusalLink := func(rig *signInRig) string {
-		t.Helper()
-		page := rig.signIn(t, outsider)
-		if page.Code != http.StatusForbidden {
-			t.Fatalf("the sign-in of an account no list names answered %d %s, want the refusal page", page.Code, page.Body.String())
-		}
-		_, after, found := strings.Cut(page.Body.String(), `<a href="`)
-		link, _, closed := strings.Cut(after, `"`)
-		if !found || !closed {
-			t.Fatalf("the refusal page holds no link: %s", page.Body.String())
-		}
-		return link
-	}
-	prompt := func(rig *signInRig, target string) string {
-		t.Helper()
-		location, _ := rig.start(t, target)
-		return location.Query().Get("prompt")
-	}
+// signInAt runs a whole Google sign-in through the rig's router at host, as the account claims
+// names: the start and the callback are both requests whose Host is host, so each comes back to
+// that origin's callback.
+func (r *signInRig) signInAt(t *testing.T, host string, claims map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	r.issuer.SignInAs(claims)
+	authURL, stateCookie := r.start(t, "http://"+host+"/auth/start")
+	code, state := r.issuer.Authorize(t, authURL.String())
+	callback := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
+	callback.AddCookie(stateCookie)
+	response := httptest.NewRecorder()
+	r.handler.ServeHTTP(response, callback)
+	return response
+}
 
-	rig := newOriginRig(t, unlisted, outsideOrigin)
-	link := refusalLink(rig)
-	if link != "/auth/start?prompt=select_account" {
-		t.Fatalf("the refused outside sign-in's link is %q, want /auth/start?prompt=select_account", link)
-	}
-	if got := prompt(rig, "http://outside.test"+link); got != "select_account consent" {
-		t.Errorf("GET %s: the issuer is asked prompt=%q, want the chooser beside the consent a refresh token needs", link, got)
-	}
-	if got := prompt(rig, "http://outside.test/auth/start"); got != "consent" {
-		t.Errorf("GET /auth/start: the issuer is asked prompt=%q, want consent alone", got)
-	}
-	if domainOnly := refusalLink(newOriginRig(t, identity.DomainRule{Domain: rigDomain}, "")); domainOnly != "/auth/start" {
-		t.Errorf("a refusal under the domain rule alone links to %q, want today's /auth/start", domainOnly)
+// A Google sign-in of an address outside the domain is refused at both origins, whatever a list
+// names: under the rule that admits restricted members by their listing, with a list naming every
+// address, a verified Google account outside rigDomain gets the refusal page saying it is not in
+// the domain, no session cookie and no people row, at the canonical origin and at the outside
+// origin. The control: an account of rigDomain signs in at each.
+func TestAGoogleSignInOfAnOutsideAddressIsRefusedAtBothOrigins(t *testing.T) {
+	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
+	for _, host := range []string{"canon.test", "outside.test"} {
+		refused := rig.signInAt(t, host, map[string]any{"sub": "outside-subject", "email": "Stranger@Other.example", "email_verified": true})
+		if refused.Code != http.StatusForbidden || sessionCookie(refused) != nil ||
+			!strings.Contains(refused.Body.String(), "stranger@other.example is not in the domain that may use Dispatch") {
+			t.Errorf("a Google sign-in of stranger@other.example at %s answered %d %s, want the 403 page saying it is not in the domain, with no session", host, refused.Code, refused.Body.String())
+		}
+		if person, found := rig.people.get("stranger@other.example"); found {
+			t.Errorf("the refused sign-in at %s recorded stranger@other.example as %+v, want no row", host, person)
+		}
+		if member := rig.signInAt(t, host, googleClaims("google-subject")); member.Code != http.StatusFound || sessionCookie(member) == nil {
+			t.Errorf("the control, an account of %s, at %s answered %d %s, want a signed-in redirect", rigDomain, host, member.Code, member.Body.String())
+		}
 	}
 }

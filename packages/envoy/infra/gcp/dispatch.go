@@ -199,11 +199,6 @@ type DispatchArgs struct {
 	// inputs set its host must also be one weborigin.GoogleRedirectHost takes, since the Google
 	// client then lists its callback. Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
-	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
-	// signInDomain sign in as a restricted member while some project's owner or access list names
-	// its email directly. It needs the sign-in inputs and is no member of their group, so a
-	// deployment that sets them leaves it unset and renders what it always rendered.
-	SignInOutside bool `pulumi:"signInOutside,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -214,7 +209,7 @@ type DispatchArgs struct {
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
 	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
 	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
-	// outsideOrigin. With it the sign-in inputs, signInOutside and outsideOrigin are taken
+	// outsideOrigin. With it the sign-in inputs and outsideOrigin are taken
 	// without the tailnet inputs, natsInCluster is required, as it is in the sandbox, and
 	// allowedNamespaces is not, since the entrance admits its own traffic. Unset, Dispatch is
 	// reached as it always was: at the front door's name or, in the sandbox, inside its cluster.
@@ -229,8 +224,8 @@ type DispatchArgs struct {
 	// output, such as one built from the backend service's own id. It needs publicOrigin, the
 	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
-	// claim to; it is refused beside signInClientId, signInClientSecret, signInOutside and
-	// outsideOrigin: IAP signs a person in, and a browser reaches Dispatch through it alone.
+	// claim to; it is refused beside signInClientId, signInClientSecret and outsideOrigin: IAP
+	// signs a person in, and a browser reaches Dispatch through it alone.
 	// Unset renders none of the three variables, and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
@@ -710,9 +705,8 @@ type Dispatch struct {
 // from args, since it may be another resource's output.
 // With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
 // cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
-// tailscale and tools images, outsideOrigin, signIn and signInOutside are empty, since nothing
-// reads them. signInOutside is set only with signInOn, and outsideOrigin is "" when its input is
-// unset, where the component renders no second origin.
+// tailscale and tools images, outsideOrigin and signIn are empty, since nothing reads them.
+// outsideOrigin is "" when its input is unset, where the component renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
@@ -734,7 +728,6 @@ type dispatchSettings struct {
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
-	signInOutside                               bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -1072,7 +1065,6 @@ func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
-		{"signInOutside", args.SignInOutside},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1217,21 +1209,18 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset and publicOrigin is unset,
 // which is what asks for the mode: no front door is built and no origin is served, so a sign-in
-// input, signInOutside among them, would ask an OAuth provider to redirect to an in-cluster
-// http:// address, outsideOrigin would add an origin for outside sign-in to a Dispatch where
-// browser sign-in is refused, and the app's own policy is its only ingress; what any Dispatch
-// without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is refused by
-// its own name rather than accepted and quietly dropped. The sign-in inputs are refused here,
-// before the sign-in group's own checks, so one sent to a sandbox is refused for being sent at
-// all and not for the rest of its group being missing.
+// input would ask an OAuth provider to redirect to an in-cluster http:// address, outsideOrigin
+// would add an origin for outside sign-in to a Dispatch where browser sign-in is refused, and the
+// app's own policy is its only ingress; what any Dispatch without a front door cannot make good is
+// refuseDispatchWithoutFrontDoor's. Each is refused by its own name rather than accepted and
+// quietly dropped. The sign-in inputs are refused here, before the sign-in group's own checks, so
+// one sent to a sandbox is refused for being sent at all and not for the rest of its group being
+// missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
 			return fmt.Errorf(dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
-	}
-	if args.SignInOutside {
-		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if args.OutsideOrigin != "" {
 		return errors.New("outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
@@ -1293,9 +1282,9 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
 // the signed header's hd claim to by the membership rule its own sign-in uses, and which it
 // refuses to boot without under IAP. And it refuses the Google client (signInClientId,
-// signInClientSecret), signInOutside and outsideOrigin: IAP signs a person in and a browser
-// reaches Dispatch through it alone, so Dispatch runs no sign-in of its own and serves no second
-// origin for outside sign-in. Each is refused by its own name, before the sign-in group's own
+// signInClientSecret) and outsideOrigin: IAP signs a person in and a browser reaches Dispatch
+// through it alone, so Dispatch runs no sign-in of its own and serves no second origin for
+// outside sign-in. Each is refused by its own name, before the sign-in group's own
 // checks, which the IAP door does not run, so a client input sent beside IAP is refused for being
 // sent at all. The audience's own value may be another resource's output, so it is judged once
 // it resolves (dispatchIAPAudience).
@@ -1307,7 +1296,6 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	for _, in := range []dispatchInput{
 		{"signInClientId", args.SignInClientId != ""},
 		{"signInClientSecret", args.SignInClientSecret != nil},
-		{"signInOutside", args.SignInOutside},
 	} {
 		if in.set {
 			return fmt.Errorf(signIn, in.input, in.input)
@@ -1629,9 +1617,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
-	} else if args.SignInOutside {
-		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
-			dispatchGroupClause("sign-in", signInGroup))
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1773,7 +1758,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.images.tools = args.FrontDoorToolsImage
 	s.signIn.clientID = args.SignInClientId
 	s.signIn.domain = args.SignInDomain
-	s.signInOutside = args.SignInOutside
 	s.outsideOrigin = outsideOrigin
 	s.publicOrigin = publicOrigin
 	s.iap = args.IapAudience != nil

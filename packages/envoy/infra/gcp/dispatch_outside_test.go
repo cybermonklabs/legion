@@ -17,15 +17,14 @@ const (
 	// dispatchOutsideOrigin is outsideOrigin as a consumer sets it: a host of its own, on no
 	// tailnet in particular, since the component names no way in.
 	dispatchOutsideOrigin = "https://dispatch-outside.example.com"
-	// dispatchOutsideGolden is the app's pod with both outside inputs set.
-	dispatchOutsideGolden = "dispatch-pod-with-outside-sign-in.golden"
+	// dispatchOutsideGolden is the app's pod with outsideOrigin set.
+	dispatchOutsideGolden = "dispatch-pod-with-outside-origin.golden"
 )
 
-// dispatchOutsideArgs is the default fixture, sign-in on, with both outside inputs set.
+// dispatchOutsideArgs is the default fixture, sign-in on, with outsideOrigin set.
 func dispatchOutsideArgs() *gcp.DispatchArgs {
 	args := dispatchArgs()
 	args.OutsideOrigin = dispatchOutsideOrigin
-	args.SignInOutside = true
 	return args
 }
 
@@ -50,18 +49,15 @@ func requireRightAfter(t *testing.T, m *pulumitest.Mocks, after, name string) {
 	require.Equal(t, name, names[at+1], "%s comes right after %s", name, after)
 }
 
-// With both inputs set the app's container carries the two settings outside sign-in reads, each
-// next to the setting it extends: DISPATCH_SIGNIN_OUTSIDE=1 right after DISPATCH_SIGNIN_DOMAIN,
-// whose accounts it admits beside the domain's own people, and DISPATCH_OUTSIDE_ORIGIN right after
+// With outsideOrigin set the app's container carries DISPATCH_OUTSIDE_ORIGIN right after
 // DISPATCH_SERVER_URL, the canonical origin it is the second of. Nothing else moves: the listener's
 // and the front door's pods, the front door's serve configuration and the registration set are
 // the defaults' own, since what serves the second origin is the deployment's and not built here.
-func TestDispatchPodWithOutsideSignInRendersBothSettings(t *testing.T) {
+func TestDispatchPodWithOutsideOriginRendersItsSetting(t *testing.T) {
 	m, err := runDispatch(t, dispatchOutsideArgs(), true)
 	require.NoError(t, err)
 
 	requirePodGolden(t, m, "example-dispatch", dispatchOutsideGolden)
-	requireRightAfter(t, m, "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SIGNIN_OUTSIDE")
 	requireRightAfter(t, m, "DISPATCH_SERVER_URL", "DISPATCH_OUTSIDE_ORIGIN")
 
 	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
@@ -70,45 +66,36 @@ func TestDispatchPodWithOutsideSignInRendersBothSettings(t *testing.T) {
 	require.Equal(t, readGolden(t, "dispatch-registrations.golden"), dispatchRegistrations(m))
 }
 
-// The two inputs are independent: each renders its own setting, right after the setting it
-// extends, and never the other's, so a deployment can serve the second origin before it admits
-// anyone from outside, a tailnet Dispatch with no browser sign-in included. The origin is the one
-// the consumer gave, its port kept and a trailing slash trimmed, as Dispatch trims one.
-func TestDispatchOutsideInputsEachRenderTheirOwnSetting(t *testing.T) {
+// outsideOrigin renders DISPATCH_OUTSIDE_ORIGIN right after DISPATCH_SERVER_URL, with browser
+// sign-in and without it, a tailnet Dispatch with no browser sign-in included. The origin is the
+// one the consumer gave, its port kept and a trailing slash trimmed, as Dispatch trims one.
+func TestDispatchOutsideOriginRendersItsOwnSetting(t *testing.T) {
 	for _, row := range []struct {
-		name                 string
-		args                 func() *gcp.DispatchArgs
-		present, after, gone string
-		value                string
+		name  string
+		args  func() *gcp.DispatchArgs
+		value string
 	}{
-		{"signInOutside alone", func() *gcp.DispatchArgs {
-			a := dispatchArgs()
-			a.SignInOutside = true
-			return a
-		}, "DISPATCH_SIGNIN_OUTSIDE", "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_OUTSIDE_ORIGIN", "1"},
-		{"outsideOrigin alone", func() *gcp.DispatchArgs {
+		{"outsideOrigin", func() *gcp.DispatchArgs {
 			a := dispatchArgs()
 			a.OutsideOrigin = "https://example-outside.example.net"
 			return a
-		}, "DISPATCH_OUTSIDE_ORIGIN", "DISPATCH_SERVER_URL", "DISPATCH_SIGNIN_OUTSIDE", "https://example-outside.example.net"},
+		}, "https://example-outside.example.net"},
 		{"outsideOrigin with a port and a trailing slash", func() *gcp.DispatchArgs {
 			a := dispatchArgs()
 			a.OutsideOrigin = "https://example-outside.example.net:8443/"
 			return a
-		}, "DISPATCH_OUTSIDE_ORIGIN", "DISPATCH_SERVER_URL", "DISPATCH_SIGNIN_OUTSIDE", "https://example-outside.example.net:8443"},
+		}, "https://example-outside.example.net:8443"},
 		{"outsideOrigin with no browser sign-in", func() *gcp.DispatchArgs {
 			a := dispatchTailnetWithoutSignInArgs()
 			a.OutsideOrigin = "https://example-outside.example.net"
 			return a
-		}, "DISPATCH_OUTSIDE_ORIGIN", "DISPATCH_SERVER_URL", "DISPATCH_SIGNIN_OUTSIDE", "https://example-outside.example.net"},
+		}, "https://example-outside.example.net"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			m, err := runDispatch(t, row.args(), true)
 			require.NoError(t, err)
-			env := appEnv(t, m)
-			require.Equal(t, row.value, env[row.present])
-			require.NotContains(t, env, row.gone)
-			requireRightAfter(t, m, row.after, row.present)
+			require.Equal(t, row.value, appEnv(t, m)["DISPATCH_OUTSIDE_ORIGIN"])
+			requireRightAfter(t, m, "DISPATCH_SERVER_URL", "DISPATCH_OUTSIDE_ORIGIN")
 		})
 	}
 }
@@ -150,8 +137,8 @@ func TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn(t *testing.T) {
 	}
 }
 
-// With both inputs unset, a tailnet Dispatch with no browser sign-in and a sandbox render neither
-// setting, as the goldens of a deployment with sign-in on show for that mode
+// With outsideOrigin unset, a tailnet Dispatch with no browser sign-in and a sandbox render no
+// second origin, as the goldens of a deployment with sign-in on show for that mode
 // (TestDispatchPodWithoutOutsideInputsIsUnchanged).
 func TestDispatchOutsideSettingsAbsentInEveryModeWhenUnset(t *testing.T) {
 	for name, args := range map[string]func() *gcp.DispatchArgs{
@@ -161,9 +148,7 @@ func TestDispatchOutsideSettingsAbsentInEveryModeWhenUnset(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, err := runDispatch(t, args(), true)
 			require.NoError(t, err)
-			env := appEnv(t, m)
-			require.NotContains(t, env, "DISPATCH_SIGNIN_OUTSIDE")
-			require.NotContains(t, env, "DISPATCH_OUTSIDE_ORIGIN")
+			require.NotContains(t, appEnv(t, m), "DISPATCH_OUTSIDE_ORIGIN")
 		})
 	}
 }
@@ -177,7 +162,7 @@ func dispatchArgsWith(set func(*gcp.DispatchArgs)) func() *gcp.DispatchArgs {
 	}
 }
 
-// With both inputs unset nothing renders differently: every committed golden of the app's pod
+// With outsideOrigin unset nothing renders differently: every committed golden of the app's pod
 // renders byte for byte as it was committed, none of them regenerated for this change, and the
 // table is held to the goldens on disk, so a pod golden added later without its fixture here
 // fails rather than escaping the check.
@@ -212,12 +197,11 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 	require.ElementsMatch(t, committed, covered, "every committed pod golden has its fixture in this test's table")
 }
 
-// Each outside input the component cannot serve is refused by its own name before anything
-// registers: outside sign-in with no browser sign-in to extend, either input in a sandbox, and a
-// second origin weborigin.Parse refuses, that is no https origin, that is the front door's own, or
-// whose host Google refuses in a redirect URI while browser sign-in is on. An nkey seed in
-// outsideOrigin is refused with every other plain input's
-// (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses both as it refuses every
+// outsideOrigin is refused by its own name before anything registers where the component cannot
+// serve it: in a sandbox, and as a second origin weborigin.Parse refuses, that is no https origin,
+// that is the front door's own, or whose host Google refuses in a redirect URI while browser
+// sign-in is on. An nkey seed in outsideOrigin is refused with every other plain input's
+// (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses it as it refuses every
 // input that configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 	// weborigin.Parse's own test holds its whole table; the rows here that expect notOrigin hold
@@ -235,26 +219,6 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		args func() *gcp.DispatchArgs
 		want string
 	}{
-		{
-			name: "signInOutside without the sign-in inputs",
-			args: func() *gcp.DispatchArgs {
-				args := dispatchTailnetWithoutSignInArgs()
-				args.SignInOutside = true
-				return args
-			},
-			want: "signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people " +
-				"(the sign-in inputs are set together or not at all; unset: signInClientId, signInClientSecret, signInDomain)",
-		},
-		{
-			name: "signInOutside in a sandbox",
-			args: func() *gcp.DispatchArgs {
-				args := dispatchSandboxArgs()
-				args.SignInOutside = true
-				return args
-			},
-			want: "signInOutside configures browser sign-in, which needs an https origin, the tailnet inputs' or publicOrigin: without either Dispatch is reached at an in-cluster http:// address, " +
-				"which no OAuth provider takes as a redirect origin, so no browser could sign in; unset signInOutside, or set the tailnet inputs or publicOrigin",
-		},
 		{
 			name: "outsideOrigin in a sandbox",
 			args: func() *gcp.DispatchArgs {
@@ -309,16 +273,12 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 	}
 }
 
-// The two inputs reach the pod over the wire a consumer's SDK sends them on, through the plugin's
-// own Construct, in a preview: outsideOrigin as a plain string and signInOutside as a plain
-// boolean, decoded and rendered as the direct path renders them.
-func TestConstructRendersTheOutsideInputsInAPreview(t *testing.T) {
+// outsideOrigin reaches the pod over the wire a consumer's SDK sends it on, through the plugin's
+// own Construct, in a preview, as a plain string decoded and rendered as the direct path renders it.
+func TestConstructRendersTheOutsideOriginInAPreview(t *testing.T) {
 	inputs := dispatchConstructBaseInputs()
 	inputs["outsideOrigin"] = property.New(dispatchOutsideOrigin)
-	inputs["signInOutside"] = property.New(true)
 	m, _, err := constructDispatch(t, inputs, true)
 	require.NoError(t, err)
-	env := appEnv(t, m)
-	require.Equal(t, "1", env["DISPATCH_SIGNIN_OUTSIDE"])
-	require.Equal(t, dispatchOutsideOrigin, env["DISPATCH_OUTSIDE_ORIGIN"])
+	require.Equal(t, dispatchOutsideOrigin, appEnv(t, m)["DISPATCH_OUTSIDE_ORIGIN"])
 }

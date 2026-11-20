@@ -1021,7 +1021,7 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInOutside` and `outsideOrigin` as it takes them beside the front door; with the
+group and `outsideOrigin` as it takes them beside the front door; with the
 sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and
 the Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
 the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
@@ -1058,7 +1058,7 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInOutside` and
+token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret` and
 `outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone. It
 renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
 `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's container, in the place the sign-in variables
@@ -1076,9 +1076,9 @@ without a header IAP signed for `iapAudience` is refused by that check, and noth
 app refuses it first. Keep `allowedNamespaces` to the namespaces whose pods call Dispatch, and
 `loadBalancerSourceRanges` to the load balancer's own ranges; a `/0` range is refused.
 
-`outsideOrigin` and `signInOutside`, both unset by default, are the component's part of sign-in
-for people from outside the company. Neither is in a group, and with both unset the component
-renders exactly what it rendered before they existed. `outsideOrigin` is a second origin Dispatch
+`outsideOrigin`, unset by default, is the component's part of sign-in for people from outside the
+company. It is in no group, and with it unset the component renders exactly what it rendered
+before it existed. `outsideOrigin` is a second origin Dispatch
 is reached at: an `https` origin written as a browser writes it, with a lowercase scheme, no
 `:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
 (a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
@@ -1099,16 +1099,11 @@ followed by `/auth/callback` as an authorized redirect URI, beside
 host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
 suffix list, a single label among them ([Redirect URI validation
 rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
-`signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
-which lets a verified Google account outside `signInDomain` sign in as a restricted member while
-some project's owner or access list names its email directly, never through a group; with it,
-that client's OAuth consent screen's audience must be External, since an Internal one admits no
-account outside the organization. Both inputs need the tailnet group or `publicOrigin`, so the
-sandbox refuses each by name, and `signInOutside` needs the sign-in group too, refused without it
-with the clause naming each sign-in input still unset. Beside `publicOrigin` the second origin's
-host is not `publicOrigin`'s, as beside the front door it is not the front door's. An `envoyImage` whose `envoy-dispatch` predates the two
-settings ignores both, as it ignores every variable its settings table
-(`packages/envoy/cmd/dispatch/settings.go`) does not list.
+The input needs the tailnet group or `publicOrigin`, so the sandbox refuses it by name. Beside
+`publicOrigin` the second origin's host is not `publicOrigin`'s, as beside the front door it is
+not the front door's. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as
+it ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1571,9 +1566,9 @@ a set `oidcAccounts` leaves out, a `projectOwnerFallback` that is not a lowercas
 refusals Dispatch would otherwise make at boot), an `outsideOrigin` that
 breaks the rule the paragraph on it above states, a `publicOrigin` that breaks the rule its own
 paragraph states or is set beside the tailnet inputs, an `iapAudience` without `publicOrigin` or
-`signInDomain` or beside `signInClientId`, `signInClientSecret`, `signInOutside` or
+`signInDomain` or beside `signInClientId`, `signInClientSecret` or
 `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend service's,
-a `signInOutside` without the sign-in inputs, an
+an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2222,18 +2217,17 @@ JetStream numbers both containers carry; every other property above is unchanged
       streamMaxBytes: 1073741824
 ```
 
-A deployment that lets people from outside the company sign in names the second origin they reach
-it at and turns outside sign-in on; every other property above is unchanged:
+A deployment that people from outside the company reach names the second origin they reach it at;
+every other property above is unchanged:
 
 ```yaml
       outsideOrigin: https://dispatch-outside.example.com
-      signInOutside: true
       # Only where what serves that origin runs in this cluster: its namespace.
       allowedNamespaces: [example-outside]
 ```
 
-Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
-`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)).
+Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com`
+([Inputs](#inputs-1)).
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and

@@ -567,11 +567,11 @@ const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 // token is 401 TOKEN_REVOKED. A token carries its owner's sign-in to an agent, so it acts only
 // while its owner may still sign in: a restricted member's token is checked at every use
 // (restrictedOwnerAdmitted, which asks the sign-in rule itself), so it stops the moment the rule
-// would refuse its owner's sign-in (outside sign-in turned off, the owner's address on a domain
-// the Workspace owns, no project naming them any more) and works again if that is undone, while
-// the owner's cookie stops at its next hourly confirmation. optionalActor is the one place a
-// bearer is resolved, for every route and the live socket's heartbeat (whileCallerResolves), so
-// the check holds on all of them.
+// would no longer admit its owner (the deployment admitting nobody from outside, the owner's
+// address on a domain the Workspace owns, no project naming them any more) and works again if
+// that is undone, while the owner's cookie stops at its next hourly confirmation. optionalActor is
+// the one place a bearer is resolved, for every route and the live socket's heartbeat
+// (whileCallerResolves), so the check holds on all of them.
 //
 // The owner's member kind is read in the token's own statement, a left join on people by the
 // owner in the form people.email holds, model.CanonicalLogin's as SQL spells it once
@@ -654,14 +654,14 @@ func tokenAccountReplaced(recordsAccounts string) string {
 
 // restrictedOwnerAdmitted answers nil while a token acting for a restricted member may act - their
 // personal token (personalTokenActor) or a token the secrets broker issued naming them
-// (brokerPersonAdmitted), the one check both are held to: while the sign-in rule would sign owner
-// in now (Deps.RestrictedAdmission, identity.SignInRule's AdmitsRestricted, the very decision a
-// restricted sign-in and its hourly confirmation make), so there is no second copy of the rule
-// here to fall behind it. Otherwise it is 401 TOKEN_OWNER_NOT_ADMITTED saying why: outside sign-in
-// is off (or this server signs nobody in), the address is on a domain the Workspace owns, or no
-// project names owner any more. Lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an
-// accept. The answer names no owner: whoever holds the token is told why it stopped, not whose it
-// is.
+// (brokerPersonAdmitted), the one check both are held to: while the sign-in rule admits owner now
+// (Deps.RestrictedAdmission, identity.SignInRule's AdmitsRestricted, the very decision a
+// restricted member's hourly confirmation makes), so there is no second copy of the rule here to
+// fall behind it. Otherwise it is 401 TOKEN_OWNER_NOT_ADMITTED saying why: the deployment admits
+// nobody from outside (or this server signs nobody in), the address is on a domain the Workspace
+// owns, or no project names owner any more. Lists that cannot be read are 503
+// IDENTITY_UNAVAILABLE, never an accept. The answer names no owner: whoever holds the token is told
+// why it stopped, not whose it is.
 func (s *server) restrictedOwnerAdmitted(ctx context.Context, owner string) error {
 	if s.deps.RestrictedAdmission == nil {
 		return tokenOwnerOutsideOff()
@@ -684,15 +684,15 @@ func (s *server) restrictedOwnerAdmitted(ctx context.Context, owner string) erro
 			"this token's owner is a restricted member from outside the sign-in domain, and no project names them any more, as its owner or on its access list, so the token acts for nobody")
 	default:
 		return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
-			"this token's owner is a restricted member from outside the sign-in domain whom this deployment would not sign in now, so the token acts for nobody")
+			"this token's owner is a restricted member from outside the sign-in domain whom this deployment would not admit now, so the token acts for nobody")
 	}
 }
 
-// tokenOwnerOutsideOff is a restricted member's token on a deployment that signs nobody from
-// outside its domain in.
+// tokenOwnerOutsideOff is a restricted member's token on a deployment that admits nobody from
+// outside its domain.
 func tokenOwnerOutsideOff() error {
 	return errorf(http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
-		"this token's owner is a restricted member from outside the sign-in domain, and outside sign-in is off on this deployment (DISPATCH_SIGNIN_OUTSIDE is unset), so the token acts for nobody")
+		"this token's owner is a restricted member from outside the sign-in domain, and this deployment admits nobody from outside it, so the token acts for nobody")
 }
 
 func newAgentToken() (string, [sha256.Size]byte, error) {

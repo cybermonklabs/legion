@@ -329,10 +329,21 @@ func googleSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, h
 // start, the issuer's sign-in, and the callback, whose answer it returns.
 func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	return codeFlowSignInAt(t, handler, issuer, "dispatch.test", claims)
+}
+
+// codeFlowSignInAt is codeFlowSignIn with the start and the callback both sent to host, so the
+// sign-in comes back to the callback of the origin host is.
+func codeFlowSignInAt(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, host string, claims map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
 	issuer.SignInAs(claims)
-	start := startSignIn(t, handler)
+	start := httptest.NewRecorder()
+	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/start", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("GET /auth/start at %s: %d %s, want a redirect to the sign-in issuer", host, start.Code, start.Body.String())
+	}
 	code, state := issuer.Authorize(t, start.Header().Get("Location"))
-	callback := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
+	callback := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
 	for _, cookie := range start.Result().Cookies() {
 		callback.AddCookie(cookie)
 	}
@@ -686,30 +697,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("an account that left example.com, past the hour: whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
 			})
-		},
-		"DISPATCH_SIGNIN_OUTSIDE": func(t *testing.T) {
-			s := newOutsideSignIn(t, nil)
-			if !s.boot.SignInOutside {
-				t.Error("DISPATCH_SIGNIN_OUTSIDE=1: SignInOutside false")
-			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com"}); boot.SignInOutside {
-				t.Error("unset: SignInOutside true")
-			}
-			refusedWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_SIGNIN_OUTSIDE": "true"}, "DISPATCH_SIGNIN_OUTSIDE")
-			// The router's sign-in asks Google for no hd, and admits the account a list names.
-			location, err := url.Parse(startSignIn(t, s.handler).Header().Get("Location"))
-			if err != nil || location.Query().Has("hd") || location.Query().Get("access_type") != "offline" {
-				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /auth/start redirected to %v (%v), want offline access and no hd", location, err)
-			}
-			signIn := s.signInAs(t, s.handler, outsiderEmail)
-			if signIn.Code != http.StatusFound || !sessionCookieSet(signIn) {
-				t.Fatalf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, signIn.Code)
-			}
-			// The API reads it too: a restricted member's own token acts only while it is on
-			// (TestOutsideSignInTokenStopsWhenTheSettingIsOff holds the token refused once it is off).
-			if response := bearerRequest(s.handler, http.MethodGet, "/api/v1/whoami", "", mintTokenOn(t, s.handler, signIn)); response.Code != http.StatusOK {
-				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /api/v1/whoami with %s's own token answered %d %s, want 200", outsiderEmail, response.Code, response.Body.String())
-			}
 		},
 		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,

@@ -9,10 +9,9 @@ import (
 )
 
 // ErrAddressHeldByMember is PeopleStore.SignInSubject's refusal of a restricted member's sign-in
-// (a Google account outside the Workspace) to an address whose row records a full member under
-// another Google account, or under none: the address is a member's, often on another domain the
-// Workspace owns, so an account outside the Workspace never takes it, and the sign-in writes
-// nothing.
+// (a person from outside the domain) to an address whose row records a full member under another
+// Google account, or under none: the address is a member's, often on another domain the Workspace
+// owns, so a person from outside never takes it, and the sign-in writes nothing.
 var ErrAddressHeldByMember = errors.New("the address is a full member's, under another Google account")
 
 // PersonMembership is what Dispatch holds to confirm that a person signed in through the sign-in

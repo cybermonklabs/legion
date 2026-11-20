@@ -196,7 +196,7 @@ describe("DISPATCH_E2E_SIGNIN", () => {
 
   // The dev control and the three google readings: four runs of run-server.sh.
   test(
-    "run-server.sh hands a google server Google's domain, outside sign-in and a second origin on its own port",
+    "run-server.sh hands a google server Google's domain and a second origin on its own port",
     async () => {
       // The control: under dev sign-in the same reading sees dev sign-in and no second origin, so
       // the reading below can tell the two apart.
@@ -211,7 +211,6 @@ describe("DISPATCH_E2E_SIGNIN", () => {
         DISPATCH_SIGNIN_CLIENT_SECRET: "secret",
         DISPATCH_SIGNIN_DOMAIN: "example.com",
         DISPATCH_SIGNIN_ISSUER: "http://127.0.0.1:9035",
-        DISPATCH_SIGNIN_OUTSIDE: "1",
         DISPATCH_SIGNING_KEY: "signing-key",
         DISPATCH_TEST_HOOKS: "1",
         DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER: "1",

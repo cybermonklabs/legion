@@ -92,17 +92,15 @@ func TestDispatchPublicOriginIsRenderedAsABrowserWritesIt(t *testing.T) {
 	require.Equal(t, "https://dispatch.example.com:8443", settings.ServerURL)
 }
 
-// outsideOrigin and signInOutside, which a Dispatch without a front door used to refuse, are
-// taken beside publicOrigin as they are beside the front door: the second origin follows the
-// first in the app's environment, and outside sign-in follows the domain.
-func TestDispatchPublicOriginTakesOutsideSignIn(t *testing.T) {
+// outsideOrigin, which a Dispatch without a front door used to refuse, is taken beside
+// publicOrigin as it is beside the front door: the second origin follows the first in the app's
+// environment.
+func TestDispatchPublicOriginTakesAnOutsideOrigin(t *testing.T) {
 	args := dispatchPublicOriginArgs()
 	args.OutsideOrigin = dispatchOutsideOrigin
-	args.SignInOutside = true
 	m, err := runDispatchWithProviders(t, "example-dispatch", args, newGCPProvider, newRandomProvider)
 	require.NoError(t, err)
 	requireRightAfter(t, m, "DISPATCH_SERVER_URL", "DISPATCH_OUTSIDE_ORIGIN")
-	requireRightAfter(t, m, "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SIGNIN_OUTSIDE")
 	require.Equal(t, dispatchOutsideOrigin, appEnv(t, m)["DISPATCH_OUTSIDE_ORIGIN"])
 }
 
@@ -206,7 +204,7 @@ func TestDispatchRendersTheIAPDoor(t *testing.T) {
 
 // The IAP door needs publicOrigin, the origin IAP's load balancer serves, and signInDomain, the
 // domain Dispatch holds the signed header's hd claim to, and runs beside no Google client of
-// Dispatch's own, no outside sign-in and no second origin: each is refused naming it before
+// Dispatch's own and no second origin: each is refused naming it before
 // anything registers, a client input for being sent at all rather than for the rest of the
 // sign-in group being missing.
 func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
@@ -240,7 +238,6 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 		}, needsOrigin},
 		{"signInClientId", with(func(a *gcp.DispatchArgs) { a.SignInClientId = "example-client-id" }), clientRefusal("signInClientId")},
 		{"signInClientSecret", with(func(a *gcp.DispatchArgs) { a.SignInClientSecret = pulumi.String("example-client-secret") }), clientRefusal("signInClientSecret")},
-		{"signInOutside", with(func(a *gcp.DispatchArgs) { a.SignInOutside = true }), clientRefusal("signInOutside")},
 		{"outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }),
 			"outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for " +
 				"outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience"},

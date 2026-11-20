@@ -37,27 +37,14 @@ var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.
 const maxDomainLength = 253
 
 // workspaceDomainALabel is entry, an entry of DISPATCH_SIGNIN_WORKSPACE_DOMAINS, as IDNA lookup
-// writes it (idna.Lookup.ToASCII), the form identity.OutsideRule compares an address's domain in,
-// and whether the setting takes entry: lowercase, taken by the lookup (a label such as xn--a, which
-// decodes to nothing, is not), and so written a lowercase DNS name (domainShape) of at most
+// writes it (idna.Lookup.ToASCII), the form identity.WorkspaceAddress compares an address's domain
+// in, and whether the setting takes entry: lowercase, taken by the lookup (a label such as xn--a,
+// which decodes to nothing, is not), and so written a lowercase DNS name (domainShape) of at most
 // maxDomainLength characters. An internationalized domain is written in Unicode, bücher.example,
 // or as its A-labels, xn--bcher-kva.example, and is the same entry either way.
 func workspaceDomainALabel(entry string) (string, bool) {
 	ascii, err := idna.Lookup.ToASCII(entry)
 	return ascii, err == nil && entry == strings.ToLower(entry) && len(ascii) <= maxDomainLength && domainShape.MatchString(ascii)
-}
-
-// workspaceDomainALabels is domains, entries of DISPATCH_SIGNIN_WORKSPACE_DOMAINS
-// checkSignInSettings took, each as its A-label (workspaceDomainALabel); nil for none.
-func workspaceDomainALabels(domains []string) []string {
-	if len(domains) == 0 {
-		return nil
-	}
-	labels := make([]string, len(domains))
-	for index, domain := range domains {
-		labels[index], _ = workspaceDomainALabel(domain)
-	}
-	return labels
 }
 
 // iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
@@ -75,19 +62,13 @@ func signInClientSettings(boot bootConfig) []struct{ name, value string } {
 	}
 }
 
-// signInSettings are all seven sign-in settings, each with boot's value: the client's three, then
+// signInSettings are all six sign-in settings, each with boot's value: the client's three, then
 // the group a Cognito sign-in pool admits and the Workspace domain Google admits, of which a
-// sign-in takes exactly one, the switch that admits Google accounts outside that domain too ("1"
-// when on), and the Workspace's other domains, as written.
+// sign-in takes exactly one, and the Workspace's other domains, as written.
 func signInSettings(boot bootConfig) []struct{ name, value string } {
-	outside := ""
-	if boot.SignInOutside {
-		outside = "1"
-	}
 	return append(signInClientSettings(boot),
 		struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup},
 		struct{ name, value string }{"DISPATCH_SIGNIN_DOMAIN", boot.SignInDomain},
-		struct{ name, value string }{"DISPATCH_SIGNIN_OUTSIDE", outside},
 		struct{ name, value string }{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(boot.SignInWorkspaceDomains, ",")},
 	)
 }
@@ -109,18 +90,18 @@ func signInSettingNames() string {
 // checkSignInSettings refuses the sign-in settings identityMode (DISPATCH_IDENTITY) cannot take.
 // Any of them beside header identity, which is only for tests and local harnesses, is refused
 // first. IAP identity takes DISPATCH_SIGNIN_DOMAIN alone (checkIAPSignInSettings). Then the first
-// of these refuses: outside sign-in without a domain, whose Google sign-in it widens; the
-// Workspace's other domains without the domain they are listed beside; a group and a domain both
-// set; some of the settings but not the issuer, client ID, client secret and one of the group or
-// domain; a domain under an issuer other than Google's, whose tokens carry no `hd`, unless the
-// test hooks put the dev OIDC issuer in Google's place (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a
-// domain that is not a lowercase DNS name; an entry of the Workspace's other domains that is empty
-// or not a lowercase domain name IDNA lookup takes (workspaceDomainALabel), named by its position;
-// under Google's issuer, an outside origin whose host Google refuses in an OAuth redirect URI,
-// since the Google client must list `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the
-// rule gcp:Dispatch holds its outsideOrigin input to with sign-in on); a group under Google's
-// issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
-// secret and group of a Cognito pool reaches none of them.
+// of these refuses: the Workspace's other domains without the domain they are listed beside; a
+// group and a domain both set; some of the settings but not the issuer, client ID, client secret
+// and one of the group or domain; a domain under an issuer other than Google's, whose tokens carry
+// no `hd`, unless the test hooks put the dev OIDC issuer in Google's place
+// (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; an entry of the
+// Workspace's other domains that is empty or not a lowercase domain name IDNA lookup takes
+// (workspaceDomainALabel), named by its position; under Google's issuer, an outside origin whose
+// host Google refuses in an OAuth redirect URI, since the Google client must list
+// `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the rule gcp:Dispatch holds its
+// outsideOrigin input to with sign-in on); a group under Google's issuer, whose tokens carry no
+// `cognito:groups`. A deployment with the issuer, client ID, client secret and group of a Cognito
+// pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
 	var set []string
 	for _, setting := range signInSettings(boot) {
@@ -133,9 +114,6 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if identityMode == "iap" {
 		return checkIAPSignInSettings(boot)
-	}
-	if boot.SignInOutside && boot.SignInDomain == "" {
-		return errors.New("DISPATCH_SIGNIN_OUTSIDE needs DISPATCH_SIGNIN_DOMAIN: it admits Google accounts outside the Workspace domain Dispatch signs people in for with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_OUTSIDE")
 	}
 	if len(boot.SignInWorkspaceDomains) > 0 && boot.SignInDomain == "" {
 		return errors.New("DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN: it lists the other domains of the Workspace whose people sign in with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
@@ -192,9 +170,9 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 // checkIAPSignInSettings refuses the sign-in and origin settings IAP identity cannot take.
 // Identity-Aware Proxy signs people in at IAP's one origin, so Dispatch runs no sign-in of its own:
 // the issuer, client ID, client secret and group are refused, each by name, and so are the outside
-// origin, outside sign-in and the Workspace's other domains, which widen Dispatch's own Google
-// sign-in. DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS name, since it is who may use
-// Dispatch: an account whose assertion's hd is that domain.
+// origin and the Workspace's other domains, which only a rule admitting people from outside reads.
+// DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS name, since it is who may use Dispatch: an
+// account whose assertion's hd is that domain.
 func checkIAPSignInSettings(boot bootConfig) error {
 	var refused []string
 	for _, setting := range append(signInClientSettings(boot), struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup}) {
@@ -204,9 +182,6 @@ func checkIAPSignInSettings(boot bootConfig) error {
 	}
 	if boot.OutsideOrigin != "" {
 		refused = append(refused, "DISPATCH_OUTSIDE_ORIGIN")
-	}
-	if boot.SignInOutside {
-		refused = append(refused, "DISPATCH_SIGNIN_OUTSIDE")
 	}
 	if len(boot.SignInWorkspaceDomains) > 0 {
 		refused = append(refused, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
@@ -229,23 +204,14 @@ func checkDomainShape(domain string) error {
 	return nil
 }
 
-// signInRule is who boot's sign-in admits: the members of a Cognito pool's group; the people of a
-// Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
-// them in to the load balancer in front of it; or, with DISPATCH_SIGNIN_OUTSIDE=1 (which IAP
-// identity refuses), those people and the verified Google accounts outside the domain that lister
-// says a project names directly, at an address on no domain the Workspace owns (the domain and
-// DISPATCH_SIGNIN_WORKSPACE_DOMAINS, which only this rule reads, each entry as its A-label:
-// workspaceDomainALabels). It is nil when boot configures neither a group nor a domain (header
-// identity, dev sign-in, or a cookie server with no DISPATCH_SIGNIN_* setting, which admits nobody
-// at all), matching signInFlow. Outside sign-in with no lister is refused, so no path builds a rule
-// that cannot read the access lists.
+// signInRule is who boot's sign-in admits: the members of a Cognito pool's group, or the people of
+// a Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
+// them in to the load balancer in front of it. No Google sign-in admits an account outside the
+// domain. It is nil when boot configures neither a group nor a domain (header identity, dev
+// sign-in, or a cookie server with no DISPATCH_SIGNIN_* setting, which admits nobody at all),
+// matching signInFlow.
 func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, error) {
 	switch {
-	case boot.SignInDomain != "" && boot.SignInOutside:
-		if lister == nil {
-			return nil, errors.New("DISPATCH_SIGNIN_OUTSIDE=1 reads the projects' access lists, and this server has no database to read them from")
-		}
-		return identity.OutsideRule{DomainRule: identity.DomainRule{Domain: boot.SignInDomain}, People: lister, WorkspaceDomains: workspaceDomainALabels(boot.SignInWorkspaceDomains)}, nil
 	case boot.SignInDomain != "":
 		return identity.DomainRule{Domain: boot.SignInDomain}, nil
 	case boot.SignInGroup != "":
@@ -255,9 +221,9 @@ func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, e
 	}
 }
 
-// accessLister is who outside sign-in asks whether some project names an email directly, as its
-// owner or on its access list as a person and never through a group: access.Listed over database's
-// pool. It is nil with no database.
+// accessLister is who a rule that admits restricted members asks whether some project names an
+// email directly, as its owner or on its access list as a person and never through a group:
+// access.Listed over database's pool. It is nil with no database.
 func accessLister(database *store.Store) identity.Lister {
 	if database == nil {
 		return nil
@@ -265,19 +231,6 @@ func accessLister(database *store.Store) identity.Lister {
 	return identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
 		return access.Listed(ctx, database.Pool, email)
 	})
-}
-
-// parseSignInOutside reads DISPATCH_SIGNIN_OUTSIDE's value: "1" turns outside sign-in on, unset or
-// empty leaves it off, and any other value refuses startup, without echoing it.
-func parseSignInOutside(raw string) (bool, error) {
-	switch value := strings.TrimSpace(raw); value {
-	case "":
-		return false, nil
-	case "1":
-		return true, nil
-	default:
-		return false, fmt.Errorf("DISPATCH_SIGNIN_OUTSIDE must be 1 or unset; got a value of %d characters", utf8.RuneCountInString(value))
-	}
 }
 
 // parseOutsideOrigin reads DISPATCH_OUTSIDE_ORIGIN's value, raw: empty for none; else the origin

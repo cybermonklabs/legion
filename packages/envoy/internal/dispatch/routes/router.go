@@ -73,11 +73,11 @@ type AppContext struct {
 	// /auth/whoami names it after ServerURL's.
 	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
-	// members of a Cognito pool's group, the people of a Google Workspace domain, or those people
-	// and the accounts outside the domain that a project names; the API holds a restricted
-	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission). A nil SignIn is a
-	// test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
-	// answer 503.
+	// members of a Cognito pool's group, or the people of a Google Workspace domain, beside them
+	// the restricted members a project names where the rule admits those; the API holds a
+	// restricted member's tokens to that same rule (api.DepsInput.RestrictedAdmission). A nil
+	// SignIn is a test/local header-identity or dev sign-in server, whose /auth/start and
+	// /auth/callback answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
 	// InsecureCookie drops the Secure attribute from every cookie the router sets, for browsers
@@ -418,14 +418,11 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 // ───── auth ─────────────────────────────────────────────────────────────────
 
 // authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
-// the request came to (callbackURL), with the Workspace domain named as hd only where the rule
-// asks for it (SignInRule.DomainHint), and Google's account chooser asked for only where the
-// request carries prompt=select_account (selectAccountPrompt), which the link of a refused
-// outside sign-in does. The sign-in in flight (its state, nonce, the page it returns to and when
-// it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key derived from
-// the current signing key (signOAuthState), and no process keeps it: whichever process holding
-// that key the issuer's redirect reaches completes the sign-in. An issuer not yet discovered is
-// answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// the request came to (callbackURL). The sign-in in flight (its state, nonce, the page it returns
+// to and when it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key
+// derived from the current signing key (signOAuthState), and no process keeps it: whichever process
+// holding that key the issuer's redirect reaches completes the sign-in. An issuer not yet
+// discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -441,10 +438,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce, oidc.AuthOptions{
-		DomainHint:    r.ctx.SignInRule.DomainHint(),
-		SelectAccount: req.URL.Query().Get("prompt") == selectAccountPrompt,
-	})
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce)
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -468,15 +462,11 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // authCallback completes a sign-in the issuer redirected back: it exchanges the code for the
 // person's ID token and signs in only a person SignInRule admits (SignInRule.Person), keeping the
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
-// their pool username carries; under a domain, by the email of a Google account of the domain,
-// and, under outside sign-in, also by that of a verified Google account outside the domain that a
-// project names, as a restricted member; the account's subject is recorded with the sign-in, which
-// ends the address's sessions when another account held it (auth.PeopleStore.SignInSubject); an
-// account outside the domain never takes the address of a full member under another account: the
-// store records nothing (auth.ErrAddressHeldByMember), and the callback answers the refusal page
-// saying so, with no cookie, as it answers a rule's refusal. The callback URL the exchange names
-// is the one of the origin the request came to (callbackURL), the one authStart sent the issuer
-// from that origin.
+// their pool username carries; under a domain, by the email of a Google account of the domain, and
+// the account's subject is recorded with the sign-in, which ends the address's sessions when
+// another account held it (auth.PeopleStore.SignInSubject). The callback URL the exchange names is
+// the one of the origin the request came to (callbackURL), the one authStart sent the issuer from
+// that origin.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -484,8 +474,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
 // process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502. Access lists the rule cannot read
-// (identity.ErrMembershipUnreadable) are no refusal: 500 IDENTITY_ERROR, and no cookie.
+// SIGNIN_UNAVAILABLE; any other failed exchange 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -519,25 +508,14 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	person, err := r.ctx.SignInRule.Person(req.Context(), session.Claims)
-	if errors.Is(err, identity.ErrMembershipUnreadable) {
-		// The rule could not decide (the access lists did not answer): no refusal, and no cookie.
-		slog.Error("dispatch: sign-in failed: the access lists could not be read", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "error", err)...)
-		identity.WriteError(w, err)
-		return
-	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-		writeSignInRefusedPage(w, person.Email, err, r.ctx.SignInRule.OffersAccountChooser())
+		writeSignInRefusedPage(w, person.Email, err)
 		return
 	}
 	email := person.Email
 	subject := r.ctx.SignInRule.Subject(session.Claims)
 	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, person, subject, session.RefreshToken); err != nil {
-		if errors.Is(err, auth.ErrAddressHeldByMember) {
-			slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-			writeSignInRefusedPage(w, email, err, r.ctx.SignInRule.OffersAccountChooser())
-			return
-		}
 		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
 		writeError(w, http.StatusInternalServerError, "record sign-in")
 		return
@@ -1165,34 +1143,18 @@ func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 	api.WriteJSON(w, status, map[string]string{"error": message, "code": code})
 }
 
-// selectAccountPrompt is the value of /auth/start's prompt query that asks Google for its account
-// chooser (oidc.AuthOptions.SelectAccount): the one the link of a refused outside sign-in carries.
-const selectAccountPrompt = "select_account"
-
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from
 // the issuer where JSON would be unreadable, for a person the issuer vouched for but Dispatch does
-// not admit, with the reason: one outside the group or the domain, an account outside the domain
-// that no project's access list names, an account outside the Workspace at an address on a domain
-// the Workspace owns (identity.ErrWorkspaceAddress) or at the address of one of its members
-// (auth.ErrAddressHeldByMember), or one whose email Google has not verified, each named by email;
-// a Google sign-in that carries no email; or a sign-in that names nobody by email.
-// Where the rule offers it (chooser: SignInRule.OffersAccountChooser, outside sign-in alone), its
-// link to sign in with a different account asks Google for its account chooser, since a browser
-// holding one Google session would otherwise be sent straight back with the account just refused;
-// under every other rule the link is as it always was.
-func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error, chooser bool) {
+// not admit, with the reason: one outside the group or the domain, or whose email Google has not
+// verified, each named by email; a Google sign-in that carries no email; or a sign-in that names
+// nobody by email.
+func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
 	message := "This sign-in does not name a person by email. Sign in again, or with a different account."
 	switch {
 	case errors.Is(reason, identity.ErrNotMember):
 		message = html.EscapeString(email) + " is not in the group that may use Dispatch. Ask an administrator to add you, then sign in again."
-	case errors.Is(reason, identity.ErrNotListed):
-		message = html.EscapeString(email) + " is not on the access list of any Dispatch project. Ask a project's owner to add this address, then sign in again."
 	case errors.Is(reason, identity.ErrNotInDomain):
 		message = html.EscapeString(email) + " is not in the domain that may use Dispatch. Sign in with your Google Workspace account."
-	case errors.Is(reason, identity.ErrWorkspaceAddress):
-		message = html.EscapeString(email) + " is an address on a domain the Google Workspace owns, so it signs in only as a Workspace account. Sign in with your Google Workspace account."
-	case errors.Is(reason, auth.ErrAddressHeldByMember):
-		message = html.EscapeString(email) + " is the address of a member of the Google Workspace, so a Google account outside the Workspace cannot sign in with it. Sign in with your Google Workspace account."
 	case errors.Is(reason, identity.ErrEmailNotVerified):
 		message = html.EscapeString(email) + ": email not verified. Google has not verified this account's email address, so Dispatch cannot name you by it."
 	case errors.Is(reason, identity.ErrNoEmail):
@@ -1201,18 +1163,14 @@ func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error, c
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
-	start := "/auth/start"
-	if chooser {
-		start += "?prompt=" + selectAccountPrompt
-	}
 	fmt.Fprintf(w, `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dispatch: sign-in refused</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem">
 <h1>Sign-in refused</h1>
 <p>%s</p>
-<p><a href="%s">Sign in with a different account</a></p>
+<p><a href="/auth/start">Sign in with a different account</a></p>
 </body></html>
-`, message, start)
+`, message)
 }
 
 func randomToken() (string, error) {

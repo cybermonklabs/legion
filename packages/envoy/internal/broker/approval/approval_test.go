@@ -576,9 +576,9 @@ func TestTheCallbackRefusesAndMakesNoSession(t *testing.T) {
 		b, callback := started(t, claims)
 		refused(t, b.Get(t, callback), http.StatusForbidden)
 	})
-	// Dispatch's outside sign-in needs the Google consent screen External, and the broker's client
-	// shares that one screen, so Google then issues the broker ID tokens for accounts of no
-	// Workspace too: the hd check is the broker's only gate against them.
+	// The broker's client shares one consent screen with Dispatch's, and with it set External
+	// Google issues the broker ID tokens for accounts of no Workspace too: the hd check is the
+	// broker's only gate against them.
 	t.Run("a Google account of no Workspace", func(t *testing.T) {
 		claims := person(ada)
 		delete(claims, "hd")

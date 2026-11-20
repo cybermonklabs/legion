@@ -190,7 +190,7 @@ Every other request is answered as `DISPATCH_SERVER_URL`'s.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
 under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
 a value that breaks any of these refuses startup.
-Beside header identity it refuses startup too, whatever `DISPATCH_IDENTITY_HEADER_TRUSTED` says, and beside `DISPATCH_DEV_SIGNIN=1`: each takes whoever a request header or a loopback client names, so anyone who reached the outside origin could name the person they are, as `DISPATCH_SIGNIN_OUTSIDE` is refused beside header identity for the same reason.
+Beside header identity it refuses startup too, whatever `DISPATCH_IDENTITY_HEADER_TRUSTED` says, and beside `DISPATCH_DEV_SIGNIN=1`: each takes whoever a request header or a loopback client names, so anyone who reached the outside origin could name the person they are.
 A dashboard URL of either origin is read as a reference, by the server and by `rebuild-refs`, so a link written on one origin opens on the other.
 
 `DISPATCH_ALLOWED_LOGINS`, `DISPATCH_APP_CLIENT_SECRET` and `DISPATCH_ASSET_STORE_BUCKET` are removed:
@@ -596,8 +596,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
 - `cookie` (the default) accepts signed `dsession` cookies, which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
-  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_OUTSIDE=1` and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
-  `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
+  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
   it issues no `dsession` cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
@@ -626,24 +626,22 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-- With `DISPATCH_SIGNIN_OUTSIDE=1` beside the domain, a verified Google account outside it signs in too, as a restricted member (`people.member_kind`), while some project's owner is that email or some project's access list names it directly (`access.Listed`; a group on a list never admits such an account).
-  An address on a domain the Workspace owns, or on a subdomain of one, that is not the Workspace's account (a personal Google account, or another Workspace's) is refused without reading the lists, with a 403 page saying such an address signs in only as a Workspace account (`identity.ErrWorkspaceAddress`), else it would read every project that lists the member, even before the member's first sign-in.
-  The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`), which only this rule reads, so a deployment without `DISPATCH_SIGNIN_OUTSIDE=1` answers as before whatever it lists;
+- A restricted member (`people.member_kind` `restricted`) is a person from outside the domain whom some project's owner is or some project's access list names directly (`access.Listed`; a group on a list never admits such a person).
+  No Google sign-in admits one: an account whose `hd` is not the domain gets the 403 page saying it is not in the domain, whatever a list names, at the canonical origin and at the outside origin alike, so the Google client's OAuth consent screen stays Internal.
+  A person from outside signs in another way, and the rule that admits restricted members (`identity.OutsideRule`) answers for them.
+  An address on a domain the Workspace owns, or on a subdomain of one, is never a restricted member's: the rule refuses it without reading the lists (`identity.ErrWorkspaceAddress`, `identity.WorkspaceAddress`), else a person from outside holding it would read every project that lists the member, even before the member's first sign-in.
+  The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`): list every domain the Workspace owns;
   a Workspace account (`hd` the domain) still signs in as a full member at an address on any of them.
   An internationalized entry is written in Unicode or as its A-labels, and the rule holds it as its A-labels (`idna.Lookup.ToASCII`);
   an address's domain is compared without one trailing dot and, when written in Unicode, also as IDNA lookup maps it, so `bob@bücher.example`, `Bob@BÜCHER.example` and the sign-in domain in fullwidth letters are refused as their A-label spellings are.
-  For a domain the Workspace owns that the setting does not list, an account outside the Workspace never takes the address of a full member who signed in under another Google account, or under none:
-  `PgPeopleStore.SignInSubject` records nothing in the transaction that would take the address (`auth.ErrAddressHeldByMember`), so the member's sessions and refresh token stand, and the callback answers a 403 page saying the address is a Workspace member's, with no cookie, logged `msg="dispatch: sign-in refused"` with its `reason`.
-  An account outside the domain that no list names gets a 403 page saying so and naming it.
-  The hourly confirmation (below) runs the same rule, so an account no list names any more, or whose address is now on a domain the Workspace owns, is signed out at its next request past the hour, and one the setting no longer admits too;
-  a list that cannot be read is no refusal: the callback answers `500 IDENTITY_ERROR` with no cookie, and a confirmation keeps the sign-in and fails only the request, as an issuer that cannot be reached does.
-  The authorization request then names no `hd` on any origin, since `hd` narrows Google's account chooser to the domain and would hide an outside account; it never decides who signs in.
-  The Google client's OAuth consent screen's audience must be External, which with the scopes Dispatch asks for (`openid`, `email`, `profile`) needs no test-user list and keeps refresh tokens past seven days in Testing status; the client lists `<DISPATCH_SERVER_URL>/auth/callback` and, with an outside origin, `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`.
+  For a domain the Workspace owns that the setting does not list, a restricted member never takes the address of a full member who signed in under another Google account, or under none:
+  `PgPeopleStore.SignInSubject` records nothing in the transaction that would take the address (`auth.ErrAddressHeldByMember`), so the member's sessions and refresh token stand.
+  A restricted member's Google sign-in that an earlier build admitted ends at its next hourly confirmation (below), since the refreshed account is not in the domain.
 
-- A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that signs them in at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`, the decision `identity.OutsideRule.Person` makes for an account outside the Workspace):
-  it acts only while `DISPATCH_SIGNIN_OUTSIDE=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
+- A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that admits them at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`):
+  it acts only while the deployment admits restricted members, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
   lists that cannot be read are `503 IDENTITY_UNAVAILABLE`, never an accept.
-  So turning the setting off, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation.
+  So a deployment that stops admitting restricted members, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation.
   None of these revokes the token, so it acts again once all hold again;
   another Google account's sign-in to the address revokes a personal token (below).
   A personal token's owner's member kind is read in the token's own lookup (`api.personalTokenActor`), by the owner in the form `people.email` holds (`canonical_login`, migration `20261117000831`: `model.CanonicalLogin` in SQL, every Unicode space trimmed and A-Z lowered), whatever case or surrounding space the token's row spells it with, so a full member's token, and one whose owner has no `people` row, reads nothing more and answers as before.
@@ -661,10 +659,10 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 - A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
   `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
   `NOT_LISTED` once no list names the account;
-  or `OUTSIDE_SIGNIN_OFF` for a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off.
+  or `OUTSIDE_SIGNIN_OFF` for a restricted member once the deployment admits nobody from outside.
   It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
   A sign-out, an expired cookie, a person a list still names at an address on no domain the Workspace owns, an address another account or another sign-in holds now and a full member are told none;
-  a deployment that never set `DISPATCH_SIGNIN_OUTSIDE` holds no restricted member, so it answers as it always has.
+  a deployment that never admitted a restricted member holds none, so it answers as it always has.
   A person who signed out and whom the rule would refuse now is told why too (`WORKSPACE_ADDRESS` or `NOT_LISTED`), at another browser still holding the session the sign-out ended.
 
 - A person is their email, so an address passed from one account to another is one person.
@@ -4355,8 +4353,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/start` (GET; none)
 
   Start Google sign-in at the sign-in issuer:
-  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and, unless `DISPATCH_SIGNIN_OUTSIDE=1`, the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
-  With `?prompt=select_account`, the link a refused outside sign-in offers, it asks Google for its account chooser too (`prompt=select_account consent`), so a browser holding one Google session can pick another account rather than be sent back with the one just refused.
+  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
   The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
@@ -4366,9 +4363,7 @@ Each item below names a path with its method and identity, then its purpose.
   Exchange the issuer's code and sign in the person `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` admits:
   under a group, named by the email in their pool username, anyone outside the group refused with a 403 page naming them;
   under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason;
-  with `DISPATCH_SIGNIN_OUTSIDE=1`, also, as a restricted member, a verified Google account outside the domain that a project's owner is or a project's access list names directly, anyone else outside the domain refused with a 403 page saying no access list names them, and an account outside the Workspace at an address on a domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`, or a subdomain of one) refused with a 403 page saying such an address signs in only as a Workspace account.
   Record the person, their member kind and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), issue the cookie.
-  An account outside the Workspace at the address of a full member under another account, or under none, is not recorded and gets a 403 page saying the address is a Workspace member's, with no cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
   `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read;
