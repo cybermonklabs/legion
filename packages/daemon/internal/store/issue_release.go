@@ -128,10 +128,15 @@ type releaseMark struct {
 	kind string
 }
 
-// holds is whether row is one of the rows this mark's release queued. Every row of a release was
-// written in the mark's own transaction, so its id lies between the release's first row and its
-// last; a row outside that range belongs to a release this mark is not.
-func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
+// rowBounds are the first and last rows this mark's release queued. Every row of a release was
+// written in the mark's own transaction, so its id lies inside these bounds.
+func (m releaseMark) rowBounds() (first, last int64) { return m.first, m.last }
+
+// holds is whether row is one of the rows this mark's release queued.
+func (m releaseMark) holds(row int64) bool {
+	first, last := m.rowBounds()
+	return row >= first && row <= last
+}
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
@@ -437,10 +442,11 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !may {
 			return nil
 		}
+		first, last := mark.rowBounds()
 		var saving bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
-			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			release.Issue, first, last).Scan(&saving); err != nil {
 			return err
 		}
 		if saving {

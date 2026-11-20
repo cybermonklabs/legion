@@ -65,10 +65,10 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 }
 
 // IssueRelease authorizes the pod of an issue that is IN the workflow — the mirror of
-// IssueSuspension, which authorizes one that has left it — and it refuses or waits on the same
-// fences in the same order: generations unmoved, the pod not taken up again, the tree's cleanup
+// IssueSuspension, which authorizes one that has left it. It refuses or waits on the same fences
+// in the same order: generations unmoved, the pod not taken up again, the tree's cleanup
 // unreserved, a wait while one of the release's own role stops is unrun or a stored claim may
-// still hold a process, and last a wait while the release's own workspace save is queued.
+// still hold a process. It then makes the release-only wait while its own workspace save is queued.
 func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -143,14 +143,14 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 			// lease, the pod still holds the only copy of its workspace.
 			name: "the release's own workspace save is still queued", state: supervise.StateSuspended, wantWait: "workspace save",
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error,lease_token,lease_until) values
-				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"tree_generation":1,"role":"architect"}',
+				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				3,now() + interval '1 hour','the bundle could not be built','expired',now() - interval '1 minute')`,
 		},
 		{
 			// A save below the mark's range is an earlier release's, and holds no pod of this one.
 			name: "an earlier release's save is still queued", state: supervise.StateSuspended, want: ReleaseActs,
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
-				(4,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"tree_generation":1,"role":"architect"}',
+				(4,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				2,now() + interval '1 hour','the bundle could not be built')`,
 		},
 		{
@@ -160,14 +160,14 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 			wantCause: ReleaseCauseUnauthorized,
 			change: `update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208';
 				insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
-				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"tree_generation":1,"role":"architect"}',
+				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				1,now() + interval '1 hour','the bundle could not be built')`,
 		},
 		{
 			name: "a role started again while the save is queued", state: supervise.StateSuspended,
 			lastStart: 7, want: ReleaseCancel, wantCause: ReleaseCauseOvertaken,
 			change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
-				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"tree_generation":1,"role":"architect"}',
+				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				1,now() + interval '1 hour','the bundle could not be built')`,
 		},
 	} {
