@@ -444,7 +444,8 @@ func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 }
 
 // Neither a retried attempt's log line nor the final failure carries the provisioning token, even
-// where git echoes it: each says *** in its place.
+// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
+// redact.Writer), and anywhere else the token says *** in its place.
 func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.failClones(t,
@@ -462,10 +463,10 @@ func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("the fetch logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://x-access-token:***@github.com/acme/widgets/'"} {
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://github.com/acme/widgets/'"} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}

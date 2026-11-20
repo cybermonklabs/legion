@@ -67,7 +67,7 @@ type AuthCallout struct {
 // callout's 1.5 s answer budget is unchanged.
 //
 // It does not catch a replica whose request handler deadlocks while its process runs: nats.go
-// answers a PING from its read loop (nats.go v1.53.1 processPing, called at parser.go:324), not
+// answers a PING from its read loop (nats.go v1.55.0 processPing at nats.go:4278, called at parser.go:324), not
 // from a handler, so the replica keeps its place in the group. Only the service can leave the
 // group then, by unsubscribing or closing its connection; that is INFRA-840's to provide.
 //

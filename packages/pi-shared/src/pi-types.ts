@@ -347,6 +347,10 @@ export interface AgentEndEvent {
    * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
    * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
+  /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
+   * be delivered (`agent-session.ts:5936-5943` at the pinned tag): the pane is idle until the
+   * job's result starts the next run. */
+  readonly awaitingAsyncWork?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];
 }
