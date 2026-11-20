@@ -212,7 +212,7 @@ func releaseBefore(first, second SettlementCandidate) record.PullRequest {
 }
 
 // rememberedOf is pr's remembered fence of head, nil when it remembers none.
-func rememberedOf(pr record.PullRequest, head string) *record.SettledHead {
+func rememberedOf(pr record.PullRequest, head string) *record.Settlement {
 	for _, settled := range pr.SettledHeads {
 		if settled.Head == head {
 			return &settled

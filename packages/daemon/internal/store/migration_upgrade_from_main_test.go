@@ -98,8 +98,8 @@ import (
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
-// dispatch://INFRA-1575's intake failures (20261120001432) create intake_failures and
-// cleared_pull_requests, add pull_requests.settled_heads at its default, the empty list, and
+// dispatch://INFRA-1575's intake failures (20261120001432) create intake_failures,
+// cleared_pull_requests and pull_request_settled_heads, all three empty, add
 // dispatch_issues.status_seq, null on every row it finds, and touch no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,

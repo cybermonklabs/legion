@@ -2170,22 +2170,25 @@ delete from outbox where kind = 'phase_ended';
 The release that gives up on an intake message whose handling keeps failing is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-1575`.
 Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
 That release keeps each failing message whole in the daemon's database, tells the controller of each message it gives up (the controller notice kind `intake-gave-up`), and lets the operator (`legion intake replay` and `legion intake discard`) or the controller (`replay_give_up` and `discard_give_up`) replay or discard it ([A message the intake gave up](https://cybermonklabs.github.io/legion/legion/troubleshooting/#a-message-the-intake-gave-up)).
-Its migration `20261120001432_intake_failures` adds two tables and two columns, and it drops nothing:
+Its migration `20261120001432_intake_failures` adds three tables and one column, and it drops nothing:
 
 - `intake_failures` holds each message of a durable consumer whose handling failed, with its subject, its headers and its payload.
   A row is an open failure until a later delivery succeeds or the intake gives the message up, and from then on a given-up record, which a replay or a discard closes and which stays in the table after that.
 
 - `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the newest lifecycle clock the record applied (`head_updated_at`), so a late opened or reopened event of that pull request no newer than that clock records nothing, whatever its head.
 
-- `pull_requests.settled_heads` keeps, for each of the last heads a CI settlement applied on, that head's check fence as the last settlement applied on it left it: the newest run of each check, the newest commit status of each context, the checks that came to failed and to cancelled, and the listener's numbering.
+- `pull_request_settled_heads` keeps, for each of the last 16 heads a CI settlement of a pull request applied on, that head's check fence as the last settlement applied on it left it: the newest run of each check, the newest commit status of each context, the checks that came to failed and to cancelled, and the listener's numbering.
+  Its rows are of two kinds, at most 16 of each for a pull request: the pull request's own memory (`pull_request`), and, while a head run is open, the memory that run was anchored with (`head_run`).
   A settlement of a head after a reopen, a new generation's clear, or the branch's return to that head is weighed against that entry, so an earlier settlement of the head is stale as it is while the fence stands.
 
 - `dispatch_issues.status_seq` is the sequence of the Dispatch event at which the mirror last saw the issue's status change, so a person's approval of a parked root's spec that reaches the daemon late queues the root only when no status change came after the approval.
 
-The earlier release never reads the two tables or the two columns, so the rollback leaves both tables and both columns standing.
-That release's own writes leave the two columns as they stand, and a row it creates takes the column's default: an empty list, or null.
+The earlier release never reads the three tables or the column, so the rollback leaves the three tables and the column standing.
+That release's own writes leave the column as it stands, and a row it creates takes the column's default, null.
+It writes no row of `pull_request_settled_heads`, and a pull request row it deletes, at a new generation's clear, takes that pull request's rows of it along (`on delete cascade`).
 At the roll forward `Migrate` finds the migration's version recorded and applies nothing, and this release reads each table and column as it stands.
 `status_seq` can then stand at a sequence older than the issue's newest status change, which only lets a late approval queue the root, as the earlier release did.
+`pull_request_settled_heads` then holds what this release wrote before the rollback, and nothing of a settlement the earlier release applied.
 Under the earlier daemon, `legion intake` finds no route (404), and the state carries no `intakeGiveUps`.
 The controller's `replay_give_up` and `discard_give_up` never reach the earlier daemon: it refuses this release's pi-legion with 409 at `legion controller start` and at the controller's registration, since the two speak different daemon API contracts, and the earlier release's pi-legion has neither tool.
 
@@ -2995,7 +2998,7 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
-20261120001432_intake_failures adds the tables `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_heads` and `dispatch_issues.status_seq`, and touches none of the six, so the block holds over it and leaves both tables and both columns standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
+20261120001432_intake_failures adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads` and the column `dispatch_issues.status_seq`, and touches none of the six, so the block holds over it and leaves the three tables and the column standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

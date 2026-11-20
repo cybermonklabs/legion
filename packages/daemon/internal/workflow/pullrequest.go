@@ -27,17 +27,18 @@ import (
 // later would otherwise have to remember the mark. Routing them through
 // one function is what makes forgetting it hard rather than easy.
 //
-// The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
+// The two exceptions write the row through the store themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
-// (review.go's checks), which writes the fence the daemon read and decides nothing: the fence is
-// part of the judgement, so the test below would read that write as news, and the daemon
-// recording what it has read of GitHub is no movement of the work. The second is a push onto the
-// base branch (base_push.go's basePush), which records the commit that push left the base at and
-// nothing else: a base that moved is no fact of the pull request, so the test below names that
-// field nowhere and this helper would mark nothing for it either, and the walk the write sits in
-// touches every pull request recorded on the base with each row in hand already, so a second
-// read apiece would buy nothing. A new write site that only records a read belongs with
-// those two; every write that changes what the record knows of the pull request belongs here.
+// (review.go's checks), which writes the fence the daemon read with record.Store.PutPullRequest and
+// decides nothing: the fence is part of the judgement, so the test below would read that write as
+// news, and the daemon recording what it has read of GitHub is no movement of the work. The second
+// is a push onto the base branch (base_push.go's basePush), which records the commit that push left
+// the base at and nothing else (record.Store.SetPullRequestBaseMoved): a base that moved is no fact
+// of the pull request, so the test below names that field nowhere and this helper would mark
+// nothing for it either, and the walk the write sits in touches every pull request recorded on the
+// base with each row in hand already, so a second read apiece would buy nothing. A new write site
+// that only records a read belongs with those two; every write that changes what the record knows
+// of the pull request belongs here.
 //
 // The row the record holds is read first, by its own key in the caller's transaction, so the
 // test has both sides. That read is the cost of never mistaking a repeat for news: GitHub

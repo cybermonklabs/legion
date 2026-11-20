@@ -60,11 +60,12 @@ func (f runFact) apply(pr record.PullRequest) record.PullRequest {
 	}
 }
 
-// stored is pr as the store reads it back (record.PutPullRequest, then scanPullRequest): its
-// failing and cancelled checks and its pushes as lists, never nil; its commit statuses as a list
-// through JSON, as the store keeps them, so each status's created_at reads back as the store
-// gives it; its check runs as they were, nil apart from empty; its moves, its head run and what it
-// remembers of its settled heads through JSON, no settled head as nil.
+// stored is pr as the store reads it back (record.PutPullRequest, then PullRequest): its failing
+// and cancelled checks and its pushes as lists, never nil; its commit statuses as a list through
+// JSON, as the store keeps them, so each status's created_at reads back as the store gives it; its
+// check runs as they were, nil apart from empty; its moves and its head run through JSON; and what
+// it remembers of its settled heads, its own and its open head run's, as the store's own table
+// gives them back (storedSettled).
 func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 	t.Helper()
 	pr.Failing, pr.Cancelled = append([]string{}, pr.Failing...), append([]string{}, pr.Cancelled...)
@@ -85,18 +86,9 @@ func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 	if err := json.Unmarshal(moves, &pr.Moves); err != nil {
 		t.Fatal(err)
 	}
-	settledHeads, err := json.Marshal(append([]record.SettledHead{}, pr.SettledHeads...))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pr.SettledHeads = nil
-	if err := json.Unmarshal(settledHeads, &pr.SettledHeads); err != nil {
-		t.Fatal(err)
-	}
-	if len(pr.SettledHeads) == 0 {
-		pr.SettledHeads = nil
-	}
+	pr.SettledHeads = storedSettled(t, pr.SettledHeads)
 	if pr.Run != nil {
+		settled := pr.Run.Settled
 		encoded, err := json.Marshal(pr.Run)
 		if err != nil {
 			t.Fatal(err)
@@ -105,8 +97,35 @@ func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 		if err := json.Unmarshal(encoded, &pr.Run); err != nil {
 			t.Fatal(err)
 		}
+		pr.Run.Settled = storedSettled(t, settled)
 	}
 	return pr
+}
+
+// storedSettled is what a pull request remembers of its settled heads as the store's table gives
+// it back (record's pull_request_settled_heads): each entry as it was put, in its order, with
+// lists of its own and its statuses' created_at through JSON, and nothing remembered as nil.
+func storedSettled(t *testing.T, settled []record.Settlement) []record.Settlement {
+	t.Helper()
+	if len(settled) == 0 {
+		return nil
+	}
+	read := make([]record.Settlement, len(settled))
+	for i, entry := range settled {
+		entry.CheckRuns, entry.Failing, entry.Cancelled = clone(entry.CheckRuns), clone(entry.Failing), clone(entry.Cancelled)
+		if entry.Statuses != nil {
+			encoded, err := json.Marshal(entry.Statuses)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry.Statuses = nil
+			if err := json.Unmarshal(encoded, &entry.Statuses); err != nil {
+				t.Fatal(err)
+			}
+		}
+		read[i] = entry
+	}
+	return read
 }
 
 func settles(head string, id int64, failing ...string) runFact {
@@ -484,7 +503,7 @@ func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 		remembered = rememberSettled(remembered, record.PullRequest{CheckedHead: fmt.Sprintf("other-%d", i),
 			CheckRuns: []record.AttemptRun{{Name: "ci", ID: int64(10 + i), Head: fmt.Sprintf("other-%d", i)}}})
 	}
-	late := func(remembered []record.SettledHead) bool {
+	late := func(remembered []record.Settlement) bool {
 		_, applied := ApplyCheckSettlement(record.PullRequest{HeadSHA: "head", Failing: []string{}, SettledHeads: remembered}, settlement("head", 4, 1))
 		return applied
 	}

@@ -1,5 +1,6 @@
 -- 20261120001432_intake_failures.up.sql — the intake's record of each message whose handling
--- fails, and the record of each pull request a new generation clears (dispatch://INFRA-1575).
+-- fails, the record of each pull request a new generation clears, and what a pull request
+-- remembers of the heads it settled (dispatch://INFRA-1575).
 --
 -- intake_failures holds one row per failing message of a durable consumer, keyed by the consumer,
 -- the stream sequence and the time JetStream stored the message, with the whole message: its
@@ -16,17 +17,32 @@
 -- event of that pull request no newer than that clock records nothing, whatever its head
 -- (record's clearGeneration, workflow's pullRequestOpened).
 --
--- pull_requests.settled_heads keeps, for each of the last heads a CI settlement of the pull
--- request applied on, that head's check fence as the last settlement applied on it left it
--- (record.PullRequest.SettledHeads, record.SettledHead): the newest run of each check, the newest
--- commit status of each context, the checks that came to failed and to cancelled, and the
--- listener's generation and snapshot, at most 16 heads (classify's maxSettledHeads). The check
--- fence (check_runs, statuses and the columns beside them) holds one head's and is emptied by a
--- reopen and by a new generation's clear, and a settlement of another head moves it there; a
--- settlement of a head the fence does not stand at is weighed against this column's entry for
--- it, so an earlier settlement of a head the branch came back to is stale, as it is against the
--- fence (classify.SettlementFor). An earlier daemon never reads or writes it: its writes leave the
--- column as it stands and a row it creates takes the default, so the way back keeps it.
+-- pull_request_settled_heads keeps, for each of the last heads a CI settlement of a pull request
+-- applied on, that head's check fence as the last settlement applied on it left it: the newest run
+-- of each check, the newest commit status of each context, the checks that came to failed and to
+-- cancelled, and the listener's generation and snapshot, one row for each head, at most 16 heads
+-- of each kind (classify's maxSettledHeads). Kind pull_request is the pull request's own memory
+-- (record.PullRequest.SettledHeads), and kind head_run the memory its open head run was anchored
+-- with (record.HeadRun.Settled), which the run's replay starts from; position is the entry's place
+-- in its list, oldest first. The check fence (check_runs, statuses and the columns beside them)
+-- holds one head's and is emptied by a reopen and by a new generation's clear, and a settlement of
+-- another head moves it there; a settlement of a head the fence does not stand at is weighed
+-- against this table's entry for it, so an earlier settlement of a head the branch came back to
+-- is stale, as it is against the fence (classify.SettlementFor).
+--
+-- It is a table of its own, rather than a column of pull_requests with a copy inside head_run, for
+-- its size. One head's fence of 63 check runs (this change's own pull request at c8fecac2) is 6,638
+-- bytes of JSON, 7,148 as jsonb prints it and 1,725 as stored (pg_column_size, compressed). Written
+-- with the head in each of its runs it would be 9,794 bytes of JSON, so a run or a status of the
+-- row's head is stored with no head, and the read stamps it back (record's storedFence). A pull
+-- request remembering 16 such heads holds 27,600 bytes as stored (114,368 as jsonb prints them),
+-- and 55,200 (228,736) in its 32 rows while a head run is open. As a column, every read of a pull
+-- request would load it - the state's read of each issue and the list reads among them - and every
+-- write would write it whole. Here only the three reads of one pull request load it (record's
+-- loadSettledHeads), and a write writes only the rows whose place or fence changed (record's
+-- putSettledHeads). An earlier daemon never reads or writes the table: a pull request row it
+-- deletes takes that pull request's rows with it (on delete cascade), and the way back keeps the
+-- rest.
 --
 -- dispatch_issues.status_seq is the sequence of the Dispatch event at which the mirror last saw the
 -- issue's status change (record.Postgres.PutDispatchIssue): set when a row is written first, and
@@ -43,12 +59,12 @@
 -- give-ups at every attempt, as 20261113181500_architect_stalled_notices.up.sql says of its own
 -- kind. Its open failures go, because the earlier image applies or drops those messages without
 -- telling the table, so after a roll forward the sweep would give up as passed a message that
--- applied. The given-up records and both tables stay: the earlier image never reads them, and a
--- roll forward finds them in place under this migration's schema_version row, which Migrate does
--- not apply again. Each delete names the project, <PROJECT>, which the operator replaces with its
--- key, and leaves the rows of another project's daemon. The way back is the last paragraph of this
--- header (migrations.WayBack). docs/kubernetes.md carries the same block under "Rolling back the
--- release that gives up on intake messages", as the step an operator runs: internal/textcheck's
+-- applied. The given-up records and the three tables stay: the earlier image never reads them,
+-- and a roll forward finds them in place under this migration's schema_version row, which Migrate
+-- does not apply again. Each delete names the project, <PROJECT>, which the operator replaces with
+-- its key, and leaves the rows of another project's daemon. The way back is the last paragraph of
+-- this header (migrations.WayBack). docs/kubernetes.md carries the same block under "Rolling back
+-- the release that gives up on intake messages", as the step an operator runs: internal/textcheck's
 -- TestTheIntakeGiveUpWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text, and
 -- internal/store's TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads and
 -- TestTheIntakeGiveUpWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack run this one.
@@ -129,7 +145,14 @@ create table cleared_pull_requests (
 -- pull_requests for the same read.
 create index cleared_pull_requests_lower_repo_number on cleared_pull_requests (lower(repo), number);
 
-alter table pull_requests add column settled_heads jsonb not null default '[]'::jsonb;
+create table pull_request_settled_heads (
+  issue text not null references pull_requests (issue) on delete cascade,
+  kind text not null check (kind in ('pull_request', 'head_run')),
+  position smallint not null,
+  head text not null,
+  fence jsonb not null,
+  primary key (issue, kind, head)
+);
 
 alter table dispatch_issues add column status_seq bigint;
 

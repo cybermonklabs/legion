@@ -71,29 +71,32 @@ func columnShape(t *testing.T, store *Store, table, column string) string {
 	return shape
 }
 
-// The columns 20261120001432 adds to two tables an earlier daemon writes, each in the shape that
-// daemon's writes keep working with: pull_requests.settled_heads, never null and the empty list by
-// default, so a row an earlier daemon inserts remembers no settled head; and
-// dispatch_issues.status_seq, a sequence that is null on every row written before it.
+// The column 20261120001432 adds to a table an earlier daemon writes, in the shape that daemon's
+// writes keep working with: dispatch_issues.status_seq, a sequence that is null on every row
+// written before it.
 var intakeFailuresColumns = map[[2]string]string{
-	{"pull_requests", "settled_heads"}: "jsonb nullable=NO default='[]'::jsonb",
-	{"dispatch_issues", "status_seq"}:  "bigint nullable=YES default=",
+	{"dispatch_issues", "status_seq"}: "bigint nullable=YES default=",
 }
 
-// 20261120001432 creates intake_failures and cleared_pull_requests, and adds the two columns
-// intakeFailuresColumns names in their shapes, none of which the database before it holds (the
-// negative control). A record takes the shapes the intake writes — an open
+// intakeFailuresTables is the tables 20261120001432 creates.
+var intakeFailuresTables = []string{"intake_failures", "cleared_pull_requests", "pull_request_settled_heads"}
+
+// 20261120001432 creates the tables intakeFailuresTables names and adds the column
+// intakeFailuresColumns names in its shape, none of which the database before it holds (the
+// negative control), and adds no column to pull_requests: what a pull request remembers of its
+// settled heads is a table of its own. A record takes the shapes the intake writes — an open
 // failure, a give-up, a give-up a replay closed, a discarded one, and a discarded one a replay
 // closed later, which keeps its discard — and the checks refuse each shape no statement may write,
 // each by its own constraint: a closed record that is not given up, a discard with no reason, a
 // close or a give-up that is no known word, either set without its time, and a discard's three
 // columns set apart. A second row of one message, and a second clear of one pull request, are
-// refused by their keys.
+// refused by their keys. A settled head is a row of a pull request the record holds, of one of
+// two kinds, once for each kind and head, and it goes with its pull request's row.
 func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, intakeFailuresVersion-1)
-	for _, table := range []string{"intake_failures", "cleared_pull_requests"} {
+	for _, table := range intakeFailuresTables {
 		if tableExists(t, store, table) {
 			t.Fatalf("the database before %d holds %s; the control wants it absent", intakeFailuresVersion, table)
 		}
@@ -106,10 +109,19 @@ func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the intake's failures: %v", err)
 	}
+	for _, table := range intakeFailuresTables {
+		if !tableExists(t, store, table) {
+			t.Errorf("the database after %d holds no %s", intakeFailuresVersion, table)
+		}
+	}
 	for column, want := range intakeFailuresColumns {
 		if got := columnShape(t, store, column[0], column[1]); got != want {
 			t.Errorf("%s.%s after %d = %q, want %q", column[0], column[1], intakeFailuresVersion, got, want)
 		}
+	}
+	if shape := columnShape(t, store, "pull_requests", "settled_heads"); shape != "" {
+		t.Errorf("pull_requests after %d holds settled_heads (%s), want what a pull request remembers of its settled heads in a table of its own",
+			intakeFailuresVersion, shape)
 	}
 
 	seq := 0
@@ -192,6 +204,51 @@ func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into cleared_pull_requests (repo, number) values ('acme/widgets', 43)`); !errors.As(err, &pgErr) || pgErr.Code != "23502" {
 		t.Errorf("a clear with no time = %v, want it refused (23502)", err)
+	}
+
+	if _, err := store.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'testing', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("record LEGION-208: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
+		failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, planned_red,
+		review_seen, state, checked_head, required_workflows, required_workflows_head, mergeability, merge_state, base, base_moved,
+		conflicting_head)
+		values ('LEGION-208', 'acme/widgets', 1208, 'legion/LEGION-208', 'h2', now(), '[]', '[]', 0, 0,
+		 '[]', 1, 'h2-1', '', false, 0, 'closed', 'h2', '[]', '', '', '', 'main', '', '')`); err != nil {
+		t.Fatalf("record LEGION-208's pull request: %v", err)
+	}
+	for _, row := range []struct {
+		shape            string
+		issue, kind      string
+		position         int
+		head             string
+		code, constraint string
+	}{
+		{shape: "the pull request's own fence of h1", issue: "LEGION-208", kind: "pull_request", position: 0, head: "h1"},
+		{shape: "the pull request's own fence of h2", issue: "LEGION-208", kind: "pull_request", position: 1, head: "h2"},
+		{shape: "its head run's fence of h1", issue: "LEGION-208", kind: "head_run", position: 0, head: "h1"},
+		{shape: "a second fence of h1 of the pull request's own", issue: "LEGION-208", kind: "pull_request", position: 2, head: "h1",
+			code: "23505", constraint: "pull_request_settled_heads_pkey"},
+		{shape: "a fence of no known kind", issue: "LEGION-208", kind: "pull_requests", position: 2, head: "h3",
+			code: "23514", constraint: "pull_request_settled_heads_kind_check"},
+		{shape: "a fence of an issue with no pull request recorded", issue: "LEGION-209", kind: "pull_request", position: 0, head: "h1",
+			code: "23503", constraint: "pull_request_settled_heads_issue_fkey"},
+	} {
+		_, err := store.Pool().Exec(ctx, `insert into pull_request_settled_heads (issue, kind, position, head, fence)
+			values ($1, $2, $3, $4, '{"checkRuns": []}'::jsonb)`, row.issue, row.kind, row.position, row.head)
+		switch {
+		case row.code == "" && err != nil:
+			t.Errorf("%s is refused: %v; the store writes it", row.shape, err)
+		case row.code != "" && (!errors.As(err, &pgErr) || pgErr.Code != row.code || pgErr.ConstraintName != row.constraint):
+			t.Errorf("writing %s = %v, want %s to refuse it (%s)", row.shape, err, row.constraint, row.code)
+		}
+	}
+	if _, err := store.Pool().Exec(ctx, `delete from pull_requests where issue = 'LEGION-208'`); err != nil {
+		t.Fatalf("delete LEGION-208's pull request: %v", err)
+	}
+	if left := rowsAsText(t, store, `select row(pull_request_settled_heads.*)::text from pull_request_settled_heads`); len(left) != 0 {
+		t.Errorf("deleting the pull request left its settled heads %v, want them deleted with it", left)
 	}
 }
 
@@ -325,8 +382,8 @@ func controllerNotices(t *testing.T, store *Store) []record.OutboxRow {
 // release before's decode refuses the intake-gave-up notice and takes the tick. The block runs as
 // the header carries it, as one exec (the simple protocol a psql run uses). Then the notice and
 // the open failure are gone, and the tick, the four records and the clear stand as they were, in
-// both tables: the earlier image reads neither table, and every controller notice left takes its
-// decode.
+// their tables, and every table the migration created stands: the earlier image reads none of
+// them, and every controller notice left takes its decode.
 //
 // The roll forward after the rollback is this release's Migrate, which finds the migration's
 // version recorded and applies nothing, and reads the records where they stood: the two still
@@ -383,7 +440,7 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			t.Errorf("this release reads the notice left as %#v, %v; want the tick as it was queued", decoded, err)
 		}
 	}
-	for _, table := range []string{"intake_failures", "cleared_pull_requests"} {
+	for _, table := range intakeFailuresTables {
 		if !tableExists(t, store, table) {
 			t.Fatalf("the way back dropped %s; the roll forward would find its migration recorded and no table", table)
 		}

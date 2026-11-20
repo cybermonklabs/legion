@@ -80,7 +80,7 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 		pushes    []record.ClassifiedPush
 		names     []record.Named
 		since     time.Time
-		settled   []record.SettledHead
+		settled   []record.Settlement
 	}
 	names, since := clone(run.Names), run.Since
 	before := make([]state, len(run.Steps))

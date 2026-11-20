@@ -731,26 +731,43 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	if head == pr.CheckedHead {
 		return pr, true
 	}
-	var remembered record.SettledHead
+	remembered := record.Settlement{Head: head}
 	for _, settled := range pr.SettledHeads {
 		if settled.Head == head {
 			remembered = settled
 		}
 	}
-	pr.CheckedHead = head
-	pr.Failing, pr.Cancelled = append([]string{}, remembered.Failing...), append([]string{}, remembered.Cancelled...)
-	pr.CheckRuns, pr.Statuses = clone(remembered.CheckRuns), clone(remembered.Statuses)
-	pr.Generation, pr.Snapshot = remembered.Generation, remembered.Snapshot
-	return pr, true
+	return withFence(pr, remembered), true
+}
+
+// fenceEntry is pr's check fence as an entry of what the pull request remembers of its settled
+// heads (record.PullRequest.SettledHeads): the head it stands at and each field of the fence, every
+// list copied, so the entry shares no list with pr.
+func fenceEntry(pr record.PullRequest) record.Settlement {
+	return record.Settlement{Head: pr.CheckedHead, CheckRuns: clone(pr.CheckRuns), Generation: pr.Generation, Snapshot: pr.Snapshot,
+		Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), Statuses: clone(pr.Statuses)}
+}
+
+// withFence is pr with entry as its check fence, standing at entry's head: each field of the entry,
+// every list copied, so pr shares no list with the entry it remembers, and Failing and Cancelled
+// lists even where the entry holds none, as a fence a settlement applied to holds them. fenceEntry
+// is the copy the other way, so a field the fence gains is added to these two copies and to no
+// other.
+func withFence(pr record.PullRequest, entry record.Settlement) record.PullRequest {
+	pr.CheckedHead = entry.Head
+	pr.Failing, pr.Cancelled = append([]string{}, entry.Failing...), append([]string{}, entry.Cancelled...)
+	pr.CheckRuns, pr.Statuses = clone(entry.CheckRuns), clone(entry.Statuses)
+	pr.Generation, pr.Snapshot = entry.Generation, entry.Snapshot
+	return pr
 }
 
 // maxSettledHeads bounds the heads a pull request remembers the fence of
-// (record.PullRequest.SettledHeads), and so the column that keeps them: at most this many heads,
-// each with one run of each check name and one status of each context it reported. A branch comes
-// back to a head it held after a push or two is undone, a reopen, or a new generation, each of
-// which is a head or two back; sixteen cover that with room. A head pushed out of the memory loses
-// only its fence: a settlement of it is weighed against an empty one, as one of a head the record
-// never settled is.
+// (record.PullRequest.SettledHeads), and so the rows of each kind pull_request_settled_heads keeps
+// for it: at most this many heads, each with one run of each check name and one status of each
+// context it reported. A branch comes back to a head it held after a push or two is undone, a
+// reopen, or a new generation, each of which is a head or two back; sixteen cover that with room.
+// A head pushed out of the memory loses only its fence: a settlement of it is weighed against an
+// empty one, as one of a head the record never settled is.
 const maxSettledHeads = 16
 
 // rememberSettled is settled, what the pull request remembers of its settled heads
@@ -759,8 +776,8 @@ const maxSettledHeads = 16
 // settlement applied on last stands, and the oldest heads beyond maxSettledHeads gone. The fence
 // was the remembered one, or the one that stood at the head, when the settlement was applied to it
 // (SettlementFor), so the entry it replaces holds nothing the fence does not.
-func rememberSettled(settled []record.SettledHead, pr record.PullRequest) []record.SettledHead {
-	kept := make([]record.SettledHead, 0, len(settled)+1)
+func rememberSettled(settled []record.Settlement, pr record.PullRequest) []record.Settlement {
+	kept := make([]record.Settlement, 0, len(settled)+1)
 	for _, entry := range settled {
 		if entry.Head != pr.CheckedHead {
 			kept = append(kept, entry)
@@ -769,8 +786,7 @@ func rememberSettled(settled []record.SettledHead, pr record.PullRequest) []reco
 	if drop := len(kept) - (maxSettledHeads - 1); drop > 0 {
 		kept = kept[drop:]
 	}
-	return append(kept, record.SettledHead{Head: pr.CheckedHead, CheckRuns: clone(pr.CheckRuns), Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled),
-		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses)})
+	return append(kept, fenceEntry(pr))
 }
 
 // HeadPushKnown says whether a push the record holds left head, so the record already knows of a

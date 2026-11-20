@@ -856,18 +856,31 @@ type PullRequest struct {
 	// of, so no text names it for the new head (workflow's headChecks).
 	Statuses []CommitStatus
 	// SettledHeads is what the pull request remembers of each of the last heads a CI settlement
-	// applied on: that head's fence as the last settlement applied on it left it (SettledHead), the
-	// head a settlement applied on last at the end, at most classify.maxSettledHeads heads. The
-	// fence above is one head's: a reopen and a new generation's clear empty it, and a settlement
-	// of another head moves it there. A settlement of a head the fence does not stand at is weighed
-	// against, and applied to, that head's entry here, which is the fence it would have met had
-	// nothing moved or emptied it (classify.SettlementFor): each check name keeps its run of highest
-	// id and each context its status of latest created_at, so an earlier settlement of the head,
-	// delivered late or replayed from a message the intake gave up on, however late, is stale as it
-	// is against the fence, and never puts back a run or a status a newer one replaced. A reset
+	// applied on: that head's fence as the last settlement applied on it left it, the head a
+	// settlement applied on last at the end, at most classify.maxSettledHeads heads. Each entry is
+	// a Settlement whose fields are the pull request's fields of the same name as they stood with
+	// CheckedHead at the entry's Head (Settlement says what each holds). The fence above is one
+	// head's: a reopen and a new generation's clear empty it, and a settlement of another head
+	// moves it there. A settlement of a head the fence does not stand at is weighed against, and
+	// applied to, that head's entry here, which is the fence it would have met had nothing moved
+	// or emptied it (classify.SettlementFor): each check name keeps its run of highest id and each
+	// context its status of latest created_at, so an earlier settlement of the head, delivered
+	// late or replayed from a message the intake gave up on, however late, is stale as it is
+	// against the fence, and never puts back a run or a status a newer one replaced. A reset
 	// clears the fence and never this. A head run keeps it as it stood at the run's anchor
 	// (HeadRun.Settled), and a reopen and a new generation keep it, as the pull request's row is.
-	SettledHeads []SettledHead
+	//
+	// The store keeps it in a table of its own, pull_request_settled_heads, one row for each head
+	// (migration 20261120001432 says why), which only the three reads of one pull request load:
+	// PullRequest, PullRequestByNumber and PullRequestByBranch. A list read loads none of it and
+	// marks its records (listedBy), which PutPullRequest refuses.
+	SettledHeads []Settlement
+	// listedBy names the list read that made the record - OpenPullRequests,
+	// OpenPullRequestsOnBase or PullRequestsOf - and is "" for a record one of the three reads of
+	// one pull request made, or that no read made. A list read loads neither SettledHeads nor
+	// HeadRun.Settled, so a write of its record would delete every remembered head: PutPullRequest
+	// refuses it, naming the read.
+	listedBy string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -1152,14 +1165,17 @@ type HeadRun struct {
 	// against it a step that was not stale when it arrived can be: one newer for some check names
 	// and older for others than a later step, or one newer for its statuses alone. Such a step
 	// shows a head again after its fence was reset (classify's settle) when it arrives, and would
-	// show nothing in the replay. omitempty, so a run anchored on a record that remembers nothing,
-	// or before the field, writes and reads as it did. A daemon of the release before the field
-	// writes the run back without it, and the replay after a roll forward then starts from nothing
-	// remembered: the pull request then remembers only what the run's own steps settled, and an
-	// earlier settlement of any other head after a reset of its fence applies, as it did on that
-	// release.
-	Settled []SettledHead `json:"settled,omitempty"`
-	Steps   []RunStep     `json:"steps"`
+	// show nothing in the replay.
+	//
+	// The head_run column's JSON leaves it out: the store keeps it in pull_request_settled_heads as
+	// the rows of kind head_run, beside the pull request's own, and the three reads of one pull
+	// request load it while a run is open (PullRequest.SettledHeads). A daemon of the release
+	// before the table writes the run and never those rows, so after a roll forward an open run
+	// reads the rows this release last wrote: those of the run open at the rollback, a memory no
+	// newer than a later run's anchor, which fences no more than that anchor's would; or none,
+	// where no run was open then, and the replay starts from nothing remembered.
+	Settled []Settlement `json:"-"`
+	Steps   []RunStep    `json:"steps"`
 }
 
 // Named is a move a synchronize named without moving the head: the move from Before to SHA, made by
@@ -1237,10 +1253,23 @@ type RunStep struct {
 	Reopened   bool        `json:"reopened,omitempty"`
 }
 
-// Settlement is a CI settlement of Head as the listener reported it (classify.SettlementFor).
-// Statuses are the commit statuses it named, in context order and with no stamp of their own
-// (CommitStatus.Head); omitempty, so a step stored before the field reads as naming none,
-// and a step of a settlement that names none is the same bytes as before it.
+// Settlement is a CI settlement of Head, in one of two uses. As a step of a head run (RunStep) it
+// is one settlement as the listener reported it (classify.SettlementFor): Statuses are the commit
+// statuses it named, in context order and with no stamp of their own (CommitStatus.Head);
+// omitempty, so a step stored before the field reads as naming none, and a step of a settlement
+// that names none is the same bytes as before it.
+//
+// As an entry of what a pull request remembers of its settled heads (PullRequest.SettledHeads,
+// HeadRun.Settled) it is Head's check fence as the last settlement applied on it left it, the merge
+// of every settlement applied on the head rather than one report of the listener's: CheckRuns is
+// the run of highest id of each check name, stamped with the head and what it concluded; Failing
+// and Cancelled are the names that came to failed and to cancelled, a check GitHub started no run
+// of among them; Generation and Snapshot number the settlement in the listener's record; and
+// Statuses is the status of latest created_at of each context, stamped with the head. CheckRuns
+// is never nil on such an entry: a fence a settlement applied to holds a list
+// (classify.ApplySettlement), and a nil one would read as a head never settled. The store keeps
+// such an entry in a row of its own rather than as this JSON (settled_heads.go), and reads it back
+// as it was put.
 type Settlement struct {
 	Head       string         `json:"head"`
 	CheckRuns  []AttemptRun   `json:"checkRuns"`
@@ -1248,27 +1277,6 @@ type Settlement struct {
 	Snapshot   string         `json:"snapshot"`
 	Failing    []string       `json:"failing"`
 	Cancelled  []string       `json:"cancelled"`
-	Statuses   []CommitStatus `json:"statuses,omitempty"`
-}
-
-// SettledHead is one head's check fence as the last CI settlement applied on it left it
-// (PullRequest.SettledHeads): Head is that head, and each other field is the pull request's field
-// of the same name as it stood with CheckedHead at Head. CheckRuns is the run of highest id of each
-// check name, stamped with the head and what it concluded; Failing and Cancelled are the names
-// that came to failed and to cancelled, a check GitHub started no run of among them; Generation and
-// Snapshot number the settlement in the listener's record; and Statuses is the status of latest
-// created_at of each context, stamped with the head. Unlike a Settlement it is no one report of
-// the listener's but the merge of every settlement applied on the head. CheckRuns is a list on
-// every entry, never null: a fence a settlement applied to holds one (classify.ApplySettlement),
-// and a null one would read as a head never settled. The other lists are omitempty, so an empty
-// list and none are written alike and read back as none.
-type SettledHead struct {
-	Head       string         `json:"head"`
-	CheckRuns  []AttemptRun   `json:"checkRuns"`
-	Failing    []string       `json:"failing,omitempty"`
-	Cancelled  []string       `json:"cancelled,omitempty"`
-	Generation int64          `json:"generation"`
-	Snapshot   string         `json:"snapshot"`
 	Statuses   []CommitStatus `json:"statuses,omitempty"`
 }
 
@@ -1912,7 +1920,13 @@ type Store interface {
 	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
 	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
+	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, and refuses a
+	// record a list read made (PullRequest.SettledHeads says why).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
+	// SetPullRequestBaseMoved writes issue's pull request's BaseMoved, after, and no other field:
+	// the one write a list read's record calls for (workflow's basePush), which PutPullRequest
+	// refuses.
+	SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, issue, after string) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)

@@ -28,11 +28,11 @@ import (
 // record.
 
 // recordTables is every row of the records a GitHub fact can write - the issues, their phase rows,
-// the pull requests, the production checks and the outbox - as text, to compare before and after a
-// fact.
+// the pull requests and what each remembers of its settled heads, the production checks and the
+// outbox - as text, to compare before and after a fact.
 func recordTables(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
-	return tablesText(t, pool, "issues", "phases", "pull_requests", "production_checks", "outbox")
+	return tablesText(t, pool, "issues", "phases", "pull_requests", "pull_request_settled_heads", "production_checks", "outbox")
 }
 
 // tablesText is every row of tables as text.

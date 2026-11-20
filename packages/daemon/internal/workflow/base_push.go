@@ -18,11 +18,14 @@ import (
 // pull request is known to be needed rather than waited for; it decides nothing else, and the phase
 // of every issue is left exactly where it is. The pull request's own facts - a head, a
 // settlement, a review - are what move an issue, and a base that moved is none of them. So the
-// write below is one of the two in this package that call record.Store.PutPullRequest directly
+// write below is one of the two in this package that write a pull request row through the store
 // rather than through the helper that marks the issue moved (putPullRequest): the one field it
 // writes is no news of the pull request (pullRequestNews), the record of when the issue last
 // moved is left where it stands, and the walk holds each row already, which a read apiece would
-// only repeat.
+// only repeat. It writes that field alone (record.Store.SetPullRequestBaseMoved): the walk's
+// records come from a list read, which loads none of what each pull request remembers of its
+// settled heads, and a write of the whole record would delete that memory, which PutPullRequest
+// refuses.
 //
 // One fact serves every pull request on the base, so the fact lock is taken once per (repo, base)
 // push however many pull requests sit on it, rather than once per pull request. The first read is
@@ -61,7 +64,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 			continue
 		}
 		own.BaseMoved = fact.After
-		if err := e.store.PutPullRequest(ctx, tx, *own); err != nil {
+		if err := e.store.SetPullRequestBaseMoved(ctx, tx, own.Issue, fact.After); err != nil {
 			return intake.Result{}, err
 		}
 		// A base that moved is what takes a head from clean to behind, which holds an approved

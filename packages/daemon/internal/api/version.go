@@ -2492,7 +2492,7 @@ package api
 // command `legion intake` reaches an older daemon, which answers it 404.
 //
 // The change carries store migration `20261120001432_intake_failures`, which adds the tables
-// `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_heads` and
+// `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads` and the column
 // `dispatch_issues.status_seq`. An older daemon binary put back on this schema
 // decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
 // an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
@@ -2501,7 +2501,7 @@ package api
 // the migration header's last paragraph (`migrations.WayBack`), the same text `docs/kubernetes.md`
 // carries under "Rolling back the release that gives up on intake messages": with the daemon
 // stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures,
-// each statement naming the project. The given-up records, both tables and both columns stay,
+// each statement naming the project. The given-up records, the three tables and the column stay,
 // which the older binary never reads and a roll forward finds in place.
 // (This entry takes 184: the base of this branch, which merged main, declares 178, as main did when
 // it was read on 2026-11-20, and the open pull requests read that day declared 179, 180, 181, 182
