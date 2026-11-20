@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -55,24 +56,39 @@ func TestLauncherExitBeforeStartResultStaysExited(t *testing.T) {
 	}
 }
 
-// A check record is made only after the exact launcher session that will receive its first slice
-// exists. This is the no-session control for the reconnect row: restoring the old pre-start
-// heldLeakCheck branch lets the caller decide a digest before this refusal.
-func TestServeLeakCheckRefusesBeforePreparingARecordWithoutALauncherSession(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	launchers := testLaunchers()
-	launchers.leakCheck = servedLeakCheck()
-	prepared := false
-	session, err := launchers.serveLeakCheck(ctx, workerToken, "pod", func(_ *launcherSession, served leakguard.Served) (string, error) {
-		prepared = true
-		return served.ManifestSHA256, nil
-	})
-	if session != nil || runtime.LeakCheckCause(err) == "" {
-		t.Fatalf("serveLeakCheck without a session = (%p, %v), want no session and a leak-check refusal", session, err)
-	}
-	if prepared {
-		t.Fatal("serveLeakCheck prepared a record before a launcher session existed")
+// A launcher that never connects is the launch's own failure, not a leak-check refusal: the claim
+// carries no leakCheckCause, on a deployment that names no check as on one that names one, and the
+// error is still the deadline it ran out on, which relaunch's boundRanOut notes as the try's bound.
+// No digest or record is prepared before the exact launcher session that will receive the first
+// slice exists: a caller that decided one before that session connected fails the configured row.
+func TestServeLeakCheckWithoutALauncherIsNoLeakCheckRefusal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setting leakguard.Setting
+		source  LeakCheckReader
+	}{
+		"a deployment that names no check": {setting: leakguard.Setting{}},
+		"a deployment that names one":      {setting: testLeakCheck, source: servedLeakCheck()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now())
+			defer cancel()
+			launchers := testLaunchers()
+			launchers.leakCheckSetting, launchers.leakCheck = tc.setting, tc.source
+			prepared := false
+			session, err := launchers.serveLeakCheck(ctx, workerToken, "pod", func(_ *launcherSession, served leakguard.Served) (string, error) {
+				prepared = true
+				return served.ManifestSHA256, nil
+			})
+			if session != nil || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("serveLeakCheck with no launcher = (%p, %v), want no session and the deadline it ran out on", session, err)
+			}
+			if cause := runtime.LeakCheckCause(err); cause != "" {
+				t.Fatalf("serveLeakCheck with no launcher failed with %v carrying the leak-check cause %q, want none", err, cause)
+			}
+			if prepared {
+				t.Fatal("serveLeakCheck prepared a record before a launcher session existed")
+			}
+		})
 	}
 }
 

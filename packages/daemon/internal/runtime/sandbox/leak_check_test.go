@@ -378,13 +378,14 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 				}
 			}
 
-			// The launcher reconnects, holding the install this daemon pushed.
+			// The launcher reconnects, holding the install this daemon pushed. connectRunning has
+			// the runtime accept that hello before it returns, so the session state reads once it is
+			// ready is the reconnected launcher's.
 			g.leakCheckInstalled = true
 			g.connectRunning(workerToken, kept.Sandbox.Generation)
-			g.eventually("the tester's launcher to reconnect saying it holds the check installed", func() bool {
-				held, connected := r2.launchers.heldLeakCheck(workerToken, kept.Sandbox.PodUID)
+			g.eventually("the tester's reconnected launcher to report its running generation", func() bool {
 				state, ready := r2.launchers.state(workerToken, kept.Sandbox.PodUID)
-				return held && connected && ready && state.Child != nil
+				return ready && state.Child != nil
 			})
 			before := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck)
 			spec := workerSpec(t)
@@ -416,8 +417,8 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 // from the exact tarball the reconnected launcher receives, not from the setting that selected
 // the repository: an image pin can still name an older tag. The served digest is recorded for the
 // kept pod, so this role and later roles run it, and it is immediately PodDrift against the newer
-// setting. Replacing the serve-time decision with the old pre-start heldLeakCheck branch records
-// and tells configured.ManifestSHA256 instead, so this row fails.
+// setting. Deciding the digest before the start from what an earlier hello said, rather than at the
+// serve, records and tells configured.ManifestSHA256 instead, so this row fails.
 func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *testing.T) {
 	configured := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	source := servedLeakCheck()

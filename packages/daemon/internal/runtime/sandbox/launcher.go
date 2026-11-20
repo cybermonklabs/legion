@@ -93,15 +93,9 @@ type launcherSession struct {
 	// leakCheckTag is the tag of the shared public leak check this launcher's hello named, its
 	// own pin ("" for a launcher that takes no check from the daemon), and leakCheckInstalled
 	// whether this launcher process holds that tag installed: as its hello said, or as its answer
-	// to the push on this connection did (serveLeakCheck). leakCheckHeld is what the hello said
-	// alone, and never changes: an install the launcher held before this connection, whether an
-	// earlier daemon pushed it or this daemon did on an earlier connection of the same launcher.
-	// A kept pod with no template record is recorded from the exact body a session is about to
-	// receive, not from leakCheckHeld: a disconnected observation tells nothing about the session
-	// that may reconnect for the push.
+	// to the push on this connection did (serveLeakCheck).
 	leakCheckTag       string
 	leakCheckInstalled bool
-	leakCheckHeld      bool
 }
 
 func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
@@ -116,7 +110,7 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, leakCheckHeld: hello.LeakCheckInstalled}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -238,21 +232,6 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 		return shimwire.LauncherState{}, false
 	}
 	return session.state, true
-}
-
-// heldLeakCheck reports what token's current launcher in podUID said in its hello. It is an
-// observation for diagnostics and tests; serveLeakCheck never uses it to choose a role checker,
-// because a reconnect can change the session after this observation.
-func (d *launchers) heldLeakCheck(token claim.Token, podUID string) (held, connected bool) {
-	d.mu.Lock()
-	session := d.sessions[token]
-	d.mu.Unlock()
-	if session == nil || session.podUID != podUID {
-		return false, false
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	return session.leakCheckHeld, !session.closed
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
@@ -423,11 +402,13 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	refuse := func(what string, err error) error {
 		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
 	}
-	// A launcher that never arrives is a failed install, not a later Start on an environment whose
-	// checker was guessed before a session existed.
+	// A launcher that never arrives is the launch's own failure, not the check's: a deployment
+	// that names no check refuses nothing for it, and the deadline it ran out on stays in the
+	// error's chain, which relaunch notes as the try's bound (boundRanOut). No digest is decided
+	// before the session that would receive the push exists.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil {
-		return nil, refuse("the pod's launcher did not connect before the shared public leak check could be installed", err)
+		return nil, fmt.Errorf("launcher %s did not connect: %w", token, err)
 	}
 	tag := session.leakCheckTag
 	session.mu.Lock()
