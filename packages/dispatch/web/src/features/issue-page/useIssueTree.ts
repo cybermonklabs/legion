@@ -1,4 +1,4 @@
-import { queryOptions, useQueries, useQuery } from "@tanstack/react-query";
+import { hashKey, type QueryKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 
 import { api } from "../../api/client";
@@ -50,7 +50,12 @@ export interface IssueTreeView {
    *  while the tree keeps the last names. A read that runs again after it failed goes on
    *  standing failed until it answers, and so does one while another read the tree is built
    *  from runs again after it failed, which holds the batched read back: it keeps the set it
-   *  was last given meanwhile (`useIssueTree`). */
+   *  was last given meanwhile (`useIssueTree`). So does a read under a new set of addresses
+   *  while the set before stood failed - that other read answered with words that cite an
+   *  address the tree did not hold, say - with the failures counted so far, running, until a
+   *  read of it answers (`useFailuresSinceAnswer`): the line stays while it is out, and says no
+   *  failure again. One under a new set after the set before answered stands failed once it
+   *  fails. */
   readonly namesFailure: NamesFailure | undefined;
   /** Whether the names the tree is built from are held: the batched names read has answered
    *  (`useIssueTree`). That read is always made: the root's words write the issue's own key
@@ -70,11 +75,15 @@ export interface IssueTreeView {
 
 /** The tree's names reads that stand failed (`IssueTreeView.namesFailure`). */
 export interface NamesFailure {
-  /** How many times those reads have failed, summed (TanStack Query's `errorUpdateCount`). */
+  /** How many times those reads have failed since each last answered, under every set of
+   *  addresses it was asked for, summed (`useFailuresSinceAnswer`, over TanStack Query's
+   *  `errorUpdateCount`): it stays the same while a read under a new set is out, so the line
+   *  draws its alert again only for a new failure. */
   readonly failure: number;
   /** Asks each of those reads again (its own `refetch`), and no other read. */
   readonly retry: () => void;
-  /** Whether one of those reads runs again (TanStack Query's `isFetching`). */
+  /** Whether one of those reads runs, again or under a new set of addresses (TanStack Query's
+   *  `isFetching`). */
   readonly retrying: boolean;
 }
 
@@ -155,6 +164,45 @@ function useLastAnswer<T>(answer: T | undefined): T | undefined {
 }
 
 /**
+ * How many times a names read has failed since a read of it last answered, under any set of
+ * addresses: what it stands failed by (`standsFailed`) in place of its own count. A names read's
+ * key is the set of addresses it names (`queryKey`), so a read under a new set is a query of its
+ * own, which has failed no time yet. By that count a read that stood failed would stand failed
+ * no more the moment the tree came to hold another address, another read that failed answering
+ * at last, say: its line would leave the page while the new read is out, with the focus its
+ * Retry held, and say its failure again once that read failed too, though the names had not
+ * answered at any point. So where the set asked for before stood failed, the failures counted so
+ * far carry over to the new set, and each failure under it adds one: the line stays while the new
+ * read is out, with the same alert (`FailedReadLine`'s `failure`). A failure the new set's query
+ * counted before it was asked for adds none, so a set asked for again is not counted twice. An
+ * answer, under any set, counts them back to 0, and a read under a new set after one counts its
+ * own failures alone (`errorUpdateCount`): one never asked before does not stand failed while it
+ * is out. The ref is written during render, as `useLastAnswer`'s is, with the read's state in
+ * that render, and a second render of the same state counts nothing more.
+ */
+function useFailuresSinceAnswer(
+  queryKey: QueryKey,
+  read: { readonly data: unknown; readonly errorUpdateCount: number }
+): number {
+  const hash = hashKey(queryKey);
+  const last = useRef<{ failures: number; hash?: string; seen: number }>({
+    failures: 0,
+    seen: 0,
+  });
+  const before = last.current;
+  let failures = 0;
+  if (read.data === undefined) {
+    if (hash === before.hash) {
+      failures = before.failures + Math.max(0, read.errorUpdateCount - before.seen);
+    } else {
+      failures = before.failures > 0 ? before.failures : read.errorUpdateCount;
+    }
+  }
+  last.current = { failures, hash, seen: read.errorUpdateCount };
+  return failures;
+}
+
+/**
  * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
  * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
  * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
@@ -166,7 +214,9 @@ function useLastAnswer<T>(answer: T | undefined): T | undefined {
  * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
  * the moment it fetches again: a failed read goes on standing failed while it runs again - its
  * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
- * answers.
+ * answers. A names read is given the failures counted across its sets of addresses since it last
+ * answered (`useFailuresSinceAnswer`) in place of its own count, since its key changes with the
+ * set it names; every other read is given its own.
  */
 export function standsFailed(state: {
   readonly data: unknown;
@@ -348,7 +398,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // lacks are the ones the previous answer carries, which is what is kept here. A name that
   // moved is a stale word until a read under the new key succeeds, where a dropped one is the
   // whole page's words at once; while that read stands failed - until its Retry, window focus or
-  // an event reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailure`).
+  // an event reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailure`). A
+  // read under a new set while the set before stood failed stands failed too, with the failures
+  // counted so far, until a read of the names answers (`useFailuresSinceAnswer`).
   //
   // The gate shuts again while a read that holds no answer runs again - a failed read's Retry,
   // window focus or an event's refresh of it, which TanStack puts back in `pending` - and the
@@ -357,12 +409,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // read, a names read that stands failed would stand failed no more, and its line would leave
   // the page with the focus its Retry held and say its failure again on coming back. Kept, the
   // line says that read's own state while another read runs: its failures, whether it runs
-  // again, and a Retry that asks it again. Until the gate first opens the set is none.
+  // again, and a Retry that asks it again. Where the read that ran answers with words that cite
+  // an address the tree did not hold, the gate opens on a new set, and the read under it carries
+  // those failures while it runs: the line stays, with the same alert and the focus its Retry
+  // holds. Until the gate first opens the set is none.
   const askedFor = useLastAnswer(treeRead ? refs : undefined) ?? [];
-  const targets = useQuery({
-    ...referenceTargetsQuery(askedFor),
-    ...EVENT_FRESH,
-  });
+  const targetsRead = referenceTargetsQuery(askedFor);
+  const targets = useQuery({ ...targetsRead, ...EVENT_FRESH });
+  const targetsFailures = useFailuresSinceAnswer(targetsRead.queryKey, targets);
   const firstAnswer = useLastAnswer(targets.data);
   const first = useMemo(
     () => (firstAnswer === undefined ? undefined : (firstAnswer.targets ?? [])),
@@ -375,16 +429,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // What the named tree's words cite that the first read was not given: a typed block's words
   // come from that read's answer, so what they cite is known only now (above). An empty set is
   // no request, and the names already in hand stand while a new non-empty set loads and after
-  // its read fails, as above.
+  // its read fails, and its failures carry over to a new set, as above.
   const extra = useMemo(() => {
     if (first === undefined) return [];
     const asked = new Set(refs);
     return treeReferences(firstTree).filter((reference) => !asked.has(reference));
   }, [first, firstTree, refs]);
-  const more = useQuery({
-    ...referenceTargetsQuery(extra),
-    ...EVENT_FRESH,
-  });
+  const moreRead = referenceTargetsQuery(extra);
+  const more = useQuery({ ...moreRead, ...EVENT_FRESH });
   // Both answers, the second's standing for an address both name that it is asked for now
   // (`extra`), and the first's for every other: an answer the second gave for an older set,
   // kept while its new set loads or after that read fails, may name an address the first read
@@ -394,7 +446,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // asks for any more. A link beside the tree draws a published name in place of the one it
   // reads of its own (`useKnownReferenceName`), and the feed refreshes a names read only for an
   // address its key holds (`referenceNameTargets`), so no event would ever move that name.
-  const moreAnswer = useLastAnswer(extra.length === 0 ? NO_MORE_TARGETS : more.data);
+  const moreHeld = extra.length === 0 ? NO_MORE_TARGETS : more.data;
+  const moreFailures = useFailuresSinceAnswer(moreRead.queryKey, {
+    data: moreHeld,
+    errorUpdateCount: more.errorUpdateCount,
+  });
+  const moreAnswer = useLastAnswer(moreHeld);
   const named = useMemo(() => {
     const added = moreAnswer?.targets ?? [];
     if (first === undefined || added.length === 0) return first;
@@ -411,12 +468,16 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // The one more read is no part of it: it names only what a block's words cite, and gives no
   // node its words.
   const namesHeld = first !== undefined;
-  // The reads that stand failed, which the names in hand stand through (above). The second read
-  // fails only where something is left for it to name: where nothing is, its query is disabled.
-  const targetsFailed = standsFailed(targets);
-  const moreFailed = standsFailed(more);
-  const failure =
-    (targetsFailed ? targets.errorUpdateCount : 0) + (moreFailed ? more.errorUpdateCount : 0);
+  // The reads that stand failed, which the names in hand stand through (above), each by the
+  // failures counted across its sets since a read of it last answered
+  // (`useFailuresSinceAnswer`), which are 0 where it does not stand failed. The second read fails
+  // only where something is left for it to name: where nothing is, its query is disabled, and the
+  // empty answer it holds then (`NO_MORE_TARGETS`) counts its failures back to 0, as an answer
+  // does, so it stands failed no more: that query would never run again, and its line would stay
+  // for good.
+  const targetsFailed = standsFailed({ data: targets.data, errorUpdateCount: targetsFailures });
+  const moreFailed = standsFailed({ data: moreHeld, errorUpdateCount: moreFailures });
+  const failure = targetsFailures + moreFailures;
   const retrying = (targetsFailed && targets.isFetching) || (moreFailed && more.isFetching);
   const { refetch: refetchTargets } = targets;
   const { refetch: refetchMore } = more;

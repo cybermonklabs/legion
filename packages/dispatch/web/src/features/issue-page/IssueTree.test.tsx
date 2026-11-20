@@ -9959,6 +9959,95 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   }
 });
 
+// The same for the one more names read, which names what a typed block's words cite that the
+// batched read was not given (`useIssueTree`): its set changes when the batched read answers the
+// block's new words, here after a comment arrives. While its read of the set before stood failed,
+// the read under the new set stands failed too, with the failures counted so far, and busy: the
+// names have not answered at any point, so the line stays drawn, with the focus on its Retry and
+// the same alert.
+test("a failed one more names read's line stays drawn, with the focus on its Retry, while it is read under the addresses a step's new words cite", async () => {
+  setViewport(1440);
+  const cited = "dispatch://CORE-7";
+  const added = "dispatch://CORE-8";
+  let words = `Hang the lanterns as ${cited} asks.`;
+  // The one more read fails until this is set, and then stays out until the case ends.
+  let more: Promise<never> | undefined;
+  const moreOut = Promise.withResolvers<never>();
+  const blocks = spyOnSpecBlock("plan_task");
+  const names = spyOn(api, "getReferenceTargets").mockImplementation((refs) => {
+    // The batched read names the step, with its words; the one more read names only what those
+    // words cite.
+    if (!refs.includes(SPEC_BLOCK)) return (more ?? Promise.reject(serverDown())) as never;
+    const text = { content: [{ text: words, type: "text" }], type: "paragraph" };
+    return Promise.resolve({
+      targets: [
+        {
+          gone: false,
+          kind: "block",
+          name: words,
+          ref: SPEC_BLOCK,
+          text_tree: { content: [text], type: "doc" },
+        },
+      ],
+    }) as never;
+  });
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const { container } = body.view;
+    await failedLines(container, 1, "one more names");
+    expect(
+      names.mock.calls.map(([refs]) => [...refs]),
+      "the one more read did not name what the step's words cite"
+    ).toContainEqual([cited]);
+    await framesPass();
+    const line = failedLineSaying(container, STATE_LINES.names_unreadable);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error("the names' line drew no Retry");
+    const alert = line.querySelector('[role="alert"]');
+    await act(async () => retry.focus());
+    expect(focusPlace(container), "the names' Retry took no focus").toBe(
+      onRetryOf(STATE_LINES.names_unreadable)
+    );
+
+    // The step's words come to cite one issue more, which the batched read of a tree that grew
+    // by a comment answers; the one more read, of both issues, is then out.
+    words = `Hang the lanterns as ${cited} and ${added} ask.`;
+    more = moreOut.promise;
+    await act(async () => {
+      body.client.setQueryData(["comments", KEY], [readComment("head-c", 5)]);
+    });
+    await waitFor(
+      () =>
+        expect(
+          names.mock.calls.map(([refs]) => [...refs]),
+          "the one more read was not read under the addresses the step's new words cite"
+        ).toContainEqual([cited, added]),
+      OWN_WORDS
+    );
+    await framesPass();
+    expect(
+      line.isConnected,
+      "the names' line left the page while the one more read was read under the new addresses"
+    ).toBe(true);
+    expect(
+      focusPlace(container),
+      "the focus left the names' Retry while the one more read was read under the new addresses"
+    ).toBe(onRetryOf(STATE_LINES.names_unreadable));
+    expect(
+      line.querySelector('[role="alert"]'),
+      "the names' alert was drawn again, which says a failure again that came only once"
+    ).toBe(alert);
+    expect(
+      retry.getAttribute("aria-busy"),
+      "the names' Retry does not read busy while the one more read runs under the new addresses"
+    ).toBe("true");
+  } finally {
+    await act(async () => moreOut.resolve({ targets: [] } as never));
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 /** Every preset that draws a view in the outline's place, read from the stage's own slots
  *  (`VIEW_SLOTS`), so a view added there is a view these cases cover. */
 const VIEW_PRESETS: readonly Preset[] = PRESET_ORDER.filter(
