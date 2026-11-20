@@ -72,7 +72,7 @@ type routing struct {
 // forms no chain, and is read alone. It reads no event of an owner $2 names, the owners the
 // batches running beside this one hold in flight (lanes), so no two batches ever take one owner
 // and an owner waiting on a send holds back only its own events. With $3, the private-delivery
-// hold (Deps.holdsPrivate), it chooses no owner whose project the database holds private
+// hold (Deps.holdRead), it chooses no owner whose project the database holds private
 // (privateOwnerSQL): such an owner is never read, so it takes no place among the batchSize
 // owners a batch chooses and holds back no public owner's event, and every event of it waits,
 // unread and unwritten, for a read without $3. A pending subscription command
@@ -198,7 +198,7 @@ func readBatch(ctx context.Context, deps Deps) (pending []pendingEvent, stopped,
 func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pendingEvent, stopped bool, err error) {
 	deps.lanes.lock()
 	defer deps.lanes.unlock()
-	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight, deps.holdsPrivate())
+	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight, deps.holdRead())
 	if err != nil {
 		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
 	}

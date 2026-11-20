@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,14 +134,28 @@ type Deps struct {
 	// project the database holds private (readBatchSQL, privateOwnerSQL), the fallback pass claims
 	// no copy of such an owner's event (claimFallbackCopies), and the retry timer looks again every
 	// privateHoldWait while one waits (Outbox.nextRetry); once it answers true, the next scan reads
-	// and publishes them. A public project's events publish as before. Each batch, pass and timer
-	// read asks it once, and the batches of one scan ask side by side. A nil func holds nothing,
-	// which is safe while no project can be private; cmd/dispatch sets it once a hub can prove it.
+	// and publishes them. A public project's events publish as before. Each batch and pass read
+	// asks it once, and the batches of one scan ask side by side; the timer's read asks it only
+	// when no read since the timer's last one found the hold on (heldReads). A nil func holds
+	// nothing, which is safe while no project can be private; cmd/dispatch sets it once a hub can
+	// prove it.
 	PrivateHubsReady func() bool
 	// privateHoldWait is how long the retry timer waits, while the hold keeps something, before it
 	// starts a scan that asks PrivateHubsReady again, and zero is privateHoldRecheck, which is what
 	// cmd/dispatch runs. A test shortens it; it is unexported, so no importer can.
 	privateHoldWait time.Duration
+	// heldReads notes that a read the private-delivery hold binds into - a batch's read (readRows)
+	// or the fallback pass's claim (claimFallbackCopies) - asked PrivateHubsReady and found the
+	// hold on (holdRead), and the retry timer's read takes the note and clears it
+	// (heldSinceRetry), and then arms the hold's re-poll whatever the func answers by then
+	// (Outbox.nextRetry). A read and the timer's read after it are moments apart, and the func
+	// signals nothing when it turns true: a timer that went by its own ask alone would, when the
+	// hubs turned proven in between, read the back-offs alone and arm nothing for what the read
+	// held - an event never tried, a copy never claimed, neither of which has one - which then
+	// waited for an unrelated wake. New makes it, one per outbox, which every copy of that
+	// outbox's Deps shares; a read run with none - one by itself, as this package's tests run
+	// it - notes nothing.
+	heldReads *atomic.Bool
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry
@@ -179,9 +194,27 @@ func (d Deps) privateHoldDelay() time.Duration {
 }
 
 // holdsPrivate reports whether the private-delivery hold is on now: PrivateHubsReady is set and
-// answers false. A nil func is no hold.
+// answers false. A nil func is no hold. A read the hold binds into asks through holdRead instead.
 func (d Deps) holdsPrivate() bool {
 	return d.PrivateHubsReady != nil && !d.PrivateHubsReady()
+}
+
+// holdRead is holdsPrivate for a read the hold binds into, a batch's read (readRows) or the
+// fallback pass's claim (claimFallbackCopies): an answer that the hold is on is also noted
+// (heldReads), for the retry timer's next read (Outbox.nextRetry).
+func (d Deps) holdRead() bool {
+	held := d.holdsPrivate()
+	if held && d.heldReads != nil {
+		d.heldReads.Store(true)
+	}
+	return held
+}
+
+// heldSinceRetry reports whether a read found the hold on since the retry timer's last read, and
+// clears the note (heldReads), so what a read held arms the timer once: at the timer's read that
+// follows it, and not at every one after.
+func (d Deps) heldSinceRetry() bool {
+	return d.heldReads != nil && d.heldReads.Swap(false)
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

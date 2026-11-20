@@ -139,7 +139,8 @@ type Outbox struct {
 
 // New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
 // record of the fallback copies its passes find held behind an earlier event (heldCopies) and
-// registers that record's gauges on deps.Metrics when it is set.
+// registers that record's gauges on deps.Metrics when it is set, and the note its reads leave the
+// retry timer when the private-delivery hold kept something out of them (Deps.heldReads).
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
@@ -149,6 +150,7 @@ func New(deps Deps) *Outbox {
 		deps.held = newHeldCopies()
 	}
 	deps.held.register(deps.Metrics)
+	deps.heldReads = new(atomic.Bool)
 	return &Outbox{
 		deps:        deps,
 		instance:    uuid.New(),
@@ -800,19 +802,27 @@ func (l *lanes) statement(fn func() error) error {
 // arms the one wake the holder's scan and its fallback pass run on. A scan that failed, or a read
 // of it that does, is retried retry.BaseDelay later.
 //
-// While the private-delivery hold is on (Deps.holdsPrivate) it reads nextRetryHeldSQL instead:
-// the back-offs of what the hold keeps are left out, since the scan they would wake reads none of
-// them, and while any event or fallback copy of a private project waits unpublished the timer is
-// armed privateHoldDelay out at the latest, a bounded re-poll, since PrivateHubsReady signals
-// nothing when it turns true and the scan that timer starts asks it anew. With a nil func, or one
-// that answers true, it reads nextRetrySQL as before (R9).
+// While the private-delivery hold is on it reads nextRetryHeldSQL instead: the back-offs of what
+// the hold keeps are left out, since the scan they would wake reads none of them, and while any
+// event or fallback copy of a private project waits unpublished the timer is armed
+// privateHoldDelay out at the latest, a bounded re-poll, since PrivateHubsReady signals nothing
+// when it turns true and the scan that timer starts asks it anew. The hold is on for the timer
+// when a read since its last read found it on (Deps.heldSinceRetry), whatever the func answers by
+// now, or else when the func answers false now (Deps.holdsPrivate): the hubs can turn proven
+// between a read that held and this one, and what the read held - an event never tried, a copy
+// never claimed - has no back-off, so going by this read's own answer would arm nothing for it
+// and leave it to an unrelated wake. What a read held arms the re-poll at this read alone, so the
+// timer does not keep re-polling while a private event waits behind a back-off of its own once
+// the hubs are proven. With a nil func, or one that answers true to every read, it reads
+// nextRetrySQL as before (R9).
 func (o *Outbox) nextRetry(ctx context.Context, failed bool) (time.Duration, bool) {
+	held := o.deps.heldSinceRetry()
 	if failed {
 		return retry.BaseDelay, true
 	}
 	var micros *int64
 	statement, args := nextRetrySQL, []any(nil)
-	if o.deps.holdsPrivate() {
+	if held || o.deps.holdsPrivate() {
 		statement, args = nextRetryHeldSQL, []any{o.deps.privateHoldDelay().Seconds()}
 	}
 	if err := o.deps.Store.Pool.QueryRow(ctx, statement, args...).Scan(&micros); err != nil {
