@@ -1367,13 +1367,14 @@ type supervision struct {
 	reportMu     sync.Mutex
 	reportedGaps []string
 	reports      map[claim.Token]capabilities.Report
-	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, the whole of what the update-round
-	// sweep keeps between ticks (reconcilePodUpdates): when this daemon last opened a pod round,
-	// and the rounds it has opened whose claims have not recorded one yet, by issue. The two pace
-	// the sweep's openings under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
-	// nothing of either is in the store, because neither decides a round, and a daemon that has
-	// just booted opens its first round at its first sweep. The sweep is one goroutine, and the
-	// mutex is what makes that a fact of this code rather than of its caller.
+	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
+	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
+	// pace the sweep's openings under `pod_update_rounds_per_minute` and
+	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
+	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
+	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
+	// caller.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
@@ -1386,6 +1387,20 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
+	// ticks of a round's read of its issue's workspace: the one read that a round made before its
+	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
+	// holding the answer or the read's error. A replacement the read stood in front of can be
+	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
+	// round's replacement reuses the answer rather than read again, so the round reads the
+	// workspace once and its line and message name that read. The entry goes where the sweep ends
+	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
+	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
+	// replacement is made whatever the read found. A restart forgets it, and the round's next
+	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
+	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
+	podUpdateWorkspaceMu sync.Mutex
+	podUpdateWorkspace   map[string]workspaceRead
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore

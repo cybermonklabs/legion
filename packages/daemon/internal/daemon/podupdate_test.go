@@ -1721,18 +1721,20 @@ func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
 	}
 }
 
-// A suspended claim is not revived for the round, whoever suspended it and whatever contract it
-// last recorded: the round's ask is a message on the role's own topic, which a role with no live
-// session does not hold, and the round ends at its bound whether or not that role answers
-// (dispatch://INFRA-2981 R1). The claim is in the round, and it is not asked while it has no
-// live session: no row is enqueued for it and no mark is written on it, so the first sweep after
-// its agent says it is ready asks it (supervision.askRound). The claim stays suspended.
+// A claim the daemon suspended is not revived for the round, whatever contract it last recorded:
+// the round passes it over (dispatch://INFRA-4109 R1). It runs no process and no turn in the pod,
+// its role's topic has no live session to take an ask, and a wake or a resume would override the
+// reason the daemon stopped it. So the claim records the round, and no row is enqueued for it,
+// no mark is written on it, and nothing resumes it. The round does not wait for it either: the
+// pod is replaced once the one worker the round asks has answered, long before the round's
+// bound, and the claim stays suspended.
 func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true,
 			contract: supervise.PodUpdateContract - 1, suspendedBy: supervise.SuspendedByDaemon},
 	)
+	clocks := rig.replacementClocks()
 	rig.drifts(podUpdateDrift)
 
 	rig.tick()
@@ -1747,15 +1749,29 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 		t.Fatalf("the suspended claim is %s after the round's sweeps, want it still suspended", c.State)
 	}
 	if c.UpdateTaskedAt != nil {
-		t.Fatalf("the suspended claim records an ask at %v, want none while no live session holds its role", c.UpdateTaskedAt)
+		t.Fatalf("the suspended claim records an ask at %v, want none: the round passes it over", c.UpdateTaskedAt)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the implementer answered", len(calls))
+	}
+
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.awaitReplacement(1, "once the one worker the round asks answered")
+	for _, at := range clocks() {
+		if !at.Before(podUpdateBound) {
+			t.Fatalf("the replacement was made at %s, want it before the bound %s: the round does not wait for the suspended claim", at, podUpdateBound)
+		}
 	}
 	for _, ask := range rig.asks() {
 		if ask.Role == claim.RoleTester {
-			t.Fatalf("the round published %+v to the suspended claim's role, want nothing while no live session holds it", ask)
+			t.Fatalf("the round published %+v to the suspended claim's role, want nothing: the round passes it over", ask)
 		}
 	}
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
-		t.Fatalf("the round resumed %d processes, want none: a suspended role is asked on its topic and woken for nothing", len(resumes))
+		t.Fatalf("the round resumed %d processes, want none: a claim the daemon suspended is woken for nothing", len(resumes))
+	}
+	if c := rig.claimOf(claim.RoleTester); c.State != supervise.StateSuspended {
+		t.Fatalf("the suspended claim is %s after the replacement, want it still suspended", c.State)
 	}
 }
 
