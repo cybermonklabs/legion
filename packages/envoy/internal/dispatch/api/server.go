@@ -796,7 +796,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
-	s.registerHeldGauges(deps.Metrics)
+	s.registerHeldGauges(deps.Metrics, time.Now)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)

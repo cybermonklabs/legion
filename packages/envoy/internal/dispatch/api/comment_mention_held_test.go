@@ -5,7 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,14 +28,15 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 
 // A mention's send that waits behind an earlier event shows, since nothing bounds the wait: the
 // server's gauges count it and read how long the oldest has waited, naming no owner, since
-// /metrics answers whoever reaches the port; and past the warn threshold - shortened here to a
-// second - the sender logs one WARN naming the owner, the event it waits behind and that event's
-// last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
-// failed topic send names that event and its topic. While it waits, each try of the parked lane
-// reads the rule alone: no claim, resolution or settle of the attempt is written (a traced pool
-// counts the server's statements). Once the topic family is captured again the send lands, the
-// gauges read none and no second WARN comes. The controls are the scrape before the comment and
-// the one after the send landed.
+// /metrics answers whoever reaches the port with no credential and an owner label would have no
+// bound, one series for each issue, document or project with a held send; and past the warn
+// threshold - shortened here to a second - the sender logs one WARN naming the owner, the event it
+// waits behind and that event's last publish error. The cause is logged too: the outbox's own
+// ERROR for the earlier event's failed topic send names that event and its topic. While it waits,
+// each try of the parked lane reads the rule alone: no claim, resolution or settle of the attempt
+// is written (a traced pool counts the server's statements). Once the topic family is captured
+// again the send lands, the gauges read none and no second WARN comes. The controls are the
+// scrape before the comment and the one after the send landed.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -44,8 +48,9 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, metrics: registry,
 		store: storetest.TracedStore(t, database, recorder),
 	})
+	const warnAfter = time.Second
 	served.mentions.mu.Lock()
-	served.mentions.heldWarnAfter = time.Second
+	served.mentions.heldWarnAfter = warnAfter
 	served.mentions.mu.Unlock()
 	issue := createInteractionIssue(t, handler, "TEST", "A held mention", "before")
 	view := &sessionView{issue: issue.Key}
@@ -73,6 +78,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		attempts, _ := eventAttempts(t, database, first)
 		return attempts > 0
 	})
+	posted := time.Now()
 	mention := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "the comment that mentions s1", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
@@ -81,35 +87,61 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
+	warned := time.Now()
 
-	// Three seconds parked: count what the server sends the database meanwhile.
+	// Parked for three seconds or more, until the lane has read the rule once: count what the
+	// server sends the database meanwhile. A try reads the rule when its timer fires, which a loaded
+	// runner can delay past any fixed window, so the window waits for that read rather than ending
+	// on the clock. Load only slows the tries, so the most reads a window can hold - one each try,
+	// the tries at least mentionOrderRetryMax apart once they ramp up - holds however long it runs.
+	opened := time.Now()
 	before := len(recorder.Statements())
-	time.Sleep(3 * time.Second)
-	window := recorder.Statements()[before:]
 	var reads, attemptWrites int
-	for _, statement := range window {
-		switch {
-		case strings.Contains(statement, "k.owed_keys &&"):
-			reads++
-		case strings.Contains(statement, "comment_deliveries"):
-			attemptWrites++
+	var window []string
+	waitUntil(t, 10*time.Second, "three seconds parked and a read of the rule", func() bool {
+		window = recorder.Statements()[before:]
+		reads, attemptWrites = 0, 0
+		for _, statement := range window {
+			switch {
+			case strings.Contains(statement, "k.owed_keys &&"):
+				reads++
+			case strings.Contains(statement, "comment_deliveries"):
+				attemptWrites++
+			}
 		}
-	}
-	body := scrape(t, registry)
-	t.Logf("over 3 s parked: %d reads of the rule, %d statements on comment_deliveries, %d statements in all; gauges:\n%s",
-		reads, attemptWrites, len(window), heldLines(body))
-	if reads == 0 || reads > 4 {
-		t.Errorf("the parked lane read the rule %d times over 3 s, want one each try at mentionOrderRetryMax (%v) once it ramps up", reads, mentionOrderRetryMax)
+		return reads > 0 && time.Since(opened) >= 3*time.Second
+	})
+	parked := time.Since(opened)
+	// The age is read from a scrape that counts the held send: a held lane's head is out of the
+	// gauges for as long as a try of it is in flight (mentionSender.heldSamples), so a scrape
+	// taken during one reads no send and an age of 0 with nothing wrong. One scrape reads the count
+	// and the age from one sample (registerHeldGauges), so the scrape that counts the send reads
+	// its age. That age is at least the hold the test saw - the warn threshold, which the send had
+	// passed when its WARN was logged, and the time since - and at most the time since the test
+	// posted the mention, in whole seconds each: load can only raise the first, and the age with
+	// it, and never takes the age past the second.
+	least := int64((warnAfter + time.Since(warned)) / time.Second)
+	var body string
+	waitUntil(t, 10*time.Second, "a scrape that counts the held send", func() bool {
+		body = scrape(t, registry)
+		return strings.Contains(body, "envoy_dispatch_mention_sends_held 1\n")
+	})
+	most := int64(time.Since(posted) / time.Second)
+	t.Logf("over %v parked: %d reads of the rule, %d statements on comment_deliveries, %d statements in all; gauges:\n%s",
+		parked, reads, attemptWrites, len(window), heldLines(body))
+	if limit := 3 + int(parked/mentionOrderRetryMax); reads > limit {
+		t.Errorf("the parked lane read the rule %d times over %v, want at most %d: one each try, at mentionOrderRetryMax (%v) once it ramps up",
+			reads, parked, limit, mentionOrderRetryMax)
 	}
 	if attemptWrites != 0 {
-		t.Errorf("the parked lane made %d statements on comment_deliveries over 3 s, want none: a try of a held send reads the rule alone", attemptWrites)
+		t.Errorf("the parked lane made %d statements on comment_deliveries over %v, want none: a try of a held send reads the rule alone", attemptWrites, parked)
 	}
-	if !strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds ") ||
-		strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 0\n") {
-		t.Errorf("the gauges read %q, want the held send's age past zero seconds", heldLines(body))
+	if oldest, ok := heldOldest(body); !ok || oldest < least || oldest > most {
+		t.Errorf("the gauges read %q, want the held send's age from %d to %d seconds: the hold the test saw, and the time since it posted the mention",
+			heldLines(body), least, most)
 	}
 	if lines := heldLines(body); strings.Contains(lines, "{") || strings.Contains(lines, issue.Key) {
-		t.Errorf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port", lines)
+		t.Errorf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port, and an owner label would have no bound", lines)
 	}
 	logged := logs.String()
 	if got := strings.Count(logged, warning); got != 1 {
@@ -140,6 +172,38 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}
 }
 
+// One scrape reads the held sends' count and the oldest one's age from one sample of the sender.
+// The clock the gauges read takes the held send off its lane at its second read, as a try of the
+// send that starts during a scrape does (next), so a scrape that read the sender twice - two
+// gauge functions, one after the other - would count the send and read the age of none. The age
+// is exact: the clock stands 4 s past the moment the send began to wait.
+func TestAScrapeReadsTheHeldSendPairFromOneSample(t *testing.T) {
+	since := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	lane := heldLane(laneKey{recipient: "session:s1"}, "A-1")
+	sender := &mentionSender{
+		mu:    new(sync.Mutex),
+		lanes: map[laneKey][]mentionSend{lane: {{mention: ResolvedMention{Target: "session:s1"}, heldSince: since}}},
+		waits: map[laneKey]heldWait{lane: {session: "s1", by: model.MentionCopyHolder{EventID: 1}}},
+	}
+	var reads atomic.Int64
+	now := func() time.Time {
+		if reads.Add(1) == 2 {
+			sender.mu.Lock()
+			sender.lanes[lane] = sender.lanes[lane][1:]
+			sender.mu.Unlock()
+		}
+		return since.Add(4 * time.Second)
+	}
+	registry := metrics.New()
+	(&server{mentions: sender}).registerHeldGauges(registry, now)
+	body := scrape(t, registry)
+	if !strings.Contains(body, "envoy_dispatch_mention_sends_held 1\n") ||
+		!strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 4\n") || reads.Load() != 1 {
+		t.Fatalf("one scrape read the gauges' clock %d times and the gauges %q; want one read, and one send held for 4 s",
+			reads.Load(), heldLines(body))
+	}
+}
+
 // heldLines is the held gauges' lines of a /metrics body.
 func heldLines(body string) string {
 	var lines []string
@@ -149,6 +213,18 @@ func heldLines(body string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// heldOldest is the oldest held send's age, in whole seconds, that a /metrics body reads, and
+// whether the body has that gauge's sample.
+func heldOldest(body string) (int64, bool) {
+	for line := range strings.SplitSeq(body, "\n") {
+		if value, ok := strings.CutPrefix(line, "envoy_dispatch_mention_send_held_oldest_seconds "); ok {
+			seconds, err := strconv.ParseInt(value, 10, 64)
+			return seconds, err == nil
+		}
+	}
+	return 0, false
 }
 
 // warningLine is the first line of logged holding marker, "" for none.

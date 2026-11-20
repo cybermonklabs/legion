@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Dispatch's `/metrics` reads each pair of held-copy gauges from one sample at each scrape:
+  `envoy_dispatch_mention_sends_held` with `envoy_dispatch_mention_send_held_oldest_seconds`, and
+  `envoy_dispatch_outbox_fallback_copies_held` with
+  `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`. A scrape that counts a held send or
+  copy now reads its age. Before, the two gauges of a pair read the sender or the record one after
+  the other, and a try of a held send, or a pass that settled a held copy, between the two reads
+  gave a count of 1 with an age of 0. The four gauges now come after Dispatch's other single-value
+  gauges in the scrape's text.
+time: 2026-11-20T15:39:01Z
+custom:
+    Issue: pr4625

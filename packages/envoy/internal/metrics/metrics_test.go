@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -86,6 +87,54 @@ func TestAGaugeSetWritesTheSeriesItsFunctionAnswersAtEachScrape(t *testing.T) {
 		if body := scrape(t, r); body != step.want {
 			t.Fatalf("%s: the scrape reads %q; want %q", step.name, body, step.want)
 		}
+	}
+}
+
+// A gauge group's gauges read one call of its function at each scrape, so they read one moment of
+// what they count. Here the function counts its own calls and answers the call's number for the
+// first gauge and ten times it for the second, so each gauge's sample shows which call it read
+// and which of the call's values went to it: both gauges read the same call, one more at each
+// scrape, each its own value in the order of the specs. The control is the reading the group
+// rules out: two gauge functions over the same count read two calls in one scrape. A scrape where
+// the function answers another number of values than the group has gauges writes each gauge's
+// HELP and TYPE lines and no sample.
+func TestAGaugeGroupReadsOneCallOfItsFunctionForEveryGauge(t *testing.T) {
+	const header = "# HELP envoy_test_held Things the test holds\n# TYPE envoy_test_held gauge\n"
+	const oldestHeader = "# HELP envoy_test_held_oldest_seconds How long the oldest has waited\n" +
+		"# TYPE envoy_test_held_oldest_seconds gauge\n"
+	specs := []GaugeSpec{
+		{Name: "envoy_test_held", Help: "Things the test holds"},
+		{Name: "envoy_test_held_oldest_seconds", Help: "How long the oldest has waited"},
+	}
+	var calls atomic.Int64
+	var short atomic.Bool
+	r := New()
+	r.NewGaugeGroupFunc(specs, func() []int64 {
+		call := calls.Add(1)
+		if short.Load() {
+			return []int64{call}
+		}
+		return []int64{call, 10 * call}
+	})
+	for call := 1; call <= 2; call++ {
+		want := fmt.Sprintf("%senvoy_test_held %d\n%senvoy_test_held_oldest_seconds %d\n", header, call, oldestHeader, 10*call)
+		if body := scrape(t, r); body != want {
+			t.Fatalf("scrape %d reads %q; want %q: both gauges from call %d, each its own value", call, body, want, call)
+		}
+	}
+	short.Store(true)
+	if body := scrape(t, r); body != header+oldestHeader {
+		t.Fatalf("a scrape whose function answered one value for two gauges reads %q; want each gauge named and no sample", body)
+	}
+
+	var apart atomic.Int64
+	control := New()
+	for _, spec := range specs {
+		control.NewGaugeFunc(spec.Name, spec.Help, func() int64 { return apart.Add(1) })
+	}
+	if body := scrape(t, control); !strings.Contains(body, "\nenvoy_test_held 1\n") ||
+		!strings.Contains(body, "\nenvoy_test_held_oldest_seconds 2\n") {
+		t.Fatalf("the control's two gauge functions read %q; want calls 1 and 2 in one scrape", body)
 	}
 }
 

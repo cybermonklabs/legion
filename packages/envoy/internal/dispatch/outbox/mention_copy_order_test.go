@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,12 +237,43 @@ func heldGauges(t *testing.T, registry *metrics.Registry) string {
 	return response.Body.String()
 }
 
+// heldClock is a clock for the held-copy record (newHeldCopies) that stands still until the test
+// moves it. A test starts it far from the wall clock - months before it, and the handed-over row a
+// year after it as well - so a read of the wall clock anywhere in the record shows in what a row
+// reads: the gauges find the copy stale (no pass found it waiting for fallbackClaim before the
+// read) or its age below zero, which reads as 0, and read 0 where a row wants 1; the WARN's
+// held_for reads months where the row wants 1s; and a sweep on the wall clock drops no stale entry
+// from one of the handed-over row's two starts.
+type heldClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *heldClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
 // A fallback copy that waits behind an earlier event of its owner shows: the gauges count it and
 // read how long the oldest has waited, naming no owner, since /metrics answers whoever reaches the
-// port; and once it has waited past the warn threshold the pass logs one WARN naming the owner,
-// the event it waits behind and that event's last publish error - once, however many passes find
-// it waiting. When the event is published the row's copy goes and the gauges read none: the
-// control, as is the scrape before any pass.
+// port with no credential and an owner label would have no bound, one series for each issue,
+// document or project with a held copy; and once it has waited past the warn threshold the pass
+// logs one WARN naming the owner, the event it waits behind and that event's last publish error -
+// once, however many passes find it waiting. When the event is published the row's copy goes and
+// the gauges read none: the control, as is the scrape before any pass.
+//
+// The record reads a clock the test moves (heldClock), so each reading below is exact: the oldest
+// copy's age is the 1.1 s the test moved the clock by between the passes, and the gauge reads it
+// as 1 in whole seconds, and the WARN's held_for as 1s, however long the passes and the scrapes
+// take. Read off the wall clock after a 1.1 s sleep, the same row read 2 in CI on 2026-11-20, when
+// the two passes after the sleep took more than the 0.9 s left before the next whole second.
 func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	logs := &storetest.LockedLog{}
@@ -261,8 +293,9 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 	registry := metrics.New()
 	publisher := &recordingPublisher{}
+	clock := &heldClock{at: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker, Metrics: registry,
-		held: newHeldCopies(), heldCopyWarnAfter: time.Second}
+		held: newHeldCopies(clock.now), heldCopyWarnAfter: time.Second}
 	holder := holding(t, deps).instance
 	due := func() {
 		t.Helper()
@@ -289,7 +322,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("%d WARN lines before the threshold, want none", got)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	clock.advance(1100 * time.Millisecond)
 	due()
 	publishFallbackCopies(ctx, deps, unfenced{}, holder)
 	due()
@@ -301,7 +334,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "envoy_dispatch_outbox_fallback_cop") && (strings.Contains(line, "{") || strings.Contains(line, "T-1")) {
-			t.Fatalf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port", line)
+			t.Fatalf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port, and an owner label would have no bound", line)
 		}
 	}
 	logged := logs.String()
@@ -309,7 +342,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	if got := warnings(); got != 1 {
 		t.Fatalf("%d WARN lines past the threshold over two passes, want one", got)
 	}
-	for _, want := range []string{"owner=T-1", fmt.Sprintf("event_id=%d", earlier.ID), "publish_error=", "notifications.dispatch.issue.T-1.message.created", "destination=" + s1} {
+	for _, want := range []string{"owner=T-1", fmt.Sprintf("event_id=%d", earlier.ID), "publish_error=", "notifications.dispatch.issue.T-1.message.created", "destination=" + s1, "held_for=1s"} {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("the WARN line does not name %q: %s", want, logged)
 		}

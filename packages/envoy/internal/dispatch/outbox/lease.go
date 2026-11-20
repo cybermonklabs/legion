@@ -146,7 +146,7 @@ func New(deps Deps) *Outbox {
 		host = "unknown-host"
 	}
 	if deps.held == nil {
-		deps.held = newHeldCopies()
+		deps.held = newHeldCopies(time.Now)
 	}
 	deps.held.register(deps.Metrics)
 	return &Outbox{

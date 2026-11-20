@@ -1,8 +1,8 @@
 // Package metrics provides minimal Prometheus-compatible metrics without
 // third-party dependencies. It supports counters (with labels), histograms
 // (with labels and configurable buckets), gauges, gauge functions evaluated at
-// scrape time, and labelled gauge sets whose series a function computes at
-// scrape time.
+// scrape time, gauge groups whose values one function computes at scrape time,
+// and labelled gauge sets whose series a function computes at scrape time.
 package metrics
 
 import (
@@ -34,12 +34,13 @@ var DefaultBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5,
 
 // Registry collects metrics and serves them in Prometheus text exposition format.
 type Registry struct {
-	mu         sync.RWMutex
-	counters   []*Counter
-	histograms []*Histogram
-	gauges     []*Gauge
-	gaugeFuncs []*GaugeFunc
-	gaugeSets  []*gaugeSet
+	mu          sync.RWMutex
+	counters    []*Counter
+	histograms  []*Histogram
+	gauges      []*Gauge
+	gaugeFuncs  []*GaugeFunc
+	gaugeGroups []*gaugeGroup
+	gaugeSets   []*gaugeSet
 }
 
 // New creates an empty metrics registry.
@@ -222,6 +223,35 @@ func (r *Registry) NewOptionalGaugeFunc(name, help string, fn func() (int64, boo
 }
 
 // ---------------------------------------------------------------------------
+// Gauge group
+// ---------------------------------------------------------------------------
+
+// GaugeSpec is one gauge of a gauge group (NewGaugeGroupFunc): its name and its help text.
+type GaugeSpec struct {
+	Name string
+	Help string
+}
+
+// gaugeGroup is gauges whose values one call of fn computes on each scrape.
+type gaugeGroup struct {
+	specs []GaugeSpec
+	fn    func() []int64
+}
+
+// NewGaugeGroupFunc registers the gauges specs names, whose values one call of fn computes on each
+// scrape: fn answers one value for each spec, in the order of specs. So every gauge of the group
+// reads one moment of what it counts, which separate gauge functions cannot: a scrape calls them
+// one after another, and what they read can change between two calls. A count and the age of the
+// oldest thing it counts are such a pair: read by two functions, one scrape can count one thing
+// and read the age of none. A scrape where fn answers another number of values writes each gauge's
+// HELP and TYPE lines and no sample, so a value fn could not stand behind reads as missing.
+func (r *Registry) NewGaugeGroupFunc(specs []GaugeSpec, fn func() []int64) {
+	r.mu.Lock()
+	r.gaugeGroups = append(r.gaugeGroups, &gaugeGroup{specs: slices.Clone(specs), fn: fn})
+	r.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
 // Gauge set
 // ---------------------------------------------------------------------------
 
@@ -293,7 +323,7 @@ func (r *Registry) Handler() http.Handler {
 func (r *Registry) render() []byte {
 	r.mu.RLock()
 	counters, histograms, gauges := slices.Clone(r.counters), slices.Clone(r.histograms), slices.Clone(r.gauges)
-	gaugeFuncs, gaugeSets := slices.Clone(r.gaugeFuncs), slices.Clone(r.gaugeSets)
+	gaugeFuncs, gaugeGroups, gaugeSets := slices.Clone(r.gaugeFuncs), slices.Clone(r.gaugeGroups), slices.Clone(r.gaugeSets)
 	r.mu.RUnlock()
 
 	var w bytes.Buffer
@@ -335,6 +365,16 @@ func (r *Registry) render() []byte {
 		writeType(&w, gf.name, gf.help, "gauge")
 		if value, ok := gf.fn(); ok {
 			fmt.Fprintf(&w, "%s %d\n", gf.name, value)
+		}
+	}
+
+	for _, gg := range gaugeGroups {
+		values := gg.fn()
+		for i, spec := range gg.specs {
+			writeType(&w, spec.Name, spec.Help, "gauge")
+			if len(values) == len(gg.specs) {
+				fmt.Fprintf(&w, "%s %d\n", spec.Name, values[i])
+			}
 		}
 	}
 
