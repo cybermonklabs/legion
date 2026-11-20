@@ -493,7 +493,7 @@ func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
 // it has to follow that document, cost the broker one read however many pages ask, answer for a
 // Dispatch with no broker at all, and keep the page rather than lose it when the broker cannot
 // be read. What a lapsed window does with a broker that has stopped answering is the client's
-// own test (internal/dispatch/agentsecrets).
+// own test (internal/dispatch/cipher).
 func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
 	const metadata = "GET /.well-known/oauth-authorization-server"
 	ask := func(t *testing.T, handler http.Handler) bool {

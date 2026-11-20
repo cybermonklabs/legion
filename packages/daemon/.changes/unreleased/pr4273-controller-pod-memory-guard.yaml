@@ -10,7 +10,7 @@ body: |-
     reading and the limit, and none of the program's arguments. The new block
     `runtime.kubernetes.memory_guard.controller_pod` sets it, with the members and ranges of
     `issue_pods` and the same defaults but the wait after a kill, `wait_seconds: 1` where an issue
-    pod's is 5; it is on by default. Daemon API contract 196.
+    pod's is 5; it is on by default. Daemon API contract 202.
 time: 2026-11-17T05:04:07Z
 custom:
     Issue: pr4273

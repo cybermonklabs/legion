@@ -4,7 +4,7 @@
 #
 # The whole local stack a session is driven against, on one machine, with no cluster, no AWS and
 # no container runtime: cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount
-# token issuer and for the identity provider a person signs in at), cmd/broker on a fake secrets
+# token issuer and for the identity provider a person signs in at), cmd/cipherd on a fake secrets
 # file, internal/testnats/cmd/natsd (one throwaway NATS with JetStream), cmd/listener on that
 # NATS, and cmd/dispatch, the real Dispatch server, pointed at that broker and that listener. It
 # is dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch and
@@ -238,14 +238,19 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
-# --- The packages of the binaries this stack runs, the one list of them: go build names each
-# binary for its package's last path element, so the build's arguments and the names --binaries
-# checks and copies all come from here. The header and the usage name them for a reader. ---
-STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+# --- The binaries this stack runs and their packages, the one list of them, as
+# <binary>=<package>: the build's arguments and the names --binaries checks and copies all come
+# from here. go build names each binary for its package's last path element, so a package whose
+# directory is not its binary's name is renamed after the build. The header and the usage name
+# them for a reader. ---
+STACK_ENTRIES=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
+  listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+STACK_PACKAGES=()
 STACK_BINARIES=()
-for stack_package in "${STACK_PACKAGES[@]}"; do
-  STACK_BINARIES+=("${stack_package##*/}")
+for stack_entry in "${STACK_ENTRIES[@]}"; do
+  STACK_BINARIES+=("${stack_entry%%=*}")
+  STACK_PACKAGES+=("${stack_entry#*=}")
 done
 
 # --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
@@ -303,7 +308,7 @@ LISTENER_KEEPER_LOG="$LOG_DIR/listener-port-keeper.log"
 LISTENER_KEEPER_SOCKET="$WORK_DIR/listener-port.sock"
 LISTENER_KEEPER_PORT_FILE="$WORK_DIR/listener-port"
 
-# The issuer and what it mints for, as dev-broker.sh names them (internal/broker/brokertest's rig):
+# The issuer and what it mints for, as dev-broker.sh names them (internal/cipher/ciphertest's rig):
 # the audience every listed caller's and every enrolment's token carries, the exchange's own
 # audience, and the accounts. The pod's two token files are one pod, since dev-oidc-issuer binds
 # one pod uid per service account.
@@ -511,6 +516,11 @@ else
     cd "$ENVOY_DIR"
     GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
+  for stack_entry in "${STACK_ENTRIES[@]}"; do
+    built="${stack_entry#*=}"
+    built="${built##*/}"
+    [ "$built" = "${stack_entry%%=*}" ] || mv "$BIN_DIR/$built" "$BIN_DIR/${stack_entry%%=*}"
+  done
 fi
 
 # --- Each process's readiness is read from its own log, never from a port this script chose:
@@ -641,7 +651,7 @@ callout_after_natsd
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
-# session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/broker reads a public URL
+# session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/cipherd reads a public URL
 # whose port is 0 as "derive it from whatever address I bind", and the real one is read from its
 # own listening line below. BROKER_METRICS_LISTEN_ADDR is port 0 too, so two stacks on one machine
 # never contend for the metrics port's fixed default. BROKER_DRAIN_SECONDS=0 turns off the
