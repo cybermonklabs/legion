@@ -288,30 +288,34 @@ func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCou
 
 // check is ygo's apply check for the room's document: nil for an apply it passes, and a
 // *renderRefusal for one it refuses (renderCheck says what it judges). ygo calls it under the
-// document's write lock, once for the update and once more for a drain that lands parked content,
-// so it reads the document only through view and the reads that take no lock, and calls nothing
-// that takes that lock.
+// document's write lock, at most twice on one apply: on the update, before the drain of the
+// pending queue, where the update changed the document, and on the drain, where the drain landed
+// something an earlier apply parked. view says which (crdt.ApplyView.Drained): false on the
+// update's run and true on the drain's, so the one run of an apply whose update changed nothing,
+// because the room held all of it or its structs only parked, is the drain's. The check reads the
+// document only through view and the reads that take no lock, and calls nothing that takes that
+// lock.
 //
-// A server write's apply (writtenApplyOf) is passed on the run of its update and judged on the
-// run of its drain. ygo checks an apply's update where it changed the document, before the drain,
-// and the drain where it landed something (crdt.WithApplyCheck), so a second run on one apply is
-// its drain's. That drain lands what browsers parked behind the clocks the write supplied: a
-// frame typed after another process's edit, which a catch-up brings, or one naming the room's
-// own client at its next clock, which only the server writes, in a transaction of the room's own
-// that drains nothing, so the next remote apply's drain lands it. The write's update is not
-// rendered here, so what it left is not known, and the drain is rendered whole and weighed as an
-// apply whose starting rendering is not known (judge): passed where it leaves the rendering
-// within maxPeerRenderingBytes, and refused for now past it (renderRefusal.unsure). Its senders
-// are then closed with the transient DOC_BUSY, and each frame sent again is weighed as its
-// browser's own apply, its gap now filled. A server write whose update the room already held is
-// checked once, for its drain, since its update changes nothing, so the write reads that before
-// it applies (writtenApply.held, heldIn) and every run on such an apply is judged as a drain's.
-// A struct the room parks is one its state vector does not reach, so an update that would only
-// park is not held, and its one run is passed as an update's. checks counts the runs passed, so a
-// drain refused, which lands nothing, is not counted (writtenApply.landedBeyond).
+// A server write's apply (writtenApplyOf) is passed on its update's run and judged on its drain's.
+// That drain lands what browsers parked behind the clocks the write supplied: a frame typed after
+// another process's edit, which a catch-up brings, or one naming the room's own client at its
+// next clock, which only the server writes, in a transaction of the room's own that drains
+// nothing, so the next remote apply's drain lands it, whatever that apply's update does. The
+// write's update is not rendered here, so what it left is not known, and the drain is rendered
+// whole and weighed as an apply whose starting rendering is not known (judge): passed where it
+// leaves the rendering within maxPeerRenderingBytes, and refused for now past it
+// (renderRefusal.unsure). Its senders are then closed with the transient DOC_BUSY, and each frame
+// sent again is weighed as its browser's own apply, its gap now filled. checks counts the runs
+// passed, so a drain refused, which lands nothing, is not counted (writtenApply.landedBeyond).
+//
+// A browser's drain is weighed against what the apply's update left where the update had a run of
+// its own (running.checked), which that run rendered. Where it had none, the update changed
+// nothing, so the drain's run is the apply's first and nothing committed since the apply began,
+// which holds the document's lock from its budget to its check: the drain is weighed against the
+// room's rendering as the apply began (base), as an update's run is.
 func (c *renderCheck) check(origin any, view *crdt.ApplyView) error {
 	if write := writtenApplyOf(origin); write != nil {
-		if write.held || write.checks.Load() > 0 {
+		if view.Drained() {
 			before, _ := c.weighing.size()
 			if _, err := c.judge(view, before, nil, false); err != nil {
 				return err
@@ -329,9 +333,9 @@ func (c *renderCheck) check(origin any, view *crdt.ApplyView) error {
 	if !exact {
 		from = nil
 	}
-	if running.checked {
-		// A drain's check: the update the drain follows stands whatever this answers, so the
-		// drain is weighed against what the update left, which that update's check rendered.
+	if view.Drained() && running.checked {
+		// The update the drain follows stands whatever this answers, so the drain is weighed
+		// against what the update left, which that update's check rendered.
 		before, exact = renderedSize(running.rendering), true
 	}
 	after, err := c.judge(view, before, from, exact)

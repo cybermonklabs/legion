@@ -1020,7 +1020,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned theorem-labs/ygo v1.55.1-theorem.11 carries, a room that parked anything was
+// which the pinned theorem-labs/ygo v1.55.1-theorem.12 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
@@ -1400,57 +1400,24 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 // (liveWriteOrigin) or a catch-up's (remoteUpdateOrigin) - keeps for the room's update observer to
 // hold the apply's commit against (classifyDrained): written, the update the writer stored, and
 // checks, how many of the room's apply check's runs on the apply passed (renderCheck.check),
-// counted under the document's lock before the commit is logged. held is whether the room held
-// all of written as the write began its apply (heldIn), so that the apply's update changes
-// nothing, ygo checks no run of its own, and every run of the check on the apply is its drain's.
-// It is written once, by the writer's goroutine before it applies, and read by the check that
-// apply runs on the same goroutine.
+// counted under the document's lock before the commit is logged.
 type writtenApply struct {
 	written []byte
 	checks  atomic.Int32
-	held    bool
 }
 
-// heldIn is whether live holds all of update, a server write's, read before the write applies it:
-// every struct it carries at clocks live's state vector reaches (crdt.ParseUpdateMeta, which reads
-// their headers alone), and every clock it deletes among those live has deleted. An apply of such
-// an update integrates nothing, so ygo runs the room's apply check on it only for its drain of the
-// room's pending queue (crdt.WithApplyCheck: "It is not called for an apply that changed
-// nothing"), and only where that drain lands something (renderCheck.check). A struct or a deleted
-// clock live lacks, an update that does not read, and a delete set read while the room's queue
-// holds nothing - no drain can land anything then - each answer false, the room's delete set
-// being built (crdt.DeleteSetFromDoc, a walk of its store) only for an update whose structs it
-// holds and whose deletes then decide it. The room only grows, so an update held as the write
-// reads it is held as it applies.
-func heldIn(live *crdt.Doc, update []byte) bool {
-	_, to, err := crdt.ParseUpdateMeta(update)
-	if err != nil {
-		return false
-	}
-	state := live.StateVector()
-	for client, end := range to {
-		if state.Clock(client) < end {
-			return false
-		}
-	}
-	deletes := crdt.NewIDSet()
-	if !eachV1Range(update, func(crdt.ClientID, uint64, uint64) {}, deletes.Add) {
-		return false
-	}
-	if clients := deletes.Clients(); len(clients) > 0 {
-		if parked := live.PendingStats(); parked.Items == 0 && parked.DeleteRanges == 0 {
-			return false
-		}
-		deleted := rangesByClient(crdt.DeleteSetFromDoc(live))
-		for _, client := range clients {
-			for _, r := range deletes.Ranges(client) {
-				if covered, _ := rangesHold(deleted[client], r.Clock, r.Len); !covered {
-					return false
-				}
-			}
-		}
-	}
-	return true
+// applyServerWrite applies update, a server write's, to live, a room's document, under origin,
+// the write's own (writtenApplyOf), and then has live forget origin as the sender of anything the
+// apply parked (crdt.Doc.ForgetParkedOrigin). A room's document discards a refused drain, and
+// keeps the origin of each apply that parked something to name the senders the discard closes
+// (leaveParkedOut, closeDiscardedSenders); only a browser is ever closed, and a server write's
+// origin holds the update it applied, so kept there it would hold those bytes for as long as what
+// the write parked stayed parked. What it parked stays parked. The forget takes live's lock,
+// which the apply has released by the time it returns.
+func applyServerWrite(live *crdt.Doc, update []byte, origin any) error {
+	err := crdt.ApplyUpdateV1(live, update, origin)
+	live.ForgetParkedOrigin(origin)
+	return err
 }
 
 // landedBeyond reports whether update, the room's commit of the apply, carries content the writer

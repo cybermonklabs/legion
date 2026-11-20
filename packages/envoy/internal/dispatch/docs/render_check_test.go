@@ -1102,6 +1102,56 @@ func TestARefusedDrainClosesTheBrowserThatParkedItAndTheUpdateIsAnsweredApplied(
 	t.Logf("the keystroke stood and reached the second browser, the parking tab was closed %v; the room renders %d bytes", parker.Closed(), len(rendering))
 }
 
+// A browser's update whose structs only park has one run of the room's apply check, its drain's
+// (crdt.ApplyView.Drained), and the drain is weighed against the room's rendering as the apply
+// began, as an update's run is: the update rendered nothing of its own to weigh it against, and
+// nothing committed between the apply's start and its drain (renderCheck.check). A room renders
+// past the bound and its creep, where the hook's byte rule takes only an update carrying no new
+// content. A frame deletes three characters under the room's own client at its next clocks, which
+// the room has not written, so the range parks; the room's own transaction then writes three
+// characters there, which drains nothing. A frame of one GC struct at the second clock of a client
+// the room has never seen parks, and its apply's drain lands the parked delete: the room is left
+// three bytes shorter, past the bound and no larger than the apply found it, so the drain is
+// passed. Weighed against a rendering of the update's own, of which there is none, or as a drain
+// whose start is not known, it would be refused, and the three characters would stay.
+func TestABrowsersUpdateThatOnlyParksHasItsDrainWeighedAgainstTheRoomAsItBegan(t *testing.T) {
+	skipAtTheBoundsUnderRace(t)
+	room := newRCRoom(t, stateOf(t, rcProse(1_200_000)+"\n\nThe last paragraph.\n"))
+	server := room.live.ClientID()
+	next := room.live.StateVector().Clock(server)
+	parked := newV1Frame(0).uint(1).uint(uint64(server)).uint(1).uint(next).uint(3).done()
+	if err := room.frame(t, "a delete under the room's next clocks", parked); err != nil {
+		t.Fatalf("a delete under the room's next clocks was answered %v, want it parked", err)
+	}
+	if stats := room.live.PendingStats(); stats.DeleteRanges != 1 {
+		t.Fatalf("the room parks %+v, want the delete's one range", stats)
+	}
+	room.live.Transact(func(txn *crdt.Transaction) {
+		texts := paragraphTextsOf(txn.GetXmlFragment(fragmentName))
+		texts[len(texts)-1].Insert(txn, 0, "abc", nil)
+	}, &struct{ server string }{"the room's own write"})
+	if clock, stats := room.live.StateVector().Clock(server), room.live.PendingStats(); clock != next+3 || stats.DeleteRanges != 1 {
+		t.Fatalf("after its own write the room holds its client to clock %d and parks %+v, want clock %d and the delete still parked",
+			clock, stats, next+3)
+	}
+	before, err := renderDocument(room.live)
+	if err != nil || len(before) <= maxPeerRenderingBytes {
+		t.Fatalf("the room renders %d bytes (%v), want it past %d", len(before), err, maxPeerRenderingBytes)
+	}
+	const client = 7_600_002
+	parks := newV1Frame(1).group(1, client, 1).gc(1).noDeletes()
+	if err := room.frame(t, "a frame that only parks", parks); err != nil {
+		t.Fatalf("a frame that only parks was answered %v, want it parked and its drain landed", err)
+	}
+	after, err := renderDocument(room.live)
+	stats := room.live.PendingStats()
+	if err != nil || stats.DeleteRanges != 0 || stats.Items != 1 || len(after) != len(before)-3 {
+		t.Fatalf("after the frame that only parks the room parks %+v and renders %d bytes (%v), want the frame's struct parked, the delete landed and %d bytes",
+			stats, len(after), err, len(before)-3)
+	}
+	t.Logf("the frame parked and its drain landed the parked delete: %d bytes to %d, past the %d bound", len(before), len(after), maxPeerRenderingBytes)
+}
+
 // A load is no browser's apply: a document stored past the bound and its creep loads as it is
 // stored, a browser opening it is sent all of it, and that browser can shorten it.
 func TestADocumentStoredPastTheBoundLoadsAndCanBeShortened(t *testing.T) {

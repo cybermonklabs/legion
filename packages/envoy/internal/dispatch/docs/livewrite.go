@@ -1321,10 +1321,11 @@ func (s *Service) publishedWithoutARoom(write *liveWrite) {
 // held is no commit: ygo calls no update observer for it, so there is nothing for the observer to
 // classify. An apply whose drain of the room's pending queue the room's apply check refused stood,
 // with that drain discarded and its senders closed, and is published as any other
-// (serverApplyStood). marginRoom is the room document a margin write's fork was warm-built from,
-// or the zero pointer (liveWrite.marginRooms): the update is tagged margin-only when the document
-// it reaches is that one (liveWriteOrigin.marginOnly). shadow, on the write's last update, is the
-// shadow whose window the update's drain closes.
+// (serverApplyStood). What the update parked stays parked, and the room keeps no record of the
+// write as the sender of it (applyServerWrite). marginRoom is the room document a margin write's
+// fork was warm-built from, or the zero pointer (liveWrite.marginRooms): the update is tagged
+// margin-only when the document it reaches is that one (liveWriteOrigin.marginOnly). shadow, on
+// the write's last update, is the shadow whose window the update's drain closes.
 func (s *Service) publishLiveUpdate(room string, update []byte, version persistence.Version, rendering publishedRendering, marginRoom weak.Pointer[crdt.Doc], shadow *roomShadow) error {
 	ctx := withOwnerVerified(context.Background())
 	slot := s.prepareSuppressedPersistence(room)
@@ -1342,8 +1343,7 @@ func (s *Service) publishLiveUpdate(room string, update []byte, version persiste
 			// would be refused everything until it reloaded.
 			advanceRoomCursor(&instance.cursor, version)
 		}
-		origin.held = heldIn(doc, update)
-		return crdt.ApplyUpdateV1(doc, update, origin)
+		return applyServerWrite(doc, update, origin)
 	})
 	if err = s.serverApplyStood(room, update, err); err != nil {
 		s.cancelSuppressedPersistence(room, slot)

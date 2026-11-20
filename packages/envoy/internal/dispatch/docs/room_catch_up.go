@@ -273,7 +273,8 @@ func mergedRuns(updates [][]byte) ([][]byte, error) {
 // cancels, since a slot left queued holds the worker at the room's next update - and whether the
 // room still held live; a room that does not writes nothing. A batch whose drain of the room's
 // pending queue the room's apply check refused is applied, with that drain discarded and its
-// senders closed (serverApplyStood).
+// senders closed (serverApplyStood). What the batch parked stays parked, and the room keeps no
+// record of the batch as the sender of it (applyServerWrite).
 func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (applied []byte, open bool, err error) {
 	release, open := s.srv.holdOpen(room, live)
 	if !open {
@@ -287,8 +288,7 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 			applied = append([]byte(nil), update...)
 		}
 	})
-	origin.held = heldIn(live, batch)
-	err = s.serverApplyStood(room, batch, crdt.ApplyUpdateV1(live, batch, origin))
+	err = s.serverApplyStood(room, batch, applyServerWrite(live, batch, origin))
 	unsubscribe()
 	if applied == nil {
 		s.cancelSuppressedPersistence(room, slot)

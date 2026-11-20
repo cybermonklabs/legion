@@ -136,16 +136,48 @@ func TestAServerWritesDrainOfParkedContentPastTheBoundIsDiscardedAndItsSenderClo
 	}
 }
 
-// A server write whose own update the room already holds integrates nothing, so ygo checks only
-// its drain, and once (crdt.WithApplyCheck), and that one run is judged as a drain's
-// (writtenApply.held, heldIn). Mallory's page adds a paragraph and parks two pastes of 900,000
-// characters after it, the first naming the room document's own client at its next clock and the
-// second following the first. The block-id backfill writes that clock in a transaction of the
-// room's own, which drains nothing. A catch-up then applies a batch the room holds whole, the
-// room's own state, whose drain would land both pastes. The catch-up stands, the drain is
-// discarded and the room renders within the bound. Before, that one run was passed as an
-// update's, and the drain landed both pastes past the bound.
+// A server write whose own update the room already holds integrates nothing, so ygo runs the
+// room's apply check on it once, for its drain, and that run is judged as a drain's
+// (crdt.ApplyView.Drained, renderCheck.check). Mallory parks two pastes the room's next remote
+// apply drains (parkPastesBehindTheRoomsOwnClock), and a catch-up then applies a batch the room
+// holds whole, the room's own state. The catch-up stands, the drain is discarded and the room
+// renders within the bound. Before, that one run was passed as an update's, and the drain landed
+// both pastes past the bound.
 func TestAServerWriteTheRoomAlreadyHoldsHasItsDrainJudged(t *testing.T) {
+	service, artifactID, room := parkPastesBehindTheRoomsOwnClock(t)
+	state := crdt.EncodeStateAsUpdateV1(room, nil)
+	if held, err := crdt.DocContainsUpdateV1(room, state); !held || err != nil {
+		t.Fatalf("the room's own state reads as held %t (%v), want held", held, err)
+	}
+	catchUpPastTheBound(t, service, artifactID, room, state, "a catch-up the room held whole", 0)
+}
+
+// A server write whose structs only park, because they name a clock the room has not reached,
+// changes nothing either, so ygo runs the room's apply check on it once, for its drain, and that
+// run is judged as a drain's (crdt.ApplyView.Drained, renderCheck.check). Mallory parks two pastes
+// the room's next remote apply drains (parkPastesBehindTheRoomsOwnClock), and a catch-up then
+// applies a batch of one struct at the second clock of a client the room has never seen. The
+// struct parks, the catch-up stands, the drain is discarded and the room renders within the bound.
+// Before the check read the run off the view, it judged a server write's run as the drain's only
+// where the room held the write whole or a run had come before, so this one run was passed as the
+// update's, and the drain landed both pastes past the bound.
+func TestAServerWriteWhoseStructsOnlyParkHasItsDrainJudged(t *testing.T) {
+	service, artifactID, room := parkPastesBehindTheRoomsOwnClock(t)
+	const client = 7_600_001
+	batch := newV1Frame(1).group(1, client, 1).raw(0x84).uint(client).uint(0).str("x").noDeletes()
+	if held, err := crdt.DocContainsUpdateV1(room, batch); held || err != nil {
+		t.Fatalf("a struct of a client the room has never seen reads as held %t (%v), want not held", held, err)
+	}
+	catchUpPastTheBound(t, service, artifactID, room, batch, "a catch-up whose struct only parks", 1)
+}
+
+// parkPastesBehindTheRoomsOwnClock opens a room of clientIDsSeed, whose next remote apply drains
+// two pastes of 900,000 characters: mallory's page adds a paragraph and parks the pastes after it,
+// the first naming the room document's own client at its next clock and the second following the
+// first, and the block-id backfill then writes that clock in a transaction of the room's own,
+// which drains nothing. It returns the service, the document and the room's document.
+func parkPastesBehindTheRoomsOwnClock(t *testing.T) (*Service, string, *crdt.Doc) {
+	t.Helper()
 	service, artifactID, serverURL := clientIDRoom(t)
 	service.settle = time.Hour
 	mallory := openPage(t, serverURL, artifactID, "mallory")
@@ -188,25 +220,30 @@ func TestAServerWriteTheRoomAlreadyHoldsHasItsDrainJudged(t *testing.T) {
 	if parked := room.PendingStats(); parked.Items != 2 {
 		t.Fatalf("the backfill's own transaction drained the queue: it parks %+v", parked)
 	}
-	state := crdt.EncodeStateAsUpdateV1(room, nil)
-	if !heldIn(room, state) {
-		t.Fatal("the room's own state reads as not held by the room")
-	}
-	if _, open, err := service.applyRemoteBatch(artifactID, room, state); !open || err != nil {
-		t.Fatalf("the catch-up of the room's own state answered open %t, %v", open, err)
+	return service, artifactID, room
+}
+
+// catchUpPastTheBound applies batch to room as a catch-up, whose drain would land mallory's two
+// pastes (parkPastesBehindTheRoomsOwnClock), and requires the catch-up to stand and the drain to
+// be discarded: the room renders within the bound and parks no struct but the parks structs batch
+// parks itself. what names the catch-up in every line.
+func catchUpPastTheBound(t *testing.T, service *Service, artifactID string, room *crdt.Doc, batch []byte, what string, parks int) {
+	t.Helper()
+	if _, open, err := service.applyRemoteBatch(artifactID, room, batch); !open || err != nil {
+		t.Fatalf("%s answered open %t, %v", what, open, err)
 	}
 	rendered, err := renderDocument(room)
 	if err != nil {
 		t.Fatalf("render the room: %v", err)
 	}
 	parked := room.PendingStats()
-	t.Logf("after a catch-up the room held whole the room parks %+v and renders %d bytes (bound %d)", parked, len(rendered), maxPeerRenderingBytes)
+	t.Logf("after %s the room parks %+v and renders %d bytes (bound %d)", what, parked, len(rendered), maxPeerRenderingBytes)
 	if len(rendered) > int(maxPeerRenderingBytes) {
-		t.Fatalf("a catch-up the room already held landed mallory's parked pastes past the bound: the room renders %d bytes, past %d",
-			len(rendered), maxPeerRenderingBytes)
+		t.Fatalf("%s landed mallory's parked pastes past the bound: the room renders %d bytes, past %d",
+			what, len(rendered), maxPeerRenderingBytes)
 	}
-	if parked.Items != 0 {
-		t.Fatalf("the room still parks %+v: the catch-up's drain was neither landed nor discarded", parked)
+	if parked.Items != parks {
+		t.Fatalf("after %s the room parks %+v, want %d structs: the drain was neither landed nor discarded", what, parked, parks)
 	}
 }
 

@@ -287,6 +287,13 @@ require (
 // range keeps one set per sender, compacted as the pending deletes are and cut to what they still
 // hold, so frames that grow or bridge the ranges parked no longer grow it past twice the parked
 // ranges plus 16 (bytesOfHeapAParkedRange); and PendingStats.ContentBytes counts the map key a
-// parked struct holds (noteQueued). The tag is on f80e73e7, the head of
-// release/v1.55.1/2026-11-20.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.11
+// parked struct holds (noteQueued).
+// v1.55.1-theorem.12 says which run an apply check judges and lets a room forget an origin, and
+// adds no option. ApplyView.Drained is false on the update's run and true on the drain's, so the
+// one run of an apply whose update changed nothing - the room held all of it, or its structs only
+// parked - is judged as the drain's (renderCheck.check); and Doc.ForgetParkedOrigin drops an
+// origin from the record a document that discards refused drains keeps of who parked what, which
+// the room calls after each server write's apply (applyServerWrite), and the WebSocket server for
+// each peer that leaves its room. The tag is on ee46210f, the head of
+// release/v1.55.1/2026-11-20.2.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.12
