@@ -281,3 +281,72 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 		t.Fatalf("the controller was told %+v of a round the moved bound ended", notices)
 	}
 }
+
+// dispatch://INFRA-4109 R1 and R2 with the project pause carried (task t11 of its plan): a role a
+// project's pause stopped is the pause's, not R1's, while the pause keeps its pod. The pause
+// stopped the tester, suspended released, and held the pod. The resume ended the hold a minute
+// before the round opened, because the implementer was live, and the wake pacing lets the
+// tester's owed launch out ten minutes past the round's own bound. The round asks the implementer,
+// which answers, and waits for the tester. The pod is not replaced at the opening, or a minute
+// past the bound the grace alone sets: the hold moved that bound on to the let-out. Nothing asks
+// the tester while it is suspended. Once the let-out has passed with the tester still suspended,
+// the round passes over it as R1 says. The pod is replaced before the moved bound, and the line
+// names the tester as a claim the round did not wait for.
+//
+// Before the fix the round passed over the tester from its opening, and replaced the pod as soon
+// as the implementer answered.
+func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RoleTester, supervise.SuspendedByReleased))
+	rig.drifts(podUpdateDrift)
+	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
+	letOut := podUpdateBound.Add(10 * time.Minute)
+	pause := openLegionPause(t, rig.pool, heldAt)
+	holdLegionPod(t, rig.st, pause, podUpdateIssue, heldAt)
+	recordPodWake(t, rig.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(claim.RoleTester),
+		Kind: pods.WakePause, At: heldAt, Pause: pause})
+	endLegionPause(t, rig.pool, pause, resumedAt)
+	if ended, err := rig.st.EndPausePodHold(rig.ctx, "LEGION", podUpdateIssue, store.PausePodHoldResumed, resumedAt); err != nil || !ended {
+		t.Fatalf("the resume's end of the pod's hold = %t, %v; want the hold ended", ended, err)
+	}
+	if moved, err := rig.st.SetResumeClock(rig.ctx, podUpdateProject, podUpdateIssue, claim.RoleTester, letOut); err != nil || !moved {
+		t.Fatalf("move the tester's held launch to its let-out = %t, %v; want the clock moved", moved, err)
+	}
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.settleAll()
+	for _, at := range []time.Time{podUpdateStart, podUpdateBound.Add(time.Minute)} {
+		rig.clockAt(at)
+		rig.tick()
+		rig.tick()
+		if calls := rig.replacements(); len(calls) != 0 {
+			t.Fatalf("at %s, before the let-out %s, the pod was replaced %d times while the tester the pause stopped had not answered",
+				at, letOut, len(calls))
+		}
+		if notices := rig.notices(); len(notices) != 0 {
+			t.Fatalf("at %s, before the moved bound, the controller was told %+v", at, notices)
+		}
+	}
+	if n := rig.askedOf(claim.RoleTester); n != 0 {
+		t.Fatalf("the round wrote %d update-ask rows for the tester while it was suspended, want none: a publish to a role with no holder wakes it", n)
+	}
+
+	rig.clockAt(letOut.Add(time.Minute))
+	rig.awaitReplacement(1, "once the let-out passed with the tester still suspended")
+	if c := rig.claimOf(claim.RoleTester); !c.Released() {
+		t.Fatalf("the tester is %s by %q once the pod was replaced, want it still released", c.State, c.SuspendedBy)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	if lines[0]["atTheBound"] != false {
+		t.Errorf("the replacement's line says atTheBound=%v, want false: the let-out passed before the moved bound", lines[0]["atTheBound"])
+	}
+	wantField(t, lines[0], "notWaitedFor", claim.RoleTester)
+	if n := rig.askedOf(claim.RoleTester); n != 0 {
+		t.Fatalf("the round wrote %d update-ask rows for the tester, want none", n)
+	}
+}

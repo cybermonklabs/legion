@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -24,10 +25,12 @@ const (
 	answeredIt
 )
 
-// roundShape is one shape of claim and the membership the round's two sets must give it.
+// roundShape is one shape of claim and the membership the round's two sets must give it. holds is
+// what a project's pause did to the issue's pod when the round is read, nil for no pause.
 type roundShape struct {
 	name  string
 	claim supervise.Claim
+	holds podHolds
 	want  roundMembership
 }
 
@@ -39,23 +42,30 @@ type roundShape struct {
 // runs no process and no turn in the pod (R1). An operator's suspension is in both, as
 // dispatch://INFRA-2981 R5 made it.
 //
-// Each row is one shape of claim, with the membership the rule gives it. The ask side is
-// roundAsks: a claim the round asks, or asks once its agent is ready (askRound reads it through
-// unaskedClaims and SaidReady). The wait side is every reading that holds the replacement for a
-// claim before the bound: waitingClaims, heldByOperator and readRoundEnd's holding. Each reading
-// is taken over the claim alone, and again beside a worker that answered and records a process in
-// the round's pod, so the two group shapes must agree. For a claim that answered, the wait side
-// is read once more with the answer cleared, so both sides of that row are compared.
+// A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
+// while the pause keeps the issue's pod: the pause kept the pod for the work on its disk (decision
+// 12 of dispatch://INFRA-3759). So it is in both sets under a hold that stands, and under a hold
+// that ended at the resume while the let-out of the launch the pause held for it is still ahead.
+// Once that let-out has passed, a claim still suspended released is R1's again, in neither set.
+// The pause keeps no other source in the round: a claim the daemon's own rule suspended is in
+// neither set under a hold that stands too.
+//
+// Each row is one shape of claim, with the membership the rule gives it, read at the round's
+// clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
+// or asks once its agent is ready (askRound reads it through unaskedClaims and SaidReady). The
+// wait side is every reading that holds the replacement for a claim before the bound:
+// waitingClaims, heldByOperator and readRoundEnd's holding. Each reading is taken over the claim
+// alone, and again beside a worker that answered and records a process in the round's pod, so the
+// two group shapes must agree. For a claim that answered, the wait side is read once more with the
+// answer cleared, so both sides of that row are compared.
 //
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.
 func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 	const round = podUpdateRound
 	opened := podUpdateStart
+	// now is the round read a minute after it opened, long before its bound.
 	now := opened.Add(time.Minute)
-	// clock is the round read a minute after it opened, long before its bound, with no pause
-	// holding its pod.
-	clock := roundClock{now: now, grace: podUpdateGrace}
 	answeredAt := opened.Add(30 * time.Second)
 	token := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
 
@@ -70,6 +80,22 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 	}
 	suspendedBy := func(source supervise.SuspendSource) supervise.Claim {
 		return member(supervise.StateSuspended, func(c *supervise.Claim) { c.SuspendedBy = source })
+	}
+	// pauseHold is one hold of the issue's pod by a pause of LEGION, put on it an hour before the
+	// round opened; change ends it.
+	pauseHold := func(change ...func(*store.PausePodHold)) podHolds {
+		hold := store.PausePodHold{ID: 1, Pause: 1, Project: "LEGION", Issue: podUpdateIssue, HeldAt: opened.Add(-time.Hour)}
+		for _, set := range change {
+			set(&hold)
+		}
+		return podHolds{hold}
+	}
+	// resumedWithLetOut is a hold the resume ended a minute before the round opened, whose pause
+	// let out its last held launch of the pod at letOut.
+	resumedWithLetOut := func(letOut time.Time) func(*store.PausePodHold) {
+		return func(hold *store.PausePodHold) {
+			hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldResumed, letOut
+		}
 	}
 
 	rows := []roundShape{
@@ -88,6 +114,26 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
 		{name: "suspended by unknown", claim: suspendedBy(supervise.SuspendedByUnknown), want: inNeither},
+		{name: "suspended by released under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(), want: inBoth},
+		{name: "suspended by released under a pause hold that ended with its let-out ahead", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumedWithLetOut(now.Add(10 * time.Minute))), want: inBoth},
+		{name: "suspended by released under a pause hold that ended with its let-out passed", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumedWithLetOut(opened.Add(30 * time.Second))), want: inNeither},
+		// The resume set the held launch's stuck clock to its own moment, the hold's end, and the
+		// wake pacing has not reserved the launch yet: the stopped role still waits for its owed
+		// launch, so it is the pause's.
+		{name: "suspended by released under a pause hold whose held launch is not let out yet", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumedWithLetOut(opened.Add(-time.Minute))), want: inBoth},
+		// The pause held no launch of the pod: nothing of the pause is left to wait for.
+		{name: "suspended by released under a pause hold that ended with no launch held", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumedWithLetOut(time.Time{})), want: inNeither},
+		{name: "suspended by released under a pause hold its pod's deletion ended", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(func(hold *store.PausePodHold) {
+				hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldDeleted, opened.Add(-time.Minute)
+			}), want: inNeither},
+		{name: "suspended by daemon under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByDaemon),
+			holds: pauseHold(), want: inNeither},
 		{name: "an operator suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByOperator
 		}), want: inBoth},
@@ -116,9 +162,9 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		UpdateRound: round, UpdateReasons: podUpdateDrift, UpdateOpenedAt: &opened,
 		UpdateTaskedAt: &opened, UpdateSignalledAt: &answeredAt}
 
-	// waitsFor reads the wait side of c over both group shapes, and fails the test where the two
-	// shapes disagree.
-	waitsFor := func(t *testing.T, c supervise.Claim) bool {
+	// waitsFor reads the wait side of c at clock over both group shapes, and fails the test where
+	// the two shapes disagree.
+	waitsFor := func(t *testing.T, c supervise.Claim, clock roundClock) bool {
 		t.Helper()
 		var read []bool
 		for _, group := range [][]supervise.Claim{{c}, {c, answeredWorker}} {
@@ -126,7 +172,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 				return slices.ContainsFunc(claims, func(of supervise.Claim) bool { return of.Token == c.Token })
 			}
 			unanswered, _ := readRoundEnd(group, round, clock).holding()
-			waiting, held, holding := named(waitingClaims(group, round)), named(heldByOperator(group, round)), named(unanswered)
+			waiting, held, holding := named(waitingClaims(group, round, clock)), named(heldByOperator(group, round, clock)), named(unanswered)
 			t.Logf("over %d claims: waitingClaims %t, heldByOperator %t, holding %t", len(group), waiting, held, holding)
 			read = append(read, waiting || held || holding)
 		}
@@ -138,7 +184,8 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			asks, waits := roundAsks(row.claim, round), waitsFor(t, row.claim)
+			clock := roundClock{now: now, grace: podUpdateGrace, holds: row.holds}
+			asks, waits := roundAsks(row.claim, round, clock), waitsFor(t, row.claim, clock)
 			switch row.want {
 			case inBoth:
 				if !asks || !waits {
@@ -154,7 +201,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 				}
 				unanswered := row.claim
 				unanswered.UpdateSignalledAt = nil
-				if !waitsFor(t, unanswered) {
+				if !waitsFor(t, unanswered, clock) {
 					t.Errorf("with its answer cleared, the claim is not waited for; want it waited for, as the round asks it")
 				}
 			default:

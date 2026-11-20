@@ -692,20 +692,28 @@ func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
 }
 
-// PassedOverByRound is whether a pod update round passes over this claim. The round does not ask
-// the claim, does not wait for it, and does not wake or resume it (dispatch://INFRA-4109 R1). It
-// is every suspension the rule may resume (RuleMayResume): a suspension by the daemon, by a root's
-// exit, by an idle release, or by an unknown source. Such a claim runs no process and no turn in
-// the pod, so an ask reaches no session. A wake or a resume for the ask would override the reason
-// the daemon stopped the claim. For a released claim that reason is the approved decision of
-// dispatch://INFRA-2981: an idle-released pod is not woken to be asked, because it holds no turn
-// to interrupt.
+// PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
+// the claim alone. The round does not ask such a claim, does not wait for it, and does not wake or
+// resume it (dispatch://INFRA-4109 R1). It is every suspension the rule may resume
+// (RuleMayResume): a suspension by the daemon, by a root's exit, by an idle release, or by an
+// unknown source. Such a claim runs no process and no turn in the pod, so an ask reaches no
+// session. A wake or a resume for the ask would override the reason the daemon stopped the claim.
+// For a released claim that reason is the approved decision of dispatch://INFRA-2981: an
+// idle-released pod is not woken to be asked, because it holds no turn to interrupt.
+//
+// The round makes one exception that the claim does not carry: a claim a project's pause stopped
+// is suspended released too, and the round asks it once its agent is ready and waits for it while
+// the pause still keeps its pod (internal/daemon's roundClock.passesOver, which reads this method
+// and the pause's holds of the pod). PublishUpdateAsk still refuses an ask to every claim this
+// method names, a claim the pause stopped included: a publish to a role with no holder raises a
+// role wake, and the sweep asks a claim only once its agent is ready, when the claim is no longer
+// suspended.
 //
 // An operator's suspension is not passed over. A person's suspend route, the boot's
 // session-conflict suspension and fresh_session record it, and it holds the round until the
-// operator acts (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks and
-// PublishUpdateAsk both read this method, so the ask, the wait and the publish state the rule
-// once.
+// operator acts (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks (through
+// roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the wait and the
+// publish state R1's rule once.
 func (c Claim) PassedOverByRound() bool {
 	return c.RuleMayResume()
 }
@@ -1805,9 +1813,10 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
-	// UpdateAskSuspended is an ask of a claim the round passes over, one the daemon suspended
+	// UpdateAskSuspended is an ask of a claim R1 passes over, one the daemon suspended
 	// (Claim.PassedOverByRound): nothing is published and nothing is marked. The sweep asks no
-	// such claim (internal/daemon's roundAsks), so the row was enqueued before the suspension.
+	// suspended claim (internal/daemon's askRound asks a claim only once its agent is ready), so
+	// the row was enqueued before the suspension.
 	UpdateAskSuspended
 )
 
