@@ -266,11 +266,11 @@ Each item below names a script, then what it proves.
 
 - `conflict-no-takeover.sh`
 
-  a phase move the daemon makes on its own — a head that starts conflicting with its base — takes no role's turn over, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the pushes and the synchronizes as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
-  the conflict starts the implementer at once, while the tester is still working the turn its own phase entry began and nothing at all is sent to the tester's connection;
-  the tester is told its phase ended by one message on its own role topic;
-  a completion it reports from that old turn is refused `409 HANDOFF_STALE_ENTRY` while the completion of the handoff the new entry's own task calls for, at a commit of its own, is taken;
-  and a phase-ended message to a role topic no live session holds finishes its outbox row rather than retrying, with the start still acting
+  a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the push onto the base, the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
+  the daemon's first conflicting read is logged and sends nothing to any role or its connection while the tester's turn runs;
+  the second read, a minute on, finds a check the base requires not passed on the head, so the issue stays in `testing` while the implementer is asked on its own role topic to merge the base forward, the tester is told on its own to hold, the architect is told once in a `checks-red` notice naming `testing`, and nothing at all is sent to the tester's connection;
+  once the merge lands the tester is told so, its completion at the head the merge replaced is refused `409 HANDOFF_HEAD_MERGED_FORWARD` with nothing recorded, and its completion at the new head is taken;
+  and a second issue whose required check passed on its conflicting head gets nothing from its second read
 
 - `behind-entry-fence.sh`
 
@@ -293,9 +293,10 @@ Each item below names a script, then what it proves.
 
 - `phase-entry-converge.sh`
 
-  the work of a phase entry reaches the worker that entry names, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the pushes and the synchronizes as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
-  the issue's phase changes twice while the tester's start waits for the launch the daemon's wake pacing holds, which raises its phases row to entry 2 with that entry's own task while its claim still holds the task of entry 1;
-  the pace then lets the launch run, the tester is sent the task it was queued, the completion it reports for that work is refused `409 HANDOFF_STALE_ENTRY` naming both entries and recording nothing, and the entry the phase is on reaches the same connection as a task of its own, whose completion is taken;
+  the work of a phase entry reaches the worker that entry names, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns, completions and backward moves over the daemon's own HTTP routes and worker stream:
+  the tester's start waits for the launch the daemon's wake pacing holds, with entry 1's task queued on its claim;
+  the launch runs while the implementer is still in its turn, so that task stays held, and the issue's phase changes twice — the tester's own backward move and the implementer's push and completion — which raises the tester's phases row to entry 2 with that entry's own task while its claim still holds the task of entry 1;
+  once both turns end the tester is sent the task it held, the completion it reports for that work is refused `409 HANDOFF_STALE_ENTRY` naming both entries and recording nothing, and the entry the phase is on reaches the same connection as a task of its own, whose completion is taken;
   a start row deleted from the outbox before any lane ran it loses no work, since with no fact of the project arriving the daemon's own entry sweep sends that entry's task to the implementer's live connection;
   and one read of `GET /legion/v1/state` carries the issue's `phaseEntry` and `givenEntry`
 
@@ -875,7 +876,7 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, held as root `AGENTS.md`'s "Admission" says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, held as "Admission and the `legion` label" in `docs/site/src/content/docs/legion/concepts.md` says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
 its first turns come from the task its start carries and the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
@@ -2315,7 +2316,7 @@ A pass proves that and no more:
 
 - The pod is an issue pod; the daemon's own controller pod, under `controller: daemon`, is not launched or checked.
 
-Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each holding a slot as root `AGENTS.md`'s "Admission" says:
+Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees, each holding a slot as "Admission and the `legion` label" in `docs/site/src/content/docs/legion/concepts.md` says:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
@@ -2647,18 +2648,18 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `conflict-no-takeover`
 
-  A head that starts conflicting with its base while tree 1's tester is in a turn takes the phase back without its completion and takes nothing else:
-  the implementer's start acts at once, and the tester keeps its turn, its background job, its process and its session.
+  A head that starts conflicting with its base while tree 1's tester is in a turn keeps tree 1 in `testing` and takes nothing over (dispatch://INFRA-4374):
+  legion-smoke's `main` requires `gate`, which passed on the head before the base moved, so the daemon records the conflict and sends nothing.
   The control: the tester runs `/usr/bin/sleep 20 && date … > /tmp/stage4b-conflict-control`, and the file is written.
   The witness: the tester runs the same chain with `/usr/bin/sleep 600` into `/tmp/stage4b-conflict-witness`
   — a bash call Oh My Pi backgrounds once it outruns its own threshold, since nothing of Legion's turns `bash.autoBackground.enabled` off, so the tester waits on it with the `wait` tool — its claim `working` and the sleep in its pod's process list;
-  the proof human commits a different version of the one file the pull request changes to its base branch, GitHub reports the head `CONFLICTING`, and tree 1 returns to `implementing`.
-  The daemon then has the implementer in a turn of the conflict's task
-  — its claim `working` on a confirmed `implementing` delivery, the task in its session — while that sleep is still in the tester's process list and the witness file is absent;
-  the tester's session (kept as `conflict-tester-session.jsonl`) holds no aborted turn, its claim is the one it first registered with, and it receives the phase-ended message on its own role topic (`the daemon ended your testing phase`), which is what ends the `wait` it is in.
+  the proof human commits a different version of the one file the pull request changes to its base branch, and GitHub reports the head `CONFLICTING`.
+  The daemon logs `workflow: a confirmed conflict needs no merge yet` for tree 1, and at least two minutes after the commit tree 1 is still in `testing` and the daemon asked no merge forward of it;
+  the implementer holds no task, and its session (kept as `conflict-implementer-session.jsonl`) holds no merge-forward ask;
+  the tester's sleep is still in its process list with the witness file absent, and its session (kept as `conflict-tester-session.jsonl`) holds no hold and no aborted turn, its claim the one it first registered with.
   A control over a copy of that session with one aborted assistant turn appended must be refused.
-  Its witness job then runs on and writes the witness file.
-  The implementer, told to, merges the base forward, tree 1 returns to `testing`, and the tester is handed testing again on its first session in its first pod
+  The proof human then tells the implementer to merge the base forward into `legion/<tree 1>` and push, with no handoff and no completion, since the issue stays in `testing`:
+  the pull request's head moves off the conflicting head, the witness job runs on and writes the witness file, tree 1 is still in `testing`, and the tester is still on its first session in its first pod, where `tree-reviewed` has it test the new head
 
 - `tree-reviewed`
 
@@ -4404,43 +4405,48 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/conflict-no-takeover.sh     # → "conflict no takeover e2e: PASS in <n>s", exit 0
 ```
 
+The live proof that a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374).
+The daemon reads such a head twice, a minute apart, and acts only when the issue's next step needs a head that merges:
+it then asks the implementer to merge the base forward, and moves nothing.
 Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-A run takes about a minute.
+The proof waits out the minute the daemon waits between a first conflicting read and its second (`internal/workflow`'s `conflictConfirmWait`), which no setting shortens, so a run takes more than a minute.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`) |
+| `driver` | a test binary of `TestAConflictKeepsThePhaseAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request whose base requires `ci`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
+It seeds a second root beside it, the control, in `testing` on an open pull request of its own onto the same base, holding its tree's slot, with `ci` passed on its head and no claim.
 Facts enter only as production's do:
-the base pushes that ask the daemon to read the head, the branch pushes and the synchronizes as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
-the daemon's own HTTP routes for each role's registration, readiness, grants and completions;
+the push onto the base that asks the daemon to read every open pull request on it, the implementer's push and its synchronize as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the daemon's own HTTP routes for each role's registration, readiness, grants and completions, each completion naming a handoff record of its own;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames: the prompt's response, `agent_start`, `agent_end` and the `prompt_result` behind it).
 The daemon's RPC has no abort frame, so the proof holds the stronger fact that leaves:
-the role's connection is sent nothing at all while the start acts, read by reading that connection for three seconds and finding it silent.
+the role's connection is sent nothing at all while the daemon reads the conflict and acts on it, read by reading that connection for three seconds and finding it silent.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `step1-the-tester-works-the-assignment-its-phase-handed-it` | the seeded implementer's `handoff_complete` at `h1`, then the tester's registration, readiness and turn on the task it is prompted | the issue in `testing`, and the tester's claim `working` on a confirmed delivery of its testing task |
-| `step2-the-conflict-starts-the-implementer-while-the-testers-turn-runs-on` | a push onto the base, after which GitHub answers the head conflicting, while that turn runs | the implementer prompted its fix task at once, named with the conflict; the issue in `implementing`; the tester still `working` the delivery it confirmed before the move; its connection sent nothing at all over three seconds; and the runtime asked to suspend nothing |
-| `step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic` | nothing: the move's own `phase_ended` row, on the outbox's role-message lane | exactly one message on `notifications.role.<the tester's claim>`, the sentence `record.PhaseEnded` writes, printed in full, with the reason behind its `Reason:` label; and the architect's one `checks-red` on its own topic beside it — a different message to a different role |
-| `step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken` | the implementer's push of `h2`, GitHub's synchronize and its completion there, which hands testing out again; then the tester's completion from the turn it began in step 1, at its first handoff `t1`, and, once that turn has ended and the new entry's task has reached it, the completion of the handoff `t2` that task's work wrote | the first refused `409 HANDOFF_STALE_ENTRY` with the issue left in `testing`, the second taken, with the issue in `reviewing` |
-| `step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts` | the reviewer's role topic answered `404 unclaimed`, which is what a listener without the kept lane, as the proof's stand-in is, answers for a role no live session holds, the phase-ended message's `keep: true` publish included; then the push of `h3`, its synchronize and CI's settlement of `h3` with `ci` failed | the implementer prompted its fix task again and the issue in `implementing`, one refused publish on that topic and no retry over three seconds, no `phase_ended` row left in the outbox, and nothing delivered on the topic |
+| `step1-the-tester-works-the-assignment-its-phase-handed-it` | the seeded implementer's `handoff_complete` at `h1`, naming an `implement` record of its own, then the tester's registration, readiness and turn on the task it is prompted | the issue in `testing`, and the tester's claim `working` on a confirmed delivery of its testing task |
+| `step2-the-first-conflicting-read-waits-for-a-second-and-sends-nothing` | a push onto the base while that turn runs, after which GitHub answers `h1` `CONFLICTING`; the base's ruleset requires `ci`, which has no run on `h1` | the daemon's `workflow: a conflict read waits for a second read` line for the issue and one `conflict_confirm` row in the outbox; over three seconds each, nothing at all on the tester's connection or the implementer's; no message on any role topic of the issue, the architect's included, and no `merge_forward` row; the issue in `testing`, the tester still `working` the delivery it confirmed, and the runtime asked to suspend nothing |
+| `step3-the-second-read-asks-for-the-merge-forward-and-the-issue-stays-in-testing` | nothing: the `conflict_confirm` row, due a minute after the first read, reads the head again, and GitHub still answers `CONFLICTING` | the second read's line about a minute after the first, and `workflow: merge forward asked` naming `h1`, `testing` and `required-check-not-green`; exactly one message on the implementer's role topic, the ask `record.MergeForwardMessage` writes, and one on the tester's, its hold, each printed in full; one notice on the architect's, `checks-red` naming `testing`; over three seconds nothing on the tester's connection and nothing more on any topic; the issue still in `testing`, and the tester still `working` the delivery of step 1 |
+| `step4-the-merge-lands-and-the-completion-at-the-replaced-head-is-refused` | the implementer's push of `h2`, its merge of the base, and GitHub's synchronize, GitHub answering `h2` mergeable; then, from the tester's turn of step 1, its completion at `h1` and its completion at `h2`, each naming a `test` record of its own | the landing on the tester's role topic, naming both heads; the completion at `h1` refused `409 HANDOFF_HEAD_MERGED_FORWARD` with the issue left in `testing` and the tester's phases row holding no verdict and no commit; the completion at `h2` taken, with the issue in `reviewing` |
+| `step5-a-conflict-whose-required-check-passed-gets-nothing` | nothing more: the control's own two reads, the first asked for by step 2's push onto the base, GitHub answering its head `CONFLICTING` throughout | the daemon's first-read line and then `workflow: a confirmed conflict needs no merge yet` for the control, naming `ci` required and green; over three seconds no message on any role topic of the control, the architect's included, no merge forward asked of it, no `merge_forward` row, and the control still in `testing` |
 
 What the proof stands in for lies outside the rule:
-the broker is a native `nats-server`, GitHub is a REST stand-in for the one pull request (its base requiring `ci`, the base branch's rulesets, its reviews and the repository a launch reads, with a GraphQL root that knows no pull request), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), Envoy's listener is the package's `noticeListener` with the no-holder refusal of a listener without the kept lane added for the topic step 5 names, the two Apps' tokens are placeholders, and no agent runs:
+the broker is a native `nats-server`, GitHub is a REST stand-in for the two pull requests (the issue's `mergeable` as the driver sets it, the control's conflicting throughout, the base branch's ruleset requiring `ci` and the branch otherwise unprotected, their reviews and the repository a launch reads, with a GraphQL root that knows no pull request), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), which holds the handoff record each completion names, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and no agent runs:
 every claim is launched by the package's fake runtime, which provisions its own workspace so the daemon clones nothing, and each role the proof acts as is driven over the daemon's own worker stream and HTTP routes.
-The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture.
-The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes — the phase-ended lane among them — are the real ones.
-The store is read for one thing no route shows: whether step 5's `phase_ended` row is still in the outbox.
+The two issues, their pull requests, their slots and the implementer's claim are seeded through the store, as every daemon test seeds its fixture.
+The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers, the merge-state reads and the outbox lanes — the second read's lane and the merge forward's among them — are the real ones.
+The driver keeps the daemon's log in memory as the daemon writes it, and reads the daemon's decisions from the lines it logs for them.
+The store is read for what no route shows: the outbox's `conflict_confirm` and `merge_forward` rows, and the tester's `phases` row, which a refused completion must leave unwritten.
 `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## behind-entry-fence.sh
@@ -4477,7 +4483,7 @@ Facts enter only as production's do:
 the implementer's push and its synchronize as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
 the daemon's own HTTP routes for each role's registration, readiness, grants, completions and backward moves;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
-Testing is entered again by the tester's own backward move to implementing and the implementer's completion, the path the daemon has for it: a CI red moves no issue, and the daemon reads a conflicting head only at its start, after a handoff, and for an approved review round (dispatch://INFRA-3164).
+Testing is entered again by the tester's own backward move to implementing and the implementer's completion, the path the daemon has for it: a CI red moves no issue, and neither does a head that conflicts with its base, which keeps the issue in its phase (dispatch://INFRA-4374).
 The daemon sends no role a task that adopts the issue's working copy while another role of the issue is in a turn (`internal/supervise`'s `sendPending`), so the tester ends the turn its first entry's task began before the implementer can be prompted, and reports every later completion from a turn of its own, begun before a later entry's task could reach it.
 The move back into testing is the reviewer's own request over `POST /legion/v1/phase/backward`, from `reviewing`, under a grant its registered session minted, because the engine takes a backward move from no role but the one running the issue's phase (`internal/workflow`'s `Engine.backward`, `BACKWARD_REFUSED`).
 
@@ -4569,7 +4575,7 @@ Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot r
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-A measured run took 88 s, 47 s of it building the driver: the proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
+The proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
@@ -4577,27 +4583,30 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
 | `driver` | a test binary of `TestAPhaseEntryConvergesOnARunningDaemonLive` (`internal/daemon/phase_entry_converge_live_test.go`, `-tags e2e`) |
-| `proof` | the four steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request at its first head, holding its tree's slot, with its implementer's claim mid-launch, which the boot relaunches.
-No `phases` row is seeded: every entry the proof reads is raised live, by the transitions its completions and its conflicting heads make.
+No `phases` row is seeded: every entry the proof reads is raised live, by the transitions its completions and its backward moves make.
 Facts enter only as production's do:
-the push onto the base branch that each conflict arms, the implementer's own pushes and GitHub's synchronizes of the pull request, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
-the daemon's own HTTP routes for each role's registration, readiness, grants and completions;
+the implementer's push and GitHub's synchronize of the pull request, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the daemon's own HTTP routes for each role's registration, readiness, grants, completions and backward moves;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does.
-The daemon is held to six wakes a minute in bursts of one (`convergeWakeRate`, `convergeWakeBurst`), so the boot's relaunch spends the burst and the next role's launch waits ten seconds, which is the window run one drives its two phase changes inside.
+The daemon is held to six wakes a minute in bursts of one (`convergeWakeRate`, `convergeWakeBurst`), so the boot's relaunch spends the burst and the next role's launch waits ten seconds, which is the wait run one's first check reads.
+The daemon sends no role a task that adopts the issue's working copy while another role of the issue is in a turn (`internal/supervise`'s `sendPending`), so the implementer, which goes on in the turn its first completion was made from, keeps the task of entry 1 on the tester's claim once the launch has run, and the tester makes its backward move from a turn of its own.
+The engine takes a backward move from no role but the one running the issue's phase (`internal/workflow`'s `Engine.backward`, `BACKWARD_REFUSED`), so the move back of run one is the tester's, in `testing`, and the move back of run two is the reviewer's, in `reviewing`, each over `POST /legion/v1/phase/backward`.
 The entry sweep's period is a Go constant with a test override the driver sets (`convergeEntrySweep`, two seconds), since the minute the shipped binary keeps (`entrySweepInterval`) would be most of the run;
 nothing else of the sweep is changed.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `run1-the-phase-changes-twice-while-the-testers-start-waits-for-its-launch` | the seeded implementer's `handoff_complete` at the first head, which hands testing to the tester and queues its claim entry 1's task while the pace holds its launch; then the daemon's read of the pull request answering that head as conflicting with its base, which sends the issue back to implementing, and the implementer's merge forward at a second head, both inside that wait | the tester's launch still waiting (`GET /legion/v1/state`'s `wakesWaiting`), its claim still holding the task of entry 1, its phases row on entry 2 with that entry's own task, and the one start row of entry 2 waiting behind the task the claim holds |
-| `run1-the-launch-runs-and-the-entry-the-phase-is-on-is-worked` | the pace letting the launch run; the tester's registration, readiness and turn on the task it is sent; its completion for that work; then the turn's end and its completion of the task that follows | the tester sent the delivery of entry 1 its claim held, with the state reading `phaseEntry` 2 and `givenEntry` 1; that completion refused `409 HANDOFF_STALE_ENTRY`, naming both entries and leaving the issue in `testing`; then a task of its own for entry 2 on the same connection, the state reading 2 and 2, and the completion of that work taken, with the issue in `reviewing` |
-| `run2-a-start-row-deleted-before-any-lane-ran-it-loses-no-work` | the driver holding the advisory lock a lane takes before it claims a lifecycle row of the issue (`record.Postgres.ClaimRow`), arming the conflicting head and driving the reviewer's completion, whose read of the pull request carries that answer and sends the issue back to implementing, which raises the implementer's entry and writes that entry's start row; then deleting that row, letting the lock go, and nothing at all | the daemon's own entry sweep sending that entry's task to the implementer's live connection, with no fact of the project arriving after the delete |
+| `run1-the-testers-start-waits-for-the-launch-the-pace-holds` | the seeded implementer's `handoff_complete` at the first head, from a turn of its own that it goes on in, which hands testing to the tester and queues its claim entry 1's task while the pace holds its launch | the tester's launch still waiting (`GET /legion/v1/state`'s `wakesWaiting`), no process started for it, and its claim holding the task of entry 1, the state reading `phaseEntry` 1 and `givenEntry` 1 |
+| `run1-the-phase-changes-twice-while-the-testers-claim-holds-the-task-of-entry-1` | the pace letting the launch run and the tester's registration and readiness; then the tester's `POST /legion/v1/phase/backward` to `implementing` from a turn of its own, and the implementer's push of a second head, GitHub's synchronize and its completion there, still in its first turn | the tester sent nothing over three seconds, its claim holding the task of entry 1 unsent; the implementer's new entry's task held on its claim; then the tester's phases row on entry 2 with that entry's own task, the claim still holding the task of entry 1, the state reading `phaseEntry` 2 and `givenEntry` 1, and the one start row of entry 2 waiting behind the task the claim holds |
+| `run1-the-held-task-is-refused-and-the-entry-the-phase-is-on-is-worked` | the end of the tester's turn, then of the implementer's; the tester's turn on the task it is sent and its completion for that work; then the turn's end and its completion of the task that follows | the tester sent the delivery of entry 1 its claim held, the implementer's task of the phase the issue left dropped unsent, and the state reading `phaseEntry` 2 and `givenEntry` 1; that completion refused `409 HANDOFF_STALE_ENTRY`, naming both entries and leaving the issue in `testing`; then a task of its own for entry 2 on the same connection, the state reading 2 and 2, and the completion of that work taken, with the issue in `reviewing` |
+| `run2-a-start-row-deleted-before-any-lane-ran-it-loses-no-work` | the driver holding the advisory lock a lane takes before it claims a lifecycle row of the issue (`record.Postgres.ClaimRow`) and driving the reviewer's `POST /legion/v1/phase/backward` to `implementing` from its review task's turn, which raises the implementer's entry and writes that entry's start row; then deleting that row, letting the lock go, and nothing at all | the daemon's own entry sweep sending that entry's task, with the reviewer's reason behind its `Reason:` label, to the implementer's live connection, with no fact of the project arriving after the delete |
 | `the-state-carries-the-phase-entry-and-the-entry-the-role-was-given` | one `GET /legion/v1/state` | the issue carrying `phaseEntry` and `givenEntry`, the two numbers a reader tells a role holding its work from one the daemon has still to reach by |
 
 What the proof stands in for lies outside the rule:
-the broker is a native `nats-server`, GitHub is `liveGitHub` (in `internal/daemon/live_issue_proof_test.go`), a REST stand-in for the one pull request the proof drives, which answers that pull request's state, head, base and `mergeable` — the last of these what the driver arms to drive a conflict — its reviews as none and any repository with `main` as its default branch, and serves no branch rule at all, with this proof's pause of its pull-request read (`pullRequestReadPause`), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), the two Apps' tokens are placeholders, and no agent runs:
+the broker is a native `nats-server`, GitHub is `liveGitHub` (in `internal/daemon/live_issue_proof_test.go`), a REST stand-in for the one pull request the proof drives, which answers that pull request's state, head, base and `mergeable`, the last mergeable throughout, its reviews as none and any repository with `main` as its default branch, and serves no branch rule at all, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), which holds the handoff record each completion names and takes the reason each backward move posts, the two Apps' tokens are placeholders, and no agent runs:
 every claim is launched by the package's fake runtime, which provisions its own workspace so the daemon clones nothing, and each role the proof acts as is driven over the daemon's own worker stream and HTTP routes.
 The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture.
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers, the outbox lanes and the entry sweep are the real ones.
@@ -5489,12 +5498,12 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]     # → "nats-callout-sessions: 9 of 9 checks passed (hosts: plugins)", exit 0
+  bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]     # → "nats-callout-sessions: 19 of 19 checks passed (hosts: plugins)", exit 0
 ```
 
 The live proof of the NATS auth service's `r-kinds` and `r-refusal` with sessions: its verification's check `c-callout-kinds-plugins` in the default mode, and `c-callout-kinds` with `--real-hosts`.
-An Oh My Pi session and a Claude Code session, each connecting to the hub with its own broker token, are admitted to their own channels and receive a direct message, again after a restart of the listener and again after a restart of the hub's server on the same store;
-and a probe run in one session's own environment is refused the other session's channel by name.
+An Oh My Pi session, a Claude Code session and two Codex CLI sessions, each connecting to the hub with its own broker token, are admitted to their own channels and receive a direct message, again after a restart of the listener and again after a restart of the hub's server on the same store;
+and a probe run in one session's own environment is refused another session's channel by name.
 
 The stack is `packages/envoy/scripts/dev-stack.sh --callout`: the brokers, the listener, Dispatch and `nats-server` behind the NATS auth service, each the process production runs, built from this checkout.
 dev-stack.sh restarts natsd (SIGUSR1) and the listener (SIGUSR2) in place, on the ports they served, and natsd on the same JetStream store and callout keys.
@@ -5502,38 +5511,48 @@ It runs its sessions two ways.
 
 By default, what `e2e.yaml` runs on a hosted runner, they are each plugin's own code under a stand-in host, in processes of their own and with no model:
 the Oh My Pi extension under the stand-in host its own suite drives (`packages/pi-envoy/scripts/role-takeover/omp-client.ts`, whose heartbeat the script ticks before each message, as the host's timer would),
-and Claude Code's channel server under a stand-in `claude` that speaks MCP to it and plays the Legion inbox it writes each delivery to (`role-takeover/claude-client.ts --inbox`).
+Claude Code's channel server under a stand-in `claude` that speaks MCP to it and plays the Legion inbox it writes each delivery to (`role-takeover/claude-client.ts --inbox`),
+and the Codex plugin, `@sjawhar/codex-envoy`, built and packed as the release packs it (`scripts/build.ts --codex-out`, `bun pm pack`) and installed where Codex installs it, under a stand-in `codex` (`role-takeover/codex-client.ts`, compiled into a binary named `codex`).
+The stand-in starts the plugin's MCP server from the installed manifest with only the manifest's `env_vars` and the variables Codex CLI 0.154.0 hands every MCP server, runs the plugin's hooks as Codex does (`SessionStart` at the first prompt and at `/new`), keeps the transcript the plugin reads, and answers the plugin's `codex queue`.
 
-`--real-hosts`, run by hand on a Legion pod or any box given the pins and a model route, is the hosts themselves:
-the Oh My Pi binary in RPC mode with this checkout's pi-envoy packed as the release packs it, and the pinned Claude Code under `legion claude-bridge` (built from this checkout) with this checkout's claude-envoy.
+`--real-hosts`, run by hand on a Legion pod or any box given the pins and the model routes, is the hosts themselves:
+the Oh My Pi binary in RPC mode with this checkout's pi-envoy packed as the release packs it, the pinned Claude Code under `legion claude-bridge` (built from this checkout) with this checkout's claude-envoy,
+and the pinned Codex CLI in a tmux server of the run's own with this checkout's codex-envoy packed as the release packs it and installed with Codex's own `codex plugin marketplace add` and `codex plugin add` into a fresh Codex home under `${XDG_CACHE_HOME:-$HOME/.cache}` (outside `TMPDIR`, where Codex refuses its helper binaries).
 It needs a model route (`LEGION_E2E_MODEL_BASE_URL`, `LEGION_E2E_MODEL_KEY_FILE`, `LEGION_E2E_MODEL_ID`, `LEGION_E2E_CLAUDE_MODEL`), the omp binary (`LEGION_E2E_OMP_PATH`, default the build `.omp-pin` names where mise has it installed, else the `omp` on `PATH`, else the worker image's `/opt/omp/bin/omp`), its `--version` held to `.omp-pin`'s release and a mise install of oh-my-pi to its build, and the Claude Code pin (`LEGION_E2E_CLAUDE_CODE_PIN`, default the worker image's `/opt/legion/claude-code`), installed under `$TMPDIR` with `npm ci` and its `--version` held to the pin, as [`envoy-session-states.sh`](#envoy-session-statessh) takes them.
-It runs every check but `receives-after-switch`, which drives each host's switch through its stand-in.
+Codex needs a route of its own, an OpenAI Responses-compatible endpoint, and its pin: `LEGION_E2E_CODEX_BASE_URL` (the endpoint, its `/v1` included), `LEGION_E2E_CODEX_KEY_FILE` (its key, preflighted: `GET /models` must answer the key 200 and list the model, and answer no key otherwise), `LEGION_E2E_CODEX_MODEL`, `LEGION_E2E_CODEX_PATH` (the `codex` binary) and `LEGION_E2E_CODEX_VERSION` (the release the deployment pins, tested with 0.154.0), which `codex --version` must print as `codex-cli <version>`.
+A missing input refuses the run, naming it; it needs `tmux` too.
+It runs every check but `receives-after-switch`, which drives each host's switch through its stand-in, and adds `transcript-in-evidence` for each Codex session (`17 of 17 checks passed (hosts: real)`).
 
 In both, the Oh My Pi session is told `NATS_AUTH=broker` in its environment and the Claude Code session `"natsAuth": "broker"` in its `envoy.json`, so both ways of naming the credential run.
+A Codex session can be told either way, so there are two: `codex-env`, told `NATS_AUTH=broker` in its environment alone, which reaches the plugin's MCP server only because the plugin's manifest names `NATS_AUTH` among its `env_vars`, and `codex-file`, told `"natsAuth": "broker"` in its `envoy.json`.
 Each trades the stack's pod identity for a token naming its own session, which the script first registers for that pod, as a deployment's daemon does.
 
 | check | what it holds |
 | :--- | :--- |
-| `receives (omp)`, `receives (claude)` | a direct message (`POST /v1/messages/send`) reaches the session: its own consumer (`s-<id>`, `/jsz`) acks the stream sequence it was delivered, which the listener does only on the host's `done`; the hub lists the connection as admitted as `session/<id>` (`/connz?auth=true`), and the host shows the message |
+| `receives (omp)`, `receives (claude)`, `receives (codex-env)`, `receives (codex-file)` | a direct message (`POST /v1/messages/send`) reaches the session: its own consumer (`s-<id>`, `/jsz`) acks the stream sequence it was delivered, which the listener does only on the host's `done` (a Codex session's once `codex queue` stored the message); the hub lists the connection as admitted as `session/<id>` (`/connz?auth=true`), and the host shows the message |
 | `receives-after-listener-restart (…)` | the same, after the listener was restarted on its port |
 | `receives-after-hub-restart (…)` | the same, after natsd was restarted on its port and store and the listener reconnected to it |
-| `receives-after-switch (…)` | the same for the session ids each host switched to: Oh My Pi's `/new` (`omp-client.ts` `switch`) and Claude Code's `/clear` (`claude-client.ts` `clear`, the handoff file the channel server adopts), each plugin moving its connection to the new id's token before it subscribes that id's subjects |
+| `receives-after-switch (…)` | the same for the session ids each host switched to: Oh My Pi's `/new` (`omp-client.ts` `switch`), Claude Code's `/clear` (`claude-client.ts` `clear`, the handoff file the channel server adopts) and Codex's `/new` (`codex-client.ts` `new`, whose `SessionStart` hook writes that handoff file), each plugin moving its connection to the new id's token before it subscribes that id's subjects |
 | `probe-refused-other-session` | `natsprobe` in the Oh My Pi session's environment is served its own channel and refused the Claude Code session's: `Permissions Violation for Subscription to "notifications.envoy.deliver.<id>"` |
+| `probe-refused-other-session (codex-env)`, `(codex-file)` | `natsprobe` in the environment the Codex session's plugin server got (read from its `/proc/<pid>/environ`, so as the manifest's `env_vars` filtered it), presenting the credential the plugin's own settings resolve there ([`codex-probe.ts`](../../packages/pi-envoy/scripts/role-takeover/codex-probe.ts): the broker token, or none), is served its own channel and refused the Oh My Pi session's, and in the Oh My Pi session's environment it is refused the Codex session's |
+| `transcript-in-evidence (codex-env)`, `(codex-file)` | `--real-hosts` only, read after the teardown: the `sessions/` the teardown left in the evidence holds the Codex session's own transcript, the file its receives read, whose first line names the session's id; the row copies nothing itself |
 
 A receive that fails says where it stopped: `not admitted` when the hub lists no connection admitted as that session; `not acked` when the host shows the message but its consumer acked nothing new.
-Two negative controls, `NATS_CALLOUT_SESSIONS_CONTROL`:
-`seedless` starts both sessions with no credential named, so the auth service admits neither connection and every receive FAILs `not admitted`;
-`withhold-ack` (default mode) has the Claude Code stand-in take each delivery and never answer it, so the listener acks nothing: the first Claude Code receive FAILs `not acked` (the host shows it, its consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi ones pass.
-Either exits 1.
+Four negative controls, `NATS_CALLOUT_SESSIONS_CONTROL`:
+`seedless` starts every session with no credential named, so the auth service admits no connection and every receive FAILs `not admitted`, and each Codex probe row FAILs, its plugin's settings presenting no credential; the Oh My Pi probe row, which trades with the broker variables alone, passes;
+`withhold-ack` (default mode) has the Claude Code stand-in take each delivery and never answer it, so the listener acks nothing: the first Claude Code receive FAILs `not acked` (the host shows it, its consumer acked nothing), the later ones FAIL `not acked` or held behind it, and the others, every probe row among them, pass;
+`withhold-ack-codex` (default mode) has each Codex stand-in take each message the plugin's `codex queue` hands it and never answer, so that command does not return while the session runs and the listener acks nothing: the first receive of each Codex session FAILs `not acked`, the later ones FAIL `not acked` or held behind it, and the Oh My Pi and Claude Code ones and every probe row pass;
+`manifest-drops-nats-auth` installs the Codex plugin with `NATS_AUTH` taken out of its manifest's `env_vars`, so Codex hands `codex-env`'s server no `NATS_AUTH` and it dials with no credential: `codex-env`'s receives FAIL `not admitted`, naming the manifest, its probe row FAILs, presenting none, and the others pass.
+Each exits 1.
 
 | input | default | meaning |
 | :--- | :--- | :--- |
 | `LEGION_TEST_PG_DSN`, else `DATABASE_URL` | none: refused | the Postgres server dev-stack.sh creates its two databases on and drops on exit |
-| `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless` or `withhold-ack`, the negative controls |
+| `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless`, `withhold-ack`, `withhold-ack-codex` or `manifest-drops-nats-auth`, the negative controls |
 | `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `dev-stack.log`, `stack-logs/` (every server's log, each restarted one's earlier log beside it), `client-logs/` (each client's stdout and stderr and the channel server's stderr), `answers/` (each send's answer, each acking consumer's state and the probe's output) and, with `--real-hosts`, `sessions/` (each host's transcript and logs) |
 
-By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner; `--real-hosts` needs `npm` too.
-No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*` or `CLAUDE_*` variable of the caller reaches anything the run starts; with `--real-hosts` the model key reaches the two hosts' environments alone, never an argv.
+By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner; `--real-hosts` needs `npm` and `tmux` too.
+No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*` or `OPENAI_*` variable of the caller reaches anything the run starts; with `--real-hosts` each model key reaches its hosts' environments alone, never an argv.
 Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, a pin does not match, or the stack or a client did not start).
 
 ## lib/loopback-dsn.py
@@ -6044,7 +6063,7 @@ the caller does, with its work directory, `<key-dir>` unconditionally and `<dest
 
 ## lib/model-endpoint.sh
 
-The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
+The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh), and by [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which also holds Codex's route to its key with `responses_key_preflight`.
 `anthropic_base_url` is Anthropic's own endpoint, the one a run with no `LEGION_E2E_MODEL_BASE_URL` calls.
 `model_base_url_refusal URL` prints why `URL` cannot be a model base URL, and nothing when it can:
 an `http://` or `https://` URL of letters, digits and `:/._~-` alone (so it carries no user or password, and stays a plain YAML scalar), ending in neither a colon nor a slash.
@@ -6055,6 +6074,17 @@ With `BASE` named it also asks `GET /v1/models` with no key, which must not answ
 the code a refusal gave is noted), and `GET /key/info` with the key (a LiteLLM proxy serves key management at its root, not under `/v1`), whose `key_alias` (the proxy's non-secret name for the key, at the top level or under `info`) is noted as `the model key is <alias>`, or that the endpoint names no alias, never failing on it.
 Every call sends `anthropic-version: 2023-06-01`;
 the key reaches curl in `HEADER`, a 0600 header file removed before it returns (the callers' cleanup removes it too, after a `fail`), never an argv, and neither the key nor a response body is printed.
+
+`responses_key_preflight BASE KEY HEADER WHAT MODEL` holds an OpenAI Responses-compatible endpoint `BASE` (a Codex model provider's `base_url`, its `/v1` included) to the key in `KEY` the same way, sent as a bearer:
+`GET /models` with the key must answer 200 and list `MODEL`, and `GET /models` with no key must not answer 200.
+
+## lib/codex-host.sh
+
+The Codex CLI sessions of [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which sources it; it keeps the Codex sessions' lifecycle, and the script keeps the checks and the one table of how each session is told its credential and what each control changes (`told`, `withholds`, `manifest_drops`), which it reads.
+`codex_pack` builds and packs the Codex plugin as the release does (`scripts/build.ts --codex-out`, `bun pm pack`) into a marketplace of the run's own, takes the control's variables out of its manifest's `env_vars`, and in the default mode compiles the stand-in `codex` (`packages/pi-envoy/scripts/role-takeover/codex-client.ts`).
+`codex_start` starts each Codex session and makes its first prompt: under the stand-in in the default mode, and as the pinned Codex CLI in a tmux server of its own with `--real-hosts`.
+`codex_stop` keeps each real Codex's terminal in the evidence and quits it, and `codex_clean` keeps the stand-in transcripts and removes the real sessions' Codex homes and sockets.
+Sourced, never run: it defines functions and starts nothing of its own.
 
 ## lib/install-box-login-route.sh
 

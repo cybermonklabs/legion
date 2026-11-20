@@ -1,15 +1,16 @@
 name: CI job lint
 
-# The steps of ci.yaml's `lint` job, in a file of its own.
+# The steps of ci.yaml's `lint` job, in a file of its own, and the private-name check of the
+# repository in a job beside it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
-# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
+# it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -31,6 +32,13 @@ on:
           that filter matched.
         type: string
         required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line, which the private-names job below
+          checks for (.github/scripts/check-private-names.sh's fifth rule, whose header says what
+          an unset list does on each event).
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -83,9 +91,6 @@ jobs:
 
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
-
-      - name: Check no file names the private deployment repository, company, internal host, or tailnet host
-        run: .github/scripts/check-private-names.sh
 
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
@@ -241,6 +246,33 @@ jobs:
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: lint
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The repository's private-name check, in a job of its own: it reads the deployment's term list
+  # (PRIVATE_NAME_TERMS), and no job that runs dependency code holds that list, as the lint job
+  # above does (bun install, Biome, go). This one checks the repository out and runs that shell
+  # script alone.
+  private-names:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # By the checkout's own path, the form every job that holds the list runs the check by.
+      - name: Check no file names the private deployment repository, company, internal host, tailnet host, or a term of the deployment's own list
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

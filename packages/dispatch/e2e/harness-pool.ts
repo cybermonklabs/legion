@@ -135,7 +135,16 @@ async function terminate(): Promise<void> {
   // `stacks` yet, so `stopStacks` would stop nothing and remove the run directory under a
   // server that is still up. The wait is bounded, so a start that never settles still ends.
   if (starting !== undefined) await Promise.race([starting, sleep(terminateGraceMs)]);
-  await stopStacks(true);
+  // Stacks that are up are stopped keeping what a failed run keeps, since nothing here knows how
+  // the run ended: the log directories of a run of more than one stack (a run of one stack, such
+  // as e2e/harness-up.ts's, has none, and `clearRunDir` removes its directory either way). No
+  // container's log is printed for them: a SIGTERM is how e2e/visual-run.sh ends harness-up after
+  // every run, passed or failed, and printing there would put a whole Postgres log in every visual
+  // job's output. A SIGTERM that lands while stacks are still starting ends that start: the log of
+  // each stack's container that had come up is printed as the start stops it, and a container
+  // still waiting to answer is removed unread; a start that has not settled within
+  // `terminateGraceMs` is left, and the stacks that are up are stopped here, printing nothing.
+  await stopStacks(true, false);
   process.kill(process.pid, "SIGTERM");
 }
 
@@ -303,7 +312,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
         stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {
-        await database?.stop();
+        await database?.stop(true);
         throw error;
       }
     };
@@ -353,11 +362,15 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 /** Stops every harness and every database, clears the run's directory and takes the pool's
  *  signal listeners off again. `keepLogs` is the one decision this cannot make for itself: the
  *  logs are what a failed run is read from, and this module never learns whether the run passed
- *  (`e2e/run-outcome.ts`). */
-export async function stopStacks(keepLogs: boolean): Promise<void> {
+ *  (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said otherwise, is
+ *  whether each stack's Postgres container prints its log before it goes (`StackDatabase.stop`). */
+export async function stopStacks(
+  keepLogs: boolean,
+  printContainerLogs: boolean = keepLogs
+): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
-  await Promise.allSettled(stacks.map((stack) => stack.database?.stop()));
+  await Promise.allSettled(stacks.map((stack) => stack.database?.stop(printContainerLogs)));
   clearRunDir(keepLogs);
   stacks.length = 0;
   stopped = false;

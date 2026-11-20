@@ -59,6 +59,104 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 	}
 }
 
+// The host rule reads a host, not a Lean or OCaml name. A name holding a capital letter, then a
+// segment spelled exactly Internal, passes: Lake's and Rocq's module paths (src/lake/Lake/Build of
+// leanprover/lean4, kernel/indTyping.ml of rocq-prover/rocq), and a Lean function's own namespace.
+// So does Lean's own option of the cmdline snapshots under its Lean namespace (as
+// src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it), and no name near it. Every other host
+// is refused, whatever the case of its labels: at the start of a record, on a later line, in
+// italics, right after a reserved example host, and with a capital letter in its first label while
+// the segment is not spelled Internal. The texts are assembled from pieces, as every refusable
+// literal of these tests is, so that no line of this file names one whole, and so that a guard
+// still reading a namespace as a host passes the file too.
+func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
+	engine, err := compiled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		label   = "internal"
+		capital = "Internal"
+		upper   = "INTERNAL"
+		class   = "names a private internal host"
+	)
+	scan := func(t *testing.T, record Record) []string {
+		t.Helper()
+		lines, err := engine.scan(context.Background(), []Record{record})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lines
+	}
+	t.Run("a namespace passes", func(t *testing.T) {
+		for _, text := range []string{
+			"import Std." + capital + ".UV.System",
+			"open Std." + capital + ".UV in",
+			"  if Environ." + capital + ".is_above_prop env q then",
+			"  let invert = Inductiveops." + capital + ".should_invert_case env sigma ci in",
+			"  (Environ." + capital + ".View.view answer_env).Environ." + capital + ".View.env_modtypes",
+			"      Classes." + capital + ".add_instance ~locality inst",
+			"import Std.Async",
+			// The lines of leanprover/lean4's src the namespace alone would leave refused: a
+			// function's namespace (Init/Internal/Order/While.lean, twice, and both
+			// SpecLemmas.lean of Std's Do and WP), and the option (Lean/Elab/Frontend.lean).
+			"This module proves the one-step unfolding lemma `repeatM." + capital + ".eq_of_monadTail`,",
+			"  rw [repeatM." + capital + ".eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]",
+			"    rw [_root_.repeatM." + capital + ".eq_of_monadTail (f := f) a]",
+			"  let opts := Lean." + label + ".cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone",
+		} {
+			if lines := scan(t, Record{Label: "the body", Text: text}); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", text, lines)
+			}
+		}
+	})
+	t.Run("a reserved example host and the vendored property pass", func(t *testing.T) {
+		for _, record := range []Record{
+			{Label: "the body", Text: "https://listener." + label + ".example"},
+			{Label: "the body", Text: "listener." + label + ".example"},
+			{Label: "the body", Text: "line one\nlistener." + label + ".example"},
+			{Label: "the body", Text: "nats://nats." + label + ".example.com:4222"},
+			{Label: "the body", Text: "Point it at api." + label + ".example."},
+			{Label: "the body", Text: "now https://ENVOY." + upper + ".EXAMPLE"},
+			{Label: "packages/claude-envoy/dist/envoy-channel.js", Text: "        this." + label + ".push(sv);"},
+		} {
+			if lines := scan(t, record); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", record.Text, lines)
+			}
+		}
+	})
+	t.Run("a host is refused", func(t *testing.T) {
+		for _, text := range []string{
+			"https://beacon." + label + ".quietforge",
+			"https://beacon." + upper + ".quietforge",
+			"https://beacon." + capital + ".quietforge",
+			"https://BEACON." + upper + ".QUIETFORGE",
+			"https://beacon." + label + ".Quietforge.Net",
+			"beacon." + label + ".quietforge",
+			"line one\nbeacon." + label + ".quietforge",
+			"see _beacon." + label + ".quietforge_ in italics",
+			"NATS_URLS=a." + label + ".example,b." + label + ".quietforge",
+			"ip-10-0-0-7." + label + ".quietforge.net:443",
+			"https://dispatch." + label + ".quietforge.com/",
+			"this." + label + ".push(value)",
+			"Beacon." + label + ".quietforge answers on 443.",
+			"BEACON." + label + ".quietforge",
+			"fooBar." + label + ".quietforge",
+			"Beacon." + upper + ".quietforge",
+			// Near names of the one Lean option the rule allows: another option, a longer name,
+			// a name glued in front, and a host after its method.
+			"Lean." + label + ".otherName",
+			"Lean." + label + ".cmdlineSnapshotsX.get opts",
+			"xLean." + label + ".cmdlineSnapshots",
+			"Lean." + label + ".cmdlineSnapshots.get.beacon",
+		} {
+			if lines, want := scan(t, Record{Label: "the body", Text: text}), []string{"the body: " + class}; !slices.Equal(lines, want) {
+				t.Errorf("%q: the report is %q, want %q", text, lines, want)
+			}
+		}
+	})
+}
+
 // Each record is scanned on its own: a record that names something private is reported against
 // itself and against no record after it. Detect of one fragment answers that fragment's
 // findings, where DetectSource would hand the detector's whole run back and report the first

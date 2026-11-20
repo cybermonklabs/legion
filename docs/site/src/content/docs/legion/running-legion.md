@@ -134,19 +134,31 @@ until you add it in the App's settings on GitHub and each account that installed
 approves it. The controller, which works no repository, holds a read lease of the review App on
 each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
 commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
-itself reads GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts, which covers
-what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
-the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's
-own pull request rather than a listing of every open one, so a handoff costs the reads of its own
-pull request alone. It reads no repository ruleset, no branch protection, no check run and no
+itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
+runtime starts, which covers what arrived while the daemon was down, and a start read that finds
+GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
+been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
+ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
+for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
+the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
+state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
+answers a state, the head moves or the pull request is no longer open, each
+read logged with its wait; a minute after a read found the head conflicting with its base, to
+read it once more before it acts on the conflict; and once after GitHub reports the pull request
+out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request
+rather than a listing of every open one. A read that finds the head
+conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
+for the checks the base requires and whether it requires a current branch, since that decides
+whether the conflict needs the implementer's merge forward now. It reads no check run and no
 commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
-that head's check runs and commit statuses, and the checks a base branch requires the daemon never
-reads at all, so it names no required check that has never run. Dispatch's CI reconcile reads the
+that head's check runs and commit statuses, which is also where it reads whether a required check
+is green on a conflicting head. Dispatch's CI reconcile reads the
 commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
 permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+The read as the workflow runtime starts and the read after a handoff are each the backstop for a webhook that never arrived — GitHub can fail to
 deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
 lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
 the next of them:
