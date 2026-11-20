@@ -4892,11 +4892,14 @@ func fillMargin(t *testing.T, server *memoryServer, issue, artifactID, text stri
 }
 
 // floorFrame is a frame of exactly size bytes carrying an update that appends to the document's
-// first text, as one browser's paste would arrive.
+// first text, as one browser's paste would arrive. Every frame it tries is made under one client id:
+// a fresh document draws its id at random, and a draw whose varint is a byte shorter or longer
+// moves the frame's length with it, so a search over fresh documents can miss size on each try.
 func floorFrame(t *testing.T, sending *browser, state []byte, size int) []byte {
 	t.Helper()
+	client := crdt.WithClientID(crdt.New().ClientID())
 	build := func(appended int) []byte {
-		return sending.updateFrame(browserEdit(t, state, func(tree *pmdoc.Node) {
+		return sending.updateFrame(newBrowserDocument(t, state, client).edit(t, func(tree *pmdoc.Node) {
 			tree.Children[0].Children[0].Text += strings.Repeat("x", appended)
 		}))
 	}

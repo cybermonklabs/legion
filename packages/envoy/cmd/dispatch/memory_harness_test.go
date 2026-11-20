@@ -1570,9 +1570,11 @@ type browserDocument struct {
 	fragment *crdt.YXmlFragment
 }
 
-func newBrowserDocument(t *testing.T, state []byte) *browserDocument {
+// newBrowserDocument is a browser's document holding state, under the client id opts name, or a
+// fresh random one.
+func newBrowserDocument(t *testing.T, state []byte, opts ...crdt.DocOption) *browserDocument {
 	t.Helper()
-	doc := crdt.New()
+	doc := crdt.New(opts...)
 	if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
 		t.Fatalf("decode the document's state: %v", err)
 	}
