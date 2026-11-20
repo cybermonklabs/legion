@@ -351,3 +351,85 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
 	}
 }
+
+// A result's dry run judges a commit of a linked repository as the record does, because the two
+// share one judgement (readResultRequest): a commit only the linked repository holds is taken, a
+// commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN, a linked read that did not
+// answer is refused 502 GITHUB_UNREADABLE, and a linked repository the App cannot read is named in
+// the refusal. Each dry run answers what the record of the same body then answers, word for word,
+// and stores nothing. A dry run that skipped the linked reads would answer a line where the
+// record refuses, and tell a role its result will be taken when it will not.
+//
+// The negative control is a dry run that asks no repository about the commit: it answers 200 in
+// the three refused rows.
+func TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes(t *testing.T) {
+	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
+	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+	for _, row := range []struct {
+		name string
+		// github is how GitHub answers, beside the open pull request acme/tools#7.
+		github func(*linkedGitHub)
+		// status and code are the record's answer; the dry run answers 200 where the record 201s.
+		status int
+		code   string
+	}{
+		{"a commit only the linked repository holds", func(*linkedGitHub) {}, http.StatusCreated, ""},
+		{"a commit no repository holds", func(linked *linkedGitHub) { linked.held["acme/tools"] = nil },
+			http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN"},
+		{"a linked read GitHub answered 500", func(linked *linkedGitHub) { linked.erroring = []string{"acme/tools"} },
+			http.StatusBadGateway, "GITHUB_UNREADABLE"},
+		{"a linked repository the App cannot read", func(linked *linkedGitHub) { linked.refusing = []string{"acme/tools"} },
+			http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			linked := &linkedGitHub{
+				held:  map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {linkedCommit}},
+				pulls: map[string]string{"acme/tools#7": "open"},
+			}
+			row.github(linked)
+			handler, database := linkedRepositoriesGitHub(t, linked)
+			issue := issueInRepository(t, handler, "RELD", "acme/widgets", "A dry run at a linked commit").Key
+			uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+			linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
+			body := resultBody("k1", "pass", linkedCommit, nil)
+			eventsBefore := resultEventsOn(t, database, issue)
+
+			dry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/results/dry-run", body, "alice")
+			if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
+				t.Errorf("the dry run appended %d result.recorded events, want none", stored)
+			}
+			if rows := resultRowsOn(t, database, issue); rows != 0 {
+				t.Errorf("the dry run left %d check_results rows, want none", rows)
+			}
+			recorded := recordResult(t, handler, issue, body)
+
+			if recorded.Code != row.status {
+				t.Fatalf("the record: status=%d body=%s, want %d", recorded.Code, recorded.Body.String(), row.status)
+			}
+			if row.code == "" {
+				if dry.Code != http.StatusOK {
+					t.Fatalf("the dry run: status=%d body=%s, want 200 where the record is taken", dry.Code, dry.Body.String())
+				}
+				line := decodeBody[resultDryRun](t, dry).Line
+				if want := "pass at " + linkedCommit; !strings.Contains(line, want) {
+					t.Errorf("the dry run's line = %q, want it to say %q", line, want)
+				}
+				if repo := storedCommitRepo(t, database, decodeBody[recordedResult](t, recorded).Result); repo == nil || *repo != "acme/tools" {
+					t.Errorf("the record stored commit_repo %v, want acme/tools", repo)
+				}
+				return
+			}
+			if dry.Code != row.status {
+				t.Fatalf("the dry run: status=%d body=%s, want the record's %d", dry.Code, dry.Body.String(), row.status)
+			}
+			dryCode, dryText := refusalOf(t, dry)
+			code, text := refusalOf(t, recorded)
+			if dryCode != row.code || code != row.code {
+				t.Errorf("the dry run refused %s and the record %s, want both %s", dryCode, code, row.code)
+			}
+			if dryText != text {
+				t.Errorf("the dry run's refusal reads %q, want the record's %q", dryText, text)
+			}
+		})
+	}
+}
