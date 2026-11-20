@@ -13,7 +13,8 @@
 # unmeasured `git fetch` of every branch head of the feed into that copy's shared clone, as
 # remote-tracking refs it does not hold, and an unmeasured `git commit` in its workspace, with
 # both dates fixed, so describedArgs imports new refs and a new HEAD, as a role's jj does once
-# git has fetched new branches into the shared clone and committed. It reads the image's `git
+# git has fetched new branches into the shared clone and committed; its adoptionArgs runs right
+# after a second such commit, so it imports a new HEAD too. It reads the image's `git
 # config --system` and `jj --version` too. The implementer runs it at the head it measures, and
 # the tester runs it again at the head it tests, so this recipe is the one both read.
 #

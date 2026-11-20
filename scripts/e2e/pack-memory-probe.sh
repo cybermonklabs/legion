@@ -51,8 +51,8 @@
 #   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of
 #      another directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed
 #      per command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and
-#      pushed with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads,
-#      the commit before describedArgs, and the shim's describedArgs and adoptionArgs as
+#      pushed with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads, a
+#      commit, the shim's describedArgs, a second commit and the shim's adoptionArgs as
 #      packages/daemon/internal/shim/commands.go builds them: with the image's jj,
 #      JJ_PACK_MAPPED_LIMIT unset, on the original, with jj 0.45.1 on its copy. The fetch is one
 #      unmeasured `git fetch --no-tags <the feed> +refs/heads/*:refs/remotes/feed/*` into the
@@ -60,23 +60,24 @@
 #      the feed as a remote-tracking ref the clone does not hold, since the clone, made from the
 #      feed, holds each as origin's. The clone holds their objects, so the fetch writes refs and no
 #      pack, which it prints; its setup verdict holds when it exits 0 and writes at least one ref
-#      the clone did not hold. The commit, by the setup git too, appends one line to the walk file
+#      the clone did not hold. Each commit, by the setup git too, appends one line to the walk file
 #      and commits it with `git add` and `git commit`, as the handoff commit is made, with the
 #      probe's identity and both of git's dates fixed; its setup verdict holds when HEAD moved to
 #      it, a child of the HEAD before. The two copies' commits differ only in their parents, each
 #      copy's own handoff commit, which a verdict checks. describedArgs, the next command, imports
-#      the new refs and the new HEAD at its start and snapshots against that HEAD's tree, as jj
-#      does in a workspace colocated with git, which a workspace whose .git is a worktree of the
-#      clone is: what a role's jj does once git has fetched new branches into the shared clone and
-#      committed in the workspace.
+#      the new refs and the new HEAD at its start and snapshots against that HEAD's tree, and
+#      adoptionArgs, the command after the second commit, imports that one's HEAD the same way,
+#      as jj does in a workspace colocated with git, which a workspace whose .git is a worktree of
+#      the clone is: what a role's jj does once git has fetched new branches into the shared clone
+#      and committed in the workspace.
 #   8. R3 to R5's verdicts.
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
 #      `jj --ignore-working-copy file list -r @-`, the STANDING read, step 7's fetch of the feed's
-#      heads and its commit, describedArgs, adoptionArgs, `jj new`, `jj diff` after the same edits
-#      in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk file>`. The five
-#      copies' HEADs are one commit before the commit, so the commit is one id on all five, which
-#      a verdict checks, and each released row's stdout can equal its control's.
+#      heads and its two commits, describedArgs, adoptionArgs, `jj new`, `jj diff` after the same
+#      edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk file>`. The
+#      five copies' HEADs are one commit before the commits, so each commit is one id on all five,
+#      which a verdict checks, and each released row's stdout can equal its control's.
 #  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a `git
 #      clone --no-checkout` of the feed, its packs hardlinked, then every jj command the measuring
 #      jj recorded for the original's provision, in its order and with its argv, run with that jj
@@ -264,9 +265,9 @@ for copy in "${copies[@]}"; do
   expected+=("setup $copy jj reads the copied store")
 done
 for copy in image control; do
-  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs")
+  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
 done
-expected+=("setup image and control commits")
+expected+=("setup image and control commits before describedArgs" "setup image and control commits before adoptionArgs")
 expected+=(
   "c-jj-snapshot-memory diff image"
   "c-jj-snapshot-memory diff control"
@@ -289,9 +290,9 @@ expected+=(
   "c-shim-adoption-memory author control"
 )
 for copy in "${r10_copies[@]}"; do
-  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs")
+  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
 done
-expected+=("setup r10 copies' commit id")
+expected+=("setup r10 copies' commit id before describedArgs" "setup r10 copies' commit id before adoptionArgs")
 for copy in "${r10_copies[@]}"; do
   expected+=("setup $copy fresh root")
 done
@@ -730,8 +731,9 @@ r10_output() {
   esac
 }
 
-# fetch_jj <copy> <url> <asset sha256> <binary sha256>: a release's musl jj at $scratch/<copy>-jj/jj,
-# the asset and its ./jj member each checked by sha256; fetched names the binary when both hold.
+# fetch_jj <copy> <url> <asset sha256> <binary sha256>: a release's musl jj at
+# $scratch/<copy>-jj/jj, the asset and its ./jj member each checked by sha256; fetched names the
+# binary when both hold.
 fetched=""
 fetch_jj() {
   local copy=$1 url=$2 asset_sha256=$3 binary_sha256=$4 dir=$scratch/$1-jj asset_got binary_got
@@ -1492,34 +1494,36 @@ fetch_feed_heads() {
   fi
 }
 
-# commit_before_described <copy> <workspace>: the commit each copy's describedArgs follows, right
-# after the fetch of the feed's heads. The setup git, outside every measured tree, appends one line
-# to the walk file and commits it as the handoff commit is made, `git add` and then `git commit`,
-# with the probe's identity and both of git's dates fixed at jj_timestamp, so HEAD moves and the
-# jj command after it imports the new HEAD and snapshots against its tree. The commit is one id on
-# every copy whose HEAD was one commit before it. Its setup verdict holds when the commit exits 0
-# and HEAD moved to a child of the HEAD before it; committed and commit_body keep its id and its
-# text without the parent line, for the verdicts that compare the copies' commits.
+# commit_before <copy> <workspace> <command>: the commit each copy's describedArgs, and then its
+# adoptionArgs, follows, so each of the shim's two commands is the first jj command after a commit
+# that moved HEAD. The setup git, outside every measured tree, appends one line to the walk file and
+# commits it as the handoff commit is made, `git add` and then `git commit`, with the probe's
+# identity and both of git's dates fixed at jj_timestamp, so HEAD moves and the jj command after it
+# imports the new HEAD and snapshots against its tree, which it reads from the pack. Each commit is
+# one id on every copy whose HEAD was one commit before it. Its setup verdict holds when the commit
+# exits 0 and HEAD moved to a child of the HEAD before it; committed and commit_body keep its id and
+# its text without the parent line, by copy and command, for the verdicts that compare the copies'
+# commits.
 declare -A committed=() commit_body=()
-commit_before_described() {
-  local copy=$1 dir=$2 before after parent status want
+commit_before() {
+  local copy=$1 dir=$2 command=$3 before after parent status want
   want="exit 0, HEAD moved to a new commit whose parent is the HEAD before it"
-  echo "the commit before describedArgs in the $copy workspace, unmeasured:"
+  echo "the commit before $command in the $copy workspace, unmeasured:"
   before=$(setup_git -C "$dir" rev-parse HEAD 2>&1)
-  printf 'pack-memory probe: the commit describedArgs imports\n' >> "$dir/$walk_file"
+  printf 'pack-memory probe: the commit %s imports\n' "$command" >> "$dir/$walk_file"
   setup_git -C "$dir" add -- "$walk_file" &&
     GIT_AUTHOR_DATE=$jj_timestamp GIT_COMMITTER_DATE=$jj_timestamp \
-      setup_git -C "$dir" commit --quiet -m "pack-memory probe: the commit describedArgs imports"
+      setup_git -C "$dir" commit --quiet -m "pack-memory probe: the commit $command imports"
   status=$?
   after=$(setup_git -C "$dir" rev-parse HEAD 2>&1)
   parent=$(setup_git -C "$dir" rev-parse HEAD^ 2>&1)
   echo "exit $status; HEAD $before before, $after after: $(setup_git -C "$dir" log -1 --format='tree %T, author %an <%ae> %aI, committer %cn <%ce> %cI' 2>&1)"
   if [ "$status" -eq 0 ] && [ "$after" != "$before" ] && [ "$parent" = "$before" ]; then
-    committed[$copy]=$after
-    commit_body[$copy]=$(setup_git -C "$dir" cat-file commit HEAD | grep -v '^parent ')
-    verdict "setup $copy commit before describedArgs" pass "exit 0, HEAD moved from $before to $after, its child" "$want"
+    committed[$copy/$command]=$after
+    commit_body[$copy/$command]=$(setup_git -C "$dir" cat-file commit HEAD | grep -v '^parent ')
+    verdict "setup $copy commit before $command" pass "exit 0, HEAD moved from $before to $after, its child" "$want"
   else
-    verdict "setup $copy commit before describedArgs" fail "exit $status, HEAD $before before, $after after, whose parent is $parent" "$want"
+    verdict "setup $copy commit before $command" fail "exit $status, HEAD $before before, $after after, whose parent is $parent" "$want"
   fi
 }
 
@@ -1543,12 +1547,14 @@ jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
   # handoff-record.ts's STANDING read.
   measure "$copy-standing" --env JJ_RANDOMNESS_SEED=103 -- "$jj" -R "$dir" "${standing_args[@]}"
   # The shim's adoption: the working copy is undescribed, so the shim runs adoptionArgs and not
-  # `jj new`. describedArgs runs right after the fetch and the commit, so it is the command that
-  # imports the fetch's refs and the commit's HEAD.
+  # `jj new`. describedArgs runs right after the fetch and a commit, so it is the command that
+  # imports the fetch's refs and the commit's HEAD, and adoptionArgs right after a second commit,
+  # so it imports a new HEAD too: each of the two reads its tree from the pack.
   fetch_feed_heads "$copy" "$shared"
-  commit_before_described "$copy" "$dir"
+  commit_before "$copy" "$dir" describedArgs
   measure "$copy-described" --env JJ_RANDOMNESS_SEED=104 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${described_args[@]}" -R "$dir"
+  commit_before "$copy" "$dir" adoptionArgs
   measure "$copy-adoption" --env JJ_RANDOMNESS_SEED=105 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${adoption_args[@]}" -R "$dir"
   JJ_RANDOMNESS_SEED=106 "$jj" --ignore-working-copy -R "$dir" log -r @ --no-graph -T 'author.email()' > "$out/$copy-author.out" 2>&1
@@ -1562,18 +1568,22 @@ if going; then
   jj_rows control "$control_ws" "$control_jj" "$control_clone"
 fi
 
-# The image and control copies' commits before describedArgs: each is made on its copy's own
-# handoff commit, whose message names the copy and whose dates are the clock's, so their ids
-# differ, and everything else of them must be the same.
+# The image and control copies' commits before each shim command: each is made on its copy's own
+# handoff commit (and the second on the first), whose message names the copy and whose dates are the
+# clock's, so their ids differ, and everything else of them must be the same.
 if going; then
   want="one commit but for its parent, each copy's own handoff commit"
-  if [ -z "${committed[image]:-}" ] || [ -z "${committed[control]:-}" ]; then
-    verdict "setup image and control commits" fail "image ${committed[image]:-none}, control ${committed[control]:-none}" "$want" "a commit was not made"
-  elif [ "${commit_body[image]}" = "${commit_body[control]}" ]; then
-    verdict "setup image and control commits" pass "image ${committed[image]} and control ${committed[control]}: the same tree, identity, dates and message" "$want"
-  else
-    verdict "setup image and control commits" fail "image ${committed[image]}, control ${committed[control]}: they differ beyond their parents" "$want"
-  fi
+  for command in describedArgs adoptionArgs; do
+    image_commit=${committed[image/$command]:-}
+    control_commit=${committed[control/$command]:-}
+    if [ -z "$image_commit" ] || [ -z "$control_commit" ]; then
+      verdict "setup image and control commits before $command" fail "image ${image_commit:-none}, control ${control_commit:-none}" "$want" "a commit was not made"
+    elif [ "${commit_body[image/$command]}" = "${commit_body[control/$command]}" ]; then
+      verdict "setup image and control commits before $command" pass "image $image_commit and control $control_commit: the same tree, identity, dates and message" "$want"
+    else
+      verdict "setup image and control commits before $command" fail "image $image_commit, control $control_commit: they differ beyond their parents" "$want"
+    fi
+  done
 fi
 
 # --------------------------------------------------------------------------------------------
@@ -1633,9 +1643,10 @@ r10_rows() { # r10_rows <copy>
   measure "$copy-file-list" "${limit[@]}" --env JJ_RANDOMNESS_SEED=201 -- "$jj" --ignore-working-copy -R "$dir" file list -r @-
   measure "$copy-standing" "${limit[@]}" --env JJ_RANDOMNESS_SEED=202 -- "$jj" -R "$dir" "${standing_args[@]}"
   fetch_feed_heads "$copy" "$(copy_clone "$copy")"
-  commit_before_described "$copy" "$dir"
+  commit_before "$copy" "$dir" describedArgs
   measure "$copy-described" "${limit[@]}" --env JJ_RANDOMNESS_SEED=203 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${described_args[@]}" -R "$dir"
+  commit_before "$copy" "$dir" adoptionArgs
   measure "$copy-adoption" "${limit[@]}" --env JJ_RANDOMNESS_SEED=204 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
     -- "$jj" "${adoption_args[@]}" -R "$dir"
   measure "$copy-new" "${limit[@]}" --env JJ_RANDOMNESS_SEED=205 -- "$jj" -R "$dir" new
@@ -1650,17 +1661,19 @@ if going; then
       r10_rows "$copy"
     fi
   done
-  # The five copies held one HEAD before their commits, so the commits are one id.
-  got=""
-  for copy in "${r10_copies[@]}"; do
-    got+="${got:+, }$copy ${committed[$copy]:-none}"
+  # The five copies held one HEAD before their commits, so each of the two commits is one id.
+  for command in describedArgs adoptionArgs; do
+    got=""
+    for copy in "${r10_copies[@]}"; do
+      got+="${got:+, }$copy ${committed[$copy/$command]:-none}"
+    done
+    ids=$(for copy in "${r10_copies[@]}"; do echo "${committed[$copy/$command]:-none}"; done | sort -u)
+    if [ "$ids" = "${committed[r10-control/$command]:-none}" ] && [ "$ids" != none ]; then
+      verdict "setup r10 copies' commit id before $command" pass "$got" "one commit id on all ${#r10_copies[@]} copies"
+    else
+      verdict "setup r10 copies' commit id before $command" fail "$got" "one commit id on all ${#r10_copies[@]} copies"
+    fi
   done
-  ids=$(for copy in "${r10_copies[@]}"; do echo "${committed[$copy]:-none}"; done | sort -u)
-  if [ "$ids" = "${committed[r10-control]:-none}" ] && [ "$ids" != none ]; then
-    verdict "setup r10 copies' commit id" pass "$got" "one commit id on all ${#r10_copies[@]} copies"
-  else
-    verdict "setup r10 copies' commit id" fail "$got" "one commit id on all ${#r10_copies[@]} copies"
-  fi
 fi
 
 # --------------------------------------------------------------------------------------------
