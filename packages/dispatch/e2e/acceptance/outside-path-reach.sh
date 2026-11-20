@@ -43,6 +43,14 @@
 # alone on one recorded probe and prints its class; five of them separated by `;` are judged as
 # one target's five rounds, in order, and the target's class is printed. Either way it exits 4,
 # never PASS's 0, and refuses an empty value with exit 2.
+# OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and OUTSIDE_PATH_ORIGIN_READ_SECONDS bound each of the two
+# reads of the origin, as curl's --connect-timeout and --max-time: 3 and 10 s when unset or empty.
+# Each must be a whole number of seconds from 2 to 999999, in digits; any other value refuses the
+# run, naming the setting. A curl built with the synchronous resolver (neither threaded nor c-ares)
+# gives up before it resolves a name, 127.0.0.1 included, with under 1000 ms of the bound left,
+# which a 1 s bound reaches once 1 ms has passed; curl reads 0 as no bound; and curl 7.55 and
+# later refuse a bound past 2147483 s where a long has 32 bits. They do not bound the probes, whose
+# 3 s to connect and 5 s in all the classifier's rules count on.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
@@ -73,6 +81,7 @@
 # See `classify` for the classes and `judge` for a target's rounds.
 #
 # Usage: OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+#          [OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS=3] [OUTSIDE_PATH_ORIGIN_READ_SECONDS=10] \
 #          bash outside-path-reach.sh
 
 # A shell other than bash stops here, before it reads a line it would take another way.
@@ -325,6 +334,18 @@ fi
 [ -n "${OUTSIDE_PATH_TARGETS:-}" ] ||
   unknown "OUTSIDE_PATH_TARGETS is unset: set it to the file of 'name host port' lines naming every internal target"
 
+# check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a whole number of seconds
+# from 2 to 999999, in digits (the header says why).
+check_seconds() {
+  local whole=${2#"${2%%[!0]*}"}
+  is_count "$2" && [ -n "$whole" ] && [ "$whole" != 1 ] && [ "${#whole}" -le 6 ] && return
+  unknown "$1 must be a whole number of seconds from 2 to 999999, not $2"
+}
+origin_connect=${OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS:-3}
+origin_read=${OUTSIDE_PATH_ORIGIN_READ_SECONDS:-10}
+check_seconds OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS "$origin_connect"
+check_seconds OUTSIDE_PATH_ORIGIN_READ_SECONDS "$origin_read"
+
 origin=${OUTSIDE_ORIGIN%/}
 case $origin in
   https://*)
@@ -506,11 +527,11 @@ printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"
   echo "outside-path-reach: warning: every target is a name, and a name proves only where it resolves on this device; list each of our services' addresses on the path as lines of their own"
 
 # fetch PATH: what the origin answers PATH with, no credential sent: its body, then its three-digit
-# status, 000 when none came.
+# status, 000 when none came. Its curl runs in the C locale, as the probe's does.
 fetch() {
   local answer
-  answer=$(curl -q --noproxy '*' -g -sS -o - --connect-timeout 3 --max-time 10 \
-    -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
+  answer=$(LC_ALL=C curl -q --noproxy '*' -g -sS -o - --connect-timeout "$origin_connect" \
+    --max-time "$origin_read" -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
   [ "${#answer}" -ge 3 ] || answer=000
   printf '%s' "$answer"
 }
