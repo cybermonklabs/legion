@@ -232,6 +232,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.race_memory_test: race_memory.test.sh and what it tests."
         type: string
         required: true
+      private_proc_test:
+        description: "ci.yaml's needs.changes.outputs.private_proc_test: private_proc.test.sh and what it tests."
+        type: string
+        required: true
       disk_watch_test:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
@@ -513,6 +517,18 @@ jobs:
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
+
+      # The wrapper every daemon go test of CI runs through: it builds a scratch module with the
+      # job's Go and makes each test binary's namespace both of the wrapper's ways, as an
+      # unprivileged user namespace and with `sudo -n`, which the runner gives. Ubuntu 24.04
+      # restricts unprivileged user namespaces with an AppArmor sysctl, so the step turns it off on
+      # its throwaway runner first, as ci-job-daemon-go.yaml does for the launcher's role tests
+      # (`|| true`: a runner image without the key restricts nothing).
+      - name: Test the private /proc wrapper
+        if: inputs.changes-result != 'success' || inputs.private_proc_test == 'true'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          .github/scripts/private_proc.test.sh
 
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'

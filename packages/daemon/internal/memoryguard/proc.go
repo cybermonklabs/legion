@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"golang.org/x/sys/unix"
 )
 
@@ -103,16 +104,17 @@ func (t *Table) Cwd(pid int) (string, error) {
 // it holds nothing any longer, and a missing file is how the kernel says so. A zombie and a dead
 // process are left out the same way (errExited), and so is a process that a read after its stat's
 // finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread.
-func scan(proc string) (*Table, error) {
-	entries, err := os.ReadDir(proc)
+// The listing is the common scan's (hostproc.PIDs): in a test, a scan of a /proc of the machine
+// with no reason, the guard's or the guest watch's own, ends the test binary.
+func scan(proc string, host hostproc.Reason) (*Table, error) {
+	pids, err := hostproc.PIDs("the memory guard's scan", proc, host)
 	if err != nil {
 		return nil, err
 	}
 	t := &Table{proc: proc, byPID: map[int]*Process{}, children: map[int][]*Process{}, unread: map[int]error{}}
 	cmdline := make([]byte, classifierArgsBytes)
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
+	for _, pid := range pids {
+		if pid <= 0 {
 			continue
 		}
 		p, err := readProcess(proc, pid, cmdline)

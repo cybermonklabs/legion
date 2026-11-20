@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -62,10 +63,13 @@ var gitLockRemove = os.Remove
 // gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
 // own, where PID 1 of the container sees every process that may hold a lock. It is a variable for
 // the rows that drive a real launcher, which builds its sweep here and so takes no field of its
-// own. Such a row points it at a /proc of its own (useSweepingLauncher), as it points the memory
-// guard at a pod of its own: the /proc of the machine a test runs on lists processes the row knows
-// nothing of, and on a machine several users share, any git or jj of another user is one whose
-// open files the test cannot read, which keeps every lock the row planted (holders).
+// own. Every row that stands its process in for PID 1 points it at a /proc of its own
+// (useContainerInit), as it points the memory guard at a pod of its own: the /proc of the machine
+// a test runs on lists processes the row knows nothing of, and on a machine several users share,
+// any git or jj of another user is one whose open files the test cannot read, which keeps every
+// lock the row planted (holders). A sweep reads the value it was built with: a row that points
+// this elsewhere after a sweep is built changes nothing of that sweep's, and a sweep of the
+// machine's /proc in a test is refused (holders).
 var gitLockProc = "/proc"
 
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
@@ -95,20 +99,24 @@ const gitLockFirstPassBound = 30 * time.Second
 // ws is the jj workspace the clone is swept through and the clone itself, which the launcher
 // derives from its own working directory and otherwise learns from the first role start it
 // serves (learn), and fromWorkDir says which of the two it was. proc is the container's /proc,
-// which the holder read walks. guard, interval and recheck are the package's three numbers, read
-// once by whoever builds the sweep. remove and now are the removal (os.Remove, through
-// gitLockRemove) and the clock, each a field because a test answers them itself: one to refuse or
-// hold a removal, one to pin a line's age. The walk (workspace.GitLocksOf) is called outright,
-// since every caller of the sweep, test or not, wants the real one; it is the layout guard and
-// the walk of the clone in one call, so every pass of this sweep holds the rule the init
-// container's own sweep holds, from the same helper. The workspace is derived once, by whoever
-// gave the sweep its workspace, and held in ws. log is the launcher's own log line,
-// roleLog.linef, which carries no role prefix: the sweep belongs to no role.
+// which the holder read walks, and hostProc why a test's sweep may walk a /proc of the machine:
+// the zero Reason, for every sweep but the one a test of the original conditions builds, so a
+// test's sweep of the machine's /proc is refused (holders). guard, interval and recheck are the
+// package's three numbers, read once by whoever builds the sweep. remove and now are the removal
+// (os.Remove, through gitLockRemove) and the clock, each a field because a test answers them
+// itself: one to refuse or hold a removal, one to pin a line's age. The walk
+// (workspace.GitLocksOf) is called outright, since every caller of the sweep, test or not, wants
+// the real one; it is the layout guard and the walk of the clone in one call, so every pass of
+// this sweep holds the rule the init container's own sweep holds, from the same helper. The
+// workspace is derived once, by whoever gave the sweep its workspace, and held in ws. log is the
+// launcher's own log line, roleLog.linef, which carries no role prefix: the sweep belongs to no
+// role.
 //
 // mu serializes the passes and the learning, so the pod's roles never sweep one clone twice at
 // once and a role start that arrives while the first pass runs waits for it.
 type gitLockSweep struct {
 	proc     string
+	hostProc hostproc.Reason
 	guard    time.Duration
 	interval time.Duration
 	recheck  time.Duration
@@ -186,7 +194,7 @@ type gitLockSweep struct {
 // anywhere else (by hand inside a role) sees that role's processes alone and would remove a lock
 // another role's git or jj holds. Any other launcher logs one line, sweeps nothing, and answers a
 // channel already closed. No manager then holds a sweep (manager.gitLocks), so a role start
-// learns nothing (learn) and runs its restore over the clone as the clone stands.
+// learns nothing (learn) and runs its restore over the clone as it stands.
 func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{} {
 	if !containerInit() {
 		managers[0].log.linef("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",
@@ -531,8 +539,12 @@ func (h gitLockHolders) keeps(path string) string {
 // of process that takes one; comm is a line, so the comparison is of its trimmed content, and
 // nothing else matches — a `git-remote-https` holds no lock of this clone. Any other such process
 // is passed over, as is one that has gone between the walk and the read of its files.
+//
+// The walk is of the sweep's own proc, the one it was built with, through hostproc.PIDs: in a test,
+// a sweep whose proc is a /proc of the machine and that holds no reason (hostProc) ends the test
+// binary there, whatever goroutine the pass runs on.
 func (s *gitLockSweep) holders(locks []gitLock) (gitLockHolders, error) {
-	pids, err := procPIDs(s.proc)
+	pids, err := hostproc.PIDs("the launcher's git lock sweep", s.proc, s.hostProc)
 	if err != nil {
 		return gitLockHolders{}, fmt.Errorf("read the container's processes: %v", err)
 	}

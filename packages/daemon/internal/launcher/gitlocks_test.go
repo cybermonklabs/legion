@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -353,14 +354,13 @@ func shortGitLockClock(t *testing.T, interval, recheck time.Duration) {
 // sweeps (serveGitLockSweep) and no test of this package runs as PID 1. Such a launcher runs the
 // memory guard too, so the guard is pointed at an empty pod of its own (useGuardPod), whose
 // reading is far below the mark and whose signal ends nothing of the machine's, and its sweep
-// reads a /proc of the row's own whose one process is the test's (useGitLockProc), rather than
+// reads a /proc of the row's own whose one process is the test's (useContainerInit), rather than
 // either reading this machine's /proc, whose processes the row knows nothing of. It is called
 // before the launcher starts, so its restore runs after the launcher's own cleanup, which waits
 // for Run.
 func useSweepingLauncher(t *testing.T) {
 	t.Helper()
 	useGuardPod(t, newGuardPod(t), nil)
-	useGitLockProc(t, procRoot(t, os.Getpid()))
 }
 
 // useGitLockProc points the sweep of every launcher this row starts (newGitLockSweep) at proc
@@ -465,16 +465,13 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 // namespaces is found from outside them.
 func childOf(t *testing.T, parent int) int {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("childOf", "/proc", hostproc.Because("the child is in PID namespaces of its own, so only "+
+		"the container's /proc names it, and parent is the test's own role-init, which no process the test did not start has for parent"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		status, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "status"))
+	for _, pid := range pids {
+		status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 		if err != nil {
 			// Gone between the read of the process table and the read of its status.
 			continue
@@ -711,6 +708,115 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		if !swept(lock) {
 			t.Fatalf("the start was answered with %s still there; the launcher's log:\n%s", lock, f.stderr.String())
 		}
+	})
+}
+
+// heldFrame is how long the answer and exit rows of
+// TestTheRigWaitsForAFrameTheLauncherIsSlowToSend hold the frame they read: a second past 10 s,
+// which one frame of this package has already taken on a loaded machine (frameWait).
+// heldHello is how long its hello row holds the launcher's first pass: a second past 20 s, a span
+// a fixed accept could have, and inside the pass's own bound, gitLockFirstPassBound.
+const (
+	heldFrame = 11 * time.Second
+	heldHello = 21 * time.Second
+)
+
+// What the launcher is slow to send is still read: the daemon end of the connection waits for
+// the launcher's connection and hello up to helloBound and for each later frame up to frameBound,
+// the launcher's own bounds for them, and a span inside such a bound is read. Each row holds one
+// frame through something the row owns, and reads the frame when it comes.
+func TestTheRigWaitsForAFrameTheLauncherIsSlowToSend(t *testing.T) {
+	// A start's answer waits for the sweep's first pass over the clone the start names, which
+	// the pod's bundle restore runs after (gitLockSweep.learn). The pass is held where it removes
+	// the clone's one lock, as TestTheFirstPassRunsBeforeTheBundleRestore holds it.
+	t.Run("a start's answer the sweep's first pass holds", func(t *testing.T) {
+		requireRoleNamespaces(t)
+		c := newLockClone(t)
+		lock := c.lock("index.lock", "stale", time.Second)
+		reached := make(chan struct{}, 1)
+		previous := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- struct{}{}:
+			default:
+			}
+			time.Sleep(heldFrame)
+			return os.Remove(path)
+		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one.
+		t.Cleanup(func() { gitLockRemove = previous })
+		t.Chdir(t.TempDir())
+		useSweepingLauncher(t)
+		f := newFleet(t, 5*time.Second, "tester")
+		conn := f.role("tester")
+		sent := time.Now()
+		got := conn.start(roleStart(1, c.dir, nil))
+		took := time.Since(sent)
+		if !got.OK {
+			t.Fatalf("the start answered %#v; the launcher's log:\n%s", got, f.stderr.String())
+		}
+		select {
+		case <-reached:
+		default:
+			t.Fatalf("the start was answered without its pass reaching the removal of %s; the launcher's log:\n%s", lock, f.stderr.String())
+		}
+		if took < heldFrame {
+			t.Fatalf("the start was answered %s after it was sent, inside the pass's hold of %s", took, heldFrame)
+		}
+		if !swept(lock) {
+			t.Fatalf("the start was answered with %s still there; the launcher's log:\n%s", lock, f.stderr.String())
+		}
+		t.Logf("the start was answered %s after it was sent, behind a pass held for %s", took.Round(time.Millisecond), heldFrame)
+	})
+
+	// A generation's exit is reported once its role has ended, and this role sleeps for the hold.
+	t.Run("a generation's exit its role holds", func(t *testing.T) {
+		requireRoleNamespaces(t)
+		f := newFleet(t, 5*time.Second, "tester")
+		conn := f.role("tester")
+		start := roleStart(1, t.TempDir(), nil)
+		start.Argv = []string{"/bin/sleep", strconv.Itoa(int(heldFrame / time.Second))}
+		sent := time.Now()
+		if got := conn.start(start); !got.OK {
+			t.Fatalf("the start answered %#v; the launcher's log:\n%s", got, f.stderr.String())
+		}
+		exit := conn.awaitExit(1)
+		took := time.Since(sent)
+		if exit.Code != 0 {
+			t.Fatalf("the sleeping role exited %#v; the launcher's log:\n%s", exit, f.stderr.String())
+		}
+		if took < heldFrame {
+			t.Fatalf("generation 1's exit was reported %s after its start was sent, inside its role's sleep of %s", took, heldFrame)
+		}
+		t.Logf("generation 1's exit was reported %s after its start was sent, behind a role that slept %s", took.Round(time.Millisecond), heldFrame)
+	})
+
+	// A launcher whose working directory is a workspace runs the sweep's first pass before it
+	// connects (gitLockSweep.serve), so its connection and its hello wait for the pass, which is
+	// held where it removes the clone's one lock.
+	t.Run("a launcher's hello its first pass holds", func(t *testing.T) {
+		c := newLockClone(t)
+		lock := c.lock("index.lock", "stale", time.Second)
+		previous := gitLockRemove
+		gitLockRemove = func(path string) error {
+			time.Sleep(heldHello)
+			return os.Remove(path)
+		}
+		// Restored after the launcher's own cleanup, for the reason the first row's is.
+		t.Cleanup(func() { gitLockRemove = previous })
+		t.Chdir(c.dir)
+		useSweepingLauncher(t)
+		began := time.Now()
+		f := newFleet(t, 2*time.Second, "tester")
+		took := time.Since(began)
+		if !swept(lock) {
+			t.Fatalf("the launcher connected with %s still there; its log:\n%s", lock, f.stderr.String())
+		}
+		if took < heldHello {
+			t.Fatalf("the launcher's hello was read %s after it started, inside its first pass's hold of %s", took, heldHello)
+		}
+		t.Logf("the launcher's hello was read %s after it started, behind a first pass held for %s", took.Round(time.Millisecond), heldHello)
 	})
 }
 
@@ -2391,6 +2497,11 @@ func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
 	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+	// A /proc of the row's own, as every other row's sweep reads, so the check below that the pass
+	// removed nothing depends on no process the test did not start. A derivation that took the
+	// clone fails the checks above over any /proc, and the pass's own guard (workspace.GitLocksOf)
+	// still refuses the clone and keeps both locks.
+	s.proc = procRoot(t, os.Getpid())
 	refusal := fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
 		c.dir, fmt.Sprintf("refusing workspace operation in %s: %s is a symlink, and no directory of the workspace layout below the state directory is one", c.dir, c.clone))
 	requireLine(t, log, refusal)

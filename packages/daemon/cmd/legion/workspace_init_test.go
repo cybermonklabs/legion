@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1035,23 +1036,20 @@ func TestWorkspaceInitHoldEndsWithItsTest(t *testing.T) {
 // killed once found so a failing run leaves none behind.
 func killProcessesRunning(t *testing.T, path string) []string {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("killProcessesRunning", "/proc",
+		hostproc.Because("path is a file under the test's own TempDir, which no process the test did not start names"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var found []string
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		cmdline, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+	for _, pid := range pids {
+		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 		if err != nil {
 			continue
 		}
 		argv := strings.ReplaceAll(strings.TrimRight(string(cmdline), "\x00"), "\x00", " ")
 		if strings.Contains(argv, path) {
-			found = append(found, "pid "+entry.Name()+": "+argv)
+			found = append(found, "pid "+strconv.Itoa(pid)+": "+argv)
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}

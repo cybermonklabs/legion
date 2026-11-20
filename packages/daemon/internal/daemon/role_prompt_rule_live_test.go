@@ -84,6 +84,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -551,21 +552,22 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
 	t := r.t
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("ompChildOf", "/proc", hostproc.Because("it takes only a child of shim, the shim this test's "+
+		"own daemon started for the claim the test made (its locator names it), whose argv[0] is the binary the test points "+
+		"LEGION_OMP_PATH at; no process the test did not start has that shim for its parent"))
 	if err != nil {
 		t.Fatalf("read /proc to find the Oh My Pi %s's shim (pid %d) started: %v", token, shim, err)
 	}
 	var ofTheShim []string
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == shim {
+	for _, pid := range pids {
+		if pid == shim {
 			continue
 		}
-		status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
+		status, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
 		if err != nil || parentOf(string(status)) != shim {
 			continue
 		}
-		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 		if err != nil {
 			continue
 		}

@@ -110,8 +110,10 @@ jobs:
       # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
       # builds.
+      # Through .github/scripts/private_proc.py, as every daemon go test of CI runs: the test binary
+      # runs in a PID and mount namespace of its own (ci-job-daemon-go.yaml's plain step says why).
       - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
-        run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
+        run: ../../.github/scripts/private_proc.py go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

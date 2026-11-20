@@ -327,6 +327,13 @@
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
 #      nothing would say so.
+#  22. a go test of packages/daemon in ci.yaml or a workflow it calls - a step whose working
+#      directory is the module or below it, or a `go -C` into it - that does not run behind
+#      .github/scripts/private_proc.py, naming the file, the job, the step and the line. The
+#      wrapper runs each test binary in a PID and mount namespace of its own, whose /proc lists
+#      none of the runner's processes; outside it a listing no scanner of the module checks sees
+#      every process of the machine, and nothing fails (docs/testing.md, "A test that lists the
+#      machine's /proc"). A `-c` build and a `-list` listing run no test and are passed over.
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
 # in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file

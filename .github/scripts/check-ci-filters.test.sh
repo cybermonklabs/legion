@@ -40,9 +40,10 @@
 # filters it gates them by, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
-# under test is the code CI runs. It needs go and a
-# python3 with PyYAML.
+# (ci_workflow_rules.py), the path model they import (workflow_paths.py), the build-tag reader
+# (go_build_tags.py) and the two modules rule 22 imports (private_proc.py's go command reader,
+# shell_commands.py's shell keywords) into it, so the code under test is the code CI runs. It
+# needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.
@@ -78,7 +79,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py private_proc.py shell_commands.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -2539,6 +2540,201 @@ check "names the job and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
+# Rule 22. A go test of packages/daemon in a workflow of the router runs behind
+# .github/scripts/private_proc.py, which gives each test binary a /proc of its own. daemon_step
+# <root> <name> <run> <working-directory>: a step of the app job that runs <run> there. The other
+# rules refuse such a step for reasons of their own (no gate claims it), so each case reads the
+# rule's own line, and the wrapped cases read that the line is absent.
+daemon_step() {
+  replace "$1/.github/workflows/ci.yaml" $'      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:' \
+    $'      - name: '"$2"$'\n        run: '"$3"$'\n        working-directory: '"$4"$'\n      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:'
+}
+rule22='outside .github/scripts/private_proc.py: its test binaries then read the runner'
+
+echo "case: a daemon go test outside the wrapper"
+root=$(fixture daemon-unwrapped)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go test -count=1 ./..." packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the step and the line" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the daemon\" runs \`go test -count=1 ./...\` in packages/daemon $rule22")"
+
+echo "case: a daemon go test piped into xargs outside the wrapper"
+root=$(fixture daemon-unwrapped-xargs)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go list ./... | xargs go test -count=1" packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go list ./... | xargs go test -count=1\` in packages/daemon $rule22")"
+
+echo "case: a go -C into the daemon from the root, outside the wrapper"
+root=$(fixture daemon-unwrapped-chdir)
+daemon_step "$root" "Test the daemon" "go -C packages/daemon test ./..." .
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go -C packages/daemon test ./...\` in packages/daemon $rule22")"
+
+# The four forms rule 22 once let through, each its own case: the rule reads each command of a
+# line on its own, follows a cd, reads a go test a quoted script runs, and refuses a test binary
+# run by its own name.
+echo "case: a -c build and then a run of the daemon's tests on one line, outside the wrapper"
+root=$(fixture daemon-unwrapped-after-build)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go test -c -o /dev/null ./... && go test -count=1 ./..." packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go test -c -o /dev/null ./... && go test -count=1 ./...\` in packages/daemon $rule22")"
+
+echo "case: a cd into the daemon from the root, then a go test outside the wrapper"
+root=$(fixture daemon-unwrapped-cd)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "cd packages/daemon && go test -count=1 ./..." .
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`cd packages/daemon && go test -count=1 ./...\` in packages/daemon $rule22")"
+
+echo "case: a daemon go test inside a quoted script, outside the wrapper"
+root=$(fixture daemon-unwrapped-quoted)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "bash -c 'go test -count=1 ./...'" packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`bash -c 'go test -count=1 ./...'\` in packages/daemon $rule22")"
+
+echo "case: a daemon test binary built with -c and run by its own name"
+root=$(fixture daemon-unwrapped-binary)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the launcher" "go test -c -o d.test ./internal/launcher/ && ./d.test -test.count=1" packages/daemon
+run_check "$root"
+check "names the line and the binary" "$(contains "$out" "step \"Test the launcher\" runs \`go test -c -o d.test ./internal/launcher/ && ./d.test -test.count=1\` in packages/daemon, the test binary ./d.test run by its own name, $rule22")"
+
+echo "case: the step's working directory, as step_workdir reads it, is where a cd starts"
+# step_workdir drops a leading ./ and a trailing /, which the rule's own reading once did not.
+root=$(fixture daemon-unwrapped-workdir-cd)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "cd daemon && go test -count=1 ./..." ./packages/
+run_check "$root"
+check "names the module the cd reaches" "$(contains "$out" "step \"Test the daemon\" runs \`cd daemon && go test -count=1 ./...\` in packages/daemon $rule22")"
+
+echo "case: a cd out of the daemon, and a quoted script behind the wrapper, pass rule 22"
+root=$(fixture daemon-cd-out)
+mkdir -p "$root/packages/daemon" "$root/packages/other"
+daemon_step "$root" "Test another module" "cd ../other && go test -count=1 ./..." packages/daemon/
+daemon_step "$root" "Test the daemon in a quoted script" "bash -c '../../.github/scripts/private_proc.py go test -count=1 ./...'" packages/daemon
+run_check "$root"
+check "no line of rule 22" "$(is "$(contains "$out" "$rule22")" false)"
+
+echo "case: a daemon go test behind the wrapper, and a -c build, pass rule 22"
+root=$(fixture daemon-wrapped)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "../../.github/scripts/private_proc.py go test -count=1 ./..." packages/daemon
+daemon_step "$root" "Test the daemon through xargs" "go list ./... | xargs ../../.github/scripts/private_proc.py go test -count=1" packages/daemon
+daemon_step "$root" "Build the daemon's test binaries" "go test -c -o /dev/null ./..." packages/daemon
+run_check "$root"
+check "no line of rule 22" "$(is "$(contains "$out" "$rule22")" false)"
+
+# The forms the gates of the last round found rule 22 let through, and the three things it did
+# right that no case held: each its own case, its step written as a block (daemon_block_step), so a
+# line of any shape and a line continued with `\` reach the rule as bash reads them. Each case
+# reads the rule's line for its step with grep -F (has), since the lines hold regular-expression
+# characters. rule22_refuses <fixture> <case> <working directory> <run line> <where it names>.
+daemon_block_step() {
+  local body
+  body=$(printf '%s\n' "$3" | sed 's/^/          /')
+  replace "$1/.github/workflows/ci.yaml" $'      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:' \
+    $'      - name: '"$2"$'\n        run: |\n'"$body"$'\n        working-directory: '"$4"$'\n      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:'
+}
+has() { grep -qF -- "$2" <<<"$1" && echo true || echo false; }
+# daemon_workspace <root>: the fixture's go.work uses a daemon module of this repository's module
+# path and another module beside mod, as this repository's binds packages/daemon and
+# packages/envoy, so a go command from the root or from the other module can name the daemon's
+# packages.
+daemon_workspace() {
+  mkdir -p "$1/packages/daemon" "$1/packages/envoy"
+  printf 'module github.com/sjawhar/legion/daemon\n\ngo 1.21\n' > "$1/packages/daemon/go.mod"
+  printf 'module github.com/sjawhar/legion/envoy\n\ngo 1.21\n' > "$1/packages/envoy/go.mod"
+  printf 'go 1.21\n\nuse (\n\t./mod\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$1/go.work"
+}
+rule22_refuses() {
+  echo "case: $2"
+  root=$(fixture "$1")
+  daemon_workspace "$root"
+  daemon_block_step "$root" "Test the daemon" "$4" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the line and where it runs" "$(has "$out" "step \"Test the daemon\" runs \`${6:-$4}\` in $5 $rule22")"
+}
+rule22_refuses daemon-go-c-equals "go -C=dir into the daemon from the root" . "go -C=packages/daemon test -count=1 ./..." packages/daemon
+rule22_refuses daemon-package-path "a package path of the daemon from the root" . "go test -count=1 ./packages/daemon/..." "the root, whose packages are the daemon's,"
+rule22_refuses daemon-root-pattern "./... from the root, whose workspace holds the daemon" . "go test ./..." "the root, whose packages are the daemon's,"
+rule22_refuses daemon-module-path "the daemon's module path from another module" packages/envoy "go test -count=1 github.com/sjawhar/legion/daemon/..." "packages/envoy, whose packages are the daemon's,"
+rule22_refuses daemon-env-c "env -C into the daemon" . "env -C packages/daemon go test -count=1 ./..." packages/daemon
+rule22_refuses daemon-pushd "pushd into the daemon" . "pushd packages/daemon && go test -count=1 ./..." packages/daemon
+rule22_refuses daemon-continued "a go test continued over two lines with \\" packages/daemon $'go \\\n  test -count=1 ./...' packages/daemon "go    test -count=1 ./..."
+rule22_refuses daemon-binary-not-dot-test "a test binary built without the .test suffix and run by its own name" packages/daemon "go test -c -o launcher.bin ./internal/launcher/ && ./launcher.bin -test.v" "packages/daemon, the test binary ./launcher.bin run by its own name,"
+rule22_refuses daemon-cd-p "cd -P into the daemon" . "cd -P packages/daemon && go test ./..." packages/daemon
+rule22_refuses daemon-cd-dashdash "cd -- into the daemon" . "cd -- packages/daemon && go test ./..." packages/daemon
+rule22_refuses daemon-go-path "a go named by its full path" packages/daemon "/usr/local/go/bin/go test ./..." packages/daemon
+rule22_refuses daemon-go-variable "a go named by a variable" packages/daemon '"$GO" test ./...' packages/daemon
+rule22_refuses daemon-bash-c-binary "a test binary behind bash -c" packages/daemon "bash -c './launcher.test -test.run X'" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule22_refuses daemon-subshell-cd "a cd in a subshell, which the line's next command does not take" packages/daemon "(cd ../envoy && true); go test ./..." packages/daemon
+rule22_refuses daemon-setsid "a test binary behind setsid" packages/daemon "setsid ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule22_refuses daemon-stdbuf "a test binary behind stdbuf" packages/daemon "stdbuf -oL ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule22_refuses daemon-nohup "a test binary behind nohup" packages/daemon "nohup ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule22_refuses daemon-timeout-binary "a test binary behind a runner, timeout" packages/daemon "timeout 20m ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule22_refuses daemon-cd-unknown "a go test after a cd to a directory named by a variable" . 'cd "$DAEMON" && go test ./...' "a directory a cd made unknown"
+rule22_refuses daemon-semicolon "a -c build and a run split by ; rather than &&" packages/daemon "go test -c -o /dev/null ./... ; go test -count=1 ./..." packages/daemon
+
+rule22_refuses daemon-quoted-run-alternation "a quoted -run alternation before a daemon package" packages/envoy "go test -run 'Test|Example' ../daemon/internal/launcher" "packages/envoy, whose packages are the daemon's,"
+
+# The forms the gates of 3cdb10cf12 found the rule let through: a script a command runs (bash -c,
+# sh -c, eval, flock -c, behind any runner) read as a script of its own in the command's
+# directory, a cd behind a shell keyword or in a brace group, and a go test after another go of the
+# same command.
+rule22_refuses daemon-quoted-vet-then-test "a quoted script that vets and then tests" packages/daemon "bash -c 'go vet ./... && go test -count=1 ./...'" packages/daemon
+rule22_refuses daemon-quoted-mod-then-test "a double-quoted script that downloads modules and then tests" packages/daemon 'bash -c "go mod download; go test -count=1 ./..."' packages/daemon
+rule22_refuses daemon-sh-build-then-test "an sh -c script that builds and then tests" packages/daemon "sh -c 'go build ./... && go test -count=1 ./...'" packages/daemon
+rule22_refuses daemon-quoted-binary "a quoted script that builds a test binary and runs it by its own name" packages/daemon "bash -c 'go test -c -o x.test ./internal/launcher/ && ./x.test -test.count=1'" "packages/daemon, the test binary ./x.test run by its own name,"
+rule22_refuses daemon-quoted-cd "a quoted script that moves into the daemon, from the root" . "bash -c 'cd packages/daemon && go test -count=1 ./internal/launcher/'" packages/daemon
+rule22_refuses daemon-if-cd "a cd behind if, and a go test behind then" . "if cd packages/daemon; then go test -count=1 ./internal/launcher/; fi" packages/daemon
+rule22_refuses daemon-brace-cd "a cd in a brace group" . "{ cd packages/daemon; } && go test -count=1 ./internal/launcher/" packages/daemon
+rule22_refuses daemon-go-env-then-go "a go test of the go that go env names" packages/daemon '$(go env GOROOT)/bin/go test ./...' packages/daemon
+rule22_refuses daemon-timeout-quoted "a quoted script behind timeout" packages/daemon "timeout 30m bash -c 'go vet ./... && go test ./...'" packages/daemon
+rule22_refuses daemon-env-c-quoted "a quoted script behind env -C, from the root" . "env -C packages/daemon bash -c 'go test ./internal/launcher/'" packages/daemon
+rule22_refuses daemon-eval "an eval of a quoted script" packages/daemon 'eval "go vet ./... && go test ./..."' packages/daemon
+rule22_refuses daemon-flock "a script flock -c runs" packages/daemon "flock /tmp/l -c 'go test ./...'" packages/daemon
+
+echo "case: a multiline subshell restores the directory for the command after it"
+root=$(fixture daemon-multiline-subshell)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon" $'(\n  cd ../envoy\n  go test ./...\n)\ngo test ./...' packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the daemon test after the closing parenthesis" \
+  "$(has "$out" "step \"Test the daemon\" runs \`go test ./...\` in packages/daemon $rule22")"
+
+echo "case: a quoted empty command before an unwrapped daemon test"
+root=$(fixture daemon-empty-command)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon" $'""\ngo test ./...' packages/daemon
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the daemon test after the empty command" \
+  "$(has "$out" "step \"Test the daemon\" runs \`go test ./...\` in packages/daemon $rule22")"
+echo "case: the forms beside those that run no daemon test binary outside the wrapper pass rule 22"
+root=$(fixture daemon-quiet-forms)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon with --sudo" "../../.github/scripts/private_proc.py --sudo go test -count=1 ./..." packages/daemon
+daemon_block_step "$root" "Test the daemon through xargs with --sudo" "go list ./... | xargs ../../.github/scripts/private_proc.py --sudo go test -count=1" packages/daemon
+daemon_block_step "$root" "Test another module by its path from the root" "go test ./packages/envoy/..." .
+daemon_block_step "$root" "Test another module by its import path" "go test github.com/sjawhar/legion/envoy/..." packages/daemon
+daemon_block_step "$root" "Test another module's packages through xargs" "go list ../envoy/... | xargs go test" packages/daemon
+daemon_block_step "$root" "Run another module's test binary by its own name" "go test -c -o x.test ./internal/x/ && ./x.test -test.v" packages/envoy
+daemon_block_step "$root" "Read a test binary's name" "rm -f launcher.test" packages/daemon
+daemon_block_step "$root" "Build a command named like a test binary" "go build -o launcher.test ./cmd/legion" packages/daemon
+daemon_block_step "$root" "Keep a quoted script's cd in its own shell" "bash -c 'cd packages/daemon' && go test ./packages/envoy/..." .
+daemon_block_step "$root" "Test the daemon in a quoted script behind the wrapper, after a cd" "cd packages/daemon && bash -c '../../.github/scripts/private_proc.py go test ./...'" .
+daemon_block_step "$root" "Say a test binary's command" "echo 'run ./launcher.test -test.v'" packages/daemon
+daemon_block_step "$root" "Run another module's test binary named by -o= with --" "go test -c -o=x--y.test ./internal/x/ && ./x--y.test -test.v" packages/envoy
+daemon_block_step "$root" "Leave the daemon by popd" "pushd packages/daemon && popd && go test ./packages/envoy/..." .
+run_check "$root"
+check "no line of rule 22" "$(is "$(contains "$out" "$rule22")" false)"
 # The rule holds the race build of the job DAEMON_RACE_FILL_JOB names, and that job only: a race
 # build of another job fills another family, for another lane, and names its own packages. The
 # control for this case is "a race build naming a package the lane does not" above, where the same

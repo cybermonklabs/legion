@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -153,6 +154,7 @@ type Guest struct {
 	// count of kills (writeKill).
 	killWriter
 	proc      string
+	hostProc  hostproc.Reason
 	cgroupDir string
 	classify  Classifier
 	clock     Clock
@@ -229,6 +231,10 @@ type GuestConfig struct {
 	// self/oom_score_adj is the watch's starting score, and its self/cgroup and self/mountinfo
 	// find the cgroup when Cgroup is empty.
 	Proc string
+	// HostProc is why a test's watch may read a /proc of the machine, as the guard's Config.HostProc
+	// is: in a test, a watch of the machine's /proc with no reason is refused (hostproc.Check, at
+	// NewGuest and at each scan).
+	HostProc hostproc.Reason
 	// Cgroup is the container's memory cgroup directory, of either version, which the files it
 	// holds tell apart; empty finds the cgroup of the watch's own process (findCgroup).
 	Cgroup string
@@ -351,11 +357,16 @@ type guestWindow struct {
 	raised, unraised     uint64
 }
 
-// NewGuest is a guest watch of cfg, with an id of its own.
+// NewGuest is a guest watch of cfg, with an id of its own. In a test, a watch whose Proc resolves to
+// a /proc of the machine and that carries no HostProc ends the test binary here, before it reads
+// anything there (hostproc.Check).
 func NewGuest(cfg GuestConfig) *Guest {
+	proc := cmp.Or(cfg.Proc, "/proc")
+	hostproc.Check("the guest watch", proc, cfg.HostProc)
 	g := &Guest{
 		killWriter:    newKillWriter(cfg.Logf, cfg.Sink),
-		proc:          cmp.Or(cfg.Proc, "/proc"),
+		proc:          proc,
+		hostProc:      cfg.HostProc,
 		cgroupDir:     cfg.Cgroup,
 		classify:      cfg.Classify,
 		clock:         cfg.Clock,
@@ -545,7 +556,7 @@ func (g *Guest) look() (*Table, map[int]Class) {
 	if !g.watching {
 		return nil, nil
 	}
-	t, err := scan(g.proc)
+	t, err := scan(g.proc, g.hostProc)
 	if err != nil {
 		g.watching = false
 		clear(g.known)

@@ -193,10 +193,20 @@ jobs:
       # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
+      #
+      # Every go test of this job runs through .github/scripts/private_proc.py, which runs each test
+      # binary beneath a supervisor at PID 1 of a PID and mount namespace of its own, with a new
+      # /proc that lists that binary's processes and none of the runner's, and fails the step when
+      # the namespace cannot be made or a package with tests ran in none (docs/testing.md, "A test
+      # that lists the machine's /proc"). check-ci-filters.sh refuses a daemon go test outside it.
+      # Each of the job's three passes --sudo, so the wrapper makes the namespace with sudo -n
+      # unshare and never as a user namespace, which the step above allows: sudo cannot make a
+      # process root inside a user namespace, and the rows that run sudo themselves (the hostile
+      # row's git of another user, runAsPIDOne's PID 1) run here alone.
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs ../../.github/scripts/private_proc.py --sudo go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -227,7 +237,7 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: ../../.github/scripts/private_proc.py --sudo go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -238,7 +248,7 @@ jobs:
       # peak, and the detector multiplies both.
       - name: Test what the race build cannot run
         run: |
-          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+          ../../.github/scripts/private_proc.py --sudo go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

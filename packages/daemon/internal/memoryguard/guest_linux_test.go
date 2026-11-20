@@ -10,10 +10,11 @@ import (
 	"testing"
 )
 
-// On this machine's real /proc, one scan raises a real child of the test process to 1000, a write
-// to another process's oom_score_adj that needs no privilege, while the test process, which the
-// classifier names the role's agent, keeps its score. The classifier names no other process, so the
-// scan writes no score but these two's.
+// On a /proc of the test's own whose entries are links into this machine's /proc, the test process
+// and a real child of it, one scan raises that child to 1000, a write to another process's
+// oom_score_adj that needs no privilege, while the test process, which the classifier names the
+// role's agent, keeps its score. The scan lists these two alone, so its writes depend on no
+// process the test did not start.
 func TestGuestRaisesARealChild(t *testing.T) {
 	self := filepath.Join("/proc", "self", "oom_score_adj")
 	start, err := readScore(self, make([]byte, 64))
@@ -37,7 +38,18 @@ func TestGuestRaisesARealChild(t *testing.T) {
 		t.Fatalf("the child %d reads oom_score_adj %d (%v) before any scan, want its parent's %d", pid, before, err, start)
 	}
 
-	h := newGuestHarness(t, "/proc", newFakeCgroup(t, cgroupV2).dir, map[int]Class{
+	proc := t.TempDir()
+	for name, target := range map[string]string{
+		strconv.Itoa(os.Getpid()): filepath.Join("/proc", strconv.Itoa(os.Getpid())),
+		strconv.Itoa(pid):         filepath.Join("/proc", strconv.Itoa(pid)),
+		"self":                    filepath.Join("/proc", strconv.Itoa(os.Getpid())),
+		"meminfo":                 "/proc/meminfo",
+	} {
+		if err := os.Symlink(target, filepath.Join(proc, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := newGuestHarness(t, proc, newFakeCgroup(t, cgroupV2).dir, map[int]Class{
 		os.Getpid(): {Role: "implementer", Protected: true},
 		pid:         {Role: "implementer"},
 	}).run()

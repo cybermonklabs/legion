@@ -93,8 +93,11 @@ jobs:
       - name: Check the text packages/envoy/infra pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy/infra
+      # The two daemon steps run through .github/scripts/private_proc.py, as every daemon go test of
+      # CI runs: each test binary in a PID and mount namespace of its own (ci-job-daemon-go.yaml's
+      # plain step says why).
       - name: Check the text packages/daemon pins
-        run: go test -count=1 ./internal/textcheck/
+        run: ../../.github/scripts/private_proc.py go test -count=1 ./internal/textcheck/
         working-directory: packages/daemon
       # The seventeen tests of the API's nine static source checks read the module's source and
       # open no database, so they run here rather than in the job that carries Postgres for that
@@ -124,7 +127,7 @@ jobs:
       # texts, so a pin added or renamed reaches both or fails the ci-filters job naming this
       # step. The file's three other tests drive a machine and stay in that plain step.
       - name: Test the supervise table's two pure pins (no database)
-        run: go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
+        run: ../../.github/scripts/private_proc.py go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

@@ -355,6 +355,15 @@ func (m *manager) logf(format string, args ...any) {
 	fmt.Fprintf(m.stderr, format+"\n", args...)
 }
 
+// dialDaemon opens one of the launcher's connections to the daemon. It is a variable for the
+// tests alone, as gitLockRemove is: the daemon end a test runs (launcher_test.go's acceptRole)
+// listens on a loopback port any process of the machine can reach, and records the address each
+// of this process's launcher connections leaves from, so a connection that closes before its
+// hello is told apart as the launcher's own, which fails the test, or another process's.
+var dialDaemon = func(ctx context.Context, address string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+}
+
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
 // state, then start, stop, bundle and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
@@ -367,7 +376,7 @@ func (m *manager) logf(format string, args ...any) {
 // connection (openMemoryReports); what it carries for the pod's cache trimmer is put in force with
 // the writer (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	conn, err := dialDaemon(ctx, address)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", address, err)
 	}

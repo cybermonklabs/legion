@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -143,7 +144,7 @@ func TestTheUsedPathSetKeepsOnlyPathsUnderTheRoots(t *testing.T) {
 	process.fds = append(process.fds, held)
 	proc, _ := writeProcFixture(t, process)
 
-	used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
+	used := readUsedPaths(proc, hostproc.Reason{}, reclaimableRootPaths(), os.Getpid())
 
 	if len(used.Refused) > 0 {
 		t.Fatalf("the fixture was refused: %v", used.Refused)
@@ -171,7 +172,7 @@ func TestAMapsLineLongerThanTheBufferStillMarksItsEntryUsed(t *testing.T) {
 	outside := "/usr/lib/" + strings.Repeat("d/", procMapsReadBytes) + "lib.so"
 	proc, _ := writeProcFixture(t, fixtureProcess{pid: 102, maps: []string{outside, long, after}})
 
-	used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
+	used := readUsedPaths(proc, hostproc.Reason{}, reclaimableRootPaths(), os.Getpid())
 
 	if len(used.Refused) > 0 {
 		t.Fatalf("the fixture was refused: %v", used.Refused)

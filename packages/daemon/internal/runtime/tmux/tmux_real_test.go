@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -686,14 +687,11 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0
+	reason := hostproc.Because("the walk goes down from root, a process the test started, and no process the test did not start descends from it")
 	eventually(t, 20*time.Second, name+" under pid "+strconv.Itoa(root), func() bool {
 		children := map[int][]int{}
-		entries, _ := os.ReadDir("/proc")
-		for _, entry := range entries {
-			pid, err := strconv.Atoi(entry.Name())
-			if err != nil {
-				continue
-			}
+		pids, _ := hostproc.PIDs("descendant", "/proc", reason)
+		for _, pid := range pids {
 			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 			if err != nil {
 				continue

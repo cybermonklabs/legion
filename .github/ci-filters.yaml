@@ -210,6 +210,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/ghconfig/*'
   - 'packages/daemon/internal/ghrepo/*'
   - 'packages/daemon/internal/githubrest/*'
+  - 'packages/daemon/internal/hostproc/*'
   - 'packages/daemon/internal/intake/*'
   - 'packages/daemon/internal/launcher/*'
   - 'packages/daemon/internal/leakguard/*'
@@ -332,6 +333,7 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  - '.github/scripts/private_proc.py'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -411,6 +413,7 @@ plugin_pack:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-plugin-pack.yaml'
+  - '.github/scripts/private_proc.py'
   - *go_workspace
   - *bun_install
   - *omp_install
@@ -481,6 +484,7 @@ plugin_pack:
   - '!packages/daemon/internal/ghconfig/**/*_test.go'
   - '!packages/daemon/internal/ghrepo/**/*_test.go'
   - '!packages/daemon/internal/githubrest/**/*_test.go'
+  - '!packages/daemon/internal/hostproc/**/*_test.go'
   - '!packages/daemon/internal/intake/**/*_test.go'
   - '!packages/daemon/internal/launcher/**/*_test.go'
   - '!packages/daemon/internal/leakguard/**/*_test.go'
@@ -920,6 +924,13 @@ race_memory_test: &race_memory_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/race_memory.test.sh'
   - '.github/scripts/race_memory.py'
+private_proc_test: &private_proc_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/private_proc.test.sh'
+  - '.github/scripts/private_proc.py'
 disk_watch_test: &disk_watch_test
   - *ci_router
   - *ci_filters_data
@@ -945,6 +956,8 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/ci_workflow_rules.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
+  - '.github/scripts/private_proc.py'
+  - '.github/scripts/shell_commands.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
 check_ts_filters_test: &check_ts_filters_test
@@ -965,6 +978,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/go-test-step-expansion.test.sh'
   - '.github/scripts/go-test-step-expansion.py'
   - '.github/scripts/ci_filter_coverage.py'
+  - '.github/scripts/private_proc.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
   - '.github/workflows/ci-job-*.yaml'
@@ -1028,6 +1042,7 @@ test:
   - *dispatch_browser_run_reads_test
   - *dispatch_browser_samples_test
   - *race_memory_test
+  - *private_proc_test
   - *disk_watch_test
   - *priorities_seed_check_test
   - *check_ci_filters_test
@@ -1706,6 +1721,7 @@ text_checks:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-text-checks.yaml'
+  - '.github/scripts/private_proc.py'
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/daemon/**/*.go'
@@ -2446,6 +2462,8 @@ ci_filters:
   - '.github/scripts/ci_workflow_rules.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
+  - '.github/scripts/private_proc.py'
+  - '.github/scripts/shell_commands.py'
   - '.github/go-release-targets.json'
   - '.github/agent-secrets-client-targets.json'
   - '.github/envoy-infra-targets.json'

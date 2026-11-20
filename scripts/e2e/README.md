@@ -4298,19 +4298,18 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/child-adoption.sh     # → "child adoption e2e: PASS in <n>s", exit 0
 ```
 
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAQueuedRootUnderALiveTreeJoinsItLive` (`internal/daemon/child_adoption_live_test.go`, `-tags e2e`) |
-| `proof` | the eleven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestAQueuedRootUnderALiveTreeJoinsItLive` (`internal/daemon/child_adoption_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the eleven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with an admission cap of 3 and a linger of eight seconds, and seeds three trees that hold every slot:
 T, the live tree, in planning with its design gate approved and its architect's launch unfinished, which the boot relaunches and the driver registers over the daemon's own worker stream and routes;
@@ -4357,20 +4356,19 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 dispatch://INFRA-3915's live proof that every child that starts runs under an architect of its own.
-Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+Runs on any Linux host with `go`, `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run took 60 s in a Legion worker pod, 53 s of it building the driver and 7 s the proof's seven steps.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestEveryChildThatStartsRunsUnderItsOwnArchitectLive` (`internal/daemon/sub_architect_live_test.go`, `-tags e2e`) |
-| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestEveryChildThatStartsRunsUnderItsOwnArchitectLive` (`internal/daemon/sub_architect_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with an admission cap of 6, a slot for the root and one for each of the five children the proof starts, and seeds one live tree:
 T, in planning with its design gate approved and its architect's launch unfinished, which the boot relaunches and the driver registers over the daemon's own worker stream and routes.
@@ -4420,20 +4418,19 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 The live proof that a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374).
 The daemon reads such a head twice, a minute apart, and acts only when the issue's next step needs a head that merges:
 it then asks the implementer to merge the base forward, and moves nothing.
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The proof waits out the minute the daemon waits between a first conflicting read and its second (`internal/workflow`'s `conflictConfirmWait`), which no setting shortens, so a run takes more than a minute.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAConflictKeepsThePhaseAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestAConflictKeepsThePhaseAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request whose base requires `ci`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
 It seeds a second root beside it, the control, in `testing` on an open pull request of its own onto the same base, holding its tree's slot, with `ci` passed on its head and no claim.
@@ -4475,20 +4472,19 @@ No reading of the heads tells that last case from the one that is taken, since a
 Steps 3, 4 and 5 report the same completion behind the same forward entry and differ only in the commit.
 Step 6 is what follows a taken one: the completion step 5 took moved the issue to `reviewing` and left the tester's claim serving the entry it was behind on, so the completions that claim sends next meet the fence in a phase the tester no longer works.
 The fence answers each `409 HANDOFF_NOT_CURRENT_PHASE` in the engine's own words (`intake.NotCurrentPhase`), never with the `HANDOFF_STALE_ENTRY` text that tells the worker a task is owed to it, since that task is queued for testing and the daemon drops it unsent once the issue has left testing.
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run of the eight steps took 73 s, 2 s of it the proof itself and the rest building the driver.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive` (`internal/daemon/behind_entry_fence_live_test.go`, `-tags e2e`) |
-| `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive` (`internal/daemon/behind_entry_fence_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request at `bf1`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
 Facts enter only as production's do:
@@ -4527,20 +4523,19 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/merge-wait-readable.sh     # → "merge wait readable e2e: PASS in <n>s", exit 0
 ```
 
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A run takes about half a minute.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive` (`internal/daemon/merge_wait_readable_live_test.go`, `-tags e2e`) |
-| `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive` (`internal/daemon/merge_wait_readable_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds three roots in reviewing, each holding its tree's slot:
 one on an open pull request GitHub answers `blocked` for, which is the issue the six steps drive;
@@ -4582,20 +4577,19 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 dispatch://INFRA-2800's live proof that the work of a phase entry reaches the worker that entry names (its R3, R4, R5, R6 and R9).
-Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAPhaseEntryConvergesOnARunningDaemonLive` (`internal/daemon/phase_entry_converge_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestAPhaseEntryConvergesOnARunningDaemonLive` (`internal/daemon/phase_entry_converge_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request at its first head, holding its tree's slot, with its implementer's claim mid-launch, which the boot relaunches.
 No `phases` row is seeded: every entry the proof reads is raised live, by the transitions its completions and its backward moves make.
@@ -4633,7 +4627,7 @@ LEGION_OMP_PATH=/opt/omp/bin/omp \
 ```
 
 dispatch://INFRA-956's live proof that a turn ending in a provider error keeps the worker's task (its R2) and that the operator restarts the claims such turns leave (its R3), with real agents rather than a fake runtime.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no kube context and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable:
 the proof launches real agents and guesses no build, and in a Legion worker pod that binary is the fleet's build rather than the branch's fetch, which the driver prints.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
@@ -4642,14 +4636,13 @@ The DSN's host must be loopback: `prerequisites` refuses one that is not with ex
 The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A whole run took 317 s measured in a Legion worker pod (omp/18.16.0), the driver 300 s of it:
 the ladder's first three gaps are waited out where they are real, 30 s, 60 s and 120 s of wall clock between the daemon's sends, while its fourth and fifth are driven on the daemon's own clock (`ladderClock`, which shortens those two durations and no others), since waiting them out would add twelve minutes and measure the same ladder twice.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive` (`internal/daemon/provider_error_retry_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive` (`internal/daemon/provider_error_retry_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds three issues of one tree, each standing in the phase of its one worker: a planner, an implementer and a tester.
 Each of those workers is seeded mid-launch with the task its phase's start left pending on its claim, because admission starts the phase of a slotted worker that holds no task (`internal/admit/admit.go`'s `resumeSlottedWorkers`), which would otherwise hand the claim its phase's resume task before the driver gave it anything and have every deliver refused `a delivery is already pending`.
@@ -4690,19 +4683,18 @@ dispatch://INFRA-956's live proof of the two operations an operator and a projec
 Each is driven through both of its doors, with real agents rather than a fake runtime.
 It is a script of its own rather than more steps of [`provider-error-retry.sh`](#provider-error-retrysh), which proves the ladder those operations rescue a claim from:
 the two runs would otherwise share a wall clock, and this one starts four panes and waits out a compaction its endpoint holds.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
 A whole run took 176 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 152 s of it, and a cold cache adds the driver's own build:
 four panes start Oh My Pi once each and the five fresh sessions of steps 7 and 8 start one more each, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held summary — Oh My Pi writes a split turn's summary in two passes, the stand-in holds each for 35 s, and that compaction answers after about 70 s.
 Nothing else waits on a clock bar step 8, which releases each of its two holds just after a pass of the runtime's own two-second observation sweep: the provider-error ladder's own gaps are the sibling proof's subject, and this one never waits a rung out, since a newer task takes the place of the one a wait stands for.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive` (`internal/daemon/claim_compaction_live_test.go`, `-tags e2e`) |
-| `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive` (`internal/daemon/claim_compaction_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds four issues, each its own tree: a planner's, an implementer's, a root architect's and a tester's, each with its worker mid-launch, plus a `reviewer` claim stopped and never launched.
 Each of the three phase workers is seeded holding the task its phase's start left pending on its claim, and the root architect's issue stands in `accepting`, the phase whose role is the architect and in which no phase worker runs.
@@ -4759,20 +4751,19 @@ The planner's own rule is that its completion reports work already done: the par
 A child's architect, a sub-architect, is launched on the sub-architect's own part (`internal/prompts/roles/architect.md`, `# Legion Sub-Architect`), where a root architect's is the root's (`roles/architect-root.md`), and its addressing line names the architect above it (`addressingFragment`, in `internal/daemon/specs.go`).
 Unit tests already read the pod memory rule out of each composed prompt and hold it to one part of each tree (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`), and hold the planner's rule in the planner's own part alone (`internal/prompts/roles_test.go`).
 Neither file starts anything, so neither says a role process was ever launched with the text, and that is what this proof is for.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`claim-compaction.sh`](#claim-compactionsh), the DSN's host must be loopback as it must there, and the broker is the run's own.
 Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s and 16 s into its first step.
 A first run in such a pod took 179 s, with the Go build cache cold and the pinned `nats-server` installed by the run itself.
 Each of these figures is from a Legion worker pod, which runs under gVisor.
 The proof waits on no clock of its own: its one wait is the panes starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is on each process from the moment that process began.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it read between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the five steps below, each printing what it read between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds one tree with one child, so that the daemon starts three real panes of three different kinds: the tree's root architect, the planner of the same issue, which stands in `planning`, and the architect of the child, which stands in `planning` on a slot of its own.
 Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
@@ -4814,21 +4805,20 @@ A finished implementer that completes again while the issue is in `testing`, wit
 A finished tester that completes again, naming its own test record, is refused the same in one request, and a reviewer whose own approval moved the issue to `accepting` before it completed has its completion taken, naming its own review record.
 Unit tests already hold each half: `packages/pi-shared/src/handoff-record.test.ts` the record the tool's `findHandoffReport` reads once the issue has moved on, and `internal/api/handoff_test.go` and `internal/workflow/handoff_test.go` what the route and the engine answer such a completion.
 None of them runs the tool a pane loads against the daemon a pane talks to, and that is what this proof is for.
-It runs on any Linux host with `go`, `awk`, `tar`, `jj`, `git`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `awk`, `tar`, `jj`, `git`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no kube context, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` is required and means what it means for [`claim-compaction.sh`](#claim-compactionsh).
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
 The broker is the run's own.
 A whole run took 134 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache: 50 s building the driver and 78 s of proof, of which building Dispatch was 12 s and the six steps 23 s, the first of them waiting for the implementer's pane to start; the 9f1d4789 negative control's run below took 141 s the same way.
 The proof waits on no clock of its own beyond the 3 s it watches after each completion for a second request.
-The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+The three checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun`, no `jj`, no `git` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestLateCompletionsThroughTheRealLegionToolLive` (`internal/daemon/late_completion_live_test.go`, `-tags e2e`) |
-| `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestLateCompletionsThroughTheRealLegionToolLive` (`internal/daemon/late_completion_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over the real Dispatch server this checkout builds, run as [`handoff-records.sh`](#handoff-recordssh) runs it, on a database of its own, with `dispatch_url` at it.
 Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`) with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own, and told the same Dispatch as `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, as the tmux runtime tells a pane its daemon's Dispatch.
@@ -4878,18 +4868,17 @@ LEGION_OMP_PATH=/opt/omp/bin/omp LEGION_TEST_PG_DSN=… \
 dispatch://INFRA-3276's live proof of its R4 and its R3 on the binary that has them, with real agents rather than a fake runtime.
 R4: a worker in a turn is sent its task once and again only after that turn, the turn that serves a task settles it, and a newer task takes its place.
 R3: a relaunched process reads what the relaunch ended — its turn, its subagents and its background jobs — in the first prompt it is sent, an architect, a root's or a child's, reads it in its catch-up too, and the claim row records it.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
 A whole run took 262 s and 271 s on two runs measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 214 s and 212 s of them, and the first build of the driver 102 s:
 five panes start Oh My Pi and four relaunches start it again, and the waits are two held recalls of 20 s, a 20 s background job and those four relaunches of about five seconds each.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+The three checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive` (`internal/daemon/busy_relaunch_live_test.go`, `-tags e2e`) |
-| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>` |
+| `proof` | a test binary of `TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive` (`internal/daemon/busy_relaunch_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds five issues, each its own tree: an implementer's, a tester's, a planner's, a root architect's in `accepting` and a second implementer's, each with its worker mid-launch.
 Each phase worker is seeded holding the task its phase's start left pending, and answers it before the first step, for the reason [`claim-compaction.sh`](#claim-compactionsh)'s seed gives: admission's repair of a slotted worker holding no task.
@@ -4919,7 +4908,7 @@ No run of this proof has been made on the pinned build.
 | `relaunch-task` | a task to the second implementer whose turn starts `sleep 600` as an `async` bash job and goes on, held; once the report names `async-job`, SIGKILL | the claim row recording the death, the task's turn and the kind `async-job` (`claim-row`), and the task sent again behind the sentence naming the interrupted turn, the death and the background job (`sentence`) |
 
 `busy-own-turn` holds the turn of the agent's own at its model request rather than at a recall, because at the pin a turn a job's result starts runs no recall — a run of the pin made for this proof saw that turn start with no recall asked, where every prompt before it asked one — and its `agent_start` reaches the daemon at once, so the daemon sees the turn begin and sends the waiting task nothing until its end: the step reads one busy answer at most there, for a send that reached the agent before that `agent_start` did.
-`--base-commit <rev>` takes the tree of that commit with `git archive` into a directory of the run's own under `TMPDIR`, lays this checkout's driver file over it, gives it node_modules of its own with `bun install --frozen-lockfile`, and makes the same four checks there in a subshell whose root is that tree, so the daemon, the `legion` and both plugins the driver builds are the base's.
+`--base-commit <rev>` takes the tree of that commit with `git archive` into a directory of the run's own under `TMPDIR`, lays this checkout's driver file over it, gives it node_modules of its own with `bun install --frozen-lockfile`, and makes the same three checks there in a subshell whose root is that tree, so the daemon, the `legion` and both plugins the driver builds are the base's.
 The driver names no Go symbol the base lacks: it reads the claim row's `ended_work` through SQL and the relaunch sentence as literals, so over a base whose schema has no such column the read itself fails `claim-row`.
 That run must fail, and the script's `negative-control` check reads its `proof.log` for five steps each failing at the assertion it names — `busy-late-turn` at `stale-result`, `newer-task` at `accepted`, `relaunch-subagent-worker` and `relaunch-subagent-architect` at `sentence`, and `relaunch-task` at `claim-row` — and prints what `busy-own-turn` and `idle-control` did there as it came.
 An empty `<rev>` is refused with exit 2; the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2; and a `proof.log` an earlier run left in the evidence directory is removed before the base run, so only that run's steps are read.
@@ -4982,22 +4971,21 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 sjawhar/legion#2354's live proof that a phase's handoff is a record on its Dispatch issue (its A3, A6, A10 and the daemon's half of A7, and `HANDOFF_NOT_NEW`), which the integration issue after it runs again on main (A11).
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root), `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) and a kernel that lets the user make a user namespace, or `sudo -n` (the driver's `/proc` of its own) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the driver also creates Dispatch's own database on the same server and drops it on exit, so the DSN's role must be allowed to create and drop databases, and the server must offer the `pgvector` extension Dispatch's migrations create.
 That server must be this machine's: the DSN's host must be loopback, and `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The script starts no database.
 The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
 A run takes two to four minutes, most of it building Dispatch and the driver.
-The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+The three checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), the wrapper can give the driver a `/proc` of its own (`.github/scripts/private_proc.py --check`: an unprivileged user namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestHandoffRecordsLive` (`internal/daemon/handoff_records_live_test.go`, `-tags e2e`) |
-| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestHandoffRecordsLive` (`internal/daemon/handoff_records_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 Nothing of the record path is stood in for.
 The driver builds `packages/envoy`'s `cmd/dispatch` and runs it as `packages/dispatch/e2e/run-server.sh` does:
@@ -5043,15 +5031,14 @@ It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boo
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
 A run takes two to five minutes: most of it builds Dispatch and the driver, and up to a minute and a half waits for the daemon's outbox after the outage.
-The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+The three checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestStepRecordsLive` (`internal/daemon/step_records_live_test.go`, `-tags e2e`) |
-| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestStepRecordsLive` (`internal/daemon/step_records_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 Nothing of the record path is stood in for.
 The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`SR<6 hex>`), maps `acme/widgets` to it, and creates one issue, in progress with the `legion` label.
@@ -5106,15 +5093,14 @@ It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boo
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
 A run takes about a minute with a warm Go build cache (53 s measured on a loaded host, 17 s of it building the driver and 33 s the proof, which builds Dispatch first) and up to five minutes cold, most of it building Dispatch and the driver.
-The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+The three checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI and the read script out of.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestPlanRatingsLive` (`internal/daemon/plan_ratings_live_test.go`, `-tags e2e`) |
-| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | a test binary of `TestPlanRatingsLive` (`internal/daemon/plan_ratings_live_test.go`, `-tags e2e`), which go test builds and runs through `.github/scripts/private_proc.py`: the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 Nothing of the record path is stood in for.
 The driver is [`step-records.sh`](#step-recordssh)'s, over four issues of one project of the run's own (`SR<6 hex>`) instead of one, each seeded and booted as that driver seeds and boots its issue, so each plan and each rating goes through the daemon's outbox and its Dispatch client to the real `PUT /api/v1/issues/{key}/plans/{id}` and `PUT /api/v1/issues/{key}/steps/{id}/rating`.
@@ -5205,7 +5191,7 @@ It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inp
 `go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
 The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
 A run took 51 s on a shared devbox under load with a warm Go build cache: 3 s for the prerequisites, 0 s for the broker, 20 s building the driver and 28 s for the proof, whose first 4 s build Dispatch.
-The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, and the `driver` check builds a test binary of `TestReviewRangeLive` (`internal/daemon/review_range_live_test.go`, `-tags e2e`).
+The three checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, and the `proof` check builds and runs a test binary of `TestReviewRangeLive` (`internal/daemon/review_range_live_test.go`, `-tags e2e`).
 
 The rig is `handoff-records.sh`'s (`startOnDispatch` and `seedIssues`, in `internal/daemon/handoff_records_live_test.go`):
 the real Dispatch server on a database of its own, a project of the run's own (`RR<6 hex>`) with `acme/widgets` mapped to it, the whole daemon booted through `run` with `dispatch_url` at that server, each handoff written with the real `dispatch` CLI as the session its claim registered, and each claim brought to ready over the daemon's worker stream as its pane's shim brings it.
@@ -7221,22 +7207,25 @@ live_daemon_proof LABEL SLUG TEST EVIDENCE         # the script's last command
 An entry script whose driver runs this checkout's `dispatch` CLI (`handoff-records.sh`, `step-records.sh`, `plan-ratings.sh`) calls `require_dispatch_cli` between the two lines above: it refuses a host with no `bun` on PATH or no `node_modules` at the checkout's root with `FAIL prerequisites: …` and exit 1, before the run builds or starts anything, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
 
 The caller sets `set -euo pipefail` and `root`, the checkout.
-`live_daemon_proof` starts the transcript ([`lib/transcript.sh`](#libtranscriptsh)) in the evidence directory, then runs the four checks each script's section lists
-— `prerequisites`, `broker`, `driver` and `proof` — each printing `== <check>`, what it observed and `ok <check> (<s>s)`, and the first that fails `FAIL <check>: <why>`.
+`live_daemon_proof` starts the transcript ([`lib/transcript.sh`](#libtranscriptsh)) in the evidence directory, then runs the three checks each script's section lists
+— `prerequisites`, `broker` and `proof` — each printing `== <check>`, what it observed and `ok <check> (<s>s)`, and the first that fails `FAIL <check>: <why>`.
 That failure ends the run with exit 2 when it refuses an input of the caller's, and with exit 1 otherwise.
 `prerequisites` refuses two inputs: a `LEGION_TEST_PG_DSN` that is unset, and one whose host is not `127.0.0.1`, `localhost` or `::1`, which [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads before the driver is built and before the broker starts.
 It also unsets `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before that call, so nothing the run starts reads one.
 Exit 2 covers one fault of the host as well: [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses every DSN where the machine has no libpq, and this file answers that refusal as it answers the other two.
 The refusal line tells that case apart, and names libpq and the package to install.
 That guard reads the caller's DSN in the shell, and it reaches no further.
-The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
+`prerequisites` also asks the wrapper, `.github/scripts/private_proc.py --check`, whether it can give the driver a `/proc` of its own: as an unprivileged user namespace where the kernel lets this user make one, as a Legion pod's does, and with `sudo -n unshare` where it refuses that; where neither works the run fails there, naming both reasons.
+The `proof` check builds the test binary and runs its one test in one `go test` through that wrapper, as CI runs every daemon test binary (`docs/testing.md`, "A test that lists the machine's /proc"): `go test -tags e2e -count=1 -timeout 20m -v -run '^TEST$' ./internal/daemon`, whose binary go runs beneath a supervisor at PID 1 of a PID and mount namespace of its own, whose `/proc` lists the driver's processes and none of the machine's; a driver that does not build fails `proof`.
+That binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
+The wrapper is the one beside the library, whatever `root` the caller set, so the negative control's base tree runs through this checkout's, and the wrapper's own lines end `proof.log`.
 `DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go` is where that frame is written, and the comment above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh) is where this one is.
 On any exit it stops the `nats-server`, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
 
 | argument | is |
 | :--- | :--- |
 | `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
-| `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
+| `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and go's build of the driver for `proof`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
 | `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 

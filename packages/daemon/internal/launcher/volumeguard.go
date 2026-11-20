@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 )
 
 // The three guards the cache trimmer asks before it deletes anything: what the pod's processes
@@ -43,7 +45,9 @@ type usedPaths struct {
 }
 
 // readUsedPaths reads procRoot, leaving the sweep's own processes out, and keeps the paths that
-// are one of under or lie below one.
+// are one of under or lie below one. It lists procRoot through hostproc.PIDs, so in a test a
+// procRoot that is a /proc of the machine ends the test binary unless the caller gave reason: the
+// trimmer gives none, and its tests give it a fixture /proc of their own.
 //
 // Every process is read through six entries, because no one of them is enough. An open file
 // descriptor misses a running program's own binary and every library it mapped, which is exactly
@@ -80,9 +84,9 @@ type usedPaths struct {
 // this pass read it is no refusal — its paths are gone with it — so ENOENT and ESRCH are passed
 // over. At most one refusal is recorded per process: a process whose /proc directory the kernel
 // refuses refuses every entry of it, and six lines would say one thing.
-func readUsedPaths(procRoot string, under []string, own ...int) usedPaths {
+func readUsedPaths(procRoot string, reason hostproc.Reason, under []string, own ...int) usedPaths {
 	used := usedPaths{}
-	entries, err := os.ReadDir(procRoot)
+	pids, err := hostproc.PIDs("the cache trimmer's used-path read", procRoot, reason)
 	if err != nil {
 		// Not one process but all of them: the reading of /proc itself failed, so nothing is
 		// known about any process of the pod. It is reported in the same list because it is the
@@ -92,12 +96,11 @@ func readUsedPaths(procRoot string, under []string, own ...int) usedPaths {
 		return used
 	}
 	lines := bufio.NewReaderSize(nil, procMapsReadBytes)
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || slices.Contains(own, pid) {
+	for _, pid := range pids {
+		if slices.Contains(own, pid) {
 			continue
 		}
-		process := procProcess{dir: filepath.Join(procRoot, entry.Name()), pid: pid, under: under, lines: lines}
+		process := procProcess{dir: filepath.Join(procRoot, strconv.Itoa(pid)), pid: pid, under: under, lines: lines}
 		process.read()
 		used.paths = append(used.paths, process.paths...)
 		used.held = append(used.held, process.held...)

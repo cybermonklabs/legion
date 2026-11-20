@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -771,7 +772,7 @@ func TestGuestNamesAZombieThatShowsTheKillThoughTheScanLeavesItOut(t *testing.T)
 	killed.zombie, killed.resident = true, 0
 	pod.add(killed.fakeProcess)
 	showKill(pod, load, "python3", true)
-	if table, err := scan(pod.proc); err != nil || table.byPID[load] != nil {
+	if table, err := scan(pod.proc, hostproc.Reason{}); err != nil || table.byPID[load] != nil {
 		t.Fatalf("the scan reads the zombie %d (%v), want it left out", load, err)
 	}
 	cgroup.setKills(1)
@@ -2116,7 +2117,7 @@ func TestGuestKeepsWhatAPassLeftAtARiseThroughTheScansSnapshot(t *testing.T) {
 	zombie.zombie = true
 	pod.addGuest(zombie)
 	showKill(pod, cc1, "cc1", true)
-	if table, err := scan(pod.proc); err != nil || table.byPID[cc1] != nil {
+	if table, err := scan(pod.proc, hostproc.Reason{}); err != nil || table.byPID[cc1] != nil {
 		t.Fatalf("the scan reads the zombie %d (%v), want it left out", cc1, err)
 	}
 	pod.addGuest(command(ld, 9450, "ld", 0, 0))

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -1309,7 +1310,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	// that goes on to tick is the sweep's own, and not this line's.
 	defer contain(passed.said)
 
-	used := readUsedPaths(t.procRoot, under, t.self)
+	used := readUsedPaths(t.procRoot, hostproc.Reason{}, under, t.self)
 	usedAt := t.now()
 	if len(used.Refused) > 0 {
 		// Nothing is deleted. A refused read is a process whose open files are unknown, and on
@@ -1391,7 +1392,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		if t.now().Sub(usedAt) >= volumeUsedPathsMaxAge {
 			// The deleter is left out with the trimmer: it holds every directory the listing
 			// opened, and read as a use it was a hold on the root it deletes from (readUsedPaths).
-			used = readUsedPaths(t.procRoot, under, t.self, remover.process())
+			used = readUsedPaths(t.procRoot, hostproc.Reason{}, under, t.self, remover.process())
 			usedAt = t.now()
 			if len(used.Refused) > 0 {
 				// Later than the first read: what the sweep deleted stands, and it stops here

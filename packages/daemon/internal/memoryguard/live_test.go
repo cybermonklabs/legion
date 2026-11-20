@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -378,8 +379,11 @@ func (r *liveRun) startHelpers() string {
 func (r *liveRun) startGuard() {
 	r.watch = &guardWatch{act: r.cfg.settings.ActPercent, notify: make(chan struct{}, 1)}
 	g := New(Config{
-		Sink: r.watch.sink,
-		Logf: func(format string, args ...any) { r.out.printf("guard: %s", fmt.Sprintf(format, args...)) },
+		// The guard on a machine's own processes and memory is what this measures, and it runs
+		// only in a pod made for it, where liveEnv is 1 and every process is the run's own.
+		HostProc: hostproc.Because("the live sandbox measures the guard on its own pod's processes and memory, in a pod made for the run"),
+		Sink:     r.watch.sink,
+		Logf:     func(format string, args ...any) { r.out.printf("guard: %s", fmt.Sprintf(format, args...)) },
 	})
 	g.observe = r.watch.observe
 	if r.cfg.wire != nil {
@@ -948,20 +952,22 @@ func (s *liveSampler) largest(shmem uint64) liveProcess {
 }
 
 // liveDescendants is root and every process whose PPid chain leads to it, each as its stat reads
-// (the root by its pid alone where its stat cannot be read).
+// (the root by its pid alone where its stat cannot be read). It lists liveProc through
+// hostproc.PIDs with its reason: the walk goes down from root, the run's own process, so no process
+// the run did not start is kept.
 func liveDescendants(root int) []*Process {
 	procs := map[int]*Process{root: {PID: root}}
-	entries, err := os.ReadDir(liveProc)
+	pids, err := hostproc.PIDs("liveDescendants", liveProc, hostproc.Because("the walk goes down from root, the live "+
+		"sandbox's own process, and keeps no process it did not start"))
 	if err != nil {
 		return []*Process{procs[root]}
 	}
 	children := map[int][]int{}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
+	for _, pid := range pids {
+		if pid <= 0 {
 			continue
 		}
-		stat, err := os.ReadFile(filepath.Join(liveProc, entry.Name(), "stat"))
+		stat, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(pid), "stat"))
 		if err != nil {
 			continue
 		}

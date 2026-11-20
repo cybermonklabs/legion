@@ -74,6 +74,14 @@ echo "case: the wrapper's own path is read from its end, as a step writes it"
 check "a deeper relative path is still the wrapper" \
   "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
 
+echo "case: the private /proc wrapper, and its one option, before the go command (daemon-go's steps)"
+check "the wrapper is dropped" \
+  "$(is "$(command_of '../../.github/scripts/private_proc.py go test -count=1 ./internal/launcher/')" "go test -count=1 ./internal/launcher/")"
+check "its --sudo is dropped with it" \
+  "$(is "$(command_of '../../.github/scripts/private_proc.py --sudo go test -count=1 ./internal/launcher/')" "go test -count=1 ./internal/launcher/")"
+check "an option the wrapper does not take is left in place" \
+  "$(is "$(command_of '../../.github/scripts/private_proc.py --other go test ./pkg')" "../../.github/scripts/private_proc.py --other go test ./pkg")"
+
 echo "case: a -run pattern keeps its quoting"
 line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \

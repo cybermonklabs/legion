@@ -253,6 +253,9 @@ The list is the one the test job's filter used to name through this anchor while
 it gated nothing of its own; it is now the daemon-go job's own filter, so a change
 a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
 
+Every go test of the job runs its test binaries through
+.github/scripts/private_proc.py, so the filter names that script.
+
 ## daemon_go_tests: pi-legion's agents: internal/prompts/roles_test.go stats `agents/<name>.md`.
 
 pi-legion's agents: internal/prompts/roles_test.go's TestEveryTaskAgentARolePromptDispatchesIsShipped
@@ -278,6 +281,8 @@ tests were daemon-go's, bun.lock and skills/ were on that filter and a change to
 either ran the daemon's whole Go suite (dispatch://INFRA-1413).
 No Stage 1 script, no uv and no NATS images: those are daemon-go's steps, not this
 one's.
+The pack step runs its test binary through .github/scripts/private_proc.py, so the
+filter names that script.
 
 ## claude_envoy_build: What packages/claude-envoy/scripts/build.ts and scripts/verify-build.sh
 
@@ -631,6 +636,9 @@ credential-argument check reads every text file of the repository, so the `text_
 selects the job for every change but one under docs/plans or docs/superpowers. The
 patterns after it name what the other checks read, which `**` covers too, so that
 each read keeps its reason here.
+
+The two daemon steps run their test binaries through
+.github/scripts/private_proc.py, so the filter names that script.
 
 credential_argument_test.go's credentialTextFiles lists every file git tracks or would
 track, but docs/plans and docs/superpowers, which are dated history, and its

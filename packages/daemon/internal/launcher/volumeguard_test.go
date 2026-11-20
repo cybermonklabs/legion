@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -201,7 +202,7 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 			process := fixtureProcess{pid: 101}
 			source.place(&process, held)
 			proc, _ := writeProcFixture(t, process)
-			used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
+			used := readUsedPaths(proc, hostproc.Reason{}, reclaimableRootPaths(), os.Getpid())
 			if len(used.Refused) > 0 {
 				t.Fatalf("the fixture was refused: %v", used.Refused)
 			}
@@ -235,7 +236,7 @@ func TestTheUsedPathSetLeavesTheReadersOwnProcessOut(t *testing.T) {
 		fixtureProcess{reader: true, fds: []string{own}, cwd: "/legion/go/build"},
 		fixtureProcess{pid: os.Getpid() + 1, fds: []string{other}},
 	)
-	used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
+	used := readUsedPaths(proc, hostproc.Reason{}, reclaimableRootPaths(), os.Getpid())
 	if len(used.Refused) > 0 {
 		t.Fatalf("the fixture was refused: %v", used.Refused)
 	}
@@ -279,7 +280,7 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 			// The third process has no entry at all, which is what the kernel shows of a process
 			// that exited while the pass read it.
 			proc, pids := writeProcFixture(t, staging.process, fixtureProcess{pid: 400, fds: []string{gone}}, fixtureProcess{pid: 500})
-			used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
+			used := readUsedPaths(proc, hostproc.Reason{}, reclaimableRootPaths(), os.Getpid())
 			if len(used.Refused) != 1 {
 				t.Fatalf("Refused = %v, want exactly the one process this case made unreadable", used.Refused)
 			}
@@ -323,7 +324,7 @@ func TestAProcessHoldsEachRootOnceHoweverManyDescriptorsItHasOnIt(t *testing.T) 
 	if want := []string{build, bun}; len(read.held) != len(want) || !slices.Equal(held, want) {
 		t.Errorf("the process holds %d roots, %q among them, want each root it has a descriptor on once: %q", len(read.held), held, want)
 	}
-	used := readUsedPaths(proc, roots, os.Getpid())
+	used := readUsedPaths(proc, hostproc.Reason{}, roots, os.Getpid())
 	if !used.Holds(bun) || !used.Holds(build) || used.Holds(tmp) {
 		t.Errorf("Holds answers %t for %s, %t for %s and %t for %s, want the two roots the process holds and not the third",
 			used.Holds(bun), bun, used.Holds(build), build, used.Holds(tmp), tmp)
@@ -765,6 +766,10 @@ var guardHeldFile *os.File
 //
 // The negative control is a path of the same tree no process uses: a reader that answered yes to
 // everything would pass every case above and fail this one.
+//
+// It reads the machine's /proc on purpose, with a reason (hostproc.Because): every path it asks
+// about is under the test's own TempDir, which no process the test did not start uses, and a
+// process of another user whose read is refused is logged, not judged.
 func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -842,7 +847,8 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		time.Sleep(testwait.Poll)
 	}
 
-	used := readUsedPaths("/proc", []string{dir}, os.Getpid())
+	used := readUsedPaths("/proc", hostproc.Because("every path it asks about is under the test's own TempDir, which no "+
+		"process the test did not start uses, and a process whose read is refused is logged, not judged"), []string{dir}, os.Getpid())
 	if len(used.paths) == 0 {
 		t.Fatalf("the reader found no path at all in this container's /proc; refused %v", used.Refused)
 	}
@@ -877,20 +883,19 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 // directory, read straight from /proc rather than through the guard.
 func threadCwdNames(t *testing.T, cwd string) bool {
 	t.Helper()
-	processes, err := os.ReadDir("/proc")
+	processes, err := hostproc.PIDs("threadCwdNames", "/proc", hostproc.Because("it looks only for a thread standing in cwd, a "+
+		"directory of the test's own TempDir, which only a process the test started stands in"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, process := range processes {
-		if _, err := strconv.Atoi(process.Name()); err != nil {
-			continue
-		}
-		threads, err := os.ReadDir(filepath.Join("/proc", process.Name(), "task"))
+	for _, pid := range processes {
+		process := strconv.Itoa(pid)
+		threads, err := os.ReadDir(filepath.Join("/proc", process, "task"))
 		if err != nil {
 			continue
 		}
 		for _, thread := range threads {
-			if target, err := os.Readlink(filepath.Join("/proc", process.Name(), "task", thread.Name(), "cwd")); err == nil && target == cwd {
+			if target, err := os.Readlink(filepath.Join("/proc", process, "task", thread.Name(), "cwd")); err == nil && target == cwd {
 				return true
 			}
 		}

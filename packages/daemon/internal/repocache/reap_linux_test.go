@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 )
 
 // reapExited reaps the orphans a process is handed as their subreaper. It runs in a child of the
@@ -32,7 +34,7 @@ func TestReapExitedReapsOrphans(t *testing.T) {
 		os.Exit(0)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestReapExitedReapsOrphans$")
-	command.Env = append(os.Environ(), "REPOCACHE_REAP_HELPER=1")
+	command.Env = append(os.Environ(), "REPOCACHE_REAP_HELPER=1", hostproc.ChildEnv(t))
 	out, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the helper failed: %v\n%s", err, out)

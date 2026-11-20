@@ -69,6 +69,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -160,6 +161,10 @@ type Handle interface {
 type Config struct {
 	// Proc is the root of the processes the guard reads, "/proc" when empty.
 	Proc string
+	// HostProc is why a test's guard may read a /proc of the machine: the zero Reason for every
+	// guard but the live sandbox's, so a guard of the machine's /proc is refused in a test
+	// (hostproc.Check, at New and at each scan).
+	HostProc hostproc.Reason
 	// Cgroup is the container's memory cgroup directory, "/sys/fs/cgroup/memory" when empty.
 	Cgroup string
 	// Classify says which processes are protected and whose they are; nil protects nothing but
@@ -247,6 +252,7 @@ type Guard struct {
 	// killWriter is the guard's id, its log, its sink and its count of kills (writeKill).
 	killWriter
 	proc     string
+	hostProc hostproc.Reason
 	classify Classifier
 	clock    Clock
 	signal   Signaler
@@ -304,13 +310,17 @@ type Guard struct {
 	scanMemfds map[memfdID]bool
 }
 
-// New is a guard of cfg, at the default settings and on, with an id of its own.
+// New is a guard of cfg, at the default settings and on, with an id of its own. In a test, a guard
+// whose Proc resolves to a /proc of the machine and that carries no HostProc ends the test binary
+// here, before it reads anything there (hostproc.Check).
 func New(cfg Config) *Guard {
 	proc := cmp.Or(cfg.Proc, "/proc")
+	hostproc.Check("the memory guard", proc, cfg.HostProc)
 	cgroup := cmp.Or(cfg.Cgroup, "/sys/fs/cgroup/memory")
 	g := &Guard{
 		killWriter:   newKillWriter(cfg.Logf, cfg.Sink),
 		proc:         proc,
+		hostProc:     cfg.HostProc,
 		classify:     cfg.Classify,
 		clock:        cfg.Clock,
 		signal:       cfg.Signal,
@@ -671,7 +681,7 @@ type assessment struct {
 // alike. The processes it may end are the only ones whose files it reads, so they alone are the
 // holders and the mappers of memfds among which a memfd counts once (addHeldMemfds).
 func (g *Guard) assess() (assessment, error) {
-	t, err := scan(g.proc)
+	t, err := scan(g.proc, g.hostProc)
 	if err != nil {
 		return assessment{}, err
 	}
@@ -921,7 +931,7 @@ func (g *Guard) takeScan() {
 func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
-	if t, err := scan(g.proc); err == nil {
+	if t, err := scan(g.proc, g.hostProc); err == nil {
 		classes := g.classes(t)
 		clear(g.scanMemfds)
 		read := make([]candidate, 0, len(t.byPID))

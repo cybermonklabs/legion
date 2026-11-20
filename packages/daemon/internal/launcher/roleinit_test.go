@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -106,13 +109,17 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	// The detached process sleeps for Detached seconds, and the stage looks for that number on the
+	// machine's /proc (detachedProcess). It is a number drawn at random for this run
+	// (detachedMarker), so a detached sleep of another run on the same machine is never taken for
+	// this run's.
+	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: detachedMarker(t)}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stage := exec.Command(self, "-test.run=^TestRoleInitStageHelper$")
-	stage.Env = append(os.Environ(), roleInitStageEnv+"="+string(encoded))
+	stage.Env = append(os.Environ(), roleInitStageEnv+"="+string(encoded), hostproc.ChildEnv(t))
 	// The stage's own IPC namespace, as a container's, so the message queue it makes to stand for
 	// the container's lands in no namespace of the machine's.
 	stage.SysProcAttr = &syscall.SysProcAttr{
@@ -599,21 +606,33 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 	return nil
 }
 
+// detachedMarker is the number a role's detached process sleeps for, the marker detachedProcess
+// looks for: a 9 and ten digits drawn at random for the run. A pid would not do: the machine's
+// /proc lists the processes of nested PID namespaces too, where a pid of this test's is another
+// process's, and under .github/scripts/private_proc.py every run's test process has the same pid.
+func detachedMarker(t *testing.T) string {
+	t.Helper()
+	n, err := rand.Int(rand.Reader, big.NewInt(1e10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("9%010d", n)
+}
+
 // detachedProcess says whether any process of the machine still runs the detached command the
 // role started, once the role's init has exited.
 func detachedProcess(marker string) string {
 	var unreadable string
+	reason := hostproc.Because("the role's PID namespace ends with its init, so only the machine's /proc can show a process " +
+		"of it left behind, and marker is a number drawn at random for the run (detachedMarker), which no process the test did not start names")
 	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-		entries, err := os.ReadDir("/proc")
+		pids, err := hostproc.PIDs("detachedProcess", "/proc", reason)
 		if err != nil {
 			unreadable = "unreadable: " + err.Error()
 			return true
 		}
-		for _, entry := range entries {
-			if _, err := strconv.Atoi(entry.Name()); err != nil {
-				continue
-			}
-			body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		for _, pid := range pids {
+			body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 			if err == nil && strings.Contains(string(body), marker) {
 				return false
 			}
@@ -915,7 +934,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := exec.Command(self, "-test.run=^TestTheUncoverProbeReportsAnUnlockedCoverRemoved$")
-	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir())
+	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir(), hostproc.ChildEnv(t))
 	control.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
@@ -946,17 +965,12 @@ const uncoverControlEnv = "LEGION_ROLE_INIT_TEST_UNCOVER"
 
 // processes is how many processes the role can see.
 func processes() int {
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("processes", "/proc", hostproc.Because("it runs inside the role's namespaces, where /proc is "+
+		"the role's own (role-init mounts it), and what it counts is what the role sees"))
 	if err != nil {
 		return -1
 	}
-	count := 0
-	for _, entry := range entries {
-		if _, err := strconv.Atoi(entry.Name()); err == nil {
-			count++
-		}
-	}
-	return count
+	return len(pids)
 }
 
 func signalOutside(pid int) string {
@@ -1068,7 +1082,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := exec.Command(self, "-test.run=^TestTheRoleNamespaceCheckRunsARoleGeneration$")
-	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t))
+	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t), hostproc.ChildEnv(t))
 	check.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
@@ -1548,7 +1562,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 		t.Fatal(err)
 	}
 	stage := exec.Command(self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
-	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
+	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded), hostproc.ChildEnv(t))
 	stage.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},

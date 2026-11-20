@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc/hostproctest"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -24,11 +25,23 @@ import (
 // trimmer at all; a test of the guard stands its process in for PID 1, and points the guard at a
 // pod of its own (useGuardPod), and a test of the sweep and one of the trimmer as the launcher
 // runs it do the same (useSweepingLauncher, useLauncherTrimmer).
+//
+// A launcher that takes its process for the container's first reads the container's /proc three
+// times over: the memory guard reads the pod each caller gives it, the git lock sweep reads the
+// /proc this gives it, one whose only process is the test's (useGitLockProc), and the cache
+// trimmer reads the /proc its case gives it or runs nothing (useGuardPod, useLauncherTrimmer). The
+// /proc of the machine a test runs on lists processes the test knows nothing of, and on a machine
+// several users share, a git or jj of another user is one whose open files the test cannot read,
+// which the sweep counts as a holder of every lock. A test that wants the sweep to read another
+// /proc points it there after this.
 func useContainerInit(t *testing.T, first bool) {
 	t.Helper()
 	previous := containerInit
 	containerInit = func() bool { return first }
 	t.Cleanup(func() { containerInit = previous })
+	if first {
+		useGitLockProc(t, procRoot(t, os.Getpid()))
+	}
 }
 
 const (
@@ -314,6 +327,8 @@ type guardRig struct {
 // the role of each process the test gives one, over the classifier's answer: a launcher started
 // with no role's generation has no role-init the classifier could find a role by, and what the
 // classifier answers on its own is TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace's.
+// A guest watch such a launcher builds reads pod too (useGuestOf), so neither watch reads the
+// machine's /proc.
 //
 // A launcher taken for the container's first process builds the pod's cache trimmer too
 // (serveVolumeTrim), over VolumeRoot and the machine's /proc, and an answer carrying trimmer
@@ -341,21 +356,23 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 		return guard
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
+	useGuestOf(t, rig)
 	return rig
 }
 
 // useGuestPod is useGuardPod for a microVM pod's launcher: every guest watch a launcher builds from
 // here to the test's end reads pod and its cgroup directory and waits on the rig's clock, with the
-// launcher's own classifier and sink, roles named over the classifier's answer. The launcher is
-// taken for the container's first process here too, so the pod's cache trimmer it builds is held
-// to the launcher's context and runs nothing, for useGuardPod's reason.
+// launcher's own classifier and sink, roles named over the classifier's answer. A memory guard such
+// a launcher builds reads pod too (useGuardOf), so neither watch reads the machine's /proc. The
+// launcher is taken for the container's first process here too, so the pod's cache trimmer it
+// builds is held to the launcher's context and runs nothing, for useGuardPod's reason.
 func useGuestPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	t.Helper()
 	useContainerInit(t, true)
 	previousTrimmer := podTrimmer
 	podTrimmer = func(ctx context.Context, _ *trimmer) { <-ctx.Done() }
 	t.Cleanup(func() { podTrimmer = previousTrimmer })
-	rig := &guardRig{t: t, pod: pod, clock: newGuardClock()}
+	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: &guardSignal{proc: pod.proc}}
 	previous := newGuest
 	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
 		cfg.Proc, cfg.Cgroup, cfg.Clock = pod.proc, pod.cgroup, rig.clock
@@ -367,7 +384,75 @@ func useGuestPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 		return guest
 	}
 	t.Cleanup(func() { newGuest = previous })
+	useGuardOf(t, rig)
 	return rig
+}
+
+// useGuestOf has every guest watch a launcher builds from here to the test's end read rig's pod and
+// wait on its clock, through the builder the test had before (a test that wants none built keeps
+// the builder that fails it). A guard pod's launcher runs no guest watch; this is so the branch it
+// does not run reads no other /proc than the pod's either.
+func useGuestOf(t *testing.T, rig *guardRig) {
+	t.Helper()
+	previous := newGuest
+	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
+		cfg.Proc, cfg.Cgroup, cfg.Clock = rig.pod.proc, rig.pod.cgroup, rig.clock
+		return previous(cfg)
+	}
+	t.Cleanup(func() { newGuest = previous })
+}
+
+// useGuardOf is useGuestOf for the memory guard a microVM pod's launcher does not build: through
+// the builder the test had before, every guard reads rig's pod, waits on its clock and kills with
+// its signal.
+func useGuardOf(t *testing.T, rig *guardRig) {
+	t.Helper()
+	previous := newMemoryGuard
+	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+		cfg.Proc, cfg.Cgroup, cfg.Clock, cfg.Signal = rig.pod.proc, rig.pod.cgroup, rig.clock, rig.signal
+		return previous(cfg)
+	}
+	t.Cleanup(func() { newMemoryGuard = previous })
+}
+
+// The watch a rig's launcher does not build reads the rig's pod too: a guard pod's guest watch
+// (useGuestOf) and a microVM pod's memory guard (useGuardOf). No launcher of either pod builds that
+// watch, so this calls each builder as the launcher would, with a Config that names no /proc, in a
+// child of its own: a builder that gave its watch no pod would build one over the machine's /proc,
+// which the watch's construction refuses (hostproc.Check), and the refusal ends the child. A
+// builder that gave it another root of the test's (the pod's cgroup directory) passes that check,
+// so the child also reads the Config the watch was built with, beneath the rig's builder, and holds
+// it to the pod's own /proc and cgroup.
+func TestTheWatchARigsLauncherDoesNotBuildReadsItsPodToo(t *testing.T) {
+	discard := func(string, ...any) {}
+	t.Run("the guest watch of a guard pod", func(t *testing.T) {
+		hostproctest.Allowed(t, func() {
+			var built memoryguard.GuestConfig
+			previous := newGuest
+			newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest { built = cfg; return previous(cfg) }
+			t.Cleanup(func() { newGuest = previous })
+			pod := newGuardPod(t)
+			useGuardPod(t, pod, nil)
+			_ = newGuest(memoryguard.GuestConfig{Logf: discard})
+			if built.Proc != pod.proc || built.Cgroup != pod.cgroup {
+				t.Fatalf("the guest watch was built over /proc %q and cgroup %q, want the pod's %q and %q", built.Proc, built.Cgroup, pod.proc, pod.cgroup)
+			}
+		})
+	})
+	t.Run("the memory guard of a microVM pod", func(t *testing.T) {
+		hostproctest.Allowed(t, func() {
+			var built memoryguard.Config
+			previous := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard { built = cfg; return previous(cfg) }
+			t.Cleanup(func() { newMemoryGuard = previous })
+			pod := newGuardPod(t)
+			useGuestPod(t, pod, nil)
+			_ = newMemoryGuard(memoryguard.Config{Logf: discard})
+			if built.Proc != pod.proc || built.Cgroup != pod.cgroup {
+				t.Fatalf("the memory guard was built over /proc %q and cgroup %q, want the pod's %q and %q", built.Proc, built.Cgroup, pod.proc, pod.cgroup)
+			}
+		})
+	})
 }
 
 // withRoles is classify with the role roles names for a pid put over its answer for that pid.

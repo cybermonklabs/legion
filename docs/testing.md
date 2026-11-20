@@ -674,6 +674,56 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
   Isolated keeps no test input either, so a fixture that needs one appends it after.
 
+## A test that lists the machine's /proc
+
+The machine's `/proc` lists every process of every user on it, so a test that judges by what it finds there passes or fails by what else runs on the machine.
+The launcher's git lock sweep keeps every lock while a git or jj runs whose open files it cannot read, and two of its tests failed on a dev box several users share while they passed in CI, until each test's sweep read a `/proc` of its own.
+
+Two things hold a test of `packages/daemon` off the machine's processes, one at each scanner and one around every test binary.
+
+- Each scanner of the module that lists a `/proc` checks the root it resolved (`packages/daemon/internal/hostproc`): the launcher's git lock sweep, its reaper and the cache trimmer's used-path read, role-init's reaper, the memory guard, its guest watch and their common scan, the repo cache's reaper, and every test helper that lists processes itself.
+  In a test binary, a scanner whose root is a mount of proc ends the binary with exit 86 and its stack, from whatever goroutine reaches it, unless the test gave that scanner a root of its own or a reason.
+  What counts is the mount, not the path's spelling: `/proc`, `/proc/`, `/proc/self/..` and a link to `/proc` are the machine's alike.
+  Outside a test binary the check does nothing: a launcher in a pod reads its container's `/proc` because that is its job.
+- A root of the test's own is a directory of links to the processes the test started (the launcher's `procRoot`), a directory the test wrote (`blindProc`), or a fake pod (`packages/daemon/internal/memoryguard`'s `fakePod`).
+  The launcher's builders take the package's `gitLockProc` and the pod a test points `newMemoryGuard` and `newGuest` at when they build, so a default changed after a sweep is built changes nothing of that sweep.
+- A test that needs the machine's own `/proc` gives that one scanner a reason, `hostproc.Because("<why>")`: it takes only a child of a process the test started, for example.
+  A reason belongs to the scanner it is given to, and no switch lets a test or a process read the machine's `/proc` everywhere.
+  The `/proc` of a PID namespace whose first process is the test's own process (`runAsPIDOne`, role-init in a role's namespaces) needs no reason: every process it lists is one that process or its children started.
+- CI runs every test binary of the module through `.github/scripts/private_proc.py`, which runs it beneath a supervisor at PID 1 of a PID and mount namespace of its own, whose new `/proc` lists that binary's processes and none of the runner's: the daemon steps of `ci.yaml`'s jobs, and the drivers of `e2e.yaml`'s proofs, which `scripts/e2e/lib/live-daemon-proof.sh`'s `proof` check runs through it.
+  That holds the routes no scanner sees: a raw read of the directory, `os.DirFS`, a joined glob, an opened directory handed to a helper, and a program such as `pgrep`.
+  It holds what a test can list and read of other processes, and nothing more: the test binary shares its process group and session with `go`, the wrapper and the shell that started them, so a signal a test sends its own process group (`kill(0, …)`) reaches them, as on any machine.
+- The wrapper makes each namespace the way a Legion pod's launcher starts a role (`legion launcher role-init`): as an unprivileged user namespace (`unshare --user --map-root-user`), where the binary is the user's uid and gid again through a user namespace of its own, so it needs no `sudo` where the kernel lets a user make one, as a Legion pod's does.
+  Where the kernel refuses that (GitHub's Ubuntu 24.04 runners do, under AppArmor, unless a job lifts the restriction), it makes the namespace with `sudo -n unshare` and starts the binary as the user, and where neither works it refuses the command, naming both reasons, and runs no test.
+  `--sudo` takes the sudo route alone and refuses, naming sudo's reason, where `sudo -n` does not answer: daemon-go's three steps pass it, since that job lifts the restriction for the launcher's role tests, and inside a user namespace `sudo` cannot make a process root, which the hostile row below and `runAsPIDOne`'s tests need.
+  Those rows run in CI alone; on a dev box they skip, or fail by name.
+  A namespace that cannot be made fails the step, with no run on the runner's `/proc` instead.
+  `--check [--sudo]` says which way the command would take, or why neither can.
+- `check-ci-filters.sh` refuses a daemon test binary run outside the wrapper in a workflow of the router (its rule 22), in every form it reads: a `go test` whose packages, read from the directory the command runs in, name the daemon module's (a relative pattern, `./...` from the root, whose `go.work` holds the module, or the module's import path; a package it cannot read, a variable among them, is refused too, where the workspace that governs the directory holds the daemon), a go given by its path or by a variable, and a test binary run by any command that is no reader of names, behind any runner (`timeout`, `setsid`, `nohup`, `bash -c`, …), unless a `go test -c` of the step built it from another module.
+  It reads a step's script as bash reads its lines, a line ending in `\` going on to the next, and each command of a line on its own, split at `&&`, `||`, `;`, `|` and `&`, past the words bash reads before a command (`if`, `then`, `do`, `{`, `}`, `!`, …).
+  It reads every go of a command, so a `go env` before a `go test` (`$(go env GOROOT)/bin/go test`) hides nothing, and it reads a go command's words as the wrapper does (`private_proc.py`'s `read_go_args`).
+  A word of a command that holds a blank or a separator is a script the command may run (`bash -c '…'`, `sh -ec "…"`, `eval "…"`, `su -c '…'`, `flock lock -c '…'`, behind any runner), and the rule reads it as a script of its own, in the directory that command runs in, unless the command only reads names (`echo`, `printf`, …).
+  It follows the directory each command runs in, from the step's working directory through each `cd` and `pushd` (options aside), `popd`, the end of a subshell, a command's `env -C` and its go's `-C`, and keeps no `cd` of a pipeline, a background command or a script a command runs; after a `cd` to a directory named by anything but a plain path, a go test there is refused.
+  It cannot read what no text of the workflow shows: a script a workflow runs from a file of its own, which is why the e2e proofs enroll their driver in `live-daemon-proof.sh` itself, and a command a variable holds.
+  Run a package the same way by hand from `packages/daemon`: `../../.github/scripts/private_proc.py go test ./internal/launcher/`.
+- In CI a test binary holds the rest itself: one that links `internal/hostproc` and starts with `GITHUB_ACTIONS=true` and no wrapper record (`HOSTPROC_RECORD` unset) ends before any of its tests runs, with exit 86 and a line that names it (`hostproc: refused: <binary> is a test binary that links internal/hostproc, started in CI …`), however it was started.
+  A failed test ends a test binary with 1, and a panic, a test's timeout or a fatal error of the runtime with 2, and no other code of the module ends one with 86, so the status is this refusal's or a scanner's.
+  A binary that only lists its tests (`-test.list`) passes, a child a test starts of its binary inherits the record, and outside CI nothing changes.
+  A test binary of a package that links no `internal/hostproc` is held by rule 22 alone.
+- Each test binary the wrapper runs records every scan its scanners make (`hostproc.RecordEnv`): the test that made it, the scanner, the root, and whether that root was the test's own, a mount of proc read by a reason, or refused.
+  The test is the top-level test up the chain of goroutines that started the scanning one; the answer is kept for every goroutine of that chain, so a loop whose first scan comes as its test's cleanup stops it is named through the scan that built its scanner.
+  A test that runs its own test binary again as a child (a helper, role-init, a stage) gives it `hostproc.ChildEnv(t)`, and every scan the child makes is recorded with that test: the helper the child runs is no test the command ran.
+  `TestMain` names no scan.
+- After the command the wrapper prints, package by package, the tests that read a process table, each with the roots it read (`own` or `host`), and says of a package whose tests read none, or whose binary links no scanner, which it was.
+  The list is of the tests that ran in that step, since a test that does not run reads nothing: a step that runs one test lists that test alone, and a test no step runs is on no list.
+  The wrapper prints `UNKNOWN: <reason>` and fails the step where it read nothing it could judge by: the command's packages cannot be listed or hold no test file, no test binary ran in a namespace of its own, a package with tests ran in none while the others did, a binary that links `internal/hostproc` recorded nothing, or a scan's test could not be named (a child no test named with `ChildEnv`, or a scan no goroutine of a running test started).
+- `TestTheOriginalConditionsLeaveTheLaunchersOwnRootAndTheUnreadableGitRule` (`packages/daemon/internal/launcher`) makes the conditions the sweep failed under: a real git of another user, visible, its comm exactly `git`, its open files unreadable to the test's user, each shown from that user.
+  Under them the original test passes with its own root, and a sweep given the namespace's `/proc` with a reason keeps a planted lock for the unreadable git.
+  It finds that git as a descendant of the sudo it starts, in a terminal too, where Ubuntu's `use_pty` puts a second sudo between them.
+
+The limit of this design: it checks the paths a test runs.
+A listing no test reaches is checked the first time one does, and nothing lists the paths no test runs.
+
 ## Containers a test starts
 
 Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its

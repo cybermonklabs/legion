@@ -9,12 +9,15 @@
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE runs four checks, each printing `== <check>`, what it
+# live_daemon_proof LABEL SLUG TEST EVIDENCE runs three checks, each printing `== <check>`, what it
 # observed and `ok <check> (<s>s)`; the first that fails prints `FAIL <check>: <why>` and ends the
 # run non-zero. Exit 2 is an input of the caller's the run refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
-# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, and a
-# nats-server: LEGION_E2E_NATS_BIN's, or the pinned one installed with `go install`. It refuses
+# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, a way
+# for .github/scripts/private_proc.py to make the driver's namespace (an unprivileged user
+# namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that: the wrapper's
+# --check), and a nats-server: LEGION_E2E_NATS_BIN's, or the pinned
+# one installed with `go install`. It refuses
 # two inputs with exit 2, before the driver is built and before the broker starts: a
 # LEGION_TEST_PG_DSN that is unset, and one whose host is not loopback, which
 # lib/loopback-dsn.sh's require_loopback_dsn reads. Exit 2 covers one fault of the host as well:
@@ -23,15 +26,21 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed.
+# nats-server with JetStream on a port the kernel picks. proof builds the daemon package's
+# `-tags e2e` test binary, the driver, and runs its one test TEST against them, in one go test
+# through .github/scripts/private_proc.py as CI runs every daemon test binary: go runs the driver
+# beneath a supervisor at PID 1 of a PID and mount namespace of its own, whose /proc lists the
+# driver's processes and none of the machine's, and a driver that does not build fails proof. The
+# wrapper is this checkout's, the one beside this file, whatever root the caller set. proof holds
+# that the test passed.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
-# when it is unset), which holds the broker's store and the driver binary SLUG.test and is removed
+# when it is unset), which holds the broker's store and go's build of the driver, and is removed
 # on any exit, and the evidence directory legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the
 # directory the caller named, is empty. The evidence directory is kept and printed; it holds the
 # transcript (lib/transcript.sh), the nats-server's log, the daemon's own, which the driver writes
-# through LEGION_E2E_DAEMON_LOG, and the driver's output. On any exit the nats-server is stopped and
+# through LEGION_E2E_DAEMON_LOG, and the driver's output with the wrapper's. On any exit the
+# nats-server is stopped and
 # the run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after
 # <n>s (evidence: <dir>)` on stderr.
 
@@ -46,10 +55,11 @@
 # with exit 1 and a FAIL line of its own, before the run builds or starts anything: that CLI is
 # this checkout's (packages/envoy-client/bin/dispatch.ts), which runs under bun out of the
 # checkout's node_modules. It then exports LEGION_E2E_REPO_ROOT, the checkout the driver builds
-# Dispatch from and runs the CLI out of, which the driver binary needs because it runs from the
-# directory the caller ran the entry script in, not the package's. An entry script whose driver
-# drives the CLI calls it after sourcing this file and before live_daemon_proof, so the refusal
-# comes before the run's own checks.
+# Dispatch from and runs the CLI out of. The driver runs in its package's directory, where go test
+# runs a test binary, and reads the checkout from that variable (internal/testbuild's RootEnv)
+# rather than from the directory it runs in. An entry script whose driver drives the CLI calls it
+# after sourcing this file and before live_daemon_proof, so the refusal comes before the run's own
+# checks.
 require_dispatch_cli() {
   command -v bun >/dev/null || {
     echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
@@ -67,12 +77,16 @@ require_dispatch_cli() {
 # (packages/envoy/natsversion).
 nats_version=v2.15.1
 
+# The wrapper proof runs the driver through, read beside this file when it is sourced rather than
+# under root: busy-relaunch-delivery.sh's negative control sets root to a `git archive` of a commit
+# that may predate it.
+proof_wrapper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/scripts/private_proc.py"
+
 # The run's state, global rather than live_daemon_proof's own because cleanup reads it from the
 # EXIT trap, after live_daemon_proof has returned.
 proof_label=''
 evidence=''
 work=''
-driver=''
 nats_pid=''
 port_nats=''
 check=setup
@@ -109,7 +123,6 @@ live_daemon_proof() {
   transcript_to "$evidence/transcript.log"
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug.$$.XXXXXXXX")
-  driver=$work/$slug.test
   started=$SECONDS
   check_started=$SECONDS
   trap cleanup EXIT
@@ -120,6 +133,14 @@ live_daemon_proof() {
   for tool in go awk python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
+  [ -x "$proof_wrapper" ] || fail "no executable $proof_wrapper, which the proof runs its driver through"
+  # The wrapper makes the driver's PID and mount namespace as an unprivileged user namespace where
+  # the kernel allows one, as a Legion pod's does, and with `sudo -n` where it refuses one; --check
+  # says which, or why neither can, before anything is built or started.
+  local namespace
+  namespace=$("$proof_wrapper" --check 2>&1) ||
+    fail "the driver cannot have a /proc of its own, which the proof runs it in: ${namespace#private-proc: }"
+  note "${namespace#private-proc: }"
   # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
   # these three, and why the call comes after the tool check above.
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
@@ -165,22 +186,20 @@ live_daemon_proof() {
   note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
   pass
 
-  begin driver
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$driver" ./internal/daemon ||
-    fail "the driver did not build"
-  note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
-  pass
-
   begin proof
-  # The driver's steps print their own `== <name>` / `ok <name>` pair between this check's, so the
-  # run's checks and the proof's read alike. The daemon's own log goes to the evidence directory
-  # rather than into them.
-  LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
-    LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
-    TMPDIR="$work" \
-    "$driver" -test.count=1 -test.timeout=20m -test.v \
-    -test.run "^$test_name\$" 2>&1 | tee "$evidence/proof.log" ||
-    fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
+  # go test builds the driver and runs it in its package's directory, beneath the wrapper's
+  # supervisor, so a driver that does not build fails this check. The driver's steps print their
+  # own `== <name>` / `ok <name>` pair between this check's, so the run's checks and the proof's
+  # read alike. The daemon's own log goes to the evidence directory rather than into them. The
+  # wrapper's own lines (`private-proc: ...`: the way it made the namespace, the tests that read a
+  # process table, and how many binaries ran in a namespace of their own) end the proof's log.
+  (cd "$root/packages/daemon" &&
+    LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
+      LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
+      TMPDIR="$work" \
+      "$proof_wrapper" go test -tags e2e -count=1 -timeout 20m -v \
+      -run "^$test_name\$" ./internal/daemon) 2>&1 | tee "$evidence/proof.log" ||
+    fail "the proof's driver did not build, or failed; see $evidence/proof.log and $evidence/daemon.log"
   # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.
   grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
     fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"

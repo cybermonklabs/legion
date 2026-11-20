@@ -59,8 +59,9 @@ command -v bun >/dev/null || {
   echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
   exit 1
 }
-# The driver binary runs from this directory, not the package's, so it is told the checkout it
-# builds Dispatch from and runs the CLI out of.
+# The driver binary runs in its package's directory, where go test runs a test binary, and reads
+# the checkout it builds Dispatch from and runs the CLI out of from this variable
+# (internal/testbuild's RootEnv).
 export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"

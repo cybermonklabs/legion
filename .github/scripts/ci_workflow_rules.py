@@ -24,11 +24,15 @@ and imports the engine's names for the two workflow files, the repository root, 
 main's ruleset requires, the reader of a job's `uses:` and the three
 helpers that read an `if:`, and the path model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
-a module Python has finished loading by then.
+a module Python has finished loading by then. Rule 22 reads a go command's words with
+private_proc.py's read_go_args, the wrapper's own reader of them, and the words bash reads before a
+command with shell_commands.py's SKIP_WORDS, both beside it.
 """
 
 import json
+import posixpath
 import re
+import shlex
 from collections import defaultdict
 from functools import cache
 
@@ -46,8 +50,11 @@ from ci_filter_coverage import (
     read_repository_text,
     script_lines,
     squash,
+    step_workdir,
     where_if,
 )
+from private_proc import FALSE, VALUE_FLAGS, read_go_args
+from shell_commands import SKIP_WORDS
 from workflow_paths import events
 
 
@@ -535,3 +542,416 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+
+
+# ------------------------------------------------- every daemon test binary in a /proc of its own
+# The module whose test binaries CI runs in a PID namespace of their own, and the wrapper that puts
+# them there, as a step writes it from that module's directory, with its own options, which come
+# before the go command it runs.
+DAEMON_MODULE = "packages/daemon"
+PRIVATE_PROC = ".github/scripts/private_proc.py"
+PRIVATE_PROC_OPTIONS = frozenset({"--sudo"})
+# Each separator of a script line this rule follows: bash's &&, ||, ;, | and &, and the
+# parentheses of a subshell. shell_commands reads a line into quote-aware words first (shlex), so
+# a `|` inside a quoted -run selector stays a word rather than a pipeline separator, and splits
+# each punctuation word shlex makes, such as `);` or `&&`, into its separators with this pattern
+# alone: a punctuation word it does not split whole is a word of a command. A command
+# substitution's `$(` and the `)` that closes it are read as spaces, so a go test it runs is read
+# as a command too.
+SEPARATOR = re.compile(r"(&&|\|\||[;|&()])")
+# The words bash reads before a command and runs nothing for (`if`, `then`, `do`, `{`, `}`, `!`,
+# `exec`, `time`, ...), as shell_commands.py lists them for check-release-credentials.sh, so a cd
+# after one moves the directory as a cd alone does. env stays a word of the command: it is a runner
+# whose `-C` this rule follows (env_directory).
+SHELL_KEYWORDS = SKIP_WORDS - {"env"}
+# The commands that read a test binary's name without running it. Any other command that names
+# one, however it takes its options (env, timeout, setsid, stdbuf, nohup, bash -c, ...), runs it.
+NAME_READERS = frozenset({"rm", "cp", "mv", "ls", "ln", "chmod", "chown", "mkdir", "touch", "cat", "file", "stat",
+                          "du", "test", "[", "[[", "echo", "printf", "tee", "install", "readlink", "realpath",
+                          "basename", "dirname", "wc", "sha256sum"})
+# The characters a word holds when it is a script a command runs (`bash -c '…'`, `eval "…"`,
+# `su -c '…'`, `flock lock -c '…'`): a blank or a separator, which a quoted word alone can hold.
+SCRIPT_CHARACTERS = set(" \t\n;&|()")
+# A directory a script names by anything but a plain path: a variable, a substitution, a home, a glob.
+NOT_PLAIN = set("$`~*?[{")
+UNKNOWN_DIRECTORY = "a directory a cd made unknown"
+
+
+def in_daemon_module(directory: str) -> bool:
+    return directory == DAEMON_MODULE or directory.startswith(DAEMON_MODULE + "/")
+
+
+@cache
+def workspace_modules(directory: str) -> frozenset | None:
+    """The module directories the go.work that governs directory uses, read from the repository:
+    go's own lookup, the nearest go.work from directory up to the root; None when none does."""
+    path = posixpath.normpath(directory)
+    while not path.startswith(".."):
+        work = REPO / path / "go.work"
+        if work.is_file():
+            uses, block = set(), False
+            for line in read_repository_text(work).splitlines():
+                words = line.split("//", 1)[0].split()
+                if words[:2] == ["use", "("]:
+                    block = True
+                elif block and words == [")"]:
+                    block = False
+                elif block and words or words[:1] == ["use"] and len(words) == 2:
+                    uses.add(posixpath.normpath(posixpath.join(path, words[-1])))
+            return frozenset(uses)
+        if path == ".":
+            return None
+        path = posixpath.dirname(path) or "."
+    return None
+
+
+def reaches_daemon(directory: str) -> bool:
+    """Whether a go command run in directory can name a package of the daemon module: it runs in
+    that module, or the workspace that governs it uses that module. Elsewhere no package argument,
+    not even one the rule cannot read, is the daemon's: go resolves none outside its workspace."""
+    if in_daemon_module(directory):
+        return True
+    modules = workspace_modules(directory)
+    return modules is not None and DAEMON_MODULE in modules
+
+
+@cache
+def daemon_import_path() -> str:
+    """The daemon module's path, as its go.mod names it; "" in a tree with no such module, where no
+    import path names it."""
+    go_mod = REPO / DAEMON_MODULE / "go.mod"
+    if not go_mod.is_file():
+        return ""
+    for line in read_repository_text(go_mod).splitlines():
+        if line.startswith("module "):
+            return line.split()[1]
+    return ""
+
+
+def moved(directory: str | None, target: str) -> str | None:
+    """directory moved to target, a plain path; None for an unknown directory or target."""
+    if directory is None or not target or target == "-" or set(target) & NOT_PLAIN:
+        return None
+    return posixpath.normpath(posixpath.join(directory, target))
+
+
+def without_substitutions(text: str) -> str:
+    """text with each `$(` and the `)` that closes it read as spaces, so the command a substitution
+    runs is read as words of the command it stands in."""
+    out, depth, opened = [], 0, []
+    index = 0
+    while index < len(text):
+        if text.startswith("$(", index):
+            opened.append(depth)
+            depth += 1
+            out.append("  ")
+            index += 2
+            continue
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if opened and opened[-1] == depth:
+                opened.pop()
+                char = " "
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def shell_commands(text: str) -> list[str | list[str]]:
+    """text split into its commands, each the list of its words, and the separators between them,
+    each a string SEPARATOR names. shlex keeps a quoted word whole, so `go test -run 'Test|Example'
+    ../daemon` is one command rather than two split at the selector's `|`, and the script of `bash
+    -c 'go vet ./... && go test ./...'` is one word of its command, which script_commands reads as
+    a script of its own; punctuation_chars holds only the shell separators this rule follows."""
+    try:
+        lexer = shlex.shlex(without_substitutions(text), posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split, lexer.commenters = True, ""
+        words = list(lexer)
+    except ValueError:
+        # A script Bash itself cannot parse runs no test. Read its words whole here rather than
+        # pretend an unquoted punctuation character made commands it did not.
+        return [text.split()] if text.strip() else []
+    commands: list[str | list[str]] = []
+    words_of_one: list[str] = []
+    for word in words:
+        separators = shell_separators(word)
+        if separators is None:
+            words_of_one.append(word)
+            continue
+        if words_of_one:
+            commands.append(words_of_one)
+            words_of_one = []
+        commands.extend(separators)
+    if words_of_one:
+        commands.append(words_of_one)
+    return commands
+
+
+def shell_separators(word: str) -> list[str] | None:
+    """The separators of one shlex punctuation word, as SEPARATOR splits it, or None when word is
+    no punctuation word or SEPARATOR does not split the whole of it. shlex returns a run such as
+    `);` as one word, while Bash executes its close and its next-command separator apart."""
+    if not word or set(word) - set(";&|()"):
+        return None
+    separated = SEPARATOR.findall(word)
+    return separated if "".join(separated) == word else None
+
+
+def names_daemon(directory: str, package: str) -> bool | None:
+    """Whether a package argument of a go test run in directory names a package of the daemon
+    module; None when the rule cannot read it (a variable, a substitution, an absolute path, which
+    is the runner's checkout). A relative pattern is read from directory, and one ending in `/...`
+    or `...` takes every package below it, so `./...` from the repository root, whose go.work holds
+    the daemon module, names it; an import path names it by the module's path (`all` among them,
+    which names every package of the workspace)."""
+    if set(package) & set("$`") or package.startswith("/"):
+        return None
+    if package in ("std", "cmd"):
+        return False
+    if package == "all":
+        return True
+    head, dots, _ = package.partition("...")
+    if package.startswith("."):
+        base = posixpath.normpath(posixpath.join(directory, head or "."))
+        if not dots:
+            return in_daemon_module(base)
+        if not head or head.endswith("/") or head in (".", ".."):
+            return in_daemon_module(base) or base == "." or DAEMON_MODULE.startswith(base + "/")
+        return in_daemon_module(base) or DAEMON_MODULE.startswith(base)
+    module = daemon_import_path()
+    if not module:
+        return False
+    if not dots:
+        return package == module or package.startswith(module + "/")
+    return module.startswith(head) or head.startswith(module + "/")
+
+
+def go_test_packages(args: list[str], value_flags: frozenset = VALUE_FLAGS) -> tuple[list[str], bool, bool, list[str]]:
+    """The package arguments of a go test's words after its subcommand, as read_go_args reads them
+    (private_proc.py's reader, the wrapper's own), whether it builds with -c or lists with -list and
+    so runs no test, and its -o."""
+    flags, packages = read_go_args(args, value_flags)
+    builds = any(name == "-c" and value not in FALSE for name, value, _ in flags)
+    lists = any(name == "-list" for name, _, _ in flags)
+    return packages, builds, lists, [value or "" for name, value, _ in flags if name == "-o"]
+
+
+# go list's flags whose value is the next word, beside the build flags go test shares with it.
+GO_LIST_VALUE_FLAGS = VALUE_FLAGS | {"-f"}
+# go's subcommands that run no test binary, so a command of one runs none here.
+GO_RUNS_NO_TEST = frozenset({"build", "vet", "list", "mod", "env", "version", "fmt", "install", "work", "doc", "clean"})
+
+
+def is_go(word: str) -> bool:
+    """Whether a word runs go: one whose base name is go (a path to it), or a variable that may
+    hold it (`"$GO"`, `$GOROOT/bin/go`)."""
+    return posixpath.basename(word) == "go" or word.startswith("$")
+
+
+def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
+    """Every go test of packages/daemon that ci.yaml or a workflow it calls runs goes through
+    private_proc.py, which runs each test binary beneath a supervisor at PID 1 of a PID and mount
+    namespace of its own, with a new /proc that lists none of the runner's processes, and fails the
+    step when a package with tests ran in none. A step that runs one outside it runs the module's
+    tests on the runner's /proc, where nothing refuses a listing no scanner of the module sees: a
+    raw read of the directory, a glob, a program such as pgrep. Nothing fails then; the tests pass on
+    a runner whose processes happen to be harmless and fail on a machine several users share
+    (docs/testing.md, "A test that lists the machine's /proc").
+
+    It reads a step's script as bash does lines (a line that ends in `\\` goes on to the next), and
+    each command of a line on its own (shell_commands, SEPARATOR), past the words bash reads before
+    a command (SHELL_KEYWORDS: `if`, `then`, `do`, `{`, `}`, `!`, ...). A word of a command that
+    holds a blank or a separator is a script that command may run (`bash -c '…'`, `sh -ec "…"`,
+    `eval "…"`, `su -c '…'`, `flock lock -c '…'`, behind any runner), and is read as a script of
+    its own, in the directory the command runs in, unless the command only reads names
+    (NAME_READERS: `echo`, `printf`, ...). It follows the directory each command runs in: the
+    step's working directory (step_workdir), moved by each `cd` and `pushd` of the script before
+    it, their options aside, put back by `popd` and at the end of a subshell, and not moved by a `cd`
+    of a pipeline or a background command, which runs in a subshell of its own, or of a script a
+    command runs, which runs in a shell of its own; then by the command's own `env -C` (or
+    `--chdir`) and its go's `-C`. A go is any word whose base name is `go` or a variable, and every
+    go of a command is read, so a `go env` before a `go test` (`$(go env GOROOT)/bin/go test`) hides
+    nothing. A `go test` whose words hold `-c` or `-list` builds or lists and runs no test; any other
+    is judged by the packages it names (go_test_packages), each read from its directory
+    (names_daemon), and by the packages `go list` feeds it through `xargs`. A test binary run by a
+    command that is no reader of names, whatever runner it is behind, is refused unless a `go test
+    -c` of the same step built it from another module, and so is a command that gives a word
+    `-test.` flags with no test binary named, since the rule cannot place either. After a `cd` to a
+    directory the script names by anything but a plain path the directory is unknown, and a go test
+    there is refused, for the reason a step outside the module cannot say it is outside; so is a
+    package the rule cannot read. The documents are ci.yaml and every workflow its jobs call, keyed
+    by repository-relative path. What no text shows the rule cannot read: a script a workflow runs
+    from a file of its own (scripts/e2e's proofs enroll their drivers in the wrapper themselves:
+    live-daemon-proof.sh), and a command a variable holds. internal/hostproc holds those at run
+    time: in CI it ends a test binary that has no record of the wrapper's (refuseUnwrapped)."""
+    for path, document in documents.items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                script = step.get("run")
+                if not isinstance(script, str):
+                    continue
+                for line, where in script_commands(script, step_workdir(document, job, step), {}):
+                    problems.append(error(path, f"job {job_id} step \"{step.get('name') or line}\" runs `{line}` in "
+                                                f"{where} outside {PRIVATE_PROC}: its test binaries then read the "
+                                                f"runner's /proc, where a listing no scanner of the module checks sees "
+                                                f"every process of the machine; write the go command behind the wrapper, "
+                                                f"as `../../{PRIVATE_PROC} go test …` from the module's directory"))
+
+
+def script_commands(script: str, directory: str | None, built: dict[str, bool | None]) -> list[tuple[str, str]]:
+    """Each line of script that runs a test binary of packages/daemon outside the wrapper, with
+    where it does (unwrapped_daemon_test), read as check_daemon_tests_in_private_proc says from
+    directory, where the script starts. built is the step's test binaries (unwrapped_daemon_test),
+    which a script a command of it runs shares; a line of such a script is said as the line of the
+    step that holds it."""
+    found: list[tuple[str, str]] = []
+    pushed: list[str | None] = []
+    subshells: list[str | None] = []
+    for line in script_lines(script.replace("\\\n", " ")):
+        tokens = shell_commands(line)
+        listed: list[str] | None = None
+        for at, token in enumerate(tokens):
+            if token == "(":
+                subshells.append(directory)
+                continue
+            if token == ")":
+                directory = subshells.pop() if subshells else directory
+                continue
+            if isinstance(token, str):
+                if token != "|":
+                    listed = None
+                continue
+            words = token
+            while words and words[0] in SHELL_KEYWORDS:
+                words = words[1:]
+            if not words or not words[0]:
+                # Keywords alone, or a quoted empty argument, which is a word Bash passes but no
+                # command: neither moves the directory, runs a test or is a test binary.
+                continue
+            before = tokens[at - 1] if at else ""
+            after = tokens[at + 1] if at + 1 < len(tokens) else ""
+            if words[0] in ("cd", "pushd", "popd"):
+                if "|" in (before, after) or after == "&":
+                    continue
+                if words[0] == "popd":
+                    directory = pushed.pop() if pushed else None
+                    continue
+                options = 1
+                while options < len(words) and words[options].startswith("-") and words[options] != "-":
+                    options += 1
+                    if words[options - 1] == "--":
+                        break
+                if words[0] == "pushd":
+                    pushed.append(directory)
+                directory = moved(directory, words[options] if options < len(words) else "")
+                continue
+            if posixpath.basename(command_word(words)) not in NAME_READERS:
+                place = env_directory(words, directory)
+                for word in words[1:]:
+                    if set(word) & SCRIPT_CHARACTERS:
+                        found += [(line, where) for _, where in script_commands(word, place, built)]
+            where = unwrapped_daemon_test(words, directory, built, listed)
+            if words[:2] == ["go", "list"]:
+                listed = read_go_args(words[2:], GO_LIST_VALUE_FLAGS, test=False)[1] or ["."]
+            if where:
+                found.append((line, where))
+    return found
+
+
+def command_word(words: list[str]) -> str:
+    """The word a command runs: its first that is no `NAME=value` assignment."""
+    return next((w for w in words if "=" not in w or w.startswith(("-", "/", "."))), "")
+
+
+def env_directory(words: list[str], directory: str | None) -> str | None:
+    """directory moved by the command's own `env -C DIR` (`-CDIR`, `--chdir DIR`, `--chdir=DIR`)
+    or `sudo -D DIR` (`--chdir`), which run the command after them there."""
+    for at, word in enumerate(words):
+        runner = posixpath.basename(word)
+        if runner not in ("env", "sudo"):
+            continue
+        short = "-C" if runner == "env" else "-D"
+        for index in range(at + 1, len(words)):
+            option = words[index]
+            if option == short or option == "--chdir":
+                directory = moved(directory, words[index + 1] if index + 1 < len(words) else "")
+            elif option.startswith("--chdir="):
+                directory = moved(directory, option.removeprefix("--chdir="))
+            elif option.startswith(short) and len(option) > 2:
+                directory = moved(directory, option[2:])
+    return directory
+
+
+def unwrapped_daemon_test(words: list[str], directory: str | None, built: dict[str, bool | None],
+                          listed: list[str] | None) -> str:
+    """Where one command runs a test binary of packages/daemon outside the wrapper, or "", in a
+    form check_daemon_tests_in_private_proc reads. directory is where the command runs, None when a
+    cd made it unknown; built maps each test binary a `go test -c -o` of the step built, by its path
+    from the root, to whether it holds the daemon's packages, and takes this command's builds;
+    listed is the packages a `go list` before it in its pipeline printed, for an `xargs go test`."""
+    directory = env_directory(words, directory)
+    ran_go = False
+    for at, word in enumerate(words):
+        if not is_go(word):
+            continue
+        rest, place = words[at + 1:], directory
+        while rest and rest[0].startswith("-"):
+            flag = rest[0].replace("--", "-", 1)
+            if flag == "-C":
+                place, rest = moved(place, rest[1] if len(rest) > 1 else ""), rest[2:]
+            elif flag.startswith("-C="):
+                place, rest = moved(place, flag.removeprefix("-C=")), rest[1:]
+            else:
+                rest = rest[1:]
+        if rest[:1] and rest[0] in GO_RUNS_NO_TEST:
+            ran_go = True
+            continue
+        if rest[:1] != ["test"]:
+            continue
+        wrapper = at - 1
+        while wrapper >= 0 and words[wrapper] in PRIVATE_PROC_OPTIONS:
+            wrapper -= 1
+        if wrapper >= 0 and words[wrapper].endswith(PRIVATE_PROC):
+            return ""
+        packages, builds, lists, out = go_test_packages(rest[1:])
+        fed = "xargs" in (posixpath.basename(w) for w in words[:at])
+        if lists:
+            return ""
+        if place is None:
+            return "" if builds else UNKNOWN_DIRECTORY
+        reaches = reaches_daemon(place)
+        if fed and listed is None and not builds and reaches:
+            return f"{place}, whose packages xargs reads from a command the rule cannot read,"
+        packages = packages + (listed or [] if fed else []) or ["."]
+        named = [names_daemon(place, package) if reaches else False for package in packages]
+        daemon = True if True in named else None if None in named else False
+        if builds:
+            names = out or ([f"{posixpath.basename(posixpath.normpath(posixpath.join(place, packages[0])))}.test"]
+                            if len(packages) == 1 else [])
+            for name in names:
+                if name and name != "/dev/null":
+                    built[posixpath.normpath(posixpath.join(place, name))] = daemon
+            return ""
+        if daemon is None:
+            unread = next(package for package, named_it in zip(packages, named) if named_it is None)
+            return f"{place}, whose package {unread} it cannot read,"
+        if daemon:
+            return place if in_daemon_module(place) else f"{'the root' if place == '.' else place}, whose packages are the daemon's,"
+        return ""
+    if ran_go or posixpath.basename(command_word(words)) in NAME_READERS:
+        # A go that runs no test reads the words after it as its own (`go build -o launcher.test`).
+        return ""
+    placed = False
+    for word in words:
+        path = moved(directory, word) if directory is not None else None
+        if path in built or posixpath.basename(word).endswith(".test"):
+            if path in built and built[path] is False:
+                placed = True
+                continue
+            return f"{directory or UNKNOWN_DIRECTORY}, the test binary {word} run by its own name,"
+    if not placed and any(word.startswith("-test.") for word in words):
+        return f"{directory or UNKNOWN_DIRECTORY}, a test binary given -test. flags under a name it cannot read,"
+    return ""

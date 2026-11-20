@@ -1354,6 +1354,22 @@ DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
 DAEMON_PLAIN_STEP = "Test the Go daemon"
 DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]) + ")$"
 
+# Every go test of packages/daemon that CI runs goes through this wrapper, written from the
+# module's directory: it runs each test binary beneath a supervisor at PID 1 of a PID and mount
+# namespace of its own, whose new /proc lists that binary's processes and none of the runner's,
+# and fails the step when the namespace cannot be made or a package with tests ran in none
+# (docs/testing.md, "A test that lists the machine's /proc"). The wrapper runs no test of its own
+# choosing, so a step's go command behind it compiles exactly what it would compile alone, and its
+# Runs below are that command's. PRIVATE_PROC_READ is the file each such gate reads.
+PRIVATE_PROC_READ = ".github/scripts/private_proc.py"
+PRIVATE_PROC = f"../../{PRIVATE_PROC_READ}"
+# daemon-go's three steps pass --sudo: the job lifts AppArmor's restriction on unprivileged user
+# namespaces for the launcher's role tests, so without it the wrapper would make each namespace as
+# a user namespace, where sudo cannot make a process root, and the rows that run sudo themselves
+# (the hostile row's git of another user, runAsPIDOne's PID 1) fail on CI. --sudo takes the sudo
+# route alone, and changes no test the command runs.
+PRIVATE_PROC_SUDO = f"{PRIVATE_PROC} --sudo"
+
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
 # promptreferences_omp_test.go's prompt reference probe, reads no file of the repository and stays
@@ -1383,7 +1399,7 @@ PLUGIN_PACK_PACKAGE = "internal/daemon"
 PLUGIN_PACK_JOB = "plugin-pack"
 PLUGIN_PACK_STEP = "Pack the plugin releases and run the prompt probes on the real Oh My Pi"
 PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
-PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
+PLUGIN_PACK_SCRIPT = f"{PRIVATE_PROC} go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: a package moved out of the race step while the
 # pack tests stayed in it would run them twice and read the lockfile in both jobs.
@@ -1391,7 +1407,7 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
     raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
-DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
+DAEMON_RACE_SCRIPT = f"{PRIVATE_PROC_SUDO} go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
@@ -1501,7 +1517,7 @@ SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
 SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
-SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
+SUPERVISE_TABLE_SCRIPT = f"{PRIVATE_PROC} go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain step runs every package of the module but
 # the race step's three and the text checks, and this package moved into one of those while these
@@ -1512,7 +1528,7 @@ if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
                      f"that runs them")
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs {PRIVATE_PROC_SUDO} go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
 
 
 def hold_supervise_table_tests():
@@ -2073,12 +2089,16 @@ def race_impossible_tests(root, packages=None) -> dict:
     return found
 
 
-def race_impossible_script(packages) -> str:
+def race_impossible_script(packages, wrapper="") -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout."""
-    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
-                     for under, names in packages.items())
+    sorted, in its -run, under a 10-minute timeout, and each run under `wrapper` where one is given
+    (PRIVATE_PROC, for the daemon's)."""
+    lines = []
+    prefix = f"{wrapper} " if wrapper else ""
+    for under, names in packages.items():
+        lines.append(f"{prefix}go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
+    return "\n".join(lines)
 
 
 # The step as the lane and packages/envoy's own source make it, so a test added under
@@ -2109,7 +2129,7 @@ def daemon_race_packages() -> list:
 # changes this text and ci-job-daemon-go.yaml stops matching it.
 DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
 DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_packages())
-DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
+DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES, PRIVATE_PROC_SUDO)
 
 
 # The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
@@ -2124,6 +2144,9 @@ DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PA
 TEXT_CHECK_JOB = "text-checks"
 TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
 TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
+# packages/daemon's text checks run through PRIVATE_PROC, as every daemon go test of CI does, so
+# that step is no simple form the check reduces, and its gate pins it whole.
+DAEMON_TEXT_CHECK_SCRIPT = f"{PRIVATE_PROC} {TEXT_CHECK_TEXT}"
 # The three modules whose text checks the job runs, in the order its steps run them: each step's
 # name carries the module path, so the path is written once and the name is built from it.
 TEXT_CHECK_MODULES = (ENVOY, INFRA, DAEMON)
@@ -2509,6 +2532,11 @@ SCRIPT_TEST_GATES = [
     harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
         (f"{SCRIPTS}/race_memory.py", "the module under test"),
     ]),
+    # The harness builds and runs a scratch module of its own with the job's Go, and reads nothing
+    # of the repository's Go code.
+    harness("private_proc_test", "Test the private /proc wrapper", f"{SCRIPTS}/private_proc.test.sh", [
+        (PRIVATE_PROC_READ, "the script under test"),
+    ]),
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
@@ -2523,6 +2551,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
+        (PRIVATE_PROC_READ, "the go command reader rule 22 imports (read_go_args), linked in beside it"),
+        (f"{SCRIPTS}/shell_commands.py", "the shell keywords rule 22 imports (SKIP_WORDS), linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
@@ -2537,6 +2567,7 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
         (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:42)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
+        (PRIVATE_PROC_READ, "the module imports its go test reader, read_go_args"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
@@ -2653,6 +2684,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
+        (PRIVATE_PROC_READ, f"{at('daemon-go', DAEMON_PLAIN_STEP)}, {at('daemon-go', DAEMON_RACE_STEP)} and "
+                            f"{at('daemon-go', DAEMON_RACE_IMPOSSIBLE_STEP)} run their test binaries through it"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
@@ -2685,6 +2718,7 @@ GATES = [
                                          "agentmodels_omp_test.go:175 --stage-skills"),
         ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
                       "prepack stages skills/<name>"),
+        (PRIVATE_PROC_READ, f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)} runs its test binary through it"),
     ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
@@ -3412,8 +3446,13 @@ GATES = [
     # either.
     gate("text_checks", TEXT_CHECK_JOB, runs=[
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
-          for module in TEXT_CHECK_MODULES],
+          for module in TEXT_CHECK_MODULES if module != DAEMON],
     ], exact=[
+        # packages/daemon's text checks, through PRIVATE_PROC: pinned whole, since a wrapper is no
+        # simple form, and the Run is the go test behind it.
+        pinned_step(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[DAEMON], DAEMON, DAEMON_TEXT_CHECK_SCRIPT, [
+            (DAEMON, [TEXT_CHECK_PKG], f"{TEXT_CHECK_TEXT}, its test binary run through {PRIVATE_PROC_READ}", {}),
+        ]),
         # The seventeen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
@@ -3429,7 +3468,10 @@ GATES = [
             (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
              f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + reads(
+        (PRIVATE_PROC_READ, f"{at(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[DAEMON])} and "
+                            f"{at(TEXT_CHECK_JOB, SUPERVISE_TABLE_STEP)} run their test binaries through it"),
+    )),
 
     # The claim model's job: its two tests by name (CLAIM_MODEL_TESTS), pinned whole since a -run
     # is outside the simple form. Its Run is the plain go test of the package, which compiles every
@@ -3728,6 +3770,9 @@ GATES = [
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                               "check-workflow-files.sh imports its repeated-key test"),
+        (PRIVATE_PROC_READ, "ci_workflow_rules.py's rule 22 reads a go command's words with its read_go_args"),
+        (".github/scripts/shell_commands.py", "ci_workflow_rules.py's rule 22 reads the words bash reads before "
+                                              "a command from its SKIP_WORDS"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                      "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
                      "stream decoder"),

@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -413,14 +413,14 @@ func reapOrphans(log func(string)) {
 // reapExited waits, with WNOHANG, on every process /proc lists but this one and PID 1, and answers
 // how many it reaped. A process that is not this one's child answers ECHILD and is passed over.
 func reapExited() (int, error) {
-	entries, err := os.ReadDir("/proc")
+	pids, err := hostproc.PIDs("the repo cache's reaper", "/proc", hostproc.Because("a pass reaps only this process's own "+
+		"children, since Wait4 answers ECHILD for every other process, so another process listed changes neither what it reaps nor its count"))
 	if err != nil {
 		return 0, err
 	}
 	reaped := 0
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == os.Getpid() {
+	for _, pid := range pids {
+		if pid <= 1 || pid == os.Getpid() {
 			continue
 		}
 		got, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)

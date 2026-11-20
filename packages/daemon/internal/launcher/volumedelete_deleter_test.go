@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -575,7 +576,7 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			defer cancel()
 			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
 			child.Dir = "/"
-			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep)
+			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep, hostproc.ChildEnv(t))
 			child.SysProcAttr = attr
 			output, err := child.CombinedOutput()
 			if err != nil {
@@ -695,7 +696,9 @@ func holdOpen(t *testing.T, dir string) {
 // of the container's PID namespace but the ones it is told to leave (reapOrphans). Started through
 // the launcher's pidGuard, the deleter is one of those: a pass of the reaper made after the
 // deleter has exited and before the remover's close waits on it leaves the exit to that wait,
-// which reads the deleter's own exit status, and the guard forgets the pid once it has.
+// which reads the deleter's own exit status, and the guard forgets the pid once it has. The
+// reaper lists a /proc of the test's own whose one process is the deleter (procRoot), so the
+// pass meets the deleter and nothing of the machine's.
 func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
@@ -705,6 +708,9 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := remover.process()
+	guard.mu.Lock()
+	guard.proc = procRoot(t, pid)
+	guard.mu.Unlock()
 	// The end of the requests, which the deleter answers by exiting: it then waits, a zombie,
 	// for whoever reaps it.
 	_ = remover.requests.Close()
