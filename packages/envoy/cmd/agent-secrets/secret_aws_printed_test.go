@@ -551,9 +551,9 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 	}
 	for _, row := range []struct{ name, code, want string }{
 		{"control: a store call whose session token IAM Identity Center refuses", "UnauthorizedException",
-			"Secrets Manager ListSecrets failed: " + expired + " (IAM Identity Center answered UnauthorizedException): run `aws sso login` again"},
+			"Secrets Manager ListSecrets: " + expired + " (IAM Identity Center answered UnauthorizedException): run `aws sso login` again"},
 		{"a store call whose role IAM Identity Center does not find", "ResourceNotFoundException",
-			"Secrets Manager ListSecrets failed: IAM Identity Center refused it: ResourceNotFoundException (its message is not printed); check the profile's sso_account_id and sso_role_name"},
+			"Secrets Manager ListSecrets: IAM Identity Center refused it: ResourceNotFoundException (its message is not printed); check the profile's sso_account_id and sso_role_name"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
@@ -596,6 +596,6 @@ func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
 		failed := &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: "ListSecrets",
 			Err: fmt.Errorf("failed to refresh cached credentials, %w", fmt.Errorf("failed to retrieve jwt from provide source, %w", read))}
 		wantNamedNotPrinted(t, "the store call's words", awsStoreFailure("ListSecrets", failed).Error(),
-			[]string{"Secrets Manager ListSecrets failed: read the file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"}, planted)
+			[]string{"Secrets Manager ListSecrets: read the file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"}, planted)
 	})
 }

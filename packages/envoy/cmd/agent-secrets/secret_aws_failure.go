@@ -149,39 +149,18 @@ func (s awsStore) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreS
 }
 
 // awsStoreFailure is err, the failure of the Secrets Manager call operation, as a message prints
-// it: the call, and the code AWS answered it with, never AWS's message, which whoever answers at
-// the store's address writes what it likes in, and which can repeat a value the call sent (a
-// ValidationException quotes the field it refused); a call its context ended by that end alone; a
-// request that did not complete by its class beside the address settings that are set
-// (awsAddressesSet); a file the call's sign-in could not read again, such as the web identity token
-// file a credential refresh reads (webIdentityToken), by the setting that names it and the system's
-// reason, as the sign-in's own failure prints it (awsSDKWords); and anything else in fixed words.
-// It unwraps to err, so isAccessDenied, awsDefiniteRefusal and every errors.As and errors.Is still
-// read the SDK's own error.
+// it: the call and the failure in the words a sign-in's failure prints in (awsWords), the one
+// chain both read, so a call that failed for a reason of its sign-in's, such as a credential
+// refresh that could not read a file, says it as the sign-in would. AWS's message never prints:
+// whoever answers at the store's address writes what it likes in it, and it can repeat a value
+// the call sent (a ValidationException quotes the field it refused). It unwraps to err, so
+// isAccessDenied, awsDefiniteRefusal and every errors.As and errors.Is still read the SDK's own
+// error.
 func awsStoreFailure(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	call := "Secrets Manager " + operation
-	if words, ok := awsSSOWords(err); ok {
-		return redact.Masked(err, call+" failed: "+words)
-	}
-	if words, ok := awsAPIWords(err); ok {
-		return redact.Masked(err, call+": "+words)
-	}
-	var request *url.Error
-	var path *fs.PathError
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return redact.Masked(err, call+" failed: context deadline exceeded")
-	case errors.Is(err, context.Canceled):
-		return redact.Masked(err, call+" failed: context canceled")
-	case errors.As(err, &request):
-		return redact.Masked(err, call+" failed: "+redact.Class(err).Error()+awsAddressesSet())
-	case errors.As(err, &path):
-		return redact.Masked(err, call+" failed: read "+awsFileName(path.Path)+": "+redact.File(err).Error())
-	}
-	return redact.Masked(err, call+" failed (the AWS SDK's message is not printed: it can quote an AWS setting's value)")
+	return redact.Masked(err, "Secrets Manager "+operation+": "+awsWords(err, "the call failed"))
 }
 
 // awsAPIWords is err's AWS API error as a message prints it, and whether err is one: its code
@@ -290,9 +269,16 @@ var awsCodes = func() map[string]bool {
 	return codes
 }()
 
-// awsSDKWords is err, the AWS SDK's failure to sign in, as a message prints it. The SDK's own
-// error text quotes what it was configured with: the path of a shared config or credentials file
-// twice ("failed to load shared config file, <path>, read all: read <path>: ..."), the path
+// awsSDKWords is err, the AWS SDK's failure to sign in, as a message prints it (awsWords), the
+// failure no branch names said as one it could not sign in from this environment with.
+func awsSDKWords(err error) string {
+	return awsWords(err, "the AWS SDK could not sign in from this environment")
+}
+
+// awsWords is err, a failure of the AWS SDK's, a sign-in's or a store call's, as a message prints
+// it, with failed, the caller's words for a failure no branch names. The SDK's own error text
+// quotes what it was configured with: the path of a shared config or credentials file twice
+// ("failed to load shared config file, <path>, read all: read <path>: ..."), the path
 // AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names, an endpoint's or a container's credentials URL
 // whole, with its user, password and query (net/http's *url.Error, and the SDK's own "Failed to
 // parse uri" where it does not parse), the value of a setting it cannot read (AWS_MAX_ATTEMPTS),
@@ -303,16 +289,18 @@ var awsCodes = func() map[string]bool {
 //     client names;
 //   - a web identity sign-in with no role as the setting it lacks (the SDK's own "role ARN is not
 //     set", sdkSaid);
-//   - an AWS API error by its code alone, where it is one this client names (awsAPIWords);
+//   - an AWS API error by its code alone, where it is one this client names, and the permission
+//     it says is missing (awsAPIWords);
+//   - a call its context ended by that end alone;
 //   - a file call by the setting that names the file, and the call's operation and the system's
 //     reason (redact.File): the SDK formats a file's error with %v, which drops the file call's
 //     own error from the chain, so the file it names (SharedConfigLoadError.Filename), or the
 //     file an AWS file setting names that cannot be read, is read again here for the reason;
 //   - a request that failed by its class (redact.Class), naming the AWS address settings that are
 //     set, never their values;
-//   - anything else in fixed words that say where to look: the AWS settings the SDK's text names
-//     and the address settings that are set (awsSettingsNamed), else the AWS_* variables.
-func awsSDKWords(err error) string {
+//   - anything else as failed, in words that say where to look: the AWS settings the SDK's text
+//     names and the address settings that are set (awsSettingsNamed), else the AWS_* variables.
+func awsWords(err error, failed string) string {
 	if words, ok := awsSSOWords(err); ok {
 		return words
 	}
@@ -326,6 +314,10 @@ func awsSDKWords(err error) string {
 	var path *fs.PathError
 	var request *url.Error
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context deadline exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context canceled"
 	case errors.As(err, &load):
 		return "read " + awsFileName(load.Filename) + ": " + awsFileReason(load.Filename)
 	case errors.As(err, &path):
@@ -342,7 +334,7 @@ func awsSDKWords(err error) string {
 	if named := awsSettingsNamed(err); len(named) > 0 {
 		check = strings.Join(named, ", ")
 	}
-	return "the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check " + check + " and ~/.aws/config"
+	return failed + " (its message is not printed: it can quote an AWS setting's value); check " + check + " and ~/.aws/config"
 }
 
 // ssoCannotRefresh is the AWS SDK's own words for an sso_session profile's cached token it cannot
