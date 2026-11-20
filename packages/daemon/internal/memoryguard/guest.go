@@ -389,7 +389,8 @@ func (g *Guest) ID() string { return g.id }
 // wake and the scan share the watch's state with no lock. A wake does not move the next scan, which
 // comes guestInterval after the last one however many events come between. Where the event's watch
 // ends, the watch has one line, with the error that ended it, and goes on with the scan alone. A
-// step that panics turns the watch off for good with one line (step), and Run waits for ctx.
+// step that panics turns the watch off for good with one line and stops its wake (step), and Run
+// waits for ctx.
 func (g *Guest) Run(ctx context.Context) {
 	defer g.cgroup.close()
 	defer g.stopWake()
@@ -421,7 +422,6 @@ func (g *Guest) Run(ctx context.Context) {
 			}
 		}
 		if !on {
-			g.stopWake()
 			<-ctx.Done()
 			return
 		}
@@ -429,13 +429,16 @@ func (g *Guest) Run(ctx context.Context) {
 }
 
 // step runs one step of the watch, its begin, a wake or a scan, and is false where the step
-// panicked: the watch then logs its off line once, with the panic and where it was raised, and
-// reads nothing more, since the launcher runs it on a goroutine of its own and a panic that left it
-// would end the launcher, PID 1 of the pod, which ends every role's turn.
+// panicked: the watch then logs one off line, with the panic and where it was raised, stops its
+// wake at once (stopWake), and reads nothing more, since the launcher runs it on a goroutine of
+// its own and a panic that left it would end the launcher, PID 1 of the pod, which ends every
+// role's turn. A panic in begin's first scan comes after begin has started the wake (watchKills),
+// whose inotify descriptor and reader would otherwise run until ctx ends.
 func (g *Guest) step(run func()) (on bool) {
 	defer func() {
 		if p := recover(); p != nil {
 			g.logf(guestOffLine, fmt.Sprintf("panic: %v at %s", p, panicSite()))
+			g.stopWake()
 			on = false
 		}
 	}()

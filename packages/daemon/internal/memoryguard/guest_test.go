@@ -319,8 +319,8 @@ func (h *guestHarness) awaitKills(n int) []Kill {
 	return h.reported()
 }
 
-// run starts the watch and returns once its start and its first scan are done.
-func (h *guestHarness) run() *guestHarness {
+// start starts the watch.
+func (h *guestHarness) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan struct{})
 	go func() {
@@ -328,6 +328,11 @@ func (h *guestHarness) run() *guestHarness {
 		h.g.Run(ctx)
 	}()
 	h.t.Cleanup(h.stop)
+}
+
+// run starts the watch and returns once its start and its first scan are done.
+func (h *guestHarness) run() *guestHarness {
+	h.start()
 	h.pending = h.nextWait()
 	return h
 }
@@ -497,6 +502,44 @@ func TestGuestTurnsOffOnAPanicInAScanAndRunsOnUntilItsContextEnds(t *testing.T) 
 	h.stop()
 	if len(h.clock.waits) != 0 {
 		t.Fatalf("the watch waited for another scan after its classifier panicked")
+	}
+}
+
+// A panic in the guest watch's first scan, which its start takes once it has started its wake on
+// memory.events (watchKills), stops that wake at once, with the off line, as a panic at any later
+// step does: the watch reads no file-modified event, and holds no inotify descriptor, while it
+// waits for its context's end. The wake is stopped once.
+func TestGuestStopsItsWakeAtOnceOnAPanicInItsFirstScan(t *testing.T) {
+	const start = 300
+	pod := newFakePod(t)
+	pod.setSelfScore(start)
+	classes := guestTree(pod, start)
+	h := newGuestHarness(t, pod.proc, newFakeCgroup(t, cgroupV2).dir, classes)
+	h.g.classify = func(*Table) map[int]Class { panic("a test's classifier panics") }
+	var stops atomic.Int32
+	h.g.watchModified = func(string) (*fileWatch, error) {
+		return &fileWatch{modified: make(chan struct{}), stop: func() { stops.Add(1) }}, nil
+	}
+	h.start()
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.lines("off ")) > 0 }) {
+		t.Fatalf("the watch wrote no off line after its first scan panicked; the log:\n%s", h.logged())
+	}
+	want := "launcher: guest memory: off reason=panic: a test's classifier panics at "
+	if off := h.lines("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) {
+		t.Fatalf("the watch's off lines are %q, want one starting %q", off, want)
+	}
+	if off := h.lines("wake off"); len(off) != 0 {
+		t.Fatalf("the watch logged %q, want its wake started before its first scan", off)
+	}
+	if !testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), time.Millisecond, func() bool { return stops.Load() > 0 }) {
+		t.Fatalf("the watch's wake still ran 5 seconds after its first scan panicked, want it stopped at once; the log:\n%s", h.logged())
+	}
+	h.stop()
+	if n := stops.Load(); n != 1 {
+		t.Fatalf("the watch stopped its wake %d times, want once", n)
+	}
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the watch waited for a scan after its first scan panicked")
 	}
 }
 

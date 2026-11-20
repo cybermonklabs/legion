@@ -395,7 +395,8 @@ type Signaler interface {
 	Open(pid int) (Handle, error)
 }
 
-// Handle is one process a Signaler holds.
+// Handle is one process a Signaler holds. Handles compare with ==, and two are equal only where
+// they are one hold, which the guard must close once (closePrior).
 type Handle interface {
 	// Kill sends the process SIGKILL.
 	Kill() error
@@ -563,7 +564,8 @@ type largest struct {
 // largestScan is a finished scan for the largest process, and the start of the window it was
 // started in, so a scan that finishes after its hour is over is not credited to the next one.
 // panicked is the off reason of a scan that panicked (scanLargest), which the loop turns into the
-// guard's end at its next reading (takeScan), and empty for every other scan.
+// guard's end at its next reading (takeScan), and empty for every other scan. No scan that
+// finishes later replaces one that panicked.
 type largestScan struct {
 	window   time.Time
 	panicked string
@@ -711,7 +713,8 @@ type Guard struct {
 	rereads map[procKey]uint64
 	// prior are the kills of the wait that an early kill at an urgent reading of it ends
 	// (endKnown, sendFirst): the full read of that reading leaves out each of them that has not
-	// exited, as the wait did, and then lets go of them. They keep their storage.
+	// exited, as the wait did, and then lets go of them, as die does where the guard turns off
+	// before then (closePrior). They keep their storage.
 	prior []killedProc
 
 	scans    sync.WaitGroup
@@ -852,7 +855,7 @@ func (g *Guard) Apply(w *shimwire.LauncherMemoryGuard) {
 func (g *Guard) Run(ctx context.Context) {
 	defer g.scans.Wait()
 	defer g.release()
-	if !g.step(true) {
+	if !g.step(g.begin) {
 		<-ctx.Done()
 		return
 	}
@@ -862,30 +865,31 @@ func (g *Guard) Run(ctx context.Context) {
 			return
 		case <-g.clock.After(g.interval()):
 		}
-		if !g.step(false) {
+		if !g.step(func() bool { return g.tick(false) }) {
 			<-ctx.Done()
 			return
 		}
 	}
 }
 
-// step is the guard's first reading (begin) or a later one (tick), and false once the guard has
-// turned off for good. A panic on the way turns the guard off for good with one line that names
-// it (diePanicked) and goes no further: the launcher runs the guard on a goroutine of its own, and
-// a panic that left it would end the launcher, PID 1 of the controller's pod, which ends the pod,
-// the very end the guard is there to prevent. Where the panic leaves the guard's state is not
-// known, so the guard reads nothing more, as where it cannot read the pod (INFRA-3531 R1).
-func (g *Guard) step(first bool) (on bool) {
+// step is run, the guard's first reading (begin) or a later one (tick), and false once the guard
+// has turned off for good. A panic on the way turns the guard off for good with one line that
+// names it (diePanicked) and goes no further: the launcher runs the guard on a goroutine of its
+// own, and a panic that left it would end the launcher, PID 1 of the pod, which ends the pod, the
+// very end the guard is there to prevent. That pod is the controller's or any gVisor issue pod,
+// whose launchers run the same guard. Where the panic leaves the guard's state is not known, so
+// the guard reads nothing more, as where it cannot read the pod (INFRA-3531 R1). A panic while the
+// loop reads or parses a large smaps skips the release that ends each read, so step lets go of the
+// loop's smaps buffer here (releaseSmaps).
+func (g *Guard) step(run func() bool) (on bool) {
 	defer func() {
 		if p := recover(); p != nil {
+			g.releaseSmaps()
 			g.diePanicked(fmt.Sprintf("panic: %v at %s", p, panicSite()))
 			on = false
 		}
 	}()
-	if first {
-		return g.begin()
-	}
-	return g.tick(false)
+	return run()
 }
 
 // begin turns the guard off for good where it has no kill to send, and otherwise takes its first
@@ -1885,10 +1889,9 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	early := (exited || passed) && reading >= urgentShare(limit, s.ActPercent) && g.endKnown(now, s, reading, limit)
 	a, ok := g.assessAt(now)
 	if !ok || g.isDead() {
-		// The guard has turned off for good, at the full read or at a kill (die); the kills it sent
-		// still have their lines and reports.
+		// The guard has turned off for good, at the full read or at a kill (die), which has let go
+		// of prior; the kills it sent still have their lines and reports.
 		if early {
-			g.closePrior()
 			g.reportKills(reading, limit, sizesReading, "")
 		}
 		return
@@ -1994,10 +1997,17 @@ func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64) bool 
 }
 
 // closePrior lets go of the kills of the wait before the early kills of an urgent reading
-// (endKnown), once the full read of that reading has left out each of them that has not exited.
+// (endKnown), once the full read of that reading has left out each of them that has not exited,
+// or once the guard turns off for good (die): a panic before that full read ends leaves them in
+// prior, and neither endWait nor release closes them. It closes none that is also one of the
+// wait's kills, which endWait closes: from endKnown's copy of them until sendFirst starts the wait
+// afresh, prior holds the wait's own handles, and a pidfd closed twice can close a descriptor the
+// launcher has opened since under the same number.
 func (g *Guard) closePrior() {
 	for _, k := range g.prior {
-		_ = k.handle.Close()
+		if !slices.ContainsFunc(g.wait.kills, func(w killedProc) bool { return w.handle == k.handle }) {
+			_ = k.handle.Close()
+		}
 	}
 	g.prior = g.prior[:0]
 }
@@ -3148,11 +3158,14 @@ func (g *Guard) takeScan() bool {
 	done := g.scanDone
 	g.scanDone = nil
 	g.scanMu.Unlock()
-	if done != nil && done.panicked != "" {
+	if done == nil {
+		return true
+	}
+	if done.panicked != "" {
 		g.diePanicked(done.panicked)
 		return false
 	}
-	if done != nil && done.window.Equal(g.window.start) {
+	if done.window.Equal(g.window.start) {
 		g.window.largest = done.largest
 	}
 	return true
@@ -3165,6 +3178,11 @@ func (g *Guard) takeScan() bool {
 // Shmem of the reading that started it (startScan). A panic here would end the launcher as one on
 // the loop would (step), so the scan finishes with it as its off reason (largestScan.panicked),
 // and the loop turns the guard off at its next reading, since the loop's state is the loop's own.
+// A scan that finishes never replaces a finished scan that panicked: the loop can start the next
+// scan in the same reading as the panicked one finishes after its takeScan, and that scan can
+// finish before the next takeScan. However the scan ends, a panic included, it lets go of its
+// smaps buffer once that has grown past maxHeldFile (keepSmaps), before the next scan can start
+// (scanBusy) and take the buffer over.
 func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
@@ -3172,8 +3190,12 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 		if p := recover(); p != nil {
 			found = largestScan{window: start, panicked: fmt.Sprintf("panic in the scan for the largest process: %v at %s", p, panicSite())}
 		}
+		g.scanSmaps = keepSmaps(g.scanSmaps)
 		g.scanMu.Lock()
-		g.scanDone, g.scanBusy = &found, false
+		if g.scanDone == nil || g.scanDone.panicked == "" {
+			g.scanDone = &found
+		}
+		g.scanBusy = false
 		g.scanMu.Unlock()
 	}()
 	t, err := scan(g.proc)
@@ -3194,7 +3216,6 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 		}
 		read = append(read, candidate{Process: p, role: classes[p.PID].Role, size: smapsSize(data, g.scanMemfds)})
 	}
-	g.scanSmaps = keepSmaps(g.scanSmaps)
 	addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds, shmem)
 	if len(read) > 0 {
 		biggest := read[0]
@@ -3242,27 +3263,31 @@ func (g *Guard) smapsPath(pid int) string {
 	return filepath.Join(g.proc, strconv.Itoa(pid), "smaps")
 }
 
-// die turns the guard off for good, with one line that says why.
+// die turns the guard off for good, with one line that says why, and lets go of every process it
+// holds: the kills of the wait before an urgent reading's early kills that are not also the wait's
+// (closePrior), which a panic before that reading's full read ends leaves in prior, and then the
+// wait's own (endWait). So a die before such a panic leaves prior nothing to close again.
 func (g *Guard) die(reason string) {
 	g.logf(offLine, reason)
 	g.mu.Lock()
 	g.dead = true
 	g.mu.Unlock()
+	g.closePrior()
 	g.endWait()
 }
 
 // diePanicked is die after a panic on the guard's loop or in its scan (step, takeScan), with the
-// panic as its reason. die ends the wait after a kill, whose state may be what panicked: where
-// die panics again, the guard is marked off for good all the same and the wait is dropped with its
-// handles open, so neither this end nor release meets it again, and a few descriptors stay open
-// for the pod's life rather than end it.
+// panic as its reason. die ends the wait after a kill and the one before it (prior), whose state
+// may be what panicked: where die panics again, the guard is marked off for good all the same and
+// both are dropped with their handles open, so neither this end nor release meets them again, and
+// a few descriptors stay open for the pod's life rather than end it.
 func (g *Guard) diePanicked(reason string) {
 	defer func() {
 		if recover() != nil {
 			g.mu.Lock()
 			g.dead = true
 			g.mu.Unlock()
-			g.wait, g.phase = afterKill{}, armed
+			g.wait, g.phase, g.prior = afterKill{}, armed, nil
 		}
 	}()
 	g.die(reason)

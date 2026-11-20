@@ -4347,6 +4347,7 @@ launcher: guest memory: hour start=<time> end=<time> current=<bytes> current_hig
 
 `off` comes once, where the watch cannot read its starting score (`reason=no readable starting score in /proc/self/oom_score_adj: <error>`) or cannot list the processes (`reason=cannot list the processes in /proc: <error>`).
 From then on the watch raises nothing and names nothing, writes each rise of the counter as `killed unnamed` at once, and still writes its hourly line from the cgroup.
+Such a watch goes on scanning, so a step of it that panics later writes a second `off` line, `off reason=panic: …` (below).
 A step of the watch that panics, its start, a scan or a wake, writes `off reason=panic: <value> at <function> (<file>:<line>)` once and ends the watch: it then raises, names and writes nothing more, its hourly line included, since what the panic left of its state is not known, and the launcher, the pod's first process, runs on, where a panic that left the watch would have ended it and with it every role's turn.
 
 `kills unnamed` comes once, at the start, where the watch reads no kill counter, such as where it finds no memory cgroup or a kill file with no `oom_kill` line.

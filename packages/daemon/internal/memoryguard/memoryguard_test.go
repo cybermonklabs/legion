@@ -482,6 +482,9 @@ type fakeHandle struct {
 	pid    int
 	exited bool
 	closed bool
+	// closes counts the guard's closes of the handle: a pidfd closed twice can close a descriptor
+	// opened since under the same number.
+	closes int
 }
 
 func (s *fakeSignal) Open(pid int) (Handle, error) {
@@ -515,6 +518,20 @@ func (s *fakeSignal) held() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.open
+}
+
+// notClosedOnce are the pids of the handles Open built that the guard has not closed exactly once,
+// in the order Open built them.
+func (s *fakeSignal) notClosedOnce() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []int
+	for _, h := range s.handles {
+		if h.closes != 1 {
+			out = append(out, h.pid)
+		}
+	}
+	return out
 }
 
 // exit marks pid as a process that has exited, as its pidfd would read: each handle that holds it,
@@ -559,6 +576,7 @@ func (h *fakeHandle) Exited() bool {
 func (h *fakeHandle) Close() error {
 	h.s.mu.Lock()
 	defer h.s.mu.Unlock()
+	h.closes++
 	if !h.closed {
 		h.closed = true
 		h.s.open--
@@ -743,6 +761,23 @@ func (p *fakePod) resize(fp *fakeProcess, anon uint64) {
 	p.t.Helper()
 	fp.anon = anon
 	p.add(*fp)
+}
+
+// padSmaps writes pid's smaps again with private mappings of a library after its own, which add
+// nothing to its size, until it holds size bytes or more: a process with many mappings.
+func (p *fakePod) padSmaps(pid, size int) {
+	p.t.Helper()
+	path := filepath.Join(p.proc, strconv.Itoa(pid), "smaps")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	var b strings.Builder
+	b.Write(data)
+	for at := 0x7f6000000000; b.Len() < size; at += 0x1000 {
+		fmt.Fprintf(&b, "%x-%x r--p 00000000 08:02 4243                       /usr/lib/libpad.so\nRss:                   4 kB\n", at, at+0x1000)
+	}
+	p.writeWhole(path, b.String())
 }
 
 // countReads has h's guard count the smaps it reads of each process (size), and answers how many
@@ -6000,6 +6035,202 @@ func TestMemoryGuardTurnsOffAtTheReadingAfterItsScanPanicked(t *testing.T) {
 		t.Fatalf("the guard waited for another reading after its scan panicked")
 	}
 	h.requireKilled()
+}
+
+// A scan for the largest process that panics keeps its panic until the loop takes it (INFRA-3531
+// R1): a scan the loop starts at the reading where the panicked one finishes, after that reading
+// has taken the finished scans, does not replace it however soon it finishes, and the next reading
+// turns the guard off for good with the panic as its reason, as docs/kubernetes.md says a panic in
+// the scan does. The first reading, at 1000 MiB, starts a scan that the test holds at its first
+// smaps read. The next, at 1200 MiB, a new high of the hour, comes 5 seconds later, so it reads the
+// counter after it has taken the finished scans and before it starts the next: there the held
+// scan panics and finishes, and then the reading starts a second scan, which ends before the
+// reading after.
+func TestMemoryGuardKeepsAScanPanicThatTheNextScanFinishesAfter(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "grow.py"}, anon: 3000 * mib})
+	pod.setAnon(1000 * mib)
+	h := newHarness(t, pod, nil)
+	held, release := make(chan struct{}), make(chan struct{})
+	releaseScan := sync.OnceFunc(func() { close(release) })
+	var scanReads atomic.Int32
+	h.g.scanSmapsRead = func(int) {
+		if scanReads.Add(1) == 1 {
+			close(held)
+			<-release
+			panic("a test's scan panics")
+		}
+	}
+	// The loop alone reads and writes counterReads.
+	counterReads := 0
+	h.g.counterRead = func() {
+		if counterReads++; counterReads == 2 {
+			releaseScan()
+			h.g.scans.Wait()
+		}
+	}
+	h.start()
+	// A test that fails before the second reading still lets the held scan end, so Run returns.
+	t.Cleanup(releaseScan)
+	next := func() fakeWait {
+		t.Helper()
+		select {
+		case w := <-h.clock.waits:
+			return w
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+			t.Fatalf("the guard never waited for its next reading; the log:\n%s", strings.Join(h.log.all(), "\n"))
+		}
+		return fakeWait{}
+	}
+	first := next()
+	select {
+	case <-held:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("the first reading's scan read no smaps; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	}
+	pod.setAnon(1200 * mib)
+	first.fire <- h.clock.advance(first.d + counterEvery)
+	second := next()
+	h.g.scans.Wait()
+	if n := scanReads.Load(); n != 2 {
+		t.Fatalf("the scans read %d smaps by the second reading's end, want 2: the held scan's and the next scan's", n)
+	}
+	second.fire <- h.clock.advance(second.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool {
+		return len(h.log.with("off ")) > 0 || len(h.clock.waits) > 0
+	}) {
+		t.Fatalf("the guard neither turned off nor waited for another reading; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	}
+	want := "launcher: memory guard: off reason=panic in the scan for the largest process: a test's scan panics at "
+	if off := h.log.with("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) {
+		t.Fatalf("the guard's off lines are %q, want one starting %q: the next scan replaced the panicked one; the log:\n%s", off, want, strings.Join(h.log.all(), "\n"))
+	}
+	h.stop()
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the guard waited for another reading after its scan panicked")
+	}
+	h.requireKilled()
+}
+
+// A panic while the guard reads the smaps of its processes lets go of a smaps buffer that a large
+// smaps grew past maxHeldFile, as the end of every read does (keepSmaps), so the guard, off for
+// good, does not hold that memory for the pod's life (INFRA-3531 R1): the loop's buffer, which a
+// panic at a reading leaves, and the scan for the largest process's, which a panic in that scan
+// leaves. Pid 200's smaps is 1.5 MiB, and the read of pid 201's, after it in pid order, panics.
+// The loop reads them at a first reading in the band, and the scan at a first reading below it.
+func TestMemoryGuardLetsGoOfALargeSmapsBufferOnAPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// anon is the first reading.
+		anon   uint64
+		hook   func(g *Guard, read func(pid int))
+		buffer func(g *Guard) []byte
+	}{
+		{"the loop's", 3100 * mib, func(g *Guard, read func(int)) { g.smapsRead = read }, func(g *Guard) []byte { return g.smaps }},
+		{"the scan's", 1000 * mib, func(g *Guard, read func(int)) { g.scanSmapsRead = read }, func(g *Guard) []byte { return g.scanSmaps }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "map.py"}, anon: 300 * mib},
+				fakeProcess{pid: 201, ppid: 1, args: []string{"python3", "idle.py"}, anon: 100 * mib})
+			pod.padSmaps(200, maxHeldFile*3/2)
+			pod.setAnon(tc.anon)
+			h := newHarness(t, pod, nil)
+			var panicked atomic.Bool
+			tc.hook(h.g, func(pid int) {
+				if pid == 201 {
+					panicked.Store(true)
+					panic("a test's smaps read panics")
+				}
+			})
+			h.start()
+			testwait.Eventually(t, "the panic at the read of pid 201's smaps", panicked.Load)
+			// Run returns once the loop and the scan are done, so the buffers are read after both.
+			h.stop()
+			if c := cap(tc.buffer(h.g)); c > maxHeldFile {
+				t.Fatalf("after the panic the guard holds a smaps buffer of %d bytes, want none past %d", c, maxHeldFile)
+			}
+		})
+	}
+}
+
+// A panic between an urgent reading's early kills and the end of its full read lets go of the
+// kills of the wait before them, which that full read would have let go of (closePrior), and
+// closes no handle twice: from endKnown's copy of the wait's kills until the early kill is sent,
+// those kills are the wait's own, which the end of the wait closes (INFRA-3531 R1). The pod is
+// TestMemoryGuardEndsForUrgencyAfterTheEarlyKillsWhatTheReadsAgainDidNotReach's without pid 900:
+// the reading at the mark, 87%, ends pid 800, and at the next, 93%, at or above the urgent share,
+// pid 801 has grown since that kill, so the reads again end it before the full read lists the
+// processes. A panic there, in the classifier, leaves pid 800's handle as the wait's before; one in
+// the open of pid 801's kill leaves it as the wait's own. By the time Run returns, the guard has
+// closed every handle it opened once.
+func TestMemoryGuardClosesTheHandlesOfTheWaitBeforeAnEarlyKillOnceOnAPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// arm has the guard panic once panicking holds.
+		arm func(h *harness, panicking *atomic.Bool)
+		// killed are the kills the guard sent.
+		killed []int
+	}{
+		{"in the full read", func(h *harness, panicking *atomic.Bool) {
+			classify := h.g.classify
+			h.g.classify = func(t *Table) map[int]Class {
+				if panicking.Load() {
+					panic("a test's classifier panics")
+				}
+				return classify(t)
+			}
+		}, []int{800, 801}},
+		{"in the early kill's open", func(h *harness, panicking *atomic.Bool) {
+			h.signal.onOpen = func(int) {
+				if panicking.Load() {
+					panic("a test's open panics")
+				}
+			}
+		}, []int{800}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+			pod := newFakePod(t)
+			parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock}
+			a := fakeProcess{pid: 800, ppid: 100, start: 6000, exe: "/usr/bin/python3.13", args: growArgs, anon: 200 * mib}
+			b := fakeProcess{pid: 801, ppid: 100, start: 6100, exe: "/usr/bin/python3.13", args: growArgs, anon: 100 * mib}
+			pod.add(agent(gib), parent, a, b)
+			pod.setAnon(at(7800))
+			h := newHarness(t, pod, protect("tester", 100))
+			h.signal.onKill = exitFreeing(pod, 0)
+			var panicking atomic.Bool
+			tc.arm(h, &panicking)
+			h.run()
+			for i, r := range []uint64{8000, 8200, 8400} {
+				pod.resize(&a, a.anon+40*mib)
+				if i > 0 {
+					pod.resize(&b, b.anon+10*mib)
+				}
+				pod.setAnon(at(r))
+				h.tick()
+			}
+			pod.resize(&a, a.anon+40*mib)
+			pod.setAnon(at(8700))
+			h.tick()
+			h.requireKilled(800)
+			pod.resize(&b, b.anon+64*mib)
+			pod.setAnon(at(9300))
+			panicking.Store(true)
+			w := h.pending
+			w.fire <- h.clock.advance(w.d)
+			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.log.with("off ")) > 0 }) {
+				t.Fatalf("the guard wrote no off line after the panic; the log:\n%s", strings.Join(h.log.all(), "\n"))
+			}
+			h.stop()
+			if got := h.signal.kills(); !slices.Equal(got, tc.killed) {
+				t.Fatalf("the guard killed %v, want %v; the log:\n%s", got, tc.killed, strings.Join(h.log.all(), "\n"))
+			}
+			if pids := h.signal.notClosedOnce(); len(pids) != 0 {
+				t.Fatalf("after the panic the guard had closed the handles of pids %v other than once, want every handle closed once; the log:\n%s", pids, strings.Join(h.log.all(), "\n"))
+			}
+		})
+	}
 }
 
 func TestMemoryGuardTurnsOffWhenPidfdOpenIsUnsupported(t *testing.T) {
