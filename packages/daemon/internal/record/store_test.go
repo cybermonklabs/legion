@@ -379,17 +379,26 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
 		StateReadAt: updatedAt.Add(3 * time.Minute),
-		// The runs remembered settled for each head read back whole, in their order, and so do the
-		// ones the head run was anchored with.
-		SettledRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed},
-			{Name: "lint", ID: 92, Head: "b1c2d3", Conclusion: RunSucceeded}, {Name: "unit", ID: 91, Head: "b1c2d3", Conclusion: RunFailed}},
+		// What the pull request remembers of each settled head reads back whole, in its order - each
+		// head's runs, failing and cancelled checks, numbering and commit statuses - and so does what
+		// the head run was anchored with.
+		SettledHeads: []SettledHead{
+			{Head: "a0b1c2", CheckRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}}, Failing: []string{"unit"},
+				Generation: 3, Snapshot: "snapshot-3",
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
+			{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "lint", ID: 92, Head: "b1c2d3", Conclusion: RunSucceeded},
+				{Name: "unit", ID: 91, Head: "b1c2d3", Conclusion: RunFailed}}, Failing: []string{"unit"}, Cancelled: []string{"e2e"},
+				Generation: 4, Snapshot: "snapshot-4"},
+		},
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
 				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
 				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
-			Pushes:  pushes[:1],
-			Settled: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}},
+			Pushes: pushes[:1],
+			Settled: []SettledHead{{Head: "a0b1c2", CheckRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}},
+				Failing: []string{"unit"}, Generation: 3, Snapshot: "snapshot-3",
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}}},
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
 				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
@@ -803,7 +812,7 @@ func samePullRequest(got, want PullRequest) bool {
 		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt) &&
 		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward) &&
-		reflect.DeepEqual(got.SettledRuns, want.SettledRuns)
+		reflect.DeepEqual(got.SettledHeads, want.SettledHeads)
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -2287,7 +2296,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward", "settled_runs"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward", "settled_heads"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},

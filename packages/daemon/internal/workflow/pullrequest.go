@@ -203,13 +203,14 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		// The reopen keeps the pushes - facts about commits - and the head run, so a push that
 		// arrives after the reopen settles the move the reopen made as it would have had it
-		// arrived first (classify.Reopen); the CI settlement starts afresh. It keeps the runs of
-		// the heads settled before (record.PullRequest.SettledRuns), so an earlier settlement of
-		// the head it reopens at, delivered late, is still stale against them (classify's
+		// arrived first (classify.Reopen); the check fence is emptied. It keeps what the record
+		// remembers of the heads settled before (record.PullRequest.SettledHeads), so the next
+		// settlement of the head it reopens at is weighed against that head's fence as it stood
+		// before the close, and an earlier one, delivered late, is still stale (classify's
 		// SettlementFor).
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
 		pr.ReviewSeen = recorded.ReviewSeen
-		pr.Pushes, pr.Moves, pr.Run, pr.SettledRuns = carried.Pushes, carried.Moves, carried.Run, carried.SettledRuns
+		pr.Pushes, pr.Moves, pr.Run, pr.SettledHeads = carried.Pushes, carried.Moves, carried.Run, carried.SettledHeads
 		// The reopen keeps the base and the push onto it the next read still owes an answer for: a
 		// pull request reopens onto the base it was opened on, and a fact that names none (a
 		// listener that predates the field) must not forget the recorded one.

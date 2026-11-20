@@ -230,13 +230,44 @@ func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 // pull request has left, or one of the head that is older than the settlement the record holds
 // (classify.SettlementStale), wakes nobody, however late it arrives: a webhook delivered late, or a
 // message the intake gave up on and replayed. The woken worker's task would name a verdict that is
-// no longer the head's. In the second case the newer settlement woke the pod, the worker came back
-// and its pod was released again, so the late settlement finds the role released with no open
-// resume, which is the one state a wake can be taken in.
+// no longer the head's. In every case after the first the newer settlement woke the pod, the worker
+// came back and its pod was released again, so the late settlement finds the role released with no
+// open resume, which is the one state a wake can be taken in. The pull request closed and reopened
+// at the head between the two empties its check fence; the late settlement is then weighed against
+// the fence the record remembers for the head (classify.SettlementFor), so one that names fewer
+// checks than the newer one, or an older commit status, is stale as it is with the fence standing.
 func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
 	ofRun := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
 		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, Generation: generation,
 			Snapshot: fmt.Sprintf("%s-%d", head, generation), CheckRuns: []record.AttemptRun{{Name: "build", ID: id}}, Failing: failing}
+	}
+	// wokeBy applies newer, which wakes the implementer with a task naming each of names, and has
+	// the worker take the resume up, after which a later idle release leaves its claim released
+	// again; reopened then closes and reopens the pull request at head1.
+	wokeBy := func(newer intake.PullRequestChecks, reopened bool, names ...string) func(t *testing.T, rig wakeRig) {
+		return func(t *testing.T, rig wakeRig) {
+			rig.apply("settled", newer)
+			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, names...)
+			if _, err := rig.pool.Exec(context.Background(), `update pod_resumes set first_turn_at = $1 where issue = 'LEGION-208'`, wakeAt); err != nil {
+				t.Fatalf("take the resume up: %v", err)
+			}
+			if !reopened {
+				return
+			}
+			rig.apply("closed", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head1", UpdatedAt: wakeAt.Add(time.Minute)})
+			rig.apply("reopened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1",
+				URL: "https://github.com/sjawhar/legion/pull/42", UpdatedAt: wakeAt.Add(2 * time.Minute), Reopened: true})
+			if pr := latePullRequest(t, rig.pool); pr.State != record.PullRequestOpen || pr.HeadSHA != "head1" || pr.CheckedHead != "" {
+				t.Fatalf("after the reopen the pull request is %s at %s, its fence at %q; want it open at head1 with its fence emptied", pr.State, pr.HeadSHA, pr.CheckedHead)
+			}
+		}
+	}
+	withLint := ofRun("head1", 5, 2, "lint")
+	withLint.CheckRuns = append(withLint.CheckRuns, record.AttemptRun{Name: "lint", ID: 7})
+	withStatus := func(generation int64, state record.CommitStatusState, at time.Time) intake.PullRequestChecks {
+		settlement := ofRun("head1", 5, generation)
+		settlement.Statuses = []record.CommitStatus{{Context: "deploy", State: state, CreatedAt: at}}
+		return settlement
 	}
 	for _, tc := range []struct {
 		name string
@@ -253,15 +284,13 @@ func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
 				t.Fatalf("after the push the pull request is at %s, want head2", pr.HeadSHA)
 			}
 		}, late: ofRun("head1", 1, 1, "build")},
-		{name: "a settlement of the head older than the one that woke the pod", newer: func(t *testing.T, rig wakeRig) {
-			rig.apply("settled", ofRun("head1", 5, 2))
-			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "passed every check")
-			// The worker's first turn takes the resume up, and a later idle release leaves its claim
-			// released again.
-			if _, err := rig.pool.Exec(context.Background(), `update pod_resumes set first_turn_at = $1 where issue = 'LEGION-208'`, wakeAt); err != nil {
-				t.Fatalf("take the resume up: %v", err)
-			}
-		}, wakes: 1, late: ofRun("head1", 4, 1, "build")},
+		{name: "a settlement of the head older than the one that woke the pod",
+			newer: wokeBy(ofRun("head1", 5, 2), false, "head1", "passed every check"), wakes: 1, late: ofRun("head1", 4, 1, "build")},
+		{name: "a settlement of the head naming fewer checks than the one that woke the pod, after a reopen",
+			newer: wokeBy(withLint, true, "head1", "lint"), wakes: 1, late: ofRun("head1", 5, 1)},
+		{name: "a settlement of the head with an older commit status than the one that woke the pod, after a reopen",
+			newer: wokeBy(withStatus(2, record.CommitStatusSuccess, wakeAt.Add(-time.Minute)), true, "head1", "passed every check"),
+			wakes: 1, late: withStatus(1, record.CommitStatusFailure, wakeAt.Add(-2*time.Minute))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newWakeRig(t)

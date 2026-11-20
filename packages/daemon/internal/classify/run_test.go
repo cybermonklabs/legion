@@ -63,8 +63,8 @@ func (f runFact) apply(pr record.PullRequest) record.PullRequest {
 // stored is pr as the store reads it back (record.PutPullRequest, then scanPullRequest): its
 // failing and cancelled checks and its pushes as lists, never nil; its commit statuses as a list
 // through JSON, as the store keeps them, so each status's created_at reads back as the store
-// gives it; its check runs as they were, nil apart from empty; its moves and its head run through
-// JSON.
+// gives it; its check runs as they were, nil apart from empty; its moves, its head run and what it
+// remembers of its settled heads through JSON, no settled head as nil.
 func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 	t.Helper()
 	pr.Failing, pr.Cancelled = append([]string{}, pr.Failing...), append([]string{}, pr.Cancelled...)
@@ -84,6 +84,17 @@ func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 	pr.Moves = nil
 	if err := json.Unmarshal(moves, &pr.Moves); err != nil {
 		t.Fatal(err)
+	}
+	settledHeads, err := json.Marshal(append([]record.SettledHead{}, pr.SettledHeads...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr.SettledHeads = nil
+	if err := json.Unmarshal(settledHeads, &pr.SettledHeads); err != nil {
+		t.Fatal(err)
+	}
+	if len(pr.SettledHeads) == 0 {
+		pr.SettledHeads = nil
 	}
 	if pr.Run != nil {
 		encoded, err := json.Marshal(pr.Run)
@@ -437,27 +448,27 @@ func TestAMoveMadeAgainTakesItsPushWhicheverArrivesFirst(t *testing.T) {
 	}
 }
 
-// A settlement of a head the fence no longer stands at starts that head's fence afresh
-// (SettlementFor), and the pull request remembers the runs of the heads a settlement applied on
-// (record.PullRequest.SettledRuns): after a reopen emptied the fence, or a new generation's clear
-// did, an earlier settlement of the head - delivered late, or replayed from a message the intake
-// gave up on, however late - is stale against them and applies nothing, while a later one, and the
-// same runs reported again, apply. The memory holds maxSettledHeads heads: a head pushed out of it
-// fences nothing.
+// A settlement of a head the fence no longer stands at is applied to the fence the pull request
+// remembers for that head (SettlementFor, record.PullRequest.SettledHeads): after a reopen emptied
+// the fence, or a new generation's clear did, an earlier settlement of the head - delivered late,
+// or replayed from a message the intake gave up on, however late - is stale against it and applies
+// nothing, while a later one, and the same runs reported again, apply. The memory holds
+// maxSettledHeads heads: a head pushed out of it fences nothing.
 func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 	settlement := func(head string, id, generation int64, failing ...string) SettlementCandidate {
 		return SettlementCandidate{Head: head, CheckRuns: []record.AttemptRun{{Name: "ci", ID: id}}, Generation: generation,
 			Snapshot: fmt.Sprintf("%s-%d", head, generation), Failing: append([]string{}, failing...), Cancelled: []string{}}
 	}
 	settled, applied := ApplyCheckSettlement(record.PullRequest{HeadSHA: "head", Failing: []string{}}, settlement("head", 5, 2))
-	if !applied || len(settled.SettledRuns) != 1 || settled.SettledRuns[0].ID != 5 || settled.SettledRuns[0].Head != "head" {
-		t.Fatalf("the first settlement of head applied %v and remembers %+v; want run 5 of ci on head", applied, settled.SettledRuns)
+	if !applied || len(settled.SettledHeads) != 1 || settled.SettledHeads[0].Head != "head" || len(settled.SettledHeads[0].CheckRuns) != 1 ||
+		settled.SettledHeads[0].CheckRuns[0].ID != 5 {
+		t.Fatalf("the first settlement of head applied %v and remembers %+v; want run 5 of ci on head", applied, settled.SettledHeads)
 	}
 	cleared := settled
 	cleared.CheckedHead, cleared.Failing, cleared.Cancelled, cleared.CheckRuns, cleared.Statuses = "", []string{}, []string{}, []record.AttemptRun{}, []record.CommitStatus{}
 	for name, reset := range map[string]record.PullRequest{"a reopen": Reopen(settled, "head"), "a new generation's clear": cleared} {
-		if reset.CheckedHead == "head" || !reflect.DeepEqual(reset.SettledRuns, settled.SettledRuns) {
-			t.Fatalf("after %s the fence stands at %q and the memory reads %+v; want the fence emptied and the memory kept", name, reset.CheckedHead, reset.SettledRuns)
+		if reset.CheckedHead == "head" || !reflect.DeepEqual(reset.SettledHeads, settled.SettledHeads) {
+			t.Fatalf("after %s the fence stands at %q and the memory reads %+v; want the fence emptied and the memory kept", name, reset.CheckedHead, reset.SettledHeads)
 		}
 		if got, applied := ApplyCheckSettlement(reset, settlement("head", 4, 1, "ci")); applied || !reflect.DeepEqual(got, reset) {
 			t.Errorf("after %s the earlier settlement of head applied %v and left %+v; want it stale, the pull request as it was", name, applied, got)
@@ -468,26 +479,31 @@ func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 			}
 		}
 	}
-	remembered := settled.SettledRuns
+	remembered := settled.SettledHeads
 	for i := range maxSettledHeads - 1 {
-		remembered = rememberSettled(remembered, fmt.Sprintf("other-%d", i), []record.AttemptRun{{Name: "ci", ID: int64(10 + i), Head: fmt.Sprintf("other-%d", i)}})
+		remembered = rememberSettled(remembered, record.PullRequest{CheckedHead: fmt.Sprintf("other-%d", i),
+			CheckRuns: []record.AttemptRun{{Name: "ci", ID: int64(10 + i), Head: fmt.Sprintf("other-%d", i)}}})
 	}
-	if !settledBefore(record.PullRequest{SettledRuns: remembered}, settlement("head", 4, 1)) {
+	late := func(remembered []record.SettledHead) bool {
+		_, applied := ApplyCheckSettlement(record.PullRequest{HeadSHA: "head", Failing: []string{}, SettledHeads: remembered}, settlement("head", 4, 1))
+		return applied
+	}
+	if late(remembered) {
 		t.Fatalf("with %d heads remembered head's memory is gone; want it kept", maxSettledHeads)
 	}
-	remembered = rememberSettled(remembered, "one-more", []record.AttemptRun{{Name: "ci", ID: 99, Head: "one-more"}})
-	if settledBefore(record.PullRequest{SettledRuns: remembered}, settlement("head", 4, 1)) {
+	remembered = rememberSettled(remembered, record.PullRequest{CheckedHead: "one-more", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 99, Head: "one-more"}}})
+	if !late(remembered) {
 		t.Fatalf("with one more head than %d remembered head's memory still fences; want the oldest head gone", maxSettledHeads)
 	}
 }
 
-// A settlement that is a step of an open head run replays against the runs the record remembered
-// settling at the run's anchor (record.HeadRun.Settled) and those of the steps before it, never
-// against a later step an earlier replay applied. Here each settlement of h1 is earlier than the
-// next - an older run of ci, then ci alone before lint's run appeared - and the first alone names
-// deploy's failure: the head keeps that failure, and judges as it does with its push first, while
-// the run is open and once the push closes it. A settlement earlier than one the record settled
-// for h1 before the run opened is still stale in the run, and after it closes.
+// A settlement that is a step of an open head run replays against what the record remembered of
+// its settled heads at the run's anchor (record.HeadRun.Settled) and what the steps before it
+// settled, never against a later step an earlier replay applied. Here each settlement of h1 is
+// earlier than the next - an older run of ci, then ci alone before lint's run appeared - and the
+// first alone names deploy's failure: the head keeps that failure, and judges as it does with its
+// push first, while the run is open and once the push closes it. A settlement earlier than one the
+// record settled for h1 before the run opened is still stale in the run, and after it closes.
 func TestASettlementStepIsFencedOnlyByWhatWasSettledBeforeIt(t *testing.T) {
 	settlements := []SettlementCandidate{
 		{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 9}}, Generation: 1, Snapshot: "h1-1", Failing: []string{}, Cancelled: []string{},
@@ -522,10 +538,10 @@ func TestASettlementStepIsFencedOnlyByWhatWasSettledBeforeIt(t *testing.T) {
 			got.Run != nil, got.Snapshot, got.Statuses, want.Snapshot, want.Statuses)
 	}
 
-	// h1 settled at ci's run 10 and lint's run 3 before the branch left it for h0.
+	// h1 settled as above - ci's run 10, lint's run 3 and deploy's failure - before the branch left
+	// it for h0.
 	returned := start
-	returned.SettledRuns = []record.AttemptRun{{Name: "ci", ID: 10, Head: "h1", Conclusion: record.RunSucceeded},
-		{Name: "lint", ID: 3, Head: "h1", Conclusion: record.RunSucceeded}}
+	returned.SettledHeads = want.SettledHeads
 	opened := stored(t, AdvancePullRequestHead(returned, Arrival{}, "h1"))
 	for _, earlier := range settlements[:2] {
 		late := settleEach(opened, earlier)

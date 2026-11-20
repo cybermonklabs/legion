@@ -72,12 +72,12 @@ func columnShape(t *testing.T, store *Store, table, column string) string {
 }
 
 // The columns 20261120001432 adds to two tables an earlier daemon writes, each in the shape that
-// daemon's writes keep working with: pull_requests.settled_runs, never null and the empty list by
-// default, so a row an earlier daemon inserts holds no settled run; and dispatch_issues.status_seq,
-// a sequence that is null on every row written before it.
+// daemon's writes keep working with: pull_requests.settled_heads, never null and the empty list by
+// default, so a row an earlier daemon inserts remembers no settled head; and
+// dispatch_issues.status_seq, a sequence that is null on every row written before it.
 var intakeFailuresColumns = map[[2]string]string{
-	{"pull_requests", "settled_runs"}: "jsonb nullable=NO default='[]'::jsonb",
-	{"dispatch_issues", "status_seq"}: "bigint nullable=YES default=",
+	{"pull_requests", "settled_heads"}: "jsonb nullable=NO default='[]'::jsonb",
+	{"dispatch_issues", "status_seq"}:  "bigint nullable=YES default=",
 }
 
 // 20261120001432 creates intake_failures and cleared_pull_requests, and adds the two columns

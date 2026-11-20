@@ -14,7 +14,7 @@ body: |-
   again inside the daemon, through the handling a live delivery takes, and `legion intake discard`
   closes records with a reason; the controller does the same through two new routes. A late or
   replayed fact moves no record back and wakes no worker for a head the pull request left: eight
-  fences, with the table `cleared_pull_requests` and the columns `pull_requests.settled_runs` and
+  fences, with the table `cleared_pull_requests` and the columns `pull_requests.settled_heads` and
   `dispatch_issues.status_seq`. The daemon API contract is 184. Before a rollback to an earlier
   release, run the two statements of the migration `20261120001432_intake_failures.up.sql` with
   the daemon stopped (docs/kubernetes.md, "Rolling back the release that gives up on intake

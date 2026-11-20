@@ -16,14 +16,17 @@
 -- event of that pull request no newer than that clock records nothing, whatever its head
 -- (record's clearGeneration, workflow's pullRequestOpened).
 --
--- pull_requests.settled_runs keeps, for each of the last heads a CI settlement of the pull request
--- applied on, that head's newest run of each check (record.PullRequest.SettledRuns), at most 16
--- heads (classify's maxSettledHeads) of one run per check name each. The check fence (check_runs)
--- holds one head's runs and starts afresh for another head, after a reopen and after a new
--- generation's clear, so an earlier settlement of a head the branch came back to would apply as
--- newer; against this column it is stale (classify.SettlementFor). No verdict reads it. An earlier
--- daemon never reads or writes it: its writes leave the column as it stands and a row it creates
--- takes the default, so the way back keeps it.
+-- pull_requests.settled_heads keeps, for each of the last heads a CI settlement of the pull
+-- request applied on, that head's check fence as the last settlement applied on it left it
+-- (record.PullRequest.SettledHeads, record.SettledHead): the newest run of each check, the newest
+-- commit status of each context, the checks that came to failed and to cancelled, and the
+-- listener's generation and snapshot, at most 16 heads (classify's maxSettledHeads). The check
+-- fence (check_runs, statuses and the columns beside them) holds one head's and is emptied by a
+-- reopen and by a new generation's clear, and a settlement of another head moves it there; a
+-- settlement of a head the fence does not stand at is weighed against this column's entry for
+-- it, so an earlier settlement of a head the branch came back to is stale, as it is against the
+-- fence (classify.SettlementFor). An earlier daemon never reads or writes it: its writes leave the
+-- column as it stands and a row it creates takes the default, so the way back keeps it.
 --
 -- dispatch_issues.status_seq is the sequence of the Dispatch event at which the mirror last saw the
 -- issue's status change (record.Postgres.PutDispatchIssue): set when a row is written first, and
@@ -126,7 +129,7 @@ create table cleared_pull_requests (
 -- pull_requests for the same read.
 create index cleared_pull_requests_lower_repo_number on cleared_pull_requests (lower(repo), number);
 
-alter table pull_requests add column settled_runs jsonb not null default '[]'::jsonb;
+alter table pull_requests add column settled_heads jsonb not null default '[]'::jsonb;
 
 alter table dispatch_issues add column status_seq bigint;
 

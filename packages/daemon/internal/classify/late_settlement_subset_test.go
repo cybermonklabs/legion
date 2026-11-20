@@ -12,8 +12,8 @@ import (
 // later settlement alone. Such a settlement compares equal to the later one's runs, check by check
 // (CompareAttemptSets ignores a name only the stored side holds), and its lower generation is what
 // makes it stale while the fence stands at the head. Once the fence is reset - a reopen, or a new
-// generation's clear - the generation is gone with it, and the runs the pull request remembers
-// settling for the head (record.PullRequest.SettledRuns) are what must keep that earlier
+// generation's clear - the generation is gone with it, and the fence the pull request remembers
+// for the head (record.PullRequest.SettledHeads) is what must keep that earlier
 // settlement, delivered late or replayed from a give-up, from putting the head back to its earlier
 // verdict: here, from turning the head that failed lint into one that passed every check.
 func TestALateSettlementNamingFewerChecksOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {

@@ -350,14 +350,14 @@ func TestALateSettlementWithLowerRunsChangesNothing(t *testing.T) {
 	}
 }
 
-// A settlement of a head the fence no longer stands at starts that head's fence afresh
-// (classify.SettlementFor), and the record remembers the runs of the heads it settled
-// (record.PullRequest.SettledRuns): so an earlier settlement of a head, delivered late or replayed
-// from a message the intake gave up on, however late, is stale against them and changes nothing
-// once the fence has left that head. Here head settled (ci, run 5), and then its fence was reset
-// in each of the three ways one is: the branch moved to head-2, which settled (ci, run 7), and
-// came back to head; the pull request was closed and reopened at head; or a new generation of the
-// issue cleared it. The settlement of head before run 5 then arrives.
+// A settlement of a head the fence no longer stands at is applied to the fence the record remembers
+// for that head (classify.SettlementFor, record.PullRequest.SettledHeads): so an earlier settlement
+// of a head, delivered late or replayed from a message the intake gave up on, however late, is
+// stale against it and changes nothing once the fence has left that head. Here head settled (ci,
+// run 5), and then its fence was reset in each of the three ways one is: the branch moved to
+// head-2, which settled (ci, run 7), and came back to head; the pull request was closed and
+// reopened at head; or a new generation of the issue cleared it. The settlement of head before run
+// 5 then arrives.
 func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 	const dev = "legion-implementer[bot]"
 	settled := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {

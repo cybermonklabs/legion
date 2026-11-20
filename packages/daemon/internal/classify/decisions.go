@@ -33,7 +33,7 @@ func AdvancePullRequestHead(pr record.PullRequest, arrival Arrival, headSHA stri
 			pr, _, _ = advance(pr, arrival, headSHA, nil)
 			return pr
 		}
-		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt, Settled: clone(pr.SettledRuns)}
+		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt, Settled: clone(pr.SettledHeads)}
 	}
 	pr = runStep(pr, record.RunStep{Head: headSHA, Before: arrival.Before, Sender: arrival.Sender, SyncedAt: arrival.At})
 	pr.Pushes = unspentPushes(pr.Pushes, pr.Moves, true)
@@ -706,20 +706,23 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 }
 
 // SettlementFor says whether a CI settlement of candidate.Head may stand for the pull request's
-// current head, and returns the pull request ready to apply it. It may only when candidate.Head is
-// the current head: every other settlement - an earlier head's, a head a force push left - stands
-// for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations, snapshots and commit statuses are each head's own.
+// current head, and returns the pull request with the fence it is weighed against
+// (ClassifySettlement) and applied to (ApplySettlement). It may only when candidate.Head is the
+// current head: every other settlement - an earlier head's, a head a force push left - stands for
+// nothing. Check runs, generations, snapshots and commit statuses are each head's own, so the
+// fence is the head's: the one the pull request holds when it stands at the head, and otherwise
+// the one it remembers for the head (record.PullRequest.SettledHeads), empty for a head it never
+// settled or no longer remembers.
 //
-// A fresh fence holds no run of the head, so an older settlement of it would be classified newer
-// than nothing. That happens when the branch went to another head that settled and then came
-// back, when a reopen emptied the fence, and when a new generation's clear did (record.Store's
-// ClearGeneration). So a settlement earlier than one the record applied before on that head -
-// older, check by check, than the runs it held, or naming fewer checks and no newer run
-// (record.PullRequest.SettledRuns, settledBefore) - delivered late, or replayed from a message the
-// intake gave up on, however late, stands for nothing either. A settlement of those same runs and
-// checks again is no earlier and stands: it says what the head came to, which the fresh fence
-// does not say.
+// The pull request holds another head's fence, or none, when the branch went to another head that
+// settled and came back, when a reopen emptied the fence, and when a new generation's clear did
+// (record.Store's ClearGeneration). What it remembers for the head is the fence as it stood
+// before that, so a settlement after any of them is classified as it would have been had nothing
+// reset the fence, and applied to the same fence. An earlier settlement of the head - an older
+// run, fewer checks, an older commit status - delivered late, or replayed from a message the
+// intake gave up on, however late, is then stale as it is against a fence that stands, and the
+// newest one delivered again is the duplicate it is there (settle says what each does to a fence
+// that was reset).
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -728,95 +731,46 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	if head == pr.CheckedHead {
 		return pr, true
 	}
-	if settledBefore(pr, candidate) {
-		return pr, false
+	var remembered record.SettledHead
+	for _, settled := range pr.SettledHeads {
+		if settled.Head == head {
+			remembered = settled
+		}
 	}
 	pr.CheckedHead = head
-	pr.Failing = []string{}
-	pr.Cancelled = []string{}
-	pr.CheckRuns = nil
-	pr.Generation = 0
-	pr.Snapshot = ""
-	pr.Statuses = nil
+	pr.Failing, pr.Cancelled = append([]string{}, remembered.Failing...), append([]string{}, remembered.Cancelled...)
+	pr.CheckRuns, pr.Statuses = clone(remembered.CheckRuns), clone(remembered.Statuses)
+	pr.Generation, pr.Snapshot = remembered.Generation, remembered.Snapshot
 	return pr, true
 }
 
-// maxSettledHeads bounds the heads a pull request remembers the settled runs of
-// (record.PullRequest.SettledRuns), and so the column that keeps them: at most this many heads,
-// one run of each check name a head reported. A branch comes back to a head it held after a push
-// or two is undone, a reopen, or a new generation, each of which is a head or two back; sixteen
-// cover that with room. A head pushed out of the memory loses only this fence: an older
-// settlement of it applies, as one of a head the record never settled does.
+// maxSettledHeads bounds the heads a pull request remembers the fence of
+// (record.PullRequest.SettledHeads), and so the column that keeps them: at most this many heads,
+// each with one run of each check name and one status of each context it reported. A branch comes
+// back to a head it held after a push or two is undone, a reopen, or a new generation, each of
+// which is a head or two back; sixteen cover that with room. A head pushed out of the memory loses
+// only its fence: a settlement of it is weighed against an empty one, as one of a head the record
+// never settled is.
 const maxSettledHeads = 16
 
-// settledBefore says whether candidate is an earlier settlement of candidate.Head than one already
-// applied, by the runs the record remembers settling for that head (record.PullRequest.SettledRuns).
-// It is earlier when it is older, check by check (CompareAttemptSets). It is earlier too when no
-// run of it is newer than the remembered one of its name and the remembered runs name a check it
-// does not: CompareAttemptSets ignores a name only the stored side holds, and the listener settles
-// a head only once every check it has seen there is terminal, so a later settlement names every
-// check an earlier one did. A settlement of the same runs naming the same checks is no earlier. A
-// head the record never settled, or one it no longer remembers, says nothing against it.
-func settledBefore(pr record.PullRequest, candidate SettlementCandidate) bool {
-	var settled []record.AttemptRun
-	for _, run := range pr.SettledRuns {
-		if run.Head == candidate.Head {
-			settled = append(settled, run)
+// rememberSettled is settled, what the pull request remembers of its settled heads
+// (record.PullRequest.SettledHeads), with pr's fence as the entry of its checked head, the head a
+// settlement just applied on: that head's entry replaced and moved to the end, where the head a
+// settlement applied on last stands, and the oldest heads beyond maxSettledHeads gone. The fence
+// was the remembered one, or the one that stood at the head, when the settlement was applied to it
+// (SettlementFor), so the entry it replaces holds nothing the fence does not.
+func rememberSettled(settled []record.SettledHead, pr record.PullRequest) []record.SettledHead {
+	kept := make([]record.SettledHead, 0, len(settled)+1)
+	for _, entry := range settled {
+		if entry.Head != pr.CheckedHead {
+			kept = append(kept, entry)
 		}
 	}
-	if settled == nil {
-		return false
+	if drop := len(kept) - (maxSettledHeads - 1); drop > 0 {
+		kept = kept[drop:]
 	}
-	switch CompareAttemptSets(settled, candidate.CheckRuns) {
-	case AttemptSetOlder:
-		return true
-	case AttemptSetEqual:
-		named := make(map[string]bool, len(candidate.CheckRuns))
-		for _, run := range candidate.CheckRuns {
-			named[run.Name] = true
-		}
-		for _, run := range settled {
-			if !named[run.Name] {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// rememberSettled is settled, the runs the record remembers settling (record.PullRequest's
-// SettledRuns), with the runs fence holds for head, the head a settlement just applied on: each
-// check name's newest run of that head, the head's group moved to the end, where the newest
-// settled head stands. The oldest heads go beyond maxSettledHeads. No verdict reads what it
-// keeps: only settledBefore does.
-func rememberSettled(settled []record.AttemptRun, head string, fence []record.AttemptRun) []record.AttemptRun {
-	var own, others []record.AttemptRun
-	place := map[string]int{} // each other head's place among them, oldest first
-	for _, run := range settled {
-		if run.Head == head {
-			own = append(own, run)
-			continue
-		}
-		if _, known := place[run.Head]; !known {
-			place[run.Head] = len(place)
-		}
-		others = append(others, run)
-	}
-	for _, run := range fence {
-		if run.Head == head {
-			own = append(own, run)
-		}
-	}
-	if drop := len(place) - (maxSettledHeads - 1); drop > 0 {
-		kept := others[:0]
-		for _, run := range others {
-			if place[run.Head] >= drop {
-				kept = append(kept, run)
-			}
-		}
-		others = kept
-	}
-	return append(others, mergeAttemptSets(own, nil)...)
+	return append(kept, record.SettledHead{Head: pr.CheckedHead, CheckRuns: clone(pr.CheckRuns), Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled),
+		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses)})
 }
 
 // HeadPushKnown says whether a push the record holds left head, so the record already knows of a

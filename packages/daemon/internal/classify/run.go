@@ -58,14 +58,18 @@ func runStep(pr record.PullRequest, step record.RunStep) record.PullRequest {
 // recorded, each spent by the arrival that took it. The run stays open from its first head judged
 // with no chain of pushes, or still waiting for what its synchronize named, its anchor the
 // judgement before that head, and closes when there is none; past maxRunSteps its oldest steps
-// fold into the anchor too. The pull request keeps its own pushes. The runs remembered settled
-// (record.PullRequest.SettledRuns) start from the anchor's too (record.HeadRun.Settled), so each
-// settlement step is fenced by what was settled before it (settledBefore), as it was when it
-// arrived, and never by a later step that an earlier replay applied.
+// fold into the anchor too. The pull request keeps its own pushes. What the pull request
+// remembers of its settled heads (record.PullRequest.SettledHeads) starts from the anchor's too
+// (record.HeadRun.Settled), so each settlement step is weighed against what was settled before it
+// (SettlementFor), as it was when it arrived, and never against a later step that an earlier
+// replay applied: started from the pull request's own, a step newer for its statuses alone, or
+// newer for some checks and older for others, that showed a head again after a reset would show
+// nothing (TestTheSecondOfTwoSettlementsOfAHeadIsJudgedAfterAResetAsWithNone, its reset before the
+// pushes, fails so).
 func replayRun(pr record.PullRequest) record.PullRequest {
 	run, live := pr.Run, pr.Pushes
 	at := withJudgement(pr, run.Anchor)
-	at.SettledRuns = clone(run.Settled)
+	at.SettledHeads = clone(run.Settled)
 	at.Pushes, at.Run = clone(run.Pushes), nil
 	for _, p := range at.Pushes {
 		at.Moves, _ = pushedMoves(at.Moves, p)
@@ -76,13 +80,13 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 		pushes    []record.ClassifiedPush
 		names     []record.Named
 		since     time.Time
-		settled   []record.AttemptRun
+		settled   []record.SettledHead
 	}
 	names, since := clone(run.Names), run.Since
 	before := make([]state, len(run.Steps))
 	var unchained []int
 	for i, step := range run.Steps {
-		before[i] = state{judgementOf(at), clone(at.Pushes), names, since, at.SettledRuns}
+		before[i] = state{judgementOf(at), clone(at.Pushes), names, since, at.SettledHeads}
 		var chained bool
 		at, chained, names = applyStep(at, step, names, since)
 		if step.Head != "" {
@@ -142,8 +146,9 @@ func withStep(pr record.PullRequest, s record.RunStep) record.PullRequest {
 }
 
 // Reopen is the pull request a reopen at head leaves: moved to head as a synchronize would move it
-// (AdvancePullRequestHead), its CI settlement started afresh. While a head run is open the reopen
-// is a step of it.
+// (AdvancePullRequestHead), its check fence emptied, and the head's next settlement weighed
+// against the fence the pull request remembers for it (SettlementFor). While a head run is open
+// the reopen is a step of it.
 func Reopen(pr record.PullRequest, head string) record.PullRequest {
 	if head != pr.HeadSHA {
 		pr = AdvancePullRequestHead(pr, Arrival{}, head)
@@ -151,13 +156,13 @@ func Reopen(pr record.PullRequest, head string) record.PullRequest {
 	return withStep(pr, record.RunStep{Reopened: true})
 }
 
-// ApplyCheckSettlement applies a CI settlement to the pull request when it stands for the head
-// (SettlementFor) and is newer than the one recorded (ApplySettlement), and says whether the
-// judgement changed. While a head run is open the settlement is a step of it, recorded whether it
-// stands or not: a push the run is waiting for can make it stand. The pull request then changed
-// either way, and the judgement changed when the replay with it differs. A redelivery is no new
-// step (redundantSettlement), so the listener's redeliveries do not use up the run's bound
-// (maxRunSteps).
+// ApplyCheckSettlement applies a CI settlement to the pull request when it stands for the head and
+// is newer than the fence it is weighed against, or shows a reset head's remembered fence again
+// (settle), and says whether the judgement changed. While a head run is open the settlement is a
+// step of it, recorded whether it stands or not: a push the run is waiting for can make it stand.
+// The pull request then changed either way, and the judgement changed when the replay with it
+// differs. A redelivery is no new step (redundantSettlement), so the listener's redeliveries do
+// not use up the run's bound (maxRunSteps).
 func ApplyCheckSettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	if pr.Run == nil {
 		return settle(pr, candidate)
@@ -174,11 +179,11 @@ func ApplyCheckSettlement(pr record.PullRequest, candidate SettlementCandidate) 
 
 // redundantSettlement is whether settlement, appended to steps, would replay as nothing in every
 // order of the pushes still to come: an exact copy of it is a step, and no head arrived and no
-// reopen started the settlement afresh after that copy. The copy then meets the same head and the
-// same pushes as the redelivery would: where the copy stands and is newer, it applies and the
-// redelivery is not newer; where it does not, neither does the redelivery. A copy before a head's
-// arrival is no such copy - a settlement of a head that had not arrived stands once it has - so the
-// redelivery is a step of its own.
+// reopen emptied the fence after that copy. The copy then meets the same head and the same pushes
+// as the redelivery would: where the copy stands and is applied, or shows the head's remembered
+// fence again, the redelivery meets that fence and is not newer; where it does not, neither does
+// the redelivery. A copy before a head's arrival is no such copy - a settlement of a head that had
+// not arrived stands once it has - so the redelivery is a step of its own.
 func redundantSettlement(steps []record.RunStep, settlement record.Settlement) bool {
 	for i := len(steps) - 1; i >= 0; i-- {
 		switch held := steps[i]; {
@@ -205,21 +210,30 @@ func sameSettlement(a, b record.Settlement) bool {
 		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses)
 }
 
-// settle applies candidate when it stands for the head and is newer than the recorded settlement,
-// and otherwise leaves pr as it was. A settlement it applies is remembered for its head
-// (rememberSettled), so a later reset of the head's fence still finds an older one stale
-// (SettlementFor).
+// settle applies candidate when it stands for the head and is newer than the fence it is weighed
+// against (SettlementFor, ApplySettlement), and otherwise leaves pr as it was. The fence it applies
+// to is remembered for its head (rememberSettled), so a later reset of the head's fence takes
+// nothing of it.
+//
+// Where the fence had been reset and SettlementFor put the remembered one back, a settlement that
+// is not newer and not stale either - the newest one delivered again, or one of the same runs and
+// generation that another listener record numbered (SettlementDuplicate, SettlementConflict) -
+// shows the remembered fence again: it says what the head came to, which the reset fence does not
+// say, and what it says is no newer than that fence, so the fence is what stands, as it stands
+// when nothing reset it. A stale one changes nothing, as it changes nothing of a fence that stands.
 func settle(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	stood, stands := SettlementFor(pr, candidate)
 	if !stands {
 		return pr, false
 	}
-	applied, ok := ApplySettlement(stood, candidate)
-	if !ok {
-		return pr, false
+	if applied, ok := ApplySettlement(stood, candidate); ok {
+		applied.SettledHeads = rememberSettled(applied.SettledHeads, applied)
+		return applied, true
 	}
-	applied.SettledRuns = rememberSettled(applied.SettledRuns, applied.CheckedHead, applied.CheckRuns)
-	return applied, true
+	if stood.CheckedHead != pr.CheckedHead && ClassifySettlement(stood, candidate) != SettlementStale {
+		return stood, true
+	}
+	return pr, false
 }
 
 func candidateOf(s record.Settlement) SettlementCandidate {

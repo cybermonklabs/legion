@@ -686,7 +686,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward, settled_runs`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward, settled_heads`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -864,9 +864,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode check runs: %w", pr.Issue, err)
 	}
-	settledRuns, err := json.Marshal(append([]AttemptRun{}, pr.SettledRuns...))
+	settledHeads, err := json.Marshal(append([]SettledHead{}, pr.SettledHeads...))
 	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode settled runs: %w", pr.Issue, err)
+		return fmt.Errorf("put pull request for %s: encode settled heads: %w", pr.Issue, err)
 	}
 	noteIssueWrite(ctx, pr.Issue)
 	statuses, err := json.Marshal(append([]CommitStatus{}, pr.Statuses...))
@@ -910,7 +910,7 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		conflict_read, merge_forward, settled_runs, fix_attempts, blocked_attempts, head_counted)
+		conflict_read, merge_forward, settled_heads, fix_attempts, blocked_attempts, head_counted)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
@@ -923,12 +923,12 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
-		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward, settled_runs = excluded.settled_runs`,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward, settled_heads = excluded.settled_heads`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward, settledRuns,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward, settledHeads,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1557,12 +1557,12 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward, settledRuns []byte
+	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward, settledHeads []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
-		&conflictRead, &mergeForward, &settledRuns); err != nil {
+		&conflictRead, &mergeForward, &settledHeads); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1574,12 +1574,12 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if err := json.Unmarshal(checkRuns, &pr.CheckRuns); err != nil {
 		return nil, fmt.Errorf("decode check runs: %w", err)
 	}
-	// No settled run is nil, as a pull request built before any settlement holds it.
-	if err := json.Unmarshal(settledRuns, &pr.SettledRuns); err != nil {
-		return nil, fmt.Errorf("decode settled runs: %w", err)
+	// No settled head is nil, as a pull request built before any settlement holds it.
+	if err := json.Unmarshal(settledHeads, &pr.SettledHeads); err != nil {
+		return nil, fmt.Errorf("decode settled heads: %w", err)
 	}
-	if len(pr.SettledRuns) == 0 {
-		pr.SettledRuns = nil
+	if len(pr.SettledHeads) == 0 {
+		pr.SettledHeads = nil
 	}
 	if err := json.Unmarshal(statuses, &pr.Statuses); err != nil {
 		return nil, fmt.Errorf("decode commit statuses: %w", err)

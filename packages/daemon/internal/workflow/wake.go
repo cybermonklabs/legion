@@ -217,10 +217,11 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 //
 // A settlement wakes nobody where the record will not take it for the pull request's head now
 // (dispatch://INFRA-1575 R1): one of a head the pull request has left, or one of its head that is
-// older than a settlement the record applied (classify.SettlementFor, which also reads the runs
-// remembered for the head, and classify.SettlementStale). Such a settlement arrives late, or
-// replayed from a message the intake gave up on, however late, and the woken worker's task would
-// name a verdict that is no longer the head's.
+// older than a settlement the record applied (classify.SettlementStale). It is weighed against the
+// fence the record would apply it to (classify.SettlementFor), which is the one the record
+// remembers for the head when its fence was reset, so it is stale exactly where it is with the
+// fence standing. Such a settlement arrives late, or replayed from a message the intake gave up
+// on, however late, and the woken worker's task would name a verdict that is no longer the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil

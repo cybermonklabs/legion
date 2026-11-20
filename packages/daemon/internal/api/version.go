@@ -2490,7 +2490,7 @@ package api
 // command `legion intake` reaches an older daemon, which answers it 404.
 //
 // The change carries store migration `20261120001432_intake_failures`, which adds the tables
-// `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_runs` and
+// `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_heads` and
 // `dispatch_issues.status_seq`. An older daemon binary put back on this schema
 // decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
 // an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
