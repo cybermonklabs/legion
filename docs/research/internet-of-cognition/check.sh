@@ -111,17 +111,17 @@
 # The expected-set rule: no assertion passes on no input, and no count that decides a
 # floor is read from the live input alone. Every count an assertion holds over is held to
 # a committed expected set or floor: each step of sources.json's landed list to a page of
-# the judgement that carries its Landed line; the candidate pages to PAGE_FLOOR and
-# PAGE_CAP, three and seven, and every assertion over the pages (their eleven parts, their
-# verdicts, what each commits us to, a refutation) to that floor; the three fixed pages;
-# the six named mas-lab directories and the three questions; the four fixed interview
-# rows; the three tests against our own records; the five deep-read directories of the
-# order of work; and the rows of claims.jsonl that cite each record under check, which
-# must be exactly the citations the record carries as it is read now. Where no committed
-# set exists the floor is one: a claims.jsonl with no row, no command, no quotation or no
-# absence search, a kind of citation with no row, a directory naming no dispatch://
-# reference, a judgement stating no figure in a sentence that cites a row, an empty landed
-# list or an empty question list fails the assertion over it by name.
+# the judgement that carries the state the list commits for it, Landed or Not landed; the
+# candidate pages to PAGE_FLOOR and PAGE_CAP, three and seven, and every assertion over the
+# pages (their eleven parts, their verdicts, what each commits us to, a refutation) to that
+# floor; the three fixed pages; the six named mas-lab directories and the three questions;
+# the four fixed interview rows; the three tests against our own records; the five
+# deep-read directories of the order of work; and the rows of claims.jsonl that cite each
+# record under check, which must be exactly the citations the record carries as it is read
+# now. Where no committed set exists the floor is one: a claims.jsonl with no row, no
+# command, no quotation or no absence search, a kind of citation with no row, a directory
+# naming no dispatch:// reference, a judgement stating no figure in a sentence that cites a
+# row, an empty landed list or an empty question list fails the assertion over it by name.
 #
 # The live-read rule: every read of a live source the gate makes itself goes through one
 # function, live_read, in the mode's own shell before any assertion over what it reads
@@ -135,9 +135,10 @@
 # source, exit 2, or exit 1 after a FAIL, by the precedence above; it is never an
 # assertion's failure. A source that answers that it holds no such thing has answered, and
 # judges the deliverable: Dispatch's "not found", "No block", "no version N of" or
-# "document ... not found" for a reference fails citation-dispatch, and for the judgement
-# or a record under check leaves the text empty, which every assertion over it then fails
-# by its floor or its committed rows. The live-read rule covers the gate's own reads. A row's
+# "document ... not found" for a reference fails citation-dispatch, for the record of a
+# step that is not landed fails landed-proof, and for the judgement or a record under
+# check leaves the text empty, which every assertion over it then fails by its floor or
+# its committed rows. The live-read rule covers the gate's own reads. A row's
 # own failed read of a live source, GitHub or Dispatch, is read by one rule of its own
 # (source_answer), since only an answer from the source judges the deliverable: a curl of
 # GitHub's REST API or of the Dispatch API, which the gate reads once more itself at the URL
@@ -287,11 +288,22 @@
 # and names as IOC_HISTORY_REF=refs/remotes/origin/pr-3771. A ref that names no commit of
 # this repository is a missing prerequisite of both modes.
 #
-# --landed runs no text it reads from Dispatch. The proof of each landed step is committed
-# in the landed list of sources.json, one entry per landed page with the page's title, its
-# commit and its command. The mode runs the committed command, and fails a page whose
-# Landed commit or Proven by command differs from the committed entry for its title, and a
-# page carrying a Landed line that no committed entry names.
+# --landed runs no text it reads from Dispatch. sources.json's landed list is the list of
+# the steps R12 of the specification names, each with its state. A step whose state is
+# landed commits the page's title, its commit, its command and the sentences it published
+# in their files; the mode runs the committed command, reads each sentence in its file in
+# this checkout's own tree, ROOT, and fails a page whose Landed commit or Proven by command
+# differs from the committed entry for its title, and a sentence its file does not carry,
+# naming both. A step whose state is not_landed commits the R12 condition that stops it,
+# one of R12_CONDITIONS word for word, and its records, the dispatch:// references and pull
+# requests that record why; its page says Not landed with that condition word for word and
+# names each record, and each dispatch:// record resolves through live_read, since
+# --citations resolves the references of this directory's files and not the judgement's.
+# A page carries one state: Landed with Proven by, Landed: not made with Refuted by, or
+# Not landed; a page carrying two, or a line of a state twice, fails, so no reader that
+# takes a page's first line of a kind is fooled by a second. The order of the two steps is
+# judged only when every step of the list is landed; otherwise landed-order passes naming
+# the steps that are not, and that the order is not judged for that reason.
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -621,9 +633,9 @@ citation-published|citations|every citation of a published document names a comm
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
-landed-proof|landed|every landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, and the committed command passes|a page whose proof command differs from the committed one
+landed-proof|landed|each step of sources.json's landed list has a page carrying the state the list commits for it and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
-landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
+landed-order|landed|when every step of sources.json's landed list is landed, the commit of the shortfall rows is an ancestor of the commit of the combining rule; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
@@ -694,7 +706,7 @@ citations|tool|dispatch|resolves each dispatch:// reference and reads the judgem
 citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 landed|tool|git|reads the commits of this pull request|apt-get install git
 landed|tool|jq|reads the landed list of sources.json|apt-get install jq
-landed|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 landed|tool|bun|runs the committed proof of a landed step, bun test in packages/pi-legion|curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
 landed|installed|packages/pi-legion|the committed proof of a landed step imports its packages|bun install --frozen-lockfile, run at the root of the repository
 landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
@@ -1668,6 +1680,9 @@ coverage_report() {
   reading, and the plan of this issue names them so that nobody reads this gate as
   enforcing them.
 - whether an engineer-day estimate is right. It reads the number on the page.
+- whether a pull request that a step not landed names as its record says why. --landed
+  reads that the page names it, and resolves each dispatch:// record in Dispatch; it reads
+  no pull request.
 GAPS
 }
 
@@ -1703,10 +1718,10 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               220  runs the next pipeline when this one exits 0
+#   &&                               223  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                462  joins the commands of a pipeline
-#   ;                                 63  ends a pipeline
+#   |                                466  joins the commands of a pipeline
+#   ;                                 64  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
 #   2>                                23  writes the error output to a file
@@ -1719,9 +1734,9 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   654  a command word and its arguments
-#   pipeline                         462  two or more commands joined by |
-#   list                             247  two or more pipelines joined by ;, &&, || or newline
+#   simple command                   659  a command word and its arguments
+#   pipeline                         466  two or more commands joined by |
+#   list                             251  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
@@ -1742,7 +1757,7 @@ prepare_env() {
 #   assigns o                          1  a name the rows assign
 #   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
-#   program awk                       27  wrapped in a function that records its status
+#   program awk                       29  wrapped in a function that records its status
 #   program cat                       25  wrapped in a function that records its status
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
@@ -1750,17 +1765,17 @@ prepare_env() {
 #   program curl                      33  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
-#   program echo                      15  wrapped in a function that records its status
-#   program git                      380  wrapped in a function that records its status
+#   program echo                      16  wrapped in a function that records its status
+#   program git                      385  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     245  wrapped in a function that records its status
+#   program grep                     246  wrapped in a function that records its status
 #   program jq                        72  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      304  wrapped in a function that records its status
+#   program sed                      308  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      32  wrapped in a function that records its status
@@ -1785,8 +1800,8 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 449  a parameter, its name in braces or not
-#   $?                                11  the status of the last command
+#   $NAME or ${NAME}                 451  a parameter, its name in braces or not
+#   $?                                12  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
@@ -5639,19 +5654,84 @@ mode_citations() {
 
 # ---------------------------------------------------------------- --landed
 
+# R12_CONDITIONS: the four conditions of R12 of the specification under which a candidate's
+# first step is not landed in this pull request, one per line, each the opposite of one R12
+# asks of a step it lands: at most one engineer-day, needs no decision of the owner's,
+# refuses or blocks no other tree's merge path, and needs no record that does not exist yet.
+# A step sources.json's landed list commits as not_landed names one of them word for word.
+R12_CONDITIONS="is more than one engineer-day
+needs a decision of the owner's
+refuses or blocks another tree's merge path
+needs a record that does not exist yet"
+
+# landed_state_words <state>; the words a FAIL of landed-proof says a page carries, for the
+# state mode_landed read on it.
+landed_state_words() {
+    case "$1" in
+    landed) printf 'its page carries a Landed line with a commit' ;;
+    refuted) printf 'its page says Landed: not made' ;;
+    not_landed) printf 'its page carries a Not landed line' ;;
+    two) printf 'its page carries two states, or a line of one twice' ;;
+    esac
+}
+
 mode_landed() {
-    local bad_proof=0 bad_refutation=0 page title commit command landed=0 history entry want_commit want_command named
-    local read_pages=0 found="$RUN_SCRATCH/landed-titles"
+    local bad_proof=0 bad_refutation=0 refuted=0 page title commit command history entry want_commit want_command named
+    local read_pages=0 found="$RUN_SCRATCH/landed-titles" steps="$RUN_SCRATCH/landed-steps"
+    local unresolved="$RUN_SCRATCH/landed-unresolved" record resolved=0 state carried
+    local n_landed n_proven n_refuted n_not line said condition
     history="$(history_ref)"
     judgement_load
     : >"$found"
+    : >"$unresolved"
+    # The committed list, one step per line, and the live inputs it names: each dispatch://
+    # record of a step not landed, resolved through live_read before any assertion judges.
+    # --citations resolves the dispatch:// references of this directory's files and not
+    # those of the judgement, which Dispatch holds, so no other mode resolves these.
+    jq -c '.landed // [] | .[]' "$EVIDENCE/sources.json" >"$steps" 2>/dev/null || : >"$steps"
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        resolved=$((resolved + 1))
+        live_read "Dispatch, the read of $record" "$RUN_SCRATCH/landed-record.out" dispatch_ref_read "$record" ||
+            printf '%s\t%s\n' "$record" "$(cat "$RUN_SCRATCH/landed-record.out" "$RUN_SCRATCH/landed-record.out.err" | head -1 | head -c 160)" >>"$unresolved"
+    done < <(jq -r 'select(.state == "not_landed") | .record // [] | if type == "array" then .[] else empty end | strings | select(startswith("dispatch://"))' "$steps" | sort -u)
     while IFS= read -r -d $'\f' page; do
         read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
-        printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*' || continue
-        landed=$((landed + 1))
-        printf '%s\n' "$title" >>"$found"
-        if printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*[[:space:]]*not made'; then
+        # A page carries one state, each of its lines once: Landed with Proven by, Landed:
+        # not made with Refuted by, or Not landed. Every reader below takes a page's first
+        # line of a kind, so a second line of a kind, or a line of a second state, would
+        # stand unread beside the one it reads.
+        n_landed="$(printf '%s\n' "$page" | grep -cE '\*\*Landed:\*\*')"
+        n_proven="$(printf '%s\n' "$page" | grep -cE '\*\*Proven by:\*\*')"
+        n_refuted="$(printf '%s\n' "$page" | grep -cE '\*\*Refuted by:\*\*')"
+        n_not="$(printf '%s\n' "$page" | grep -cE '\*\*Not landed:\*\*')"
+        [ $((n_landed + n_proven + n_refuted + n_not)) -gt 0 ] || continue
+        carried="$n_landed Landed, $n_proven Proven by, $n_refuted Refuted by and $n_not Not landed"
+        if [ "$n_landed" -gt 1 ] || [ "$n_proven" -gt 1 ] || [ "$n_refuted" -gt 1 ] || [ "$n_not" -gt 1 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries a line of its state more than once ($carried lines), and a page carries each line of its one state once"
+            printf 'two\t%s\n' "$title" >>"$found"
+            continue
+        fi
+        if [ "$n_landed" -eq 1 ] && printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*[[:space:]]*not made'; then
+            state=refuted
+            [ "$n_proven" -eq 0 ] && [ "$n_not" -eq 0 ]
+        elif [ "$n_landed" -eq 1 ]; then
+            state=landed
+            [ "$n_refuted" -eq 0 ] && [ "$n_not" -eq 0 ]
+        else
+            state=not_landed
+            [ "$n_not" -eq 1 ] && [ "$n_proven" -eq 0 ] && [ "$n_refuted" -eq 0 ]
+        fi || {
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries two states ($carried lines): a page is landed with its proof, not made with its refutation, or not landed with its reason, and never two"
+            printf 'two\t%s\n' "$title" >>"$found"
+            continue
+        }
+        printf '%s\t%s\n' "$state" "$title" >>"$found"
+        if [ "$state" = refuted ]; then
+            refuted=$((refuted + 1))
             # A step that is not made carries evidence in one of the five forms: a command
             # with its output, never a search that found nothing.
             printf '%s\n' "$page" | grep -qE '\*\*Refuted by:\*\*.*`.*`' || {
@@ -5660,14 +5740,39 @@ mode_landed() {
             }
             continue
         fi
-        # The proof is the one this tree commits for the page's title, never the text of
-        # the live page, which no reviewer of this pull request reads: the page must name
-        # the committed commit and the committed command, and only the committed command
-        # runs.
-        entry="$(jq -c --arg t "$title" '[.landed // [] | .[] | select(.title == $t)] | first // empty' "$EVIDENCE/sources.json")"
-        if [ -z "$entry" ]; then
+        # The proof, or the reason, is the one this tree commits for the page's title, never
+        # the text of the live page, which no reviewer of this pull request reads. A page whose
+        # state is not the one the list commits for its title is failed once, by the list's
+        # step below.
+        entry="$(jq -c --arg t "$title" 'select(.title == $t)' "$steps" | head -1)"
+        if [ -z "$entry" ] && [ "$state" = landed ]; then
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the page '$title' carries a Landed line, and the landed list of sources.json commits no proof for that title"
+            continue
+        elif [ -z "$entry" ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' says its step is not landed, and the landed list of sources.json commits no step of that title"
+            continue
+        fi
+        [ "$(printf '%s' "$entry" | jq -r '.state // ""')" = "$state" ] || continue
+        if [ "$state" = not_landed ]; then
+            # The page says the condition sources.json commits, word for word, before the
+            # records in brackets, and names each record the list commits for the step.
+            condition="$(printf '%s' "$entry" | jq -r '.condition // ""')"
+            line="$(printf '%s\n' "$page" | grep -m1 -E '\*\*Not landed:\*\*')"
+            said="${line#*\*\*Not landed:\*\*}"
+            said="$(printf '%s' "${said%% (*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')"
+            if [ "$said" != "$condition" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' says its step is not landed because it '$said', and sources.json commits the condition '$condition' for that step, word for word"
+            fi
+            while IFS= read -r record; do
+                [ -n "$record" ] || continue
+                printf '%s\n' "$line" | grep -qE -- "$(printf '%s' "$record" | sed 's/[][\.*^$+?(){}|]/\\&/g')([^[:alnum:]_/-]|\$)" || {
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the page '$title' says its step is not landed, and its Not landed line does not name the record $record, which sources.json commits for that step"
+                }
+            done < <(printf '%s' "$entry" | jq -r '.record // [] | if type == "array" then .[] else empty end | strings')
             continue
         fi
         want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
@@ -5701,28 +5806,88 @@ mode_landed() {
         fi
     done < <(page_blocks)
     # The expected set is committed: each step sources.json's landed list names is held to
-    # a page of the judgement that carries its Landed line, so a judgement that lost a
-    # Landed line, or a page, or every page, is no pass. A list with no step is no pass
-    # either.
-    local steps
-    steps="$(jq -r '.landed // [] | .[].title' "$EVIDENCE/sources.json")"
-    if [ -z "$steps" ]; then
-        bad_proof=$((bad_proof + 1))
-        fail landed-proof "sources.json's landed list names no step, so no landed step is held to a page"
-    fi
-    while IFS= read -r title; do
-        [ -n "$title" ] || continue
-        grep -qxF -- "$title" "$found" || {
+    # a page of the judgement that carries the state the list commits for it, so a
+    # judgement that lost a Landed or Not landed line, or a page, or every page, is no pass,
+    # and neither is a page that says Landed for a step the list says is not. A list with no
+    # step is no pass either. A landed step stands in this tree: each sentence it published
+    # is in its file in the checkout, ROOT, so a change the tree no longer carries is no
+    # landed step, whatever its commit and its proof say.
+    local steps_read=0 steps_landed=0 steps_not=0 not_landed="" page_state path sentence published
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        steps_read=$((steps_read + 1))
+        title="$(printf '%s' "$entry" | jq -r '.title // ""')"
+        state="$(printf '%s' "$entry" | jq -r '.state // ""')"
+        page_state=""
+        while IFS=$'\t' read -r carried line; do
+            [ "$line" = "$title" ] && page_state="$carried" && break
+        done <"$found"
+        case "$state" in
+        landed)
+            steps_landed=$((steps_landed + 1))
+            [ "$page_state" = landed ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Landed line${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            published=0
+            while IFS=$'\t' read -r path sentence; do
+                published=$((published + 1))
+                if [ -z "$path" ] || [ -z "$sentence" ]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' lists a published entry with no path or no sentence in sources.json"
+                elif ! grep -qF -- "$sentence" "$ROOT/$path" 2>/dev/null; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' published '$sentence' in $path, and this tree's $path does not carry it, so the step is not in the tree"
+                fi
+            done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | [(.path // ""), (.sentence // "")] | @tsv')
+            [ "$published" -gt 0 ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read in this tree"
+            }
+            ;;
+        not_landed)
+            steps_not=$((steps_not + 1))
+            [ "$page_state" = not_landed ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Not landed line${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            condition="$(printf '%s' "$entry" | jq -r '.condition // ""')"
+            printf '%s\n' "$R12_CONDITIONS" | grep -qxF -- "$condition" || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title' is not landed for the condition '$condition' in sources.json, which is none of R12's four: $(printf '%s' "$R12_CONDITIONS" | sed "s/.*/'&'/" | paste -sd, - | sed 's/,/, /g')"
+            }
+            [ "$(printf '%s' "$entry" | jq '.record // [] | if type == "array" then map(strings | select(length > 0)) | length else 0 end')" -gt 0 ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title' is not landed, and sources.json commits no record of why"
+            }
+            while IFS=$'\t' read -r record line; do
+                printf '%s' "$entry" | jq -e --arg r "$record" '(.record // []) | if type == "array" then any(.[]; . == $r) else false end' >/dev/null || continue
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the record $record of the step '$title', which is not landed, resolves to no node Dispatch holds: Dispatch answered '$line'"
+            done <"$unresolved"
+            not_landed="${not_landed:+$not_landed; }'$title', not landed because it $condition"
+            ;;
+        *)
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Landed line"
-        }
-    done <<<"$steps"
+            fail landed-proof "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed or not_landed"
+            ;;
+        esac
+    done <"$steps"
+    if [ "$steps_read" -eq 0 ]; then
+        bad_proof=$((bad_proof + 1))
+        fail landed-proof "sources.json's landed list names no step, so no step is held to a page"
+    fi
     if [ "$read_pages" -lt "$PAGE_FLOOR" ]; then
         bad_refutation=$((bad_refutation + 1))
         fail landed-refutation "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so no page's refutation is judged"
     fi
-    [ "$bad_proof" -eq 0 ] && pass landed-proof "each of the $(printf '%s\n' "$steps" | grep -c .) steps of sources.json's landed list has a page that carries its Landed line, each of the $landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, and the committed command passes"
-    [ "$bad_refutation" -eq 0 ] && pass landed-refutation "each of the $read_pages candidate pages that says its step is not made carries a command with output"
+    if [ "$bad_proof" -eq 0 ]; then
+        local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice"
+        [ "$steps_landed" -gt 0 ] && verdict="$verdict; each of the $steps_landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
+        [ "$steps_not" -gt 0 ] && verdict="$verdict; each of the $steps_not pages not landed names the condition and every record sources.json commits for it, and Dispatch resolves every dispatch:// record among them, $resolved distinct: $not_landed"
+        pass landed-proof "$verdict"
+    fi
+    [ "$bad_refutation" -eq 0 ] && pass landed-refutation "of the $read_pages candidate pages, $refuted say their step is not made, and each of them carries a command with output"
 
     landed_order
     landed_no_refusal
@@ -5734,8 +5899,22 @@ landed_commit_of() {
     git -C "$ROOT" log --no-walk --format='%H %s' $(pr_commits) | grep -m1 -F "$1" | cut -d' ' -f1
 }
 
+# landed_order; the order R12 names, the shortfall rows before the rule that combines the
+# reviewer's two graders, is between the steps of sources.json's landed list, and is judged
+# only when every one of them is landed: a step not landed has no commit in this tree to be
+# ordered, and the line that passes says which steps are not and that the order is not
+# judged for that reason. A list with no step holds no order and fails.
 landed_order() {
-    local rows rule
+    local rows rule not_landed
+    if [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json" 2>/dev/null || printf 0)" -eq 0 ]; then
+        fail landed-order "sources.json's landed list names no step, so no step of the order is held to a commit"
+        return
+    fi
+    not_landed="$(jq -r --arg q "'" '[.landed[] | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
+    if [ -n "$not_landed" ]; then
+        pass landed-order "the order of the shortfall rows' commit and the combining rule's is not judged, because it is judged only when every step of sources.json's landed list is landed, and these are not: $not_landed"
+        return
+    fi
     rows="$(landed_commit_of 'two graders are recorded as two rows')"
     rule="$(landed_commit_of 'combines the reviewer')"
     if [ -z "$rows" ] || [ -z "$rule" ]; then
@@ -5797,7 +5976,7 @@ mode_published() {
         live_read "GitHub, the read of the default branch of $remote" "$work/ls-remote" git ls-remote "$remote" refs/heads/main
         head="$(cut -f1 "$work/ls-remote")"
     fi
-    local clone="$work/clone" missing=0 path
+    local clone="$work/clone" missing=0 path landed_steps=0 not_landed=""
     if [ -n "$head" ]; then
         git init --quiet "$clone" 2>/dev/null || cannot_run environment " --published: git init of the scratch clone failed."
         live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
@@ -5814,17 +5993,23 @@ mode_published() {
         done
         # The files each landed step changed stand there as the step left them, each read
         # by the sentences its own step added and not by a word the file carried before.
-        # Each landed entry of sources.json lists them as its `published` pairs, so a
-        # change to a rule edits that one list; a list with no step is no pass.
-        local title sentence
+        # Each entry of sources.json's landed list whose state is landed lists them as its
+        # `published` pairs, so a change to a rule edits that one list; a step not landed
+        # changed no file and is not read, and the line that passes names it. A list with
+        # no step is no pass.
+        local title sentence state
         [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
             missing=$((missing + 1))
             fail published-tree "sources.json's landed list names no step, so no landed step is read on the default branch"
         }
+        while IFS=$'\t' read -r title state; do
+            missing=$((missing + 1))
+            fail published-tree "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed or not_landed"
+        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed") | [(.title // ""), (.state // "")] | @tsv' "$EVIDENCE/sources.json")
         while IFS= read -r title; do
             missing=$((missing + 1))
             fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
-        done < <(jq -r '.landed[]? | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
+        done < <(jq -r '.landed[]? | select(.state == "landed") | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
         while IFS=$'\t' read -r path sentence; do
             git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
                 missing=$((missing + 1))
@@ -5835,9 +6020,12 @@ mode_published() {
                 missing=$((missing + 1))
                 fail published-tree "the published $path does not carry the landed step: '$sentence'"
             }
-        done < <(jq -r '.landed[]? | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+        done < <(jq -r '.landed[]? | select(.state == "landed") | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
+        not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state == "not_landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
+        [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed changed no file and are not read there: $not_landed"
     fi
-    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each landed step changed"
+    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each of the $landed_steps landed steps changed$not_landed"
 
     local delivery=0
     grep -qF 'notifications.role.legion-infra-controller' "$work/comments" || {
@@ -6012,7 +6200,7 @@ JSONL
     {"id": "page", "address": "https://example.org/page", "fetched": "2026-11-12", "copy": "published/page.txt", "sha256": "PAGE_SHA"}
   ],
   "landed": [
-    {"title": "An execution record under the gen_ai. names", "commit": "LANDED_ROWS", "command": "true"}
+    {"title": "An execution record under the gen_ai. names", "state": "landed", "commit": "LANDED_ROWS", "command": "true", "published": [{"path": "skills/legion-worker/references/pr-body.md", "sentence": "one row per half"}]}
   ]
 }
 JSON
@@ -6297,10 +6485,9 @@ MD
     citation-figures) sed -i 's/reads 12,617 rows \[f-figure-1\]/reads 12,618 rows [f-figure-1]/' "$dir/judgement.md" ;;
     landed-proof) sed -i 's/- \*\*Proven by:\*\* `true`/- **Proven by:** `false`/' "$dir/judgement.md" ;;
     landed-refutation)
-        cat >>"$dir/judgement.md" <<'MD'
-- **Landed:** not made
-- **Refuted by:** a reading of the page with no command behind it.
-MD
+        # The page of one definitions record, which carries no state, says its step is not
+        # made, and its refutation has no command behind it.
+        sed -i 's/^- It is rejected because the measurement under it failed\.$/&\n- **Landed:** not made\n- **Refuted by:** a reading of the page with no command behind it./' "$dir/judgement.md"
         ;;
     landed-order)
         (

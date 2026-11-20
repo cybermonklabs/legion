@@ -201,6 +201,20 @@ fresh() {
     printf '%s' "$dir"
 }
 
+# not_landed_plant <dir> <line>; commits the fixture's one step of sources.json's landed list,
+# the page 'An execution record under the gen_ai. names', as not landed, for the condition
+# "needs a decision of the owner's" and two records, NOT_LANDED_RECORD, the owner's ruling,
+# and cybermonklabs/legion#4544, and writes <line> on that page in place of its Landed and
+# Proven by lines. It returns non-zero when either could not be planted.
+NOT_LANDED_RECORD='dispatch://INFRA-1484/ask/b426938b-404d-4044-8231-49e7147aba8f'
+not_landed_plant() {
+    local sources="$1/repo/docs/research/internet-of-cognition/sources.json"
+    jq --arg r "$NOT_LANDED_RECORD" '.landed = [{"title": "An execution record under the gen_ai. names", "state": "not_landed", "condition": "needs a decision of the owner'"'"'s", "record": [$r, "cybermonklabs/legion#4544"]}]' \
+        "$sources" >"$1/sources.json" && mv "$1/sources.json" "$sources" || return 1
+    sed -i "/^- \*\*Proven by:\*\* \`true\`\$/d; s|^- \*\*Landed:\*\* [0-9a-f]*\$|$2|" "$1/judgement.md"
+    grep -qxF -- "$2" "$1/judgement.md" && ! grep -qE '\*\*(Landed|Proven by):\*\*' "$1/judgement.md"
+}
+
 # ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ====
 
 # 1. A row that carries a command and a recorded output but no predicate. claims.jsonl has
@@ -3035,79 +3049,77 @@ else
     case_failed "$count_case" "$(grep -E '^(PASS|FAIL) count-reruns' "$out/text" | head -2 | tr '\n' ' ')$RUN_LINE"
 fi
 
-# 113. A landed step's proof fails when the change it lands is taken out (test round 36). The
-# page 'Each review round's shortfall recorded as two grader rows' says the step makes the
-# `Thermo` line carry one row per half of the reviewer's pair, each naming its verdict and how
-# many of its findings stand, and its committed proof is
-# `(cd packages/pi-legion && bun test src/skills-guard.test.ts)`. At 9cdd6aa3 that guard test
-# holds no string of the two rows, pr-body.md's `- \`thermonuclear-deep-review\`: <verdict>; <n>
-# findings standing.` and its code-quality twin: with both lines taken out of pr-body.md the
-# test still passes and --landed passes all five assertions, so the proof shows nothing of the
-# step it proves. The case takes the two rows out of a fresh checkout of HEAD, after `bun
-# install --frozen-lockfile`, and runs that checkout's --landed, which must fail landed-proof
-# naming the page. It needs bun, git and Dispatch, and prints SKIP when bun is missing.
-if command -v bun >/dev/null 2>&1; then
-    rows_checkout="$WORK/rows-checkout"
-    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$rows_checkout" &&
-        git -C "$rows_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
-        printf 'FAIL the fresh checkout of HEAD could not be made\n'
-        exit 1
-    }
-    (cd "$rows_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
-    rows_body="$rows_checkout/skills/legion-worker/references/pr-body.md"
-    sed -i '/^- `thermonuclear-deep-review`: <verdict>; <n> findings standing\.$/d; /^- `thermonuclear-code-quality`: <verdict>; <n> findings standing\.$/d' "$rows_body"
-    if grep -qF 'findings standing' "$rows_body"; then
-        printf 'FAIL the two pair rows could not be taken out of the checkout'"'"'s pr-body.md\n'
-        exit 1
-    fi
-    case_result "the proof of the shortfall-rows step fails with the two pair rows it landed taken out of pr-body.md" \
-        'landed-proof: the committed proof of the page .Each review round.s shortfall recorded as two grader rows., .* exits non-zero' \
-        "$(IOC_ROOT="$rows_checkout" IOC_EVIDENCE="$rows_checkout/docs/research/internet-of-cognition" gate_run "$rows_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
-else
-    printf 'SKIP the proof of the shortfall-rows step with its two rows taken out: bun is missing\n'
-fi
+# 113. A landed step stands in the tree (the architect's brief of round 40). Before: from test
+# round 36, this case took the two pair rows the page 'Each review round's shortfall recorded
+# as two grader rows' landed out of a fresh checkout's pr-body.md and asked that the step's
+# proof, the guard test, then fail. It changed because the forward merge 51c5860680 took
+# main's pr-body.md and guard test whole, so that step is in this tree no longer and
+# sources.json commits it as not landed, and no proof of it runs. At cc62bd3b --landed read
+# that a landed page names the committed commit, that this pull request added it and that
+# the committed proof passes, and never that the change stands in the tree, so it passed both
+# steps once the merge had taken them out. The case commits the fixture's landed step with
+# the sentence it published, "one row per half", in skills/legion-worker/references/pr-body.md,
+# takes that sentence out of the fixture's pr-body.md, and runs --landed, which must fail
+# landed-proof, naming the step, the file and the sentence.
+dir="$(fresh landed-not-in-tree)"
+jq '.landed[0].state = "landed" | .landed[0].published = [{"path": "skills/legion-worker/references/pr-body.md", "sentence": "one row per half"}]' \
+    "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json"
+sed -i 's/, one row per half:$/:/' "$dir/repo/skills/legion-worker/references/pr-body.md"
+grep -qF 'one row per half' "$dir/repo/skills/legion-worker/references/pr-body.md" && {
+    printf 'FAIL the published sentence could not be taken out of the fixture'"'"'s pr-body.md\n'
+    exit 1
+}
+case_result "a landed step whose published sentence its file no longer carries fails --landed, naming the file and the sentence" \
+    "landed-proof: the landed step .An execution record under the gen_ai. names. published .one row per half. in skills/legion-worker/references/pr-body\\.md, and this tree.s skills/legion-worker/references/pr-body\\.md does not carry it" \
+    "$(fixture_run "$dir" --landed)"
 
-# 114. A landed step's proof fails when the change it lands is taken out (test round 37). The
-# page 'The rule that combines the reviewer's two graders' says the step makes an `APPROVE`
-# need both halves of the reviewer's pair run at the reviewed head, or both pair rows reading
-# `not run`. At bbb41f1a merge-gate.md's clause ended "or the two `not run` rows above", and
-# the rows above are those of a diff that touches no runtime code, each reading
-# `not run (no runtime code)`. Main's #4328, merged in cbd24412, gives a later review round
-# whose difference from its last reviewed commit touches no runtime code, on a pull request
-# that does touch it, rows of another form,
-# `not run (<last-reviewed-sha>..<sha> touches no runtime code)`: that round met neither arm
-# of the clause, so its reviewer could give no honest approval. The clause now admits both
-# forms. The case takes the later-round half out of a fresh checkout of HEAD's merge-gate.md,
-# after `bun install --frozen-lockfile`, and runs that checkout's --landed, which must fail
-# landed-proof naming the page. It needs bun, git and Dispatch, and prints SKIP when bun is
-# missing.
-if command -v bun >/dev/null 2>&1; then
-    gate_checkout="$WORK/gate-checkout"
-    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$gate_checkout" &&
-        git -C "$gate_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
-        printf 'FAIL the fresh checkout of HEAD could not be made\n'
+# 114. A page not landed says the reason sources.json commits (the architect's brief of round
+# 40). Before: from test round 37, this case took the later-round half of the combining rule
+# out of a fresh checkout's merge-gate.md and asked that the step's proof then fail. It changed
+# because the forward merge 51c5860680 took main's merge-gate.md whole, so that step is in this
+# tree no longer and sources.json commits it as not landed, for the condition "needs a
+# decision of the owner's" and two records, and no proof of it runs. A step not landed is held
+# instead to a page whose Not landed line says that condition word for word and names each
+# record, and to each dispatch:// record resolving. At cc62bd3b --landed read no Not landed
+# line and no state of sources.json's list. The case commits the fixture's one step as not
+# landed and writes its page's Not landed line in three faulty forms: another condition of
+# R12 with both records; the committed condition with no record; and both records, with a
+# third committed beside them on the list and the page, a dispatch:// reference Dispatch does
+# not hold. --landed must fail landed-proof for each, naming the page and the condition, the
+# record it does not name, or the record that resolves to nothing.
+for form in condition no-record unresolved; do
+    dir="$(fresh "not-landed-$form")"
+    case "$form" in
+    condition) line="- **Not landed:** is more than one engineer-day ($NOT_LANDED_RECORD, cybermonklabs/legion#4544)" ;;
+    no-record) line="- **Not landed:** needs a decision of the owner's" ;;
+    unresolved) line="- **Not landed:** needs a decision of the owner's ($NOT_LANDED_RECORD, cybermonklabs/legion#4544, dispatch://INFRA-1484/ask/00000000-0000-0000-0000-000000000000)" ;;
+    esac
+    not_landed_plant "$dir" "$line" || {
+        printf 'FAIL the %s form of the Not landed line could not be planted in the fixture\n' "$form"
         exit 1
     }
-    (cd "$gate_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
-    gate_rule="$gate_checkout/skills/legion-worker/references/merge-gate.md"
-    gate_half='or, in a later round, the difference from its last reviewed commit to the head'
-    # The half spans wrapped lines, so it is matched with any run of whitespace between its
-    # words, and taken out with the comma before it: the sentence then ends "touches no
-    # runtime code: the whole change."
-    python3 -c 'import re, sys
-path, half = sys.argv[1], r"\s+".join(map(re.escape, (", " + sys.argv[2]).split()))
-text = open(path, encoding="utf-8").read()
-open(path, "w", encoding="utf-8").write(re.sub(half, "", text, count=1))' "$gate_rule" "$gate_half"
-    if tr -s '[:space:]' ' ' <"$gate_rule" | grep -qF "$gate_half"; then
-        printf 'FAIL the later-round half could not be taken out of the checkout'"'"'s merge-gate.md\n'
-        exit 1
+    if [ "$form" = unresolved ]; then
+        jq '.landed[0].record += ["dispatch://INFRA-1484/ask/00000000-0000-0000-0000-000000000000"]' \
+            "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+            mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json"
     fi
-    case_result "the proof of the combining rule fails with its later-round half taken out of merge-gate.md" \
-        'landed-proof: the committed proof of the page .The rule that combines the reviewer.s two graders., .* exits non-zero' \
-        "$(IOC_ROOT="$gate_checkout" IOC_EVIDENCE="$gate_checkout/docs/research/internet-of-cognition" gate_run "$gate_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
-else
-    printf 'SKIP the proof of the combining rule with its later-round half taken out: bun is missing\n'
-fi
+    out="$(fixture_run "$dir" --landed)"
+    case "$form" in
+    condition)
+        case_result "a page not landed for another condition than the one sources.json commits fails --landed, naming both" \
+            "landed-proof: the page .An execution record under the gen_ai. names. says its step is not landed because it .is more than one engineer-day., and sources.json commits the condition .needs a decision of the owner.s." "$out"
+        ;;
+    no-record)
+        case_result "a page not landed that names no record fails --landed, naming the record sources.json commits" \
+            "landed-proof: the page .An execution record under the gen_ai. names. says its step is not landed, and its Not landed line does not name the record $NOT_LANDED_RECORD" "$out"
+        ;;
+    unresolved)
+        case_result "a step not landed whose dispatch:// record Dispatch does not hold fails --landed, naming the record" \
+            "landed-proof: the record dispatch://INFRA-1484/ask/00000000-0000-0000-0000-000000000000 of the step .An execution record under the gen_ai. names., which is not landed, resolves to no node Dispatch holds" "$out"
+        ;;
+    esac
+done
 
 # 115. A row that reads a private repository cannot run where git cannot read it (test round
 # 37, and R11 of round 38, under which the gate reads GitHub through git and the REST API and
@@ -3993,6 +4005,97 @@ for form in marked aside unmarked beside; do
         ;;
     esac
 done
+
+# 131. A candidate page carries one state of its step (the architect's brief of round 40):
+# landed, with its commit and its proof; not made, with its refutation; or not landed, with
+# the condition of R12 that stops it and its record. At cc62bd3b --landed read a page by its
+# Landed line alone, so a page carrying a Not landed line beside its Landed and Proven by
+# lines passed, although it says both that its step is landed and that it is not. The case
+# writes a Not landed line under the fixture's landed page and runs --landed, which must fail
+# landed-proof, naming the page and its two states.
+dir="$(fresh landed-two-states)"
+sed -i "s|^- \*\*Proven by:\*\* \`true\`\$|&\n- **Not landed:** needs a decision of the owner's ($NOT_LANDED_RECORD, cybermonklabs/legion#4544)|" "$dir/judgement.md"
+[ "$(grep -c '^- \*\*Not landed:\*\* ' "$dir/judgement.md")" = 1 ] && grep -q '^- \*\*Landed:\*\* [0-9a-f]' "$dir/judgement.md" || {
+    printf 'FAIL the Not landed line could not be planted beside the Landed line in the fixture judgement\n'
+    exit 1
+}
+case_result "a page carrying a Landed line and a Not landed line fails --landed, naming the page and its two states" \
+    'landed-proof: the page .An execution record under the gen_ai. names. carries two states' "$(fixture_run "$dir" --landed)"
+
+# 132. A candidate page carries each line of its state once (the architect's brief of round
+# 40). At cc62bd3b --landed read a page's commit and its proof command from its first Landed
+# and its first Proven by line (grep -m1), so a page whose second Landed line names a commit
+# of the base branch, or whose second Proven by line names a command that fails, passed with
+# the first line read and the second never. The case writes each second line under the
+# fixture's landed page, one run each, and runs --landed, which must fail landed-proof each
+# time, naming the page.
+for kind in Landed 'Proven by'; do
+    dir="$(fresh "state-line-twice-${kind%% *}")"
+    case "$kind" in
+    Landed) second="- **Landed:** $(cat "$dir/base")" ;;
+    *) second='- **Proven by:** `false`' ;;
+    esac
+    sed -i "s|^- \*\*Proven by:\*\* \`true\`\$|&\n$second|" "$dir/judgement.md"
+    grep -qxF -- "$second" "$dir/judgement.md" || {
+        printf 'FAIL the second %s line could not be planted in the fixture judgement\n' "$kind"
+        exit 1
+    }
+    case_result "a page carrying its $kind line twice fails --landed, naming the page" \
+        'landed-proof: the page .An execution record under the gen_ai. names. carries a line of its state more than once' "$(fixture_run "$dir" --landed)"
+done
+
+# 133. A landed list with no step is no pass of --landed, in any assertion over it (the
+# architect's acceptance item of round 40: --landed "does not pass on an empty set in
+# silence"). At cc62bd3b landed-proof failed an empty list, but landed-order judged the
+# order of two commits it found by their subjects, whatever the list held, and passed. The
+# case empties the fixture's landed list and takes the Landed and Proven by lines off its
+# page, so neither the list nor the judgement names a step, and runs --landed, which must
+# fail both landed-proof and landed-order, each naming the empty list.
+dir="$(fresh landed-no-step)"
+jq '.landed = []' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json"
+sed -i '/^- \*\*Landed:\*\* /d; /^- \*\*Proven by:\*\* /d' "$dir/judgement.md"
+[ "$(jq '.landed | length' "$dir/repo/docs/research/internet-of-cognition/sources.json")" = 0 ] && ! grep -qE '\*\*(Landed|Proven by):\*\*' "$dir/judgement.md" || {
+    printf 'FAIL the landed list could not be emptied in the fixture\n'
+    exit 1
+}
+out="$(fixture_run "$dir" --landed)"
+no_step_case="a landed list with no step fails --landed, landed-proof and landed-order each naming the empty list"
+if ! case_read "$no_step_case" "$out"; then
+    :
+elif grep -qE '^FAIL landed-proof: sources\.json.s landed list names no step' "$out/text" &&
+    grep -qE '^FAIL landed-order: sources\.json.s landed list names no step' "$out/text"; then
+    case_passed "$no_step_case"
+else
+    case_failed "$no_step_case" "$(grep -E '^(PASS|FAIL) landed-(proof|order)' "$out/text" | head -3 | cut -c1-300 | tr '\n' ' ')$RUN_LINE"
+fi
+
+# 134. A landed list whose every step is not landed passes --landed and says so in its own
+# words (the architect's brief of round 40). After the forward merge 51c5860680 both steps
+# of this tree's list are not landed, and a pass on them must name how many steps are
+# landed and how many not, each step not landed with its condition, and that the order of
+# the two steps is not judged for that reason. At cc62bd3b --landed read only pages with a
+# Landed line, so it failed every step not landed as a page that lost its Landed line. The
+# case commits the fixture's one step as not landed, writes its page's Not landed line with
+# the condition and both records, and runs --landed, which must pass, its landed-proof line
+# naming 0 landed and 1 not landed and the step with its condition, and its landed-order
+# line naming the step and the order not judged.
+dir="$(fresh landed-none-landed)"
+not_landed_plant "$dir" "- **Not landed:** needs a decision of the owner's ($NOT_LANDED_RECORD, cybermonklabs/legion#4544)" || {
+    printf 'FAIL the step could not be planted as not landed in the fixture\n'
+    exit 1
+}
+out="$(fixture_run "$dir" --landed)"
+none_landed_case="a landed list whose every step is not landed passes --landed, naming the counts, each step with its condition, and the order not judged"
+if ! case_read "$none_landed_case" "$out"; then
+    :
+elif [ "$RUN_ENDING" = passed ] &&
+    grep -qE "^PASS landed-proof: the steps of sources\\.json.s landed list, 1 in all, are 0 landed and 1 not landed, .*: .An execution record under the gen_ai\\. names., not landed because it needs a decision of the owner.s\$" "$out/text" &&
+    grep -qE "^PASS landed-order: .* is not judged, because .*: .An execution record under the gen_ai\\. names.\$" "$out/text"; then
+    case_passed "$none_landed_case"
+else
+    case_failed "$none_landed_case" "$(grep -E '^(PASS|FAIL) landed-(proof|order)' "$out/text" | head -3 | cut -c1-400 | tr '\n' ' ')$RUN_LINE"
+fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
