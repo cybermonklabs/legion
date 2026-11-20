@@ -15,7 +15,13 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type IssueKey, LEGION_ROLES, type LegionRole, roleToken } from "@legion/contracts";
+import {
+  type IssueKey,
+  LEGION_ROLES,
+  type LegionRole,
+  LISTENER_CALL_ATTEMPTS,
+  roleToken,
+} from "@legion/contracts";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
@@ -5544,6 +5550,322 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).not.toContain(
       "/legion/v1/claims/ready"
     );
+  });
+
+  // A daemon-launched controller whose role claim the listener answers 503 does not exit: the
+  // daemon supervises it, and it claims again until the claim lands. Each wait is one warning
+  // naming the attempt and the listener's answer, and its claim widget shows it holds no role
+  // until the claim lands, which takes the widget down and reports ready. The listener answers
+  // 503 to each of the first claim's transport attempts (LISTENER_CALL_ATTEMPTS), so the claim
+  // itself is answered 503 once.
+  test("a daemon-launched controller whose role claim is answered 503 logs each wait and shows it is waiting, then claims and reports ready", async () => {
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () =>
+        ++claims <= LISTENER_CALL_ATTEMPTS
+          ? Response.json(
+              { error: "envoy: the takeover record of the claim did not store" },
+              { status: 503 }
+            )
+          : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let warnings: LoggedWarning[];
+    try {
+      ({ warnings } = await loggedWarnings(async () => {
+        await controller.handlers.get("session_start")?.(
+          {},
+          controller.context("ses_controller_busy")
+        );
+      }));
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    const waits = warnings.filter((warning) => warning.message.includes("was answered 503"));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]?.message).toContain(
+      `claim of Envoy role ${controller.token} was answered 503 at attempt 1, so nothing was claimed`
+    );
+    expect(waits[0]?.message).toContain("the takeover record of the claim did not store");
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.map((call) => call.lines?.length ?? 0)).toEqual([1, 0]);
+    expect(shown[0]?.lines?.[0]).toStartWith(
+      `legion: this controller holds no Envoy role yet: claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+    );
+    expect(shown[1]?.lines).toBeUndefined();
+    expect(controller.sentUserMessages).toEqual([]);
+    expect(controller.exits).toEqual([]);
+    expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
+  });
+
+  // A session change in the daemon-launched controller never reaches its Envoy role claim: the
+  // daemon refuses to register a session other than the one it recorded with its same-agent
+  // refusal (409, the sentence of claim.SameAgentRefusal; supervise's
+  // TestAControllersSessionChangeIsRefusedAndItIsRelaunchedOnItsRecordedSession runs that fence),
+  // so the controller exits, for the daemon to relaunch it on its recorded session, and claims the
+  // role for the new session not at all.
+  test("a daemon-launched controller whose session changed is refused at registration (409), exits, and claims no role for the new session", async () => {
+    let switched = false;
+    let roleClaimsAfterSwitch = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_switched",
+      stateFixture: "state-controller-claim.json",
+      register: (body) =>
+        body.sessionId === "ses_controller_switched"
+          ? undefined
+          : Response.json(
+              { error: "Worker respawn must resume the same agent session" },
+              { status: 409 }
+            ),
+      roleClaim: () => {
+        if (switched) roleClaimsAfterSwitch += 1;
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_switched")
+      );
+      expect(controller.exits).toEqual([]);
+      switched = true;
+      await loggedErrors(async () => {
+        await controller.handlers.get("session_switch")?.(
+          { reason: "new" },
+          controller.context("ses_controller_switched_new")
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    const refused = controller.requests.filter(
+      (request) =>
+        request.path === "/legion/v1/claims/register" &&
+        (request.body as { sessionId?: string } | undefined)?.sessionId ===
+          "ses_controller_switched_new"
+    );
+    expect(refused).toHaveLength(1);
+    expect(controller.exits).toEqual([1]);
+    expect(roleClaimsAfterSwitch).toBe(0);
+    expect(controller.holder()).toBe("ses_controller_switched");
+  });
+
+  // The bound follows who started the claim, not which controller runs it: `/legion-claim-controller`
+  // typed in the daemon-launched controller's pane, whose claim the listener keeps answering 503,
+  // shows each wait and fails as the command's error after its counted tries, and the process does
+  // not exit. The daemon's own claim at session_start, answered as it is, waits on (the row above).
+  test("/legion-claim-controller typed in a daemon-launched controller whose claim the listener keeps answering 503 fails on screen after its counted tries, and the process stays", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        claims += 1;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const notices: CommandNotice[] = [];
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_busy")
+      );
+      busy = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context("ses_controller_typed_busy"),
+        ui: {
+          notify: (message, level) => notices.push({ message, level }),
+          setWidget: recordWidget,
+        },
+      };
+      await loggedWarnings(async () => {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe("EnvoyApiError");
+    expect(claims).toBe(5 * LISTENER_CALL_ATTEMPTS);
+    const waits = notices.filter((notice) => notice.message.includes("was answered 503"));
+    expect(waits.map((notice) => notice.message.match(/at attempt (\d+)/)?.[1])).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+    expect(controller.exits).toEqual([]);
+    // The waiting line was up while the command claimed again, and came down once it gave up.
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 4") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
+  }, 45_000);
+
+  // A session change's re-claim in a controller the daemon did not launch holds its notices until
+  // it settles; once its claim landed after a 503, none of its waits is shown, and the widget holds
+  // no waiting line.
+  test("an operator controller's re-claim that lands after a 503 shows none of its waits once it landed", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_reclaim_lands",
+      roleClaim: () => {
+        if (!busy || ++claims > LISTENER_CALL_ATTEMPTS) return undefined;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    await startOperatorController(controller, controller.context("ses_controller_reclaim_lands"));
+    busy = true;
+    const notices: CommandNotice[] = [];
+    const fresh: SessionContext = {
+      ...controller.context("ses_controller_reclaim_lands_new", "/tmp/reclaim-lands-new.jsonl"),
+      ui: { notify: (message, level) => notices.push({ message, level }), setWidget: recordWidget },
+    };
+    await loggedWarnings(async () => {
+      await controller.handlers.get("session_switch")?.({ reason: "new" }, fresh);
+    });
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    expect(controller.holder()).toBe("ses_controller_reclaim_lands_new");
+    expect(notices.filter((notice) => notice.message.includes("was answered 503"))).toEqual([]);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 1") === true)).toBe(true);
+    expect((shown.at(-1)?.lines ?? []).filter((line) => line.includes("was answered 503"))).toEqual(
+      []
+    );
+  });
+
+  // A typed claim in the daemon-launched controller stays up only when its role claim gave up on
+  // the listener's 503. One whose role claim landed and whose controller-topic subscription then
+  // met a 503 (the listener's session registry unavailable) exits as the daemon's own claim does,
+  // so the daemon launches a controller that holds its topics again, rather than one that holds
+  // the role without them and sends no ready.
+  test("/legion-claim-controller typed in a daemon-launched controller whose controller-topic subscription is answered 503 after the role landed exits", async () => {
+    let typed = false;
+    let landed = false;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_topic",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (typed) landed = true;
+        return undefined;
+      },
+      answer: (path) =>
+        landed && path === "/v1/interests/subscribe"
+          ? Response.json({ error: "envoy: session registry unavailable" }, { status: 503 })
+          : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_topic")
+      );
+      typed = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined)
+        throw new Error("controller claim command was not registered");
+      await loggedErrors(async () => {
+        await claimCommand
+          .handler("", commandContext(controller.context("ses_controller_typed_topic")))
+          .catch(() => undefined);
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(landed).toBe(true);
+    expect(controller.exits).toEqual([1]);
+  });
+
+  // A claim that waited on the listener's 503 and then landed takes its waiting line down as soon
+  // as the role is held: a step after it that fails, here the controller-topic subscription, leaves
+  // no line saying the claim is still being made.
+  test("a typed controller claim that waited, landed and then failed at its controller topic leaves no waiting line", async () => {
+    let typed = false;
+    let claims = 0;
+    let landed = false;
+    const controller = await launchedController({
+      sessionId: "ses_controller_landed_failed",
+      roleClaim: () => {
+        if (!typed) return undefined;
+        if (++claims <= LISTENER_CALL_ATTEMPTS) {
+          return Response.json(
+            { error: "envoy: the takeover record of the claim did not store" },
+            { status: 503 }
+          );
+        }
+        landed = true;
+        return undefined;
+      },
+      answer: (path) =>
+        landed && path === "/v1/interests/subscribe"
+          ? Response.json({ error: "envoy: session registry unavailable" }, { status: 503 })
+          : undefined,
+    });
+    await startOperatorController(controller, controller.context("ses_controller_landed_failed"));
+    typed = true;
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    let failure: unknown;
+    await loggedWarnings(async () => {
+      failure = await claimCommand
+        .handler("", commandContext(controller.context("ses_controller_landed_failed")))
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+    });
+    expect(landed).toBe(true);
+    expect(failure).toBeInstanceOf(Error);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 1") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
   });
 
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
