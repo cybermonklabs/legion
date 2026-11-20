@@ -554,8 +554,8 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		return nil
 	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	kept, ok := keepRoleMessage(cfg, role, item)
-	if !ok {
+	kept, err := keepRoleMessage(cfg, role, item)
+	if err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -753,7 +753,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 	var fresh []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-budget-%02d", i))
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		if !expired(i + 1) {
@@ -794,7 +794,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-two-drains-%02d", i))
-		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -907,7 +907,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, tc.role+"-1")
 			tc.prepare(&item, holder)
-			if _, kept := keepRoleMessage(cfg, tc.role, item); !kept {
+			if _, err := keepRoleMessage(cfg, tc.role, item); err != nil {
 				t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)

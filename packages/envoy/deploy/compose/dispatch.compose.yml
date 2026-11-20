@@ -1,3 +1,9 @@
+# Role routes need Dispatch's identity at the Envoy listener, so the Dispatch container refuses to
+# start without one, naming both settings: on Google Cloud set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (the
+# listener's ENVOY_OIDC_GOOGLE_AUDIENCE); elsewhere set ENVOY_ACCOUNT_TOKEN_FILE to the host path of a
+# service-account token for the listener's audience, which is mounted into the container. The
+# listener's side is in listener.compose.yml (../README.md, "Dispatch's identity at the Envoy
+# listener").
 services:
   dispatch:
     image: ghcr.io/cybermonklabs/legion/envoy:${ENVOY_IMAGE_TAG:?set ENVOY_IMAGE_TAG (see deploy/README.md)}
@@ -5,7 +11,21 @@ services:
       context: ../../../..
       dockerfile: packages/envoy/docker/Dockerfile
     network_mode: host
-    entrypoint: ["/usr/local/bin/envoy-dispatch"]
+    # Starts Dispatch only once it has an identity at the listener, and otherwise exits naming both
+    # settings: a Dispatch with none would refuse every message and mention for a role: route. It is
+    # a check of the container's own environment rather than a compose interpolation, so every
+    # Docker Compose version reads the file alike and only the container's start is refused, not
+    # `pull`, `ps`, `logs` or `down`.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$${ENVOY_ACCOUNT_GOOGLE_AUDIENCE}$${ENVOY_ACCOUNT_TOKEN_FILE}" ]; then
+          echo "dispatch: role routes need Dispatch's identity at the Envoy listener; set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (on Google Cloud) or ENVOY_ACCOUNT_TOKEN_FILE (a token file's host path) in compose/.env, see deploy/README.md, \"Dispatch's identity at the Envoy listener\"" >&2
+          exit 78
+        fi
+        exec /usr/local/bin/envoy-dispatch "$$@"
+      - envoy-dispatch
     restart: unless-stopped
     # A SIGTERM runs Dispatch's ordered shutdown: the requests in flight drain first, the document
     # service settles what is owed within 14 s of its own (starting 11 s after the signal at the
@@ -49,6 +69,10 @@ services:
       DISPATCH_NATS_DISABLED: ${DISPATCH_NATS_DISABLED:-}
       ENVOY_URL: ${ENVOY_URL:-http://127.0.0.1:9020}
       ENVOY_TOKEN: ${ENVOY_TOKEN:-}
+      # Dispatch's own identity at the listener (the entrypoint above requires one): the Google
+      # audience, or the token file mounted below at /run/envoy-listener/token.
+      ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
+      ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:+/run/envoy-listener/token}
       # Optional boot seed for mappings absent from the dashboard. Stored
       # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
       # external repositories with no stored mapping.
@@ -60,6 +84,16 @@ services:
     volumes:
       # Signing key and optional app.json credentials.
       - dispatch-data:/home/envoy/.local/share/dispatch
+      # The token file ENVOY_ACCOUNT_TOKEN_FILE names on the host, when set; /dev/null otherwise,
+      # which Dispatch does not read. A path that does not exist refuses `up` rather than becoming
+      # an empty directory. A bind of one file keeps the file it found at start, so the token must
+      # be rewritten in place; a writer that replaces it by rename needs the container restarted.
+      - type: bind
+        source: ${ENVOY_ACCOUNT_TOKEN_FILE:-/dev/null}
+        target: /run/envoy-listener/token
+        read_only: true
+        bind:
+          create_host_path: false
 
 
 volumes:

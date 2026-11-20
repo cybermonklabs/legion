@@ -272,7 +272,14 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
-names it — and nothing else.
+names it — and nothing else, but for a repository of an owner the bundle holds no directory
+for. The helper reads such a repository from GitHub once, with the token of the directory
+`GH_CONFIG_DIR` names where that is a directory of the bundle. Where GitHub answers that it is a
+fork, the helper answers the token it would answer for the fork's `parent`, or else for its
+`source`, where the bundle holds that owner's directory. That repository is usually the base of
+the fork's pull requests, whose token GitHub takes for a maintainer's commit to the branch of such
+a pull request from a fork in a personal account, and GitHub decides which branch of the fork
+that token may update. Every other repository of such an owner gets nothing.
 Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
 default-repository marker, into the clone's own configuration where that configuration holds no
 `gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
@@ -578,8 +585,8 @@ provider_keys:
   arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
   files it ran with. The agent keeps the last value a key is
   given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
-  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
-  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
+  where the spend collector keeps that key. A deployment's collector may keep a fixed list of
+  attributes; include all three in that list to group spend by them. A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it

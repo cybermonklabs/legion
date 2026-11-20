@@ -17,7 +17,10 @@
 // and the two wrappers read them from there and from nowhere else; a pod launched before that
 // ruling may still hold an `<owner>/<repo>` directory of its own, which no token is read out of,
 // and the Sandbox drift check reports both that and a root with no pairs file. The helper answers
-// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. In a pod the
+// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. Where
+// the bundle holds no directory for the owner git's request names, the helper reads that
+// repository from GitHub, and a fork takes the directory its parent, or else its source, routes
+// to (cmd/legion's forkUpstreamDir). In a pod the
 // root is a read-only Secret volume, which gh never needs to write: it writes under
 // GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its

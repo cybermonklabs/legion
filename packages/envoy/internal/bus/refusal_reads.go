@@ -8,7 +8,7 @@ import (
 
 // jsAPI is the subject a JetStream API request of the given kind and names is sent on, under the
 // default API prefix every connection of this package uses: jsAPI("STREAM.INFO", "KV_x") is
-// "$JS.API.STREAM.INFO.KV_x". The kinds are nats.go's own (nats.go@v1.53.1 js.go:151-207).
+// "$JS.API.STREAM.INFO.KV_x". The kinds are nats.go's own (nats.go@v1.55.0 js.go:145-225).
 func jsAPI(kind string, names ...string) string {
 	subject := "$JS.API." + kind
 	for _, name := range names {
@@ -94,7 +94,7 @@ func (r refusalReads) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) 
 
 // consumerCreateSubjects are the subjects a create or an update of the consumer cfg names, on
 // stream, can go to: nats.go picks one of three by the server's version and the consumer's filter
-// (nats.go@v1.53.1 jsm.go:483-533), so all three are read.
+// (nats.go@v1.55.0 jsm.go:488-590), so all three are read.
 func consumerCreateSubjects(stream string, cfg *nats.ConsumerConfig) []string {
 	name := cmp.Or(cfg.Name, cfg.Durable)
 	subjects := []string{jsAPI("CONSUMER.CREATE", stream, name), jsAPI("CONSUMER.DURABLE.CREATE", stream, name)}
@@ -113,7 +113,7 @@ func (r refusalReads) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, op
 }
 
 // AddConsumer of a named consumer reads the consumer first and then creates it on one of its
-// create subjects (nats.go@v1.53.1 jsm.go:447-473, consumerCreateSubjects), in that order, so the
+// create subjects (nats.go@v1.55.0 jsm.go:447-471, consumerCreateSubjects), in that order, so the
 // refusal it ends on is the one of the request it stopped at. An unnamed consumer, an ephemeral
 // one, is sent as js sends it: no start or repair makes one through this context.
 func (r refusalReads) AddConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
@@ -126,7 +126,7 @@ func (r refusalReads) AddConsumer(stream string, cfg *nats.ConsumerConfig, opts 
 	})
 }
 
-// DeleteConsumer is one request, the consumer's delete (nats.go@v1.53.1 jsm.go:599-615).
+// DeleteConsumer is one request, the consumer's delete (nats.go@v1.55.0 jsm.go:599-630).
 func (r refusalReads) DeleteConsumer(stream, consumer string, opts ...nats.JSOpt) error {
 	_, err := refusedVia(r, []string{jsAPI("CONSUMER.DELETE", stream, consumer)}, func() (struct{}, error) {
 		return struct{}{}, r.JetStreamContext.DeleteConsumer(stream, consumer, opts...)
@@ -134,8 +134,8 @@ func (r refusalReads) DeleteConsumer(stream, consumer string, opts ...nats.JSOpt
 	return err
 }
 
-// KeyValue is the lookup of a bucket: one read of its stream (nats.go@v1.53.1 kv.go:396-411,
-// js.go:189-192).
+// KeyValue is the lookup of a bucket: one read of its stream (nats.go@v1.55.0 kv.go:397-418,
+// js.go:193-199).
 func (r refusalReads) KeyValue(bucket string) (nats.KeyValue, error) {
 	return refusedVia(r, []string{jsAPI("STREAM.INFO", "KV_"+bucket)}, func() (nats.KeyValue, error) {
 		return r.JetStreamContext.KeyValue(bucket)
@@ -144,7 +144,7 @@ func (r refusalReads) KeyValue(bucket string) (nats.KeyValue, error) {
 
 // CreateKeyValue is the create of a bucket, which asks the account for its JetStream info first
 // and then creates the stream, and on "stream name already in use" reads the stream and sometimes
-// updates it (nats.go@v1.53.1 kv.go:432-434, :525, :534-545), in that order, so the refusal a step
+// updates it (nats.go@v1.55.0 kv.go:422-548), in that order, so the refusal a step
 // ends on is the one of the request it stopped at.
 func (r refusalReads) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
 	stream := "KV_" + cfg.Bucket

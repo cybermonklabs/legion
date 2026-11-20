@@ -22,6 +22,7 @@ func newWorkspaceCacheCommand(stdout, stderr io.Writer) *cobra.Command {
 	listen := cmd.Flags().String("listen", fmt.Sprintf(":%d", repocache.Port), "the address the cache serves /healthz and /tar on")
 	refresh := cmd.Flags().Duration("refresh", 10*time.Minute, "how long between fetches from GitHub")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		return workspaceInitExit(cmd, workspaceCache(ctx, *repo, *root, *listen, *refresh, stdout), stderr)
 	})
 	return cmd

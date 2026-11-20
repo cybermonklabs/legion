@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -689,9 +690,11 @@ func (r PullRequestReview) lastLegionFooter() legionFooter {
 
 // LegionSession is the session named in the last Legion footer in the review's body
 // (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
-// be parsed, or its session is empty.
+// be parsed, or its session is empty. The footer is JSON, whose \u0000 escape decodes to a NUL
+// that the body as stored never shows, so the session is given as the store would keep it
+// (storetext.Text): the workflow compares it with the reviewer claim's stored session.
 func (r PullRequestReview) LegionSession() string {
-	return r.lastLegionFooter().Session
+	return storetext.Text(r.lastLegionFooter().Session)
 }
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
@@ -1604,7 +1607,19 @@ type Pool interface {
 // Making per-tree locking correct means promotion taking the candidate tree's lock as well, which
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
+//
+// Before anything else, source, eventID and every string fact carries are given through the
+// store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
+// handler see the fact as the store keeps it. A handler compares what the fact says with what the
+// store holds of it — a title, a check run's name, a head, a changes request's reason — and the
+// store keeps each text as the rule makes it: compared as it arrived, a fact holding a text the
+// rule changes would differ from its own stored copy every time it was delivered again, and be
+// written again, or become another step of a pull request's head run. Every fact of GitHub,
+// Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
+// the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
+// Reconcile.
 func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Result{}, err
@@ -1686,12 +1701,17 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.
+//
+// ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
+// the store keeps them, and each one found is answered under the id the caller gave: a caller that
+// looks up its own id finds it, whatever the rule made of it.
 func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, source, eventIDs)
+	stored := storetext.Strings(eventIDs)
+	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
@@ -1699,8 +1719,14 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
+	found := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		applied[id] = true
+		found[id] = true
+	}
+	for i, id := range eventIDs {
+		if found[stored[i]] {
+			applied[id] = true
+		}
 	}
 	return applied, nil
 }

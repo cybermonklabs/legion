@@ -902,7 +902,8 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
       return { markId: "m-2", placement: null, quote: MARK_ANCHOR.quote };
     },
   });
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const refusal = Promise.withResolvers<never>();
   const createComment = spyOn(api, "createComment").mockReturnValue(refusal.promise);
   jest.useFakeTimers();

@@ -1,12 +1,12 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -16,6 +16,7 @@ import { runningAgent } from "../credentials/agent-fixture";
 import { claimIssue as base, sessionClaim as claim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
@@ -458,6 +459,45 @@ test("a pin the reader stopped says Retry sends it again, not that it failed", a
         stopped: new SendStoppedError(),
       })
     );
+  } finally {
+    realClock();
+    view.unmount();
+    view.client.clear();
+    pin.mockRestore();
+    state.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The reader can make a stopped pin again from the shell's pending writes as well as from the
+// header (`PendingWritesIndicator`'s Retry, `Writes.retry`). Once that lands the pin is saved, so
+// the header's line that Dispatch has not confirmed it goes.
+test("a stopped pin's line goes once the shell's Retry of it lands", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const pin = spyOn(api, "putIssueState").mockRejectedValue(dropped());
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const view = header(base);
+  try {
+    const button = await screen.findByRole("button", { name: "Pin issue" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(button);
+    await stopTheLateWrite(view.client);
+    expect(screen.getByRole("alert").textContent).toStartWith(
+      "Dispatch has not confirmed the pin status"
+    );
+    const stoppedTries = pin.mock.calls.length;
+    pin.mockResolvedValue({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
+    const [row] = writesOf(view.client).rows();
+    act(() => writesOf(view.client).retry(row?.id ?? 0));
+    await tick(1_000);
+    expect(pin.mock.calls.length, "the shell's Retry sent the pin again").toBe(stoppedTries + 1);
+    expect(writesOf(view.client).rows(), "the shell's Retry of the pin did not land").toEqual([]);
+    expect(
+      screen.queryByRole("alert"),
+      "the stopped pin's line stayed after the shell's Retry of it landed"
+    ).not.toBeInTheDocument();
   } finally {
     realClock();
     view.unmount();

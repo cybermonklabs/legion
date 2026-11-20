@@ -19,23 +19,23 @@ const streamProbeInterval = 2 * time.Second
 
 // streamConfirmMaxAge is the oldest confirmation of the bucket's stream under which a record
 // delivered while the copy follows its bucket is applied without waiting for a read of the stream
-// (confirmation). It holds by nats.go's own constants (v1.50.0 js.go), not by timer luck. Deleting
+// (confirmation). It holds by nats.go's own constants (v1.55.0 js.go), not by timer luck. Deleting
 // the stream ends the old ordered consumer's records and idle heartbeats, and nats.go moves the
 // consumer onto a stream created again only from activityCheck, which runs every hbcThresh (2) ×
-// the 5 s idle heartbeat (orderedHeartbeatsInterval) and resets the consumer only when nothing - no
-// record, no heartbeat - arrived since the check before it, 10 s earlier. While the stream exists
-// the server sends one or the other at least every 5 s, so the earliest reset comes 10 s after the
-// last arrival before the delete: at least 5 s after the delete itself. A confirmation is the time
-// its STREAM.INFO request was sent, and an answer naming the watched stream means the delete came
-// after that send. So a record in hand at most 4 s after a confirmation's send arrived before any
-// reset could have happened, at the earliest 5 s after that send, and is the watched stream's; a
-// record past that waits for a read of the stream, which stops the copy following before the record
-// is applied when the stream is no longer the watched one. 4 s leaves a second of margin under the
-// 5 s. The jetstream watcher subscribes through the same legacy ordered push consumer (nats.go
-// v1.50.0 jetstream/kv.go:1302-1330), so these constants are the ones it runs on. The wait is for
-// the read in flight, or one the record sends when none is and none ended within the probe
-// interval; past a read that did not answer, or answered too late to vouch for it, a record is
-// applied unread (confirmation says why).
+// the 5 s idle heartbeat (orderedHeartbeatsInterval, js.go:222-226) and resets the consumer only
+// when nothing - no record, no heartbeat - arrived since the check before it, 10 s earlier. While
+// the stream exists the server sends one or the other at least every 5 s, so the earliest reset
+// comes 10 s after the last arrival before the delete: at least 5 s after the delete itself. A
+// confirmation is the time its STREAM.INFO request was sent, and an answer naming the watched
+// stream means the delete came after that send. So a record in hand at most 4 s after a
+// confirmation's send arrived before any reset could have happened, at the earliest 5 s after that
+// send, and is the watched stream's; a record past that waits for a read of the stream, which stops
+// the copy following before the record is applied when the stream is no longer the watched one. 4 s
+// leaves a second of margin under the 5 s. The jetstream watcher subscribes through the same legacy
+// ordered push consumer (nats.go v1.55.0 jetstream/kv.go:1334-1335), so these constants are the
+// ones it runs on. The wait is for the read in flight, or one the record sends when none is and
+// none ended within the probe interval; past a read that did not answer, or answered too late to
+// vouch for it, a record is applied unread (confirmation says why).
 const streamConfirmMaxAge = 4 * time.Second
 
 // Check reads the bucket's stream through KV's jetstream handle (bus.KeyValue.ReadStreamState), the
