@@ -458,13 +458,12 @@ type routeScopeSet []string
 //
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
-// and `approve`, the right to settle what a person settles, which the twelve rows below that
-// decide a credential, a sign-in, a review, a decision's Keep or a token need as well. A person's
-// browser holds both, and their personal tokens hold the set each token's row names. A
-// broker-issued token that acts for its person holds `person` alone, never `approve`
-// (brokerTokenActor): it is made from a file on the machine that holds it, so whoever copies
-// that file holds it. The shared token, a pod's service-account token, a project-scoped
-// session's token and a broker-issued token that names a service and no person hold neither.
+// and `approve`, the right to settle what a person settles, which the rows below that decide a
+// credential, a sign-in, a review, a decision's Keep or a token need as well. A person's browser
+// holds both, and their personal tokens hold the set each token's row names. A broker-issued
+// token that acts for its person holds `person` alone, never `approve` (brokerTokenActor). The
+// shared token, a pod's service-account token, a project-scoped session's token and a
+// broker-issued token that names a service and no person hold neither.
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
 // caller must hold, and no person holds that one. The routes such a token may call are a list of

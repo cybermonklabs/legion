@@ -1,3 +1,3 @@
 kind: Changed
 body: |-
-  `dispatch-openapi.json` lists `approve` beside `person` in the `x-oauth-scopes` of `POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`: keeping a decision now needs both scopes.
+  `dispatch-openapi.json` lists `approve` beside `person` in the `x-oauth-scopes` of `POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`: keeping a decision now needs both scopes. The documentation of `DISPATCH_SCOPES` names a decision's Keep and a sign-in's revoke among what `approve` settles, and says that no token the secrets broker issued holds `approve`.

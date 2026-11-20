@@ -1201,15 +1201,15 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   back and decides nothing, which is the whole of what that name carries.
 - A Dispatch access token the token exchange mints never holds Dispatch's OAuth scope `approve`,
   whatever its project scope: Dispatch gives a token that acts as its person the scope `person`
-  alone, and every other token none. So in Dispatch no agent's token, a person's sign-in on a box
-  and a machine login included, can decide or look up a machine login, revoke a grant, a machine
-  login or a sign-in, mint, change or revoke a personal token, review a document, keep a decision
-  or answer an approval request: Dispatch answers `403 OAUTH_SCOPE_REQUIRED`, or
-  `403 READ_ONLY_TOKEN` to a read-only token. The person does those in a browser signed in to
-  Dispatch, or with a personal token they gave `approve`. A copy of a machine's file
-  (`AGENT_SECRETS_MACHINE_FILE`) still reaches this broker's own operator routes, which take a
-  launcher proof signed with that file's key: it can revoke the person's grants
-  (`POST /v1/operator/grants/{id}/revoke`) and end their other machine logins
+  alone, and every other token none. So in Dispatch no token the exchange mints, a person's
+  sign-in on a box and a machine login included, can call a route whose `x-oauth-scopes` name
+  `approve` in Dispatch's OpenAPI document, such as a machine login's decision, a revoke of a
+  grant, a machine login or a sign-in, or a personal token's mint, or answer an approval request:
+  Dispatch answers `403 OAUTH_SCOPE_REQUIRED`, or `403 READ_ONLY_TOKEN` to a read-only token. The
+  person does those in a browser signed in to Dispatch, or with a personal token they gave
+  `approve`. A copy of a machine's file (`AGENT_SECRETS_MACHINE_FILE`) still reaches this broker's
+  own operator routes, which take a launcher proof signed with that file's key: it can revoke the
+  person's grants (`POST /v1/operator/grants/{id}/revoke`) and end their other machine logins
   (`POST /v1/operator/machines/{id}/revoke`). Those take access away and grant none.
 - Behind a reverse proxy, set `BROKER_TRUSTED_PROXY_HEADER` so the machine-login, token-endpoint
   and secret-reread rate limiters see each caller's address rather than the proxy's. The token
