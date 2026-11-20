@@ -416,6 +416,41 @@ func TestATypeChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 	}
 }
 
+// TestTheNextRequestEndsAGrantWhoseTypeChanged: a type retag after a grant ends that grant at the
+// next request that would reuse it too, as it does at the next release: the request is not handed
+// the grant, the grant ends for good, and setting the type back does not bring it back. While the
+// type stands, the same request is handed the grant.
+func TestTheNextRequestEndsAGrantWhoseTypeChanged(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	secret := requestTypeSecret("BACK_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
+	retag(t, machine, secret)
+	first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "BACK_TYPE_KEY"), "", nil)
+	if err != nil || first.GrantID == nil {
+		t.Fatalf("Create = %+v, %v", first, err)
+	}
+	reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key again", "BACK_TYPE_KEY"), "", nil)
+	if err != nil || reused.GrantID == nil || *reused.GrantID != *first.GrantID {
+		t.Fatalf("Create while the type stands = %+v, %v; want the grant %s handed back", reused, err, *first.GrantID)
+	}
+
+	moved := secret
+	moved.Tags = maps.Clone(secret.Tags)
+	moved.Tags[policy.TagType] = policy.TypeGoogleLogin
+	moved.Value = policytest.TypeValue(policy.TypeGoogleLogin)
+	retag(t, machine, moved)
+	again, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key once more", "BACK_TYPE_KEY"), "", nil)
+	if err != nil || (again.GrantID != nil && *again.GrantID == *first.GrantID) {
+		t.Fatalf("Create after the type moved = %+v, %v; want the grant %s not handed back", again, err, *first.GrantID)
+	}
+	if by, audits := endedForGood(t, machine, *first.GrantID); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1: the request ends it", by, audits, GrantEndedActor)
+	}
+	retag(t, machine, secret)
+	if release, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values once the type is back = %v, %v; want ErrGrantNotLive: the grant stays ended", release.Values, err)
+	}
+}
+
 // TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded: a max-grant lowered below a live
 // grant's lifetime ends that grant in the store at its next release, so raising it back does not
 // bring the grant back, while a grant within the lowered bound keeps releasing.

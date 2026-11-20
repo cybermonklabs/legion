@@ -114,3 +114,55 @@ func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T)
 		})
 	}
 }
+
+// TestAPauseFoundAfterTheReadsHidesNoMovedSource: a grant of AUTO_TOKEN and RACED_LOGIN, both
+// plain secrets its session got at once. While a release reads the store, AUTO_TOKEN, which sorts
+// first, is retagged with a tag the loader refuses, so the policy no longer serves it, which only
+// pauses the grant; and RACED_LOGIN is retagged to a type, so it is served from another source,
+// which ends the grant for good. The check after the reads reads both names, so the release ends
+// the grant, and once both retags are taken back the grant still releases nothing.
+func TestAPauseFoundAfterTheReadsHidesNoMovedSource(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	ordinary := policytest.TypeValue(policy.TypeGoogleLogin)
+	plain := policytest.Secret("RACED_LOGIN", fixtureOperator, policy.TierAgent, ordinary)
+	retag(t, machine, plain)
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read both", "AUTO_TOKEN", "RACED_LOGIN"), "", nil)
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
+	}
+	grantID := *request.GrantID
+	frozen := machine.Policy.Get().Secrets["RACED_LOGIN"].Source
+
+	refused := policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")
+	refused.Tags[policy.TagAdmin] = "yes"
+	store, reader := fixtureStore(machine), machine.Secrets
+	var duringErr error
+	machine.Secrets = retagDuringRead{Reader: reader, once: &sync.Once{}, err: &duringErr, during: func(ctx context.Context) error {
+		store.Put(refused)
+		store.Put(policytest.TypeSecret("RACED_LOGIN", fixtureOperator, policy.TierAgent, policy.TypeGoogleLogin, ordinary))
+		return machine.Policy.Refresh(ctx)
+	}}
+	release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
+	machine.Secrets = reader
+	if duringErr != nil {
+		t.Fatalf("the retags during the read: %v", duringErr)
+	}
+	now := machine.Policy.Get()
+	if _, served := now.Secrets["AUTO_TOKEN"]; served {
+		t.Fatal("the policy still serves AUTO_TOKEN under a malformed admin tag; the pause never ran")
+	}
+	if raced, served := now.Secrets["RACED_LOGIN"]; !served || raced.Source == frozen {
+		t.Fatalf("RACED_LOGIN served %v from %q; want it served from another source than %q", served, raced.Source, frozen)
+	}
+	if !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values across the two retags = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
+	}
+	if by, audits := endedForGood(t, machine, grantID); by != GrantEndedActor || audits != 1 {
+		t.Errorf("grant revoked_by %q with %d grant.revoked rows by it; want %s and 1: RACED_LOGIN's moved source ends it whatever AUTO_TOKEN answers", by, audits, GrantEndedActor)
+	}
+
+	retag(t, machine, policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"), plain)
+	if release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Errorf("Values once both retags are taken back = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
+	}
+}

@@ -263,12 +263,13 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 }
 
 // On a broker_schema_migrations an earlier runner created, the ALTER TABLE that adds the identity
-// columns takes ACCESS EXCLUSIVE on the table, and a request's read of the table
-// (requests.writtenBeforeMigration13) queues behind that lock. The runner commits the ALTER in a
-// short transaction of its own, so the lock is gone before any pending migration runs: here the
-// pending migration records, while it runs, how many ACCESS EXCLUSIVE locks on the table are
-// granted, and finds none. The control is a table this runner created, which needs no ALTER and
-// reads none either; with the ALTER back in the run's one transaction, the first row reads 1.
+// columns takes ACCESS EXCLUSIVE on the table, and a request's read of the table (a release with
+// the old rule for requests written before migration 0013 reads version 13's applied_at) queues
+// behind that lock. The runner commits the ALTER in a short transaction of its own, so the lock
+// is gone before any pending migration runs: here the pending migration records, while it runs,
+// how many ACCESS EXCLUSIVE locks on the table are granted, and finds none. The control is a
+// table this runner created, which needs no ALTER and reads none either; with the ALTER back in
+// the run's one transaction, the first row reads 1.
 func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.T) {
 	for name, table := range map[string]string{
 		"an earlier runner's table":    "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())",

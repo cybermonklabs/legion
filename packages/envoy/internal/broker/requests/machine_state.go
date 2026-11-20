@@ -22,11 +22,12 @@
 // and a withheld name's. A session that enrols on a box it has not run on before takes what the
 // enrollment it is moving off holds — its grants, its requests and the names its operator withheld
 // from it — because an approval a person gives hours later, and the grant that comes of it, belong
-// to the session rather than to the box that asked (enroll.Create's adoption,
-// dispatch://INFRA-1167). So every read and every transition here is keyed by the enrollment the
-// row itself names now, never by the one the append-only credential_requests record froze: that is
-// what gets a moved session its own grant back, lets it cancel its own request, and still refuses
-// it another session's. moved_session_test.go drives each of those surfaces across a move.
+// to the session rather than to the box that asked (enroll.Create's adoption, and the incident of
+// a session that moved boxes while its approval waited). So every read and every transition here
+// is keyed by the enrollment the row itself names now, never by the one the append-only
+// credential_requests record froze: that is what gets a moved session its own grant back, lets it
+// cancel its own request, and still refuses it another session's. moved_session_test.go drives
+// each of those surfaces across a move.
 package requests
 
 import (
@@ -511,8 +512,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
 // seam), requires iss to be this enrollment's own key and no login_hint (session requests never
 // name their own approver — that's the policy's job), rereads each name the live policy does not
-// serve (rereadMissing), and hands back a live grant for exactly these names when one may be
-// reused (reuseLiveGrant). Otherwise it decides and writes the request in one transaction: it
+// serve (rereadMissing), and checks every live grant for exactly these names before any refusal
+// of a well-formed request (endMatchingLiveGrants). That pass ends each grant its current rules
+// end, under that grant's own lifetime. Create then hands back a live grant for exactly these
+// names when one may be reused (reuseLiveGrant). Otherwise it decides and writes the request in
+// one transaction: it
 // takes the advisory locks that serialize pending requests for each requested name in one
 // enrollment (lockPendingNames), then locks the enrollment live (lockLiveEnrollment), so no
 // request or grant lands on an enrollment that ended after Create first read it (such an
@@ -553,13 +557,17 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // the enrollment's lock, end them, commit and then log each end naming the reused grant's request.
 // With none it opens no transaction and writes nothing beyond the jti Replay already wrote, so
 // such an ask waits on no writer of the enrollment row. An error of that read or of that
-// transaction is the ask's. An ask Create refuses before it writes a request ends nothing: an
+// transaction is the ask's. An ask Create refuses before it writes a request ends no request: an
 // invalid or replayed request object, an unknown name
 // (policy.ErrUnknownSecret, which the evaluation answers), a name whose value is pending, a
 // lifetime over a name's max-grant, a narrowing refusal or ErrMixedApprovers (the evaluation's
-// too). Each of them returns before any end runs, since the main transaction ends requests only
-// once the evaluation has answered and the reuse path only once a live grant has: no request of
-// that ask exists for the line to name, and the session's next valid ask ends that request.
+// too). Each of them returns before any request end runs, since the main transaction ends requests
+// only once the evaluation has answered and the reuse path only once a live grant has: no request
+// of that ask exists for the line to name, and the session's next valid ask ends that request. A
+// well-formed ask that Create refuses for a pending value, an unknown name, a max-grant or mixed
+// approvers can still end a live grant of the same names first (endMatchingLiveGrants). An invalid
+// session id (ErrSessionIDInvalid), which the ask's body names beside its request object, and an
+// invalid request object (record.ErrRequestInvalid) are refused before that grant check.
 //
 // An end takes the request's row lock after the advisory locks, which every Create takes in
 // sorted name order, and after the enrollment's lock for share. applyDecisionAttempt, which
@@ -639,6 +647,16 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
+	sorted := sortedCopy(names)
+	// A matching live grant must be re-checked before this new request can refuse for a pending
+	// value, the judge pre-check, or a max-grant limit. Those refusals pause or reject the new
+	// request, but cannot keep an old grant live when any key now ends it permanently. The pass
+	// keeps each grant it left live, with its pause, for the reuse below.
+	checkedGrants, err := m.endMatchingLiveGrants(ctx, enr, sorted, set)
+	if err != nil {
+		return Request{}, err
+	}
 	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
 	// as unknown, which a caller takes as final: no request row, record or approver for it.
 	for _, name := range names {
@@ -646,7 +664,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
 		}
 	}
-	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	// A key the judge decides grants at most its own judge seconds, but only when the judge
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
 	// keys the judge decides, and one that asks for longer is refused here, before anyone is
@@ -678,8 +695,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%w: %s allows at most %s; ask with agent-secrets --ttl %s", ErrGrantRequiresLifetime, name, limit, limit)
 		}
 	}
-	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, checkedGrants); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -734,7 +750,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	if e.state == "pending" && kept.ID != "" {
-		if slices.Equal(kept.Names, sorted) && (kept.joins(lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
+		if slices.Equal(kept.Names, sorted) && (sameLifetime(kept.Lifetime, lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
 			if err := tx.Commit(ctx); err != nil {
 				return Request{}, err
 			}
@@ -1576,7 +1592,8 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 // request row moves with the grant: enroll.Create hands what a predecessor held to the next
 // enrollment of that session name under the same principal. Reading the record's own column
 // would answer an approval given after a move with "the requesting enrollment is no longer live"
-// and mint nothing, which is the half of the incident dispatch://INFRA-1167 reports.
+// and mint nothing, which is half of the incident of a session that moved while its approval
+// waited.
 //
 // The work is one attempt (applyDecisionAttempt), made again when the request moves out from
 // under it. A session moves once per enrolment, so the attempt after a move reads one enrollment
@@ -1959,9 +1976,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// and dormant_since not null: ended by an end of its box while it still held a grant or this
 	// pending request, and kept for the session's next box (enroll.endEnrollment) — is the one
 	// this carry is for, and a grant may land on it: an approval given while the box is gone is
-	// the order dispatch://INFRA-1167 reports, the next enrollment of that session name adopts
-	// the grant with the request (enroll.adopt), the carry sweep revokes it if nobody comes back
-	// (enroll.Service.EndCarried), and a person's revoke of the machine login or the sign-in
+	// the order the incident of a moved session showed, the next enrollment of that session name
+	// adopts the grant with the request (enroll.adopt), the carry sweep revokes it if nobody comes
+	// back (enroll.Service.EndCarried), and a person's revoke of the machine login or the sign-in
 	// reaches it as it reaches any grant (endCredential). The third is a row whose lease has
 	// lapsed and against which no end is written yet, the window between the lapse and the sweep
 	// that ends it, which is up to BROKER_SWEEP_SECONDS long: a grant lands on it when the end

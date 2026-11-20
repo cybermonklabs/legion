@@ -33,13 +33,21 @@ func approvedGrant(t *testing.T, m *Machine, audience, enr string, key *ecdsa.Pr
 	t.Helper()
 	m.Audience = audience
 	defer func() { m.Audience = testAudience }()
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked of "+audience, names...), "", nil)
+	return approvedRequest(t, m, enr, signRequest(t, m, key, "asked of "+audience, names...), approver)
+}
+
+// approvedRequest is approvedGrant's grant for a request object its caller signed, such as one
+// with a lifetime of its own: compact, signed for m.Audience by enrollment enr's key, is made
+// pending on a record by Create and approved by approver.
+func approvedRequest(t *testing.T, m *Machine, enr, compact, approver string) (request Request, grantID string) {
+	t.Helper()
+	req, err := m.Create(context.Background(), enr, compact, "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
-		t.Fatalf("Create(%v) on %s = %+v, %v; want a pending request with a record", names, audience, req, err)
+		t.Fatalf("Create on %s = %+v, %v; want a pending request with a record", m.Audience, req, err)
 	}
 	dec, err := m.ApplyDecision(context.Background(), *req.RecordID, true, approver)
 	if err != nil || dec.GrantID == "" {
-		t.Fatalf("ApplyDecision(%s) on %s = %+v, %v; want a grant", *req.RecordID, audience, dec, err)
+		t.Fatalf("ApplyDecision(%s) on %s = %+v, %v; want a grant", *req.RecordID, m.Audience, dec, err)
 	}
 	return req, dec.GrantID
 }

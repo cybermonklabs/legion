@@ -729,26 +729,32 @@ The broker evaluates every name
   HTTP status code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named
   `unknown`), or the class of a failed call, never the upstream's own text, and the broker logs it
   for its operator.
-  A grant ends for good when a release finds its secret's type changed
-  (removed, or changed to another type) or its lifetime over the current `max-grant`: that
-  release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit row by
-  `broker:release-recheck`, and the session asks again. A release of a stored secret checks the
-  policy again once it has read the store, so a retag to a type reread during that read releases
-  nothing and ends the grant the same way: retag a stored secret to a type, and wait for the broker
-  to read the new tags, before storing its App key or login. That retag checks the value the
-  secret holds, so a sign-in that may read it is refused while it is no value of that type
+  A grant ends for good when a release, or a well-formed request from its enrollment for exactly
+  its names, finds its secret's type changed (removed, or changed to another type), or finds its
+  lifetime over the current `max-grant`, whatever another secret of the grant answers. Before a
+  well-formed new request can refuse because another key is missing, waits for a value, wants an
+  approval or has a `max-grant`, the broker reads every matching live grant and ends one with a
+  permanent cause.
+  A key the broker no longer serves, or one that now wants an approval, only pauses a grant when
+  no key ends it. The ending release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit
+  row by `broker:release-recheck`, and the session asks again. A release of a stored secret checks
+  the policy again once it has read the store, so a retag to a type reread during that read
+  releases nothing and ends the grant the same way: retag a stored secret to a type, and wait for
+  the broker to read the new tags, before storing its App key or login. That retag checks the value
+  the secret holds, so a sign-in that may read it is refused while it is no value of that type
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
-  A change reverted before any release finds
-  it leaves the grant as it was: it was approved for that secret, type and source, and its next
-  release mints a token of that same type from that same frozen source, never the stored value. To
-  end a grant, revoke it. A type secret the broker stops serving, such as one whose
-  `github-owners` is removed or malformed, stops releasing until the secret is served again.
+  A change reverted before any release, or any well-formed request from its enrollment for exactly
+  its names, finds it leaves the grant as it was: it was approved for that secret, type and source,
+  and its next release mints a token of that same type from that same frozen source, never the
+  stored value. To end a grant, revoke it. A type secret the broker stops serving, such as one
+  whose `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A
-  `max-grant` set or lowered later holds what came before it to the new bound: a release that finds
-  a live grant lasting longer ends it for good (`GRANT_NOT_LIVE`), and a pending request that asked
-  for longer is no one's to approve (`NOT_APPROVER`), so its session cancels it and asks again
-  within the bound.
+  `max-grant` set or lowered later holds what came before it to the new bound: a release, or a
+  well-formed request from the same enrollment for exactly the grant's names, that finds a live
+  grant lasting longer ends it for good (`GRANT_NOT_LIVE`), and a pending request that asked for
+  longer is no one's to approve (`NOT_APPROVER`), so its session cancels it and asks again within
+  the bound.
 - When every name is automatic, the request is granted at once.
 - Otherwise it is **pending**: the request carries a reason, and the broker writes a
   credential-request record for the approver to
@@ -1108,7 +1114,9 @@ not bound. On an entry that lists methods and paths, a request carrying
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
 Each entry's own fingerprint is part of what a grant was decided under, so
-an edit to one secret's entry ends the grants that entry affects and no others.
+an edit to one secret's entry ends the grants that entry affects and no others, at the release
+and at a well-formed request from the grant's enrollment for exactly its names, before the
+grant's approval chain and policy are checked again.
 
 What the airlock does not stop is as much of the design as what it does:
 
@@ -1337,18 +1345,27 @@ approves that secret lists the grant and can end it, and a judged grant of a sha
 every signed-in person's page.
 
 A judged grant is held to the rules in force rather than to a person's standing, and to the
-`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
-least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
-that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
-administrator's after the judge decided it ends that grant for good, at the release and at the
-next request that would reuse it: a person approves every release of one, so no judged grant
-goes on releasing it, and taking the tag off again does not bring the grant back: the session
-asks afresh, as a new request, which its person decides while the tag stands. The chain check
-([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
-agent secrets alone, each one a key the rules still give the judge seconds of, and a lifetime
-within each one's seconds, so a forged record, and one a rules change left behind, release
-nothing either. What the reason says is the judge's to read against the guidance, and no part of
-that check.
+`admin` tag over both. An edit to the rules entry of a key the judge decided ends that grant for
+good, as an edit to any entry ends the grants that entry affects ([The airlock](#the-airlock)):
+one that takes the key's `judge` away, lowers it below the grant's lifetime, or drops the entry
+does so at the release and at a well-formed request from that enrollment for exactly the grant's
+names, so putting the entry back does not bring the grant back (`GRANT_NOT_LIVE`). Each release also
+re-checks that the secret's entry still gives the judge at least the grant's lifetime. A key its
+owner tags as administrator's after the judge decided ends that grant for good too, whether the
+judge decided that key or the session got it at once beside the judged ones. Before that
+well-formed request can refuse because another requested key waits for a value, is not served,
+wants an approval or has a shorter `max-grant`, the broker reads every matching live grant with
+its own lifetime.
+Any permanent cause on any key ends the grant; a key that only pauses it cannot hide that end.
+A person approves every release of an administrator's secret, so no judged grant goes on
+releasing it, and taking the tag off again does not bring the grant back: the session asks
+afresh, as a new request, which its person decides while the tag stands. The chain check
+([The audit record](#the-audit-record)) still writes its failed-chain line beside an end, but
+only refuses a grant that no current policy cause ended. It admits a judge's approval only on a
+record that names agent secrets alone, each one a key the rules still give the judge seconds of,
+and a lifetime within each one's seconds, so a forged record, and one a rules change left behind,
+release nothing either. What the reason says is the judge's to read against the guidance, and no
+part of that check.
 
 The judge's reads of Dispatch are the issue a reason names and the text of its spec document, and
 the ask it cites, with the broker's own projected ServiceAccount token, read again from its file

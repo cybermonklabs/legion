@@ -155,10 +155,11 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 }
 
 // TestRequestersTheNextRequestEndsTheGrantTheListDropped drives the other re-check. A session that
-// asks again for names it already holds never reaches Values: Create's reuse of the live grant is
-// where the list is read (reuseLiveGrant). That grant must end there too, rather than be passed
-// over and left live for the next release, and the session gets back the denied request that says
-// why.
+// asks again for names it already holds never reaches Values: Create's check of every live grant
+// for those names reads the list (endMatchingLiveGrants), before any refusal and before the reuse
+// (reuseLiveGrant), which only takes the pause that check found. That check must end the grant,
+// rather than leave it live for the next release, and the session gets back the denied request
+// that says why.
 func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
@@ -182,10 +183,10 @@ func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
 		t.Fatalf("the denied request's detail = %v, want %q", denied.Detail, want)
 	}
 	if by, audits := endedForGood(t, m, *granted.GrantID); by != GrantEndedActor || audits != 1 {
-		t.Fatalf("the reused grant's revoked_by = %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+		t.Fatalf("the reused grant's revoked_by = %q with %d grant.revoked rows by %s; want the request to have ended it once", by, audits, GrantEndedActor)
 	}
 	if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
-		t.Fatalf("Values of the grant the reuse ended = %v; want ErrGrantNotLive", err)
+		t.Fatalf("Values of the grant the request ended = %v; want ErrGrantNotLive", err)
 	}
 }
 
@@ -337,14 +338,16 @@ func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing
 	}
 }
 
-// TestReuseRefusesAPodWhoseServiceIsNoLongerListed drives reuseLiveGrant's requesters re-check on
-// its own. That re-check runs behind a gate of three terms — the policy's version has moved, a
-// granted name is a service's own (anyServiceOwned), or a granted name carries a requesters tag
-// (anyListed) — and here only the last of them can open it: the secret is shared, so no name is
-// service-owned, and emptying the account mapping changes no tag, so the policy's version stands
-// still. A pod that asks again for the name it already holds, off the list by that mapping alone,
-// is answered a denied request of its own naming the secret and the rule, and the grant the reuse
-// passed over is ended for good there rather than left live until its next release reads it.
+// TestReuseRefusesAPodWhoseServiceIsNoLongerListed drives the requesters re-check of Create's check
+// of the live grants (endMatchingLiveGrants, through recheckLiveGrant) on its own. That re-check
+// runs behind a gate of four terms — the policy's version has moved, a granted name is a service's
+// own (anyServiceOwned), a granted name carries a requesters tag (anyListed), or the grant is a
+// person's pod's (personPodGrant) — and here only the requesters tag can open it: the secret is
+// shared, so no name is service-owned, the pod acts for no person, and emptying the account
+// mapping changes no tag, so the policy's version stands still. A pod that asks again for the name
+// it already holds, off the list by that mapping alone, is answered a denied request of its own
+// naming the secret and the rule, and that check ends the grant for good before the reuse, rather
+// than leave it live until its next release reads it.
 func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
@@ -369,7 +372,7 @@ func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
 		t.Fatalf("the denied request's detail = %v, want %q", denied.Detail, want)
 	}
 	if by, audits := endedForGood(t, m, *granted.GrantID); by != GrantEndedActor || audits != 1 {
-		t.Fatalf("the grant the reuse passed over: revoked_by %q with %d grant.revoked rows by %s; want it ended once", by, audits, GrantEndedActor)
+		t.Fatalf("the grant Create's check found: revoked_by %q with %d grant.revoked rows by %s; want it ended once", by, audits, GrantEndedActor)
 	}
 }
 

@@ -197,14 +197,15 @@ const versionTable = "broker_schema_migrations"
 // gives a broker_schema_migrations an earlier runner created the identity columns
 // (pgmigrate.EnsureIdentityColumns) and commits: its ALTER TABLE takes ACCESS EXCLUSIVE on the
 // table, Pin's lock_timeout bounds its wait at pgmigrate.LockTimeout (5 s), and the lock is held to
-// that short transaction's commit, so a request that reads the table
-// (requests.writtenBeforeMigration13) waits for the catalog change alone. The catalog change
-// commits whether or not the second transaction then refuses the rows: the columns are nullable,
-// and the release before ignores them. Every statement an earlier runner sends on the table names
-// its columns, so a pod of the release before this one serves beside it while the Deployment rolls,
-// and its rows record no name. A lock wait that outlasts its bound rolls that transaction back and
-// tries it again, as a migration is tried (pgmigrate.RetryVersionTableLockTimeouts), so a boot that
-// starts while a pg_dump holds the table waits it out rather than fail on its first wait.
+// that short transaction's commit, so a request that reads the table (a release with the old rule
+// for requests written before migration 0013 reads version 13's applied_at) waits for the catalog
+// change alone. The catalog change commits whether or not the second transaction then refuses the
+// rows: the columns are nullable, and the release before ignores them. Every statement an earlier
+// runner sends on the table names its columns, so a pod of the release before this one serves
+// beside it while the Deployment rolls, and its rows record no name. A lock wait that outlasts its
+// bound rolls that transaction back and tries it again, as a migration is tried
+// (pgmigrate.RetryVersionTableLockTimeouts), so a boot that starts while a pg_dump holds the table
+// waits it out rather than fail on its first wait.
 //
 // The second creates the table with those columns where there is none, judges every row before it
 // applies anything (pgmigrate.ReconcileRecorded, whose rule pgmigrate.Reconcile states: a refusal
@@ -212,10 +213,10 @@ const versionTable = "broker_schema_migrations"
 // the columns again where they are missing, for one case alone: on a fresh database, a pod of the
 // release before can create the table without them between the two transactions, and the ALTER
 // then holds ACCESS EXCLUSIVE until this transaction commits, after the pending migrations. That
-// pod serves at once, so its request's read of the table (requests.writtenBeforeMigration13) waits
-// behind the ALTER until this transaction commits, a wait the pending migrations bound. Each fill
-// is logged once the transaction has committed (pgmigrate.LogFixes). A fresh database commits
-// nothing, its table included, until every migration has applied.
+// pod serves at once, so its request's read of the table (version 13's applied_at, in a release
+// with that old rule) waits behind the ALTER until this transaction commits, a wait the pending
+// migrations bound. Each fill is logged once the transaction has committed (pgmigrate.LogFixes).
+// A fresh database commits nothing, its table included, until every migration has applied.
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {

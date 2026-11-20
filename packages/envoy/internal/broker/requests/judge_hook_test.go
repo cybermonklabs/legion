@@ -42,7 +42,7 @@ func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
 	nameTheSession(t, m, enr, judgedSession, fixtureOperator)
 	watched := watchJudge(m)
 
-	const reason = "Rotating the Deel key for INFRA-1353"
+	const reason = "Rotating the Deel key for the release job"
 	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request", req, err)
@@ -79,7 +79,7 @@ func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
 func TestTheJudgeIsHandedAnAnyoneApproverRecord(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	watched := watchJudge(m)
-	if req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Reading the shared key for INFRA-1353", 900, "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+	if req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Reading the shared key for the release job", 900, "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want a pending request", req, err)
 	}
 	if len(watched.handed) != 1 || watched.handed[0].Approver != record.AnyoneApprover {
@@ -93,7 +93,7 @@ func TestTheJudgeIsHandedAnAnyoneApproverRecord(t *testing.T) {
 func TestTheJudgeIsNotHandedACoalescedRequest(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	watched := watchJudge(m)
-	const reason = "Rotating the Deel key for INFRA-1353"
+	const reason = "Rotating the Deel key for the release job"
 	first, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, reason, 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || first.State != "pending" {
 		t.Fatalf("the first Create = %+v, %v; want a pending request", first, err)
@@ -118,7 +118,7 @@ func TestTheJudgeIsNotHandedARequestThePolicyDecided(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			watched := watchJudge(m)
-			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", c.secret), "", nil)
+			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for the release job", c.secret), "", nil)
 			if err != nil || req.State != c.state {
 				t.Fatalf("Create(%s) = %+v, %v; want %s", c.secret, req, err, c.state)
 			}
@@ -137,7 +137,7 @@ func TestANilJudgeIsNoJudge(t *testing.T) {
 	if m.Judge != nil {
 		t.Fatal("newFixture built a machine with a judge; a machine nobody wires has none")
 	}
-	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Rotating the Deel key for INFRA-1353", 900, "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Rotating the Deel key for the release job", 900, "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver {
 		t.Fatalf("Create with no judge = %+v, %v; want the pending request %s waits for", req, err, approver)
 	}
@@ -167,7 +167,7 @@ func TestJudgePolicyAnswersTheLivePolicy(t *testing.T) {
 // seconds a rules file gives it for the name, and this is the reading its admin check makes.
 func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 	m, enr, _, approver := newFixture(t)
-	retag(t, m, adminSecret())
+	retag(t, m, adminSecret(adminSecretName, "admin-v1"))
 	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, adminSecretName)
 	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || !admin {
 		t.Fatalf("JudgePolicy(%s) = %+v, withheld %v, admin %v, %v; want an approval by %s that says the secret is an administrator's", adminSecretName, decision, withheld, admin, err, approver)
@@ -190,7 +190,7 @@ func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 // outcome: a name its owner took back is not one the judge hands straight back.
 func TestJudgePolicyReportsAWithheldName(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
-	auto, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for the release job", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want an automatic grant", auto, err)
 	}

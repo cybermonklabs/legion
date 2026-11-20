@@ -146,6 +146,39 @@ func TestAChangedAirlockEntryEndsTheGrantsItAffects(t *testing.T) {
 	}
 }
 
+// TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged: an edit to an entry ends every grant it
+// affects at the next request that would reuse one, a grant a person approved as much as one the
+// model judge decided. The session asks again for SHARED_KEY, whose grant its person approved:
+// while the entry stands the grant is handed back, and once the entry changed the request is not
+// handed that grant: Create's check of the live grants for those names (endMatchingLiveGrants)
+// ends it for good before the reuse, and the request waits for a person afresh.
+func TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged(t *testing.T) {
+	digests := map[string]string{"SHARED_KEY": "shared-one"}
+	m, enr, key := newAirlockFixture(t, digests)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
+	}
+	kept, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
+	if err != nil || kept.GrantID == "" {
+		t.Fatalf("ApplyDecision(SHARED_KEY) = %+v, %v", kept, err)
+	}
+	reused, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key again", "SHARED_KEY"), "", nil)
+	if err != nil || reused.GrantID == nil || *reused.GrantID != kept.GrantID {
+		t.Fatalf("Create(SHARED_KEY) while its entry stands = %+v, %v; want the person's grant %s handed back", reused, err, kept.GrantID)
+	}
+
+	digests["SHARED_KEY"] = "shared-two"
+	reloadAirlock(t, m)
+	again, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key once more", "SHARED_KEY"), "", nil)
+	if err != nil || again.GrantID != nil || again.State != "pending" {
+		t.Fatalf("Create(SHARED_KEY) once its entry changed = %+v, %v; want no grant handed back and a new pending request", again, err)
+	}
+	if by, audits := endedForGood(t, m, kept.GrantID); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("the person's grant: revoked_by %q with %d grant.revoked rows by %s; want the request to have ended it once", by, audits, GrantEndedActor)
+	}
+}
+
 // TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUnder: a request
 // waits on its person for up to half a day, and the rules file can roll while it waits. What a
 // release compares each name against is the entry that name was decided under, and for an
@@ -187,5 +220,35 @@ func TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUn
 	}
 	if by, audits := endedForGood(t, m, decided.GrantID); by != GrantEndedActor || audits != 1 {
 		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)
+	}
+}
+
+// TestANameNoLongerServedPausesItsGrantWhateverItsEntry: a name whose entry fingerprint its grant
+// recorded, and that the policy then stops serving — here a retag the loader refuses — pauses its
+// grant rather than ending it, as it does a name the rules do not name: the policy holds no entry
+// of it to compare, and a retag that serves the name again releases the grant again. Only a name
+// the policy serves under another entry ends the grant.
+func TestANameNoLongerServedPausesItsGrantWhateverItsEntry(t *testing.T) {
+	digests := map[string]string{"AUTO_TOKEN": "entry-one"}
+	m, enr, key := newAirlockFixture(t, digests)
+	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "", nil)
+	if err != nil || granted.GrantID == nil {
+		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", granted, err)
+	}
+	refused := policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")
+	refused.Tags[policy.TagAdmin] = "yes"
+	retag(t, m, refused)
+	if _, served := m.Policy.Get().Secrets["AUTO_TOKEN"]; served {
+		t.Fatal("the policy still serves AUTO_TOKEN under a malformed admin tag; want it refused")
+	}
+	if release, err := m.Values(t.Context(), *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values while the policy does not serve AUTO_TOKEN = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
+	}
+	if by, audits := endedForGood(t, m, *granted.GrantID); by != "" || audits != 0 {
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by %s; want it paused, not ended", by, audits, GrantEndedActor)
+	}
+	retag(t, m, policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"))
+	if release, err := m.Values(t.Context(), *granted.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+		t.Fatalf("Values once AUTO_TOKEN is served again = %v, %v; want the value", release.Values, err)
 	}
 }

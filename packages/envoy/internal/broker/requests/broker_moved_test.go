@@ -473,23 +473,15 @@ func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
 }
 
 // liveGrantBesideAStaleRequest is R5 v9's sixth case's enrollment: enr holds a live grant of
-// DEEL_API_KEY that this broker's approver gave, and after it a stale request of another broker
-// for DEEL_API_KEY and stripeKey, which overlaps the grant's name. It answers the grant's request
-// and the grant's id.
+// DEEL_API_KEY that this broker's approver gave (approvedGrant), and after it a stale request of
+// another broker for DEEL_API_KEY and stripeKey, which overlaps the grant's name. It answers the
+// grant's request and the grant's id.
 func liveGrantBesideAStaleRequest(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, approver string) (granted Request, grantID string, stale Request) {
 	t.Helper()
-	ctx := context.Background()
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
-	if err != nil || granted.State != "pending" || granted.RecordID == nil {
-		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", granted, err)
-	}
-	dec, err := m.ApplyDecision(ctx, *granted.RecordID, true, approver)
-	if err != nil || dec.GrantID == "" {
-		t.Fatalf("ApplyDecision(%s) = %+v, %v; want a grant", *granted.RecordID, dec, err)
-	}
+	granted, grantID = approvedGrant(t, m, testAudience, enr, key, approver, "DEEL_API_KEY")
 	retagStripeKey(t, m)
 	stale = askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY", stripeKey)
-	return granted, dec.GrantID, stale
+	return granted, grantID, stale
 }
 
 // TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk: R5 v9's sixth case. The session holds a live

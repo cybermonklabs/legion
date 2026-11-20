@@ -925,6 +925,187 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 	}
 }
 
+// TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest: Create checks the live grants of the asked
+// names once (endMatchingLiveGrants) and reuses only a grant that check saw. A grant made for the
+// same names after that check, by a request that raced this one, is not handed back to this
+// request. That is a limit reuseLiveGrant states, not a requirement, and the first assertion
+// below pins it: a change that checks such a grant and hands it back lifts the limit, fails there
+// as expected, and changes this test with it. The request here stops at its reuse. In Create, a
+// request handed no grant goes on to write a request of its own, and for names granted at once
+// that request makes a grant of its own, so the request after it is handed that newer grant, the
+// newest. Here the next request's check sees the racing request's grant, the only one, and that
+// request is handed it.
+func TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest(t *testing.T) {
+	m, enr, key, _ := newFixture(t)
+	ctx := context.Background()
+	names := []string{"AUTO_TOKEN"}
+	row, err := m.enrollment(ctx, enr)
+	if err != nil {
+		t.Fatalf("enrollment: %v", err)
+	}
+	set := m.Policy.Get()
+	checked, err := m.endMatchingLiveGrants(ctx, row, names, set)
+	if err != nil || len(checked) != 0 {
+		t.Fatalf("endMatchingLiveGrants before any grant = %+v, %v; want no live grant", checked, err)
+	}
+
+	raced, err := m.Create(ctx, enr, signRequest(t, m, key, "the racing request", "AUTO_TOKEN"), "", nil)
+	if err != nil || raced.GrantID == nil {
+		t.Fatalf("Create(the racing request) = %+v, %v; want an automatic grant", raced, err)
+	}
+	if got, ok, err := m.reuseLiveGrant(ctx, row, names, defaultLifetime(set, names, nil), checked); err != nil || ok {
+		t.Fatalf("reuseLiveGrant with the check made before the grant = %+v, %t, %v; want no grant handed back", got, ok, err)
+	}
+
+	next, err := m.Create(ctx, enr, signRequest(t, m, key, "the next request", "AUTO_TOKEN"), "", nil)
+	if err != nil || next.State != "granted" || next.GrantID == nil || *next.GrantID != *raced.GrantID {
+		t.Fatalf("Create(the next request) = %+v, %v; want the racing request's grant %s", next, err, *raced.GrantID)
+	}
+}
+
+// TestAGrantEndedAfterTheEndPassIsNotHandedBack: Create checks the live grants of the asked names
+// once (endMatchingLiveGrants), and reuseLiveGrant looks them up again before it hands one back.
+// So a grant that check left live, and that is revoked or expires before the reuse, is not handed
+// back, and the request asks afresh. With nothing in between, the reuse hands the same grant back,
+// which makes each refusal the revoke's or the expiry's doing.
+func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		between func(t *testing.T, m *Machine, enr, grantID string)
+		reused  bool
+	}{
+		{name: "nothing happens in between", between: func(*testing.T, *Machine, string, string) {}, reused: true},
+		{name: "the grant is revoked in between", between: func(t *testing.T, m *Machine, enr, grantID string) {
+			if err := m.RevokeGrant(context.Background(), grantID, enr); err != nil {
+				t.Fatalf("RevokeGrant: %v", err)
+			}
+		}},
+		{name: "the grant expires in between", between: func(t *testing.T, m *Machine, _, grantID string) {
+			if _, err := m.Store.Pool.Exec(context.Background(), `update grants set expires_at = now() - interval '1 hour' where id=$1`, grantID); err != nil {
+				t.Fatalf("backdate grant: %v", err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newFixture(t)
+			ctx := context.Background()
+			names := []string{"AUTO_TOKEN"}
+			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
+			if err != nil || granted.GrantID == nil {
+				t.Fatalf("Create = %+v, %v; want an automatic grant", granted, err)
+			}
+			row, err := m.enrollment(ctx, enr)
+			if err != nil {
+				t.Fatalf("enrollment: %v", err)
+			}
+			set := m.Policy.Get()
+			checked, err := m.endMatchingLiveGrants(ctx, row, names, set)
+			if pause, wasChecked := checked[*granted.GrantID]; err != nil || len(checked) != 1 || !wasChecked || pause != nil {
+				t.Fatalf("endMatchingLiveGrants = %+v, %v; want the grant %s left live with no pause", checked, err, *granted.GrantID)
+			}
+
+			c.between(t, m, enr, *granted.GrantID)
+			got, ok, err := m.reuseLiveGrant(ctx, row, names, defaultLifetime(set, names, nil), checked)
+			if err != nil {
+				t.Fatalf("reuseLiveGrant once %s: %v", c.name, err)
+			}
+			if c.reused && (!ok || got.GrantID == nil || *got.GrantID != *granted.GrantID) {
+				t.Fatalf("reuseLiveGrant once %s = %+v, %t; want the grant %s handed back", c.name, got, ok, *granted.GrantID)
+			}
+			if !c.reused && ok {
+				t.Fatalf("reuseLiveGrant once %s = %+v; want no grant handed back", c.name, got)
+			}
+		})
+	}
+}
+
+// TestAPauseOnTheNewestGrantStopsTheReuse: two live grants of the same names, the older one
+// approved by the operator and the newer one by alice, while the secret was hers. Create's check
+// (endMatchingLiveGrants) keeps each grant it leaves live with its pause, and reuseLiveGrant stops
+// at the pause of the newest candidate, a grant of the lifetime the request asks for. Once the
+// secret is the operator's again, the newer grant's approver no longer decides it, so the request
+// is handed neither grant and waits for an approval, though the older grant still releases. Once
+// the secret is shared, neither grant pauses and the newer one is handed back, which makes the
+// first row's refusal the pause's doing. A newer grant of another lifetime is no candidate, so its
+// pause stops nothing and the older grant is handed back. Each row releases the newer grant too:
+// where the row says it pauses, the release answers ErrGrantNotLive and the grant stays live, so
+// the row holds the pause its name states.
+func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
+	deel := func(owner string) secrets.LocalSecret {
+		return policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1")
+	}
+	for _, c := range []struct {
+		name  string
+		owner string
+		// newerLifetime is the lifetime in seconds the newer grant's request signs. 0 signs none,
+		// so that grant gets the default lifetime, which the older grant and the request after
+		// both get.
+		newerLifetime int
+		// handedBack is the grant the request after is handed back: "newer", "older", or "" for
+		// none, with the request pending. Any other value names no grant of the row and fails it.
+		handedBack string
+		// newerPaused is whether the newer grant pauses once the secret has its row's owner: a
+		// release of it answers ErrGrantNotLive, where one of a grant that does not pause
+		// releases its value.
+		newerPaused bool
+	}{
+		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator, newerPaused: true},
+		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, handedBack: "newer"},
+		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handedBack: "older", newerPaused: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, approver := newFixture(t)
+			ctx := context.Background()
+			_, older := approvedGrant(t, m, testAudience, enr, key, approver, "DEEL_API_KEY")
+			retag(t, m, deel(otherPerson))
+			var newer string
+			if c.newerLifetime == 0 {
+				_, newer = approvedGrant(t, m, testAudience, enr, key, otherPerson, "DEEL_API_KEY")
+			} else {
+				_, newer = approvedRequest(t, m, enr, signRequestFor(t, m, key, c.newerLifetime, "DEEL_API_KEY"), otherPerson)
+			}
+			if newer == older {
+				t.Fatalf("setup made one grant %s; want two", older)
+			}
+			retag(t, m, deel(c.owner))
+
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "DEEL_API_KEY"), "", nil)
+			if err != nil {
+				t.Fatalf("Create once %s: %v", c.name, err)
+			}
+			handed := "no grant"
+			if again.GrantID != nil {
+				handed = "grant " + *again.GrantID
+			}
+			want, named := map[string]string{"": "", "newer": newer, "older": older}[c.handedBack]
+			if !named {
+				t.Fatalf("row %q: handedBack %q names no grant of the row; want \"newer\", \"older\" or \"\"", c.name, c.handedBack)
+			}
+			if want != "" && (again.GrantID == nil || *again.GrantID != want) {
+				t.Fatalf("Create once %s = state %q with %s; want the %s grant %s handed back (older %s, newer %s)", c.name, again.State, handed, c.handedBack, want, older, newer)
+			}
+			if c.handedBack == "" && (again.State != "pending" || again.GrantID != nil) {
+				t.Fatalf("Create once %s = state %q with %s; want no grant handed back, neither the newer %s nor the older %s, and a request pending", c.name, again.State, handed, newer, older)
+			}
+			if release, err := m.Values(ctx, older, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
+				t.Fatalf("Values of the older grant once %s = %v, %v; want it released, so it was a grant the reuse could hand back", c.name, release.Values, err)
+			}
+			release, err := m.Values(ctx, newer, enr, nil, ReleaseCall{})
+			if c.newerPaused && !errors.Is(err, ErrGrantNotLive) {
+				t.Fatalf("Values of the newer grant once %s = %v, %v; want ErrGrantNotLive, the pause the row names", c.name, release.Values, err)
+			}
+			if !c.newerPaused && (err != nil || release.Values["DEEL_API_KEY"] != "deel-v1") {
+				t.Fatalf("Values of the newer grant once %s = %v, %v; want it released, the grant pausing not", c.name, release.Values, err)
+			}
+			for _, id := range []string{older, newer} {
+				if by, _ := endedForGood(t, m, id); by != "" {
+					t.Fatalf("grant %s once %s: revoked_by %q; want it live, since a pause ends nothing", id, c.name, by)
+				}
+			}
+		})
+	}
+}
+
 // TestValuesHoldsNoPooledConnectionWhileReadingSecrets pins that Values reads a grant's names into
 // memory before fetching the first value, so no cursor (and its pooled connection) stays open
 // across a Secrets Manager read.

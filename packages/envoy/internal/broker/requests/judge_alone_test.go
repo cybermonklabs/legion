@@ -163,7 +163,7 @@ func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
 			m.Airlock.Secrets = append(m.Airlock.Secrets, airlock.SecretRule{Name: "DEEL_OTHER_KEY", Judge: new(uint32(900)), Guidance: "grant for the release job"})
-			retag(t, m, policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "unjudged-v1"), adminSecret(),
+			retag(t, m, policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "unjudged-v1"), adminSecret(adminSecretName, "admin-v1"),
 				policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"),
 				policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
 			var handed []PendingRequest
