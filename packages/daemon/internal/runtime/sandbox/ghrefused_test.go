@@ -91,7 +91,7 @@ func ghDriftReasons(t *testing.T, g *rig, loc runtime.Locator, role claim.Role) 
 	t.Helper()
 	name := roleVolume(ghVolume, role)
 	var named []string
-	for _, reason := range driftOf(t, g.ctx, g.r, loc) {
+	for _, reason := range driftOf(t, g, g.r, loc) {
 		if strings.Contains(reason, name) {
 			named = append(named, reason)
 		}

@@ -72,7 +72,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 				state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 				t.Fatalf("PodDrift = %q of a pod no round covers, want nothing: its launch is what replaces it", drifted)
 			}
 			shape := func() string {
@@ -122,7 +122,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatalf("PodDrift of the issue pod is empty, so this case proves nothing: its round is what replaces it")
 			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
@@ -215,7 +215,7 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
@@ -305,7 +305,7 @@ func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *tes
 		g := newRig(t, nil)
 		loc := g.spawn(spec)
 		r2 := restartedOver(t, g, loc, move)
-		drifted = driftOf(t, g.ctx, r2, loc)
+		drifted = driftOf(t, g, r2, loc)
 		g.clearActions()
 		next := spec
 		next.Generation, next.BootToken, next.ResumeSessionFile = 2, "boot-tester-g2", resumeSession

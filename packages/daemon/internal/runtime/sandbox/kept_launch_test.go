@@ -154,7 +154,7 @@ func TestARoleStartedInAKeptPodThatCarriesBothIsStartedWithBoth(t *testing.T) {
 		withBrokerAndOverlay(o)
 		movedReservation(o)
 	})
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 		t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 	}
 	kept := resumeTester(t, g, r2, loc)
@@ -180,7 +180,7 @@ func TestALaunchReplacesTheDriftedPodWhenItsStoredTemplateCannotBeRead(t *testin
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, withBrokerAndOverlay)
-	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+	if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 		t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 	}
 	forgetPodContainers(t, g, r2, loc.Sandbox.Name)
@@ -273,7 +273,7 @@ func TestARoleStartedInAKeptPodIsToldTheSessionStoreThatPodCarries(t *testing.T)
 			if tc.forget {
 				forgetSessionStore(t, g, r2, loc.Sandbox.Name)
 			}
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			if !slices.ContainsFunc(drifted, func(reason string) bool { return strings.Contains(reason, "the session store") }) {
 				t.Fatalf("the pod has drifted in %v, want its session store among it: this case proves nothing otherwise", drifted)
 			}
