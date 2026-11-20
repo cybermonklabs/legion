@@ -4276,6 +4276,51 @@ test("on an issue with no component, the Add menu's Components reaches the picke
   }
 });
 
+// The components picker stands in Details only while the project has an architecture source, so
+// a read of the sources that answers with none takes the picker away while its popover is open:
+// the trigger and the popover go together, with the focus in the popover's search box. The
+// popover stands on the page's body, outside Details, and Details' keeper watches it as a layer
+// the focus left Details for, so the focus goes to Development's heading, as for a control of the
+// row the change took away, rather than to the page's body.
+test("a sources read that takes the open components picker away hands its focus to Development's heading", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const tree = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    const picker = await screen.findByRole("button", {
+      name: componentsControlName("CORE-1", {
+        components: issue.components,
+        saving: false,
+        words: CONTROL_NAME_WORDS,
+      }),
+    });
+    await user.click(picker);
+    await screen.findByRole("option", { name: "dispatch-server · Dispatch server" });
+    expect(screen.getByRole("combobox", { name: "Search components" })).toHaveFocus();
+
+    sources.mockResolvedValue([]);
+    await act(() => queryClient.refetchQueries({ queryKey: ["architecture-sources"] }));
+    expect(picker, "the sources read left the picker on the page").not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox"), "the picker left its popover open").toBeNull();
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the popover went with its trigger, and the focus did not go to Development's heading"
+      ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }))
+    );
+  } finally {
+    unmount();
+    tree.mockRestore();
+    sources.mockRestore();
+    restore();
+  }
+});
+
 // A press at the Parent row (`useOpenDetailsAt`, as the header's Set parent issue makes it)
 // presses the control the row marks as its opener (`DETAILS_OPENER_ATTRIBUTE`), and an open
 // without a press focuses the row's first control: both are the control that opens the parent's

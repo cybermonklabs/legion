@@ -219,3 +219,118 @@ test("a row's detail reads after its label and a comma, spoken with its own word
     view.unmount();
   }
 });
+
+/** A host that keeps the popover open as the search box's Tab asks it to close, so Tab goes on
+ *  from the search box to the rows, the Create row and Clear: buttons, which a screen reader's
+ *  cursor focuses too. */
+function OpenHost({
+  onCreate,
+  options,
+}: {
+  onCreate?: (value: string) => void;
+  options: string[];
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  return (
+    <>
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Labels"
+        onChange={setSelected}
+        onCreate={onCreate}
+        onOpenChange={() => undefined}
+        open
+        options={options}
+        searchLabel="Search labels"
+        selected={selected}
+      />
+      <output data-testid="selected">{selected.join(",")}</output>
+    </>
+  );
+}
+
+// Clear is drawn only while the pick holds a value, so a press of Clear takes Clear away under
+// the focus. The focus goes to the search box, not to the body, where the popover's Escape no
+// longer reaches it.
+test("a keyboard press of Clear, by Enter or Space, empties the pick and the focus stays in the search box", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost options={["api", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    expect(search).toHaveFocus();
+    for (const key of ["{Enter}", " "]) {
+      await user.keyboard("{Enter}");
+      expect(screen.getByTestId("selected").textContent).toBe("api");
+      // From the search box past the two rows to Clear.
+      await user.tab();
+      await user.tab();
+      await user.tab();
+      expect(screen.getByRole("button", { name: "Clear labels" })).toHaveFocus();
+      await user.keyboard(key);
+      expect(screen.getByTestId("selected").textContent).toBe("");
+      expect(screen.queryByRole("button", { name: "Clear labels" })).not.toBeInTheDocument();
+      expect(search).toHaveFocus();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Create row is drawn only while the search names no option, so a press of it, which makes
+// the value and empties the search, takes it away under the focus.
+test("a keyboard press of the Create row makes the value and the focus stays in the search box", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(<OpenHost onCreate={(value) => created.push(value)} options={["docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    await user.click(search);
+    await user.paste("urgent");
+    await user.tab();
+    expect(screen.getByRole("option", { name: 'Create "urgent"' })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(created).toEqual(["urgent"]);
+    expect(screen.queryByRole("option", { name: /Create/ })).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The host's options are a read that can answer again while the popover is open, as a project's
+// labels can come back without the one a row draws. That takes away the row the focus is on.
+test("a row that new options drop leaves the focus in the search box", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost options={["api", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole("option", { name: "docs" })).toHaveFocus();
+    view.rerender(<OpenHost options={["api"]} />);
+    expect(screen.queryByRole("option", { name: "docs" })).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Options that come to hold the value the Create row offers make that value an option's row, so
+// they take away the Create row the focus is on.
+test("a Create row that new options name leaves the focus in the search box", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost onCreate={() => undefined} options={["api"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    await user.click(search);
+    await user.paste("urgent");
+    await user.tab();
+    expect(screen.getByRole("option", { name: 'Create "urgent"' })).toHaveFocus();
+    view.rerender(<OpenHost onCreate={() => undefined} options={["api", "urgent"]} />);
+    expect(screen.queryByRole("option", { name: /Create/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "urgent" })).toBeTruthy();
+    expect(search).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});

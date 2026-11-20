@@ -11,6 +11,12 @@ import { createPortal } from "react-dom";
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
 
+/** The attribute every panel's root carries. A panel stands on the body, outside the region of
+ *  the control that opened it, so the issue page's focus keeper (`focus-keeper.ts`) names it as a
+ *  layer the reader opens and closes again, rather than reading a focus in it as the reader
+ *  leaving that region for good. */
+export const ANCHORED_PANEL_ATTRIBUTE = "data-anchored-panel";
+
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
  * placed under its anchor and kept there while the page resizes or scrolls, and dismissed by
@@ -140,6 +146,7 @@ export function AnchoredPanel({
       ref={panelRef}
       style={{ position: "fixed", ...position }}
       tabIndex={-1}
+      {...{ [ANCHORED_PANEL_ATTRIBUTE]: "" }}
       {...named}
     >
       {children}
