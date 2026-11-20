@@ -456,18 +456,20 @@ func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
 }
 
-// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
-// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
-// length.
+// shownBodyRunes is how many runes of GitHub's text a line or an error shows (ShownBody): the
+// start of the text, where GitHub writes the `message` of a refusal, in a line of bounded length.
 const shownBodyRunes = 512
 
-// ShownBody is body, an answer GitHub gave, as an error's text shows it: whole where it is at most
+// ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most
 // shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
 // the length of the whole body. Every error of this package whose text holds such a body holds it
 // as this shows it: a line that logs the error writes the text whole, and a body may be as long as
 // a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into one field of a WARN
 // line (review of cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at
-// the end of such a text (api's ciUnreadDetail) finds it as this shows it. It reads at most
+// the end of such a text (api's gitHubErrorText) finds it as this shows it. The webhook
+// redelivery sweep shows the same way each GUID, event, action and key it logs or returns, each
+// error its bucket answers, and every error of a GitHub call it receives (redeliver), and the push
+// importer a push's repository and branch (architecture.Importer.Pushed). It reads at most
 // shownBodyRunes × 4 bytes of body, the most that many runes take, and never splits a rune; a byte
 // that is no UTF-8 counts as one rune.
 func ShownBody[Body ~string | ~[]byte](body Body) string {

@@ -6,15 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -25,13 +28,16 @@ import (
 )
 
 // The sweep writes GitHub's text into its lines and its errors: a delivery's GUID, its event and
-// its action, and the keys of its bucket, every one of which holds a GUID. GitHub bounds none of
+// its action, the keys of its bucket, every one of which holds a GUID, and GitHub's own answers to
+// its requests: an error's body, a next page link, a value of a 200 listing it cannot decode, and
+// the text of a transport error, which quotes what GitHub's answer held. GitHub bounds none of
 // them, so each is shown as githubapp.ShownBody shows GitHub's text: whole up to 512 runes, and
-// past that its first 512 runes and `… (<n> bytes)`. The tests here give each text boundRunes
-// runes, past that bound, and keep the GUID within nats' key alphabet so that it reaches every
-// site, and hold every line and error that names one to the cut text and never to the whole.
+// past that its first 512 runes and `… (<n> bytes)`. The tests here give each GUID, event and
+// action boundRunes runes, past that bound, and keep the GUID within nats' key alphabet so that it
+// reaches every site; they give each of GitHub's answers far more than that; and they hold every
+// line and error that names one to the bound and never to the whole.
 
-// boundRunes is how long each of the tests' texts is, in runes and in bytes alike.
+// boundRunes is how long each GUID, event and action of the tests is, in runes and in bytes alike.
 const boundRunes = 600
 
 // longText is boundRunes bytes of unit over and over, cut where the count runs out. unit is ASCII,
@@ -141,6 +147,36 @@ func requireCut(t *testing.T, s sighting) {
 		t.Errorf("%s is %.60q… (%d bytes); want the text as githubapp.ShownBody shows it, %d bytes ending %q", s.where, s.shown, len(s.shown), len(cut), ending)
 	case !s.alone && !strings.Contains(s.shown, cut):
 		t.Errorf("%s (%d bytes) does not hold the text as githubapp.ShownBody shows it, %d bytes ending %q", s.where, len(s.shown), len(cut), ending)
+	}
+}
+
+// shownMost is the longest text githubapp.ShownBody makes: 512 runes of at most utf8.UTFMax bytes
+// each, and `… (<n> bytes)` for the largest n there is.
+var shownMost = 512*utf8.UTFMax + len(fmt.Sprintf("… (%d bytes)", math.MaxInt))
+
+// shownEnd is the end githubapp.ShownBody gives a text it cuts.
+var shownEnd = regexp.MustCompile(`… \(\d+ bytes\)$`)
+
+// requireBounded fails the test unless s shows its text in an error the sweep cut whole, as it
+// cuts every error a GitHub call answers it with (gitHubErr): the start of the text, never the
+// text whole, no longer than githubapp.ShownBody makes any text (shownMost), and ending with
+// ShownBody's `… (<n> bytes)`. requireCut does not hold of such an error once the cut of the whole
+// acts, since it cuts the end of the text's own cut away. The texts here are ASCII, so the
+// sweep's own words before the cut leave it far inside shownMost.
+func requireBounded(t *testing.T, s sighting) {
+	t.Helper()
+	start := s.text[:min(len(s.text), 32)]
+	switch {
+	case s.shown == "":
+		t.Errorf("%s is missing; want the %d-byte text's start %q, cut to a bound", s.where, len(s.text), start)
+	case strings.Contains(s.shown, s.text):
+		t.Errorf("%s (%d bytes) holds the %d-byte text whole; want it cut to a bound", s.where, len(s.shown), len(s.text))
+	case len(s.shown) > shownMost:
+		t.Errorf("%s is %d bytes; want at most %d, the longest text githubapp.ShownBody makes", s.where, len(s.shown), shownMost)
+	case !shownEnd.MatchString(s.shown):
+		t.Errorf("%s ends %q; want githubapp.ShownBody's `… (<n> bytes)`", s.where, s.shown[max(0, len(s.shown)-60):])
+	case !strings.Contains(s.shown, start):
+		t.Errorf("%s is %.200q…; want it to hold the start of the text, %q", s.where, s.shown, start)
 	}
 }
 
@@ -631,6 +667,46 @@ func refuseLargely(t *testing.T, w http.ResponseWriter, status int) {
 	}
 }
 
+// undecodableDeliveredAt is a delivered_at of 100,000 bytes that is no time, which a listing
+// GitHub answers 200 can carry: the client's decode of the page fails with a time.ParseError that
+// quotes it whole.
+var undecodableDeliveredAt = strings.Repeat("v", 100_000)
+
+// undecodableListing is a page of the listing, with the fields GitHub writes (githubapptest's
+// Delivery), whose one delivery has undecodableDeliveredAt.
+var undecodableListing = `[{"id":17,"guid":"guid-undecodable","delivered_at":"` + undecodableDeliveredAt +
+	`","redelivery":false,"duration":0.3,"status":"Invalid HTTP Response: 503","status_code":503,` +
+	`"event":"pull_request_review","action":"submitted","installation_id":1,"repository_id":7}]`
+
+// malformedHeaderLine is a line of 64 KiB with no colon in it, which no header block may hold:
+// net/http's client fails a request whose answer holds it with a transport error that quotes the
+// line whole (`malformed MIME header: missing colon: "<line>"`).
+var malformedHeaderLine = strings.Repeat("h", 1<<16)
+
+// answerMalformed answers w's request with a raw HTTP/1.1 answer whose header block holds
+// malformedHeaderLine, written on the connection it takes from the server (http.Hijacker), since
+// the server writes no such header itself.
+func answerMalformed(t *testing.T, w http.ResponseWriter) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Errorf("the server's writer %T cannot hand over its connection", w)
+		return
+	}
+	conn, buffered, err := hijacker.Hijack()
+	if err != nil {
+		t.Errorf("take the connection from the server: %v", err)
+		return
+	}
+	defer conn.Close()
+	if _, err := buffered.WriteString("HTTP/1.1 200 OK\r\n" + malformedHeaderLine + "\r\n\r\n"); err != nil {
+		t.Errorf("write the malformed answer: %v", err)
+		return
+	}
+	if err := buffered.Flush(); err != nil {
+		t.Errorf("write the malformed answer: %v", err)
+	}
+}
+
 // failedListing sweeps once and then runs one sweep of the running loop, each of which fails at
 // the listing (what names why), and answers the places that show text: the error the sweep
 // answered, and the WARN line the running sweep logs its error with (sweepAndReport).
@@ -648,16 +724,18 @@ func (h *harness) failedListing(t *testing.T, what, text string) []sighting {
 	}
 }
 
-// GitHub's answers to the sweep's own requests are GitHub's text too: the body of an error status
-// GitHub answers the deliveries listing or a redelivery request with, which may be as long as a
-// response may be (1 MiB), and the listing's next page link. The githubapp client the sweep lists
-// and asks through words such a body into its errors as githubapp.ShownBody shows GitHub's text,
-// and refuses a next page link longer than it follows, showing the link the same way, so the
-// sweep holds each to the bound, its start and its size, and never whole: a listing's refusal and
-// a next page link past the bound in the error the sweep answers and in the WARN line the running
-// sweep logs it with, and a redelivery request's refusal in the request-refused line. Each case is
-// a real sweep through the real client against the fake, with a server in front of the fake that
-// gives the one answer the case is about (inFrontOfGitHub).
+// GitHub's answers to the sweep's own requests are GitHub's text too, and each reaches the sweep
+// in a GitHub call's error: the body of an error status GitHub answers the deliveries listing or a
+// redelivery request with, which may be as long as a response may be (1 MiB); the listing's next
+// page link, which the githubapp client refuses past the longest it follows; a value of a listing
+// GitHub answers 200 that the client cannot decode, which the decode's error quotes; and a header
+// line of an answer net/http cannot read, which the transport error quotes. The sweep cuts every
+// such error whole as githubapp.ShownBody shows GitHub's text (gitHubErr), so each is held to the
+// bound and never whole (requireBounded): in the error the sweep answers and in the WARN line the
+// running sweep logs it with for each failed listing, and in the request-refused line for a
+// redelivery request's refusal. Each case is a real sweep through the real client against the
+// fake, with a server in front of the fake that gives the one answer the case is about
+// (inFrontOfGitHub).
 func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -701,12 +779,35 @@ func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 			line := h.oneLine("webhook redelivery request refused")
 			return []sighting{{where: "the error of the request-refused line", shown: lineAttr(line, "error"), text: largeRefusal}}, refusalFiller
 		}},
+		{"a listing GitHub answers 200 with a value the client cannot decode", func(t *testing.T, h *harness) ([]sighting, string) {
+			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+				if isListing(r) {
+					w.Header().Set("Content-Type", "application/json")
+					if _, err := io.WriteString(w, undecodableListing); err != nil {
+						t.Errorf("write GitHub's listing: %v", err)
+					}
+					return
+				}
+				fake.ServeHTTP(w, r)
+			})
+			return h.failedListing(t, "listing holds a delivered_at the client cannot decode", undecodableDeliveredAt), undecodableDeliveredAt
+		}},
+		{"a listing whose answer fails at the transport on a header line past the bound", func(t *testing.T, h *harness) ([]sighting, string) {
+			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+				if isListing(r) {
+					answerMalformed(t, w)
+					return
+				}
+				fake.ServeHTTP(w, r)
+			})
+			return h.failedListing(t, "listing's answer holds a header line with no colon", malformedHeaderLine), malformedHeaderLine
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			shown, whole := tc.run(t, h)
 			for _, s := range shown {
-				requireCut(t, s)
+				requireBounded(t, s)
 			}
 			h.requireNoneWhole(whole)
 		})
