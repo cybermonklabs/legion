@@ -149,7 +149,7 @@ type ExternalAccountIdentity struct {
 // Describe names the identity in every trade's log line and error: the audience, the broker's
 // Google exchange audience, as internal/redact's allow-list prints a URL, and by what it is where
 // that withholds it, since it is text a broker's settings answer wrote; and the account where it
-// is a service account's email or unique id (serviceAccountWords), else by the credentials file
+// is a service account's email or unique id (ServiceAccountWords), else by the credentials file
 // that names it, since the file is a credential's place.
 func (e *ExternalAccountIdentity) Describe() string {
 	audience := "the Google exchange audience the broker names"
@@ -161,7 +161,7 @@ func (e *ExternalAccountIdentity) Describe() string {
 
 // account is the service account the identity acts as, as a message names it.
 func (e *ExternalAccountIdentity) account() string {
-	return serviceAccountWords(e.ServiceAccount, credentialsFileVar)
+	return ServiceAccountWords(e.ServiceAccount, credentialsFileVar)
 }
 
 // Token mints the service account's access token with the credentials file's own exchange and

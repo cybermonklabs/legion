@@ -75,14 +75,14 @@ type PoolIdentity struct {
 // internal/redact's allow-list prints a URL, beside MachineAudienceVar; the pool audience whole
 // where it is a workload identity pool provider's resource name (poolProvider), else by
 // PoolAudienceVar alone, since it is no http URL the allow-list could print; and the account where
-// it is a service account's email or unique id (serviceAccountWords), else by PoolAccountVar. A
+// it is a service account's email or unique id (ServiceAccountWords), else by PoolAccountVar. A
 // setting is where a person who pasted a credential in the wrong place puts it.
 func (p *PoolIdentity) Describe() string {
 	pool := "that " + PoolAudienceVar + " names"
 	if poolProvider.MatchString(p.Audience) {
 		pool = p.Audience + " (" + PoolAudienceVar + " names it)"
 	}
-	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + serviceAccountWords(p.ServiceAccount, PoolAccountVar)
+	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + ServiceAccountWords(p.ServiceAccount, PoolAccountVar)
 }
 
 // poolProvider is a workload identity pool provider's full resource name, as Google spells it:
@@ -110,9 +110,10 @@ func ServiceAccountShaped(account string) bool {
 	return serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account)
 }
 
-// serviceAccountWords is account as a message names it: whole where it has a service account's
+// ServiceAccountWords is account as a message names it: whole where it has a service account's
 // shape (ServiceAccountShaped), else as the service account setting names, which is not printed.
-func serviceAccountWords(account, setting string) string {
+// agent-secrets names a credentials file's account by it too.
+func ServiceAccountWords(account, setting string) string {
 	if ServiceAccountShaped(account) {
 		return account
 	}
@@ -131,7 +132,7 @@ func (p *PoolIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, serviceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
+	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, ServiceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
 	if err != nil {
 		return "", "", err
 	}
