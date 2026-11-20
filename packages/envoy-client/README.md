@@ -54,7 +54,8 @@ hours the stream still holds shows no receipts.
 ## Consumer delivery
 
 `createConsumerDelivery` (`@legion/envoy-client/consumer-delivery`) is a session's side of the
-listener's relay of its durable consumer ("Session consumers" in `packages/envoy/AGENTS.md`). A
+listener's relay of its durable consumer (the "Session consumers" item of "Runtime shape" in
+`packages/envoy/docs/architecture.md`). A
 host makes one per session, subscribes its `subject` (`notifications.envoy.deliver.<session id>`)
 before it registers, passes `registration()` as the registration's `delivery` field, and gives the
 registration's answer and the topics it carried to `answered`, which returns `consumer`, the one

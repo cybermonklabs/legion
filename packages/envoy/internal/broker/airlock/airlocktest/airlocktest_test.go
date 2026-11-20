@@ -374,9 +374,7 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 
 // TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo: the refusing option answers the 422 GitHub
 // answers a body it will not mint for, and the minter must read that as the caller's narrowing
-// rather than as the upstream's trouble. It answers a read-only narrowing's second request - the
-// one the minter asks without actions - the same way, so no narrowing driven against it releases
-// a token.
+// rather than as the upstream's trouble, so no narrowing driven against it releases a token.
 func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
@@ -412,8 +410,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 // narrowing reads. The repository answer refuses the narrowing naming its repository, mints the
 // one naming another, and mints the request that names no repository at all - the probe that
 // finds the repositories to be the refused part. The permissions answer refuses a read-only
-// narrowing, its second request without actions included, and mints a narrowing that names
-// repositories alone.
+// narrowing and mints a narrowing that names repositories alone.
 func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 	value := gitHubAppValue(t)
 	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}

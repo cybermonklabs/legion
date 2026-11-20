@@ -10,6 +10,17 @@
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
 # run of the same binaries in the same image, which is the whole point of the layer.
 #
+# A baseline comes from this command alone. A machine with no container, an issue pod among
+# them, takes one from the full lane's run in CI instead:
+#
+#   1. gh run download <failed full-lane run id> --repo <owner>/<repo> \
+#        --name dispatch-browser-visual-<attempt>
+#   2. A failed row's -actual.png is under the results directory this script names on a failed
+#      run, at the same path inside the download.
+#   3. Copy it over e2e/__screenshots__/<project>/<route>-<scheme>.png only if every pixel that
+#      moved was meant to and a second run gave the same bytes (else the page is not settled),
+#      and say why in the commit message.
+#
 # WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
 # changes what every row after it compares. The review seed writes each such mark before any row
 # runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
@@ -171,5 +182,44 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
+
+# A failed run says where its shots are, and what a failure in reverse order alone means.
+# Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under the run's
+# output directory: `e2e/test-results` (e2e/playwright.config.ts's `outputDir`) unless `--output`
+# names another, as CI's reverse step names `e2e/test-results-reverse`. Both are relative to this
+# package, where the run works, so the line names them from the repository root, as a CI log's
+# reader and the job's upload do (`packages/dispatch/e2e/test-results-reverse`); an absolute
+# `--output` is printed as given. A row that fails in the reverse order and passes in the normal
+# one most likely reads a mark another row writes as it draws (a run under load can also draw a
+# frame mid-change, so run the row again before acting). Its fix is that mark in the seed
+# (`markWhatTheShotPagesRead`, e2e/review-seed.ts), not a new baseline: a baseline taken from the
+# reverse run's shot holds the state the normal order never draws, and fails that run instead.
+# The loop reads `--output` as Playwright does: the last one wins, an empty value names nothing,
+# and arguments after `--` are no options. A line that cannot be written leaves the status as it
+# was, so the run's verdict is always the container's.
+if [ "$status" -ne 0 ]; then
+  output=e2e/test-results
+  value_follows=""
+  for arg in "$@"; do
+    if [ -n "$value_follows" ]; then
+      output=$arg
+      value_follows=""
+      continue
+    fi
+    case $arg in
+      --) break ;;
+      --output=?*) output=${arg#--output=} ;;
+      --output) value_follows=1 ;;
+    esac
+  done
+  case $output in
+    /*) ;;
+    *) output=packages/dispatch/${output#./} ;;
+  esac
+  echo "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under $output/." >&2 || :
+  if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
+    echo "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+  fi
+fi
 
 exit "$status"

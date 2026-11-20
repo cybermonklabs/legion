@@ -38,12 +38,15 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
 	var asked []tokenRequest
+	// held is what each installation's account approved for the App, as GitHub's listing names it:
+	// every permission a read-only token asks for, most of them at write.
+	held := map[string]string{"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "write"}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 7, "account": map[string]string{"login": "acme"}},
-				{"id": 8, "account": map[string]string{"login": "ada"}},
+				{"id": 7, "account": map[string]string{"login": "acme"}, "permissions": held},
+				{"id": 8, "account": map[string]string{"login": "ada"}, "permissions": held},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			body, _ := io.ReadAll(r.Body)
@@ -152,7 +155,9 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(tokens[0].body), &body); err != nil {
 		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
 	}
-	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}}; !reflect.DeepEqual(body, want) {
+	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{
+		"actions": "read", "checks": "read", "contents": "read", "metadata": "read", "pull_requests": "read", "statuses": "read",
+	}}; !reflect.DeepEqual(body, want) {
 		t.Fatalf("the access_tokens body = %v, want %v", body, want)
 	}
 

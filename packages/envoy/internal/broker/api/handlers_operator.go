@@ -3,11 +3,18 @@
 // POST /v1/operator/grants/{id}/revoke — a person's own machine logins and live grants, listed and
 // ended from their machine under its machine login (launcherAuth). The grant routes answer as
 // Dispatch's Live grants page does through the UI routes; the machine routes cover the person's
-// own machines' logins alone, a subset of Dispatch's machine-logins page, which also lists every
-// service's login, so ending the Legion daemon's login stays a Dispatch sign-in's. Each acts for
-// the calling credential's operator, and each revoke records that machine login as its actor,
-// since its launcher proof, not a Dispatch sign-in, is what authenticated it. A retire is the
-// calling login ending itself after its machine logged in again, leaving its sessions running.
+// own logins alone, their machines' logins and the token logins of the accounts
+// BROKER_POD_OPERATORS maps to them (enroll.Service.OwnLiveCredentials), a subset of Dispatch's
+// machine-logins page, which also lists every service's login, so ending the Legion daemon's
+// login stays a Dispatch sign-in's. Each acts for the calling credential's operator, and each
+// revoke records that machine login as its actor, since its launcher proof, not a Dispatch
+// sign-in, is what authenticated it. A retire is the calling login ending itself after its
+// machine logged in again, leaving its sessions running.
+//
+// Every route but the retire reads the operator through operatorOf, which refuses two kinds of
+// login. A person's pod login is 403 PERSON_POD_LOGIN, live or stale. A service's login is 403
+// SERVICE_CREDENTIAL. The retire reads no operator and refuses neither, because it ends only the
+// calling login.
 package api
 
 import (
@@ -17,9 +24,22 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
-// operatorOf answers the person a launcher credential acts for, canonicalized. A service's login
-// (the Legion daemon's) has none: machine and grant self-service is a person's.
+// operatorOf answers the person a launcher credential acts for, canonicalized. Two kinds of
+// credential get no answer:
+//
+//   - A person's pod login (enroll.PersonPodLogin) is 403 PERSON_POD_LOGIN. Such a login acts
+//     for its person on secrets alone. It lists and revokes none of the person's machine logins
+//     and grants, which the person does from a box or from Dispatch. The test reads the
+//     credential's row and not BROKER_POD_OPERATORS. So the answer is the same for a live login
+//     and for a stale one, whose entry the setting dropped or moved to another person, and no
+//     route here reads a stale pod login as its person's machine login.
+//   - A service's login (the Legion daemon's) has no operator, and is 403 SERVICE_CREDENTIAL:
+//     machine and grant self-service is a person's.
 func operatorOf(w http.ResponseWriter, cred enroll.Credential) (string, bool) {
+	if enroll.PersonPodLogin(cred) {
+		writeError(w, http.StatusForbidden, "PERSON_POD_LOGIN", "a person's pod login acts for its person on secrets alone; list and revoke machine logins and grants from the person's box or Dispatch")
+		return "", false
+	}
 	if cred.Operator == nil {
 		writeError(w, http.StatusForbidden, "SERVICE_CREDENTIAL", "a service's machine login has no operator; machine and grant commands are a person's")
 		return "", false
@@ -27,9 +47,11 @@ func operatorOf(w http.ResponseWriter, cred enroll.Credential) (string, bool) {
 	return record.CanonicalLogin(*cred.Operator), true
 }
 
-// listOperatorMachines lists the calling credential's operator's own machines' logins, as
-// GET /v1/launcher-credentials lists them for that person but without any service's login: not
-// revoked, and unexpired or expired with a session still running.
+// listOperatorMachines lists the calling credential's operator's own logins, as
+// GET /v1/launcher-credentials lists them for that person but without any service's login: their
+// machines' logins and the token logins of the accounts BROKER_POD_OPERATORS maps to them
+// (enroll.Service.OwnLiveCredentials), each not revoked, and unexpired or expired with a session
+// still running.
 func (s *server) listOperatorMachines(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
 	operator, ok := operatorOf(w, cred)
 	if !ok {
@@ -38,7 +60,7 @@ func (s *server) listOperatorMachines(w http.ResponseWriter, r *http.Request, cr
 	s.writeLauncherCredentials(w, r, s.deps.Enroll.OwnLiveCredentials, operator)
 }
 
-// revokeOperatorMachine ends one of the calling credential's operator's own machines' logins, as
+// revokeOperatorMachine ends one of the calling credential's operator's own logins, as
 // POST /v1/launcher-credentials/{id}/revoke-by-approver ends it for that person, recording the
 // calling machine login as the actor. A service's login is not found here (404 NOT_FOUND), as an
 // unknown id is. Revoking the calling credential itself ends this machine's own access.

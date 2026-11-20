@@ -8,7 +8,7 @@
  *  that is absent here, so the map stays complete and machine-checked either way.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
- *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
+ *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
  *  A file whose every row moved is absent from this list, and so is a file no project of this
@@ -170,6 +170,10 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-g.e2e.ts":
+    "the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on",
+  "issue-page-g-view.e2e.ts":
+    "its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on",
   "issue-page-look.e2e.ts":
     "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
   "issue-page-switch.e2e.ts":
@@ -206,6 +210,8 @@ export const realStackReasons: Record<string, string> = {
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
+  "machine-logins-person-pod.e2e.ts":
+    "the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back",
   "machines.e2e.ts":
     "the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes",
   "margin-composer-hold.e2e.ts": "live document margin with sends out and server refusals",

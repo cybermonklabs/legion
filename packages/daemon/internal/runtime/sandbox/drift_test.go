@@ -635,8 +635,8 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // A pod runs as the ServiceAccount it was created with for its whole life, so an operator's
 // change of runtime.kubernetes.pod.service_account is drift of every issue pod created under the
 // account before it, and PodDrift is what names it: the round that reason opens asks every worker
-// in the pod to push, and only then replaces the pod
-// (accountDrift). The reason carries both accounts, the one the pod runs as and the one
+// in the pod to do the steps of its update message (supervise.UpdateTask), and only then replaces
+// the pod (accountDrift). The reason carries both accounts, the one the pod runs as and the one
 // configured now, each read through serviceAccountOr — so a pod already on the configured
 // account has drifted from nothing, and so has one on `default` under a configuration naming no
 // account, which is that same account spelled the other way, while a pod on a named account

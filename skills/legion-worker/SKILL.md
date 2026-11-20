@@ -46,6 +46,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 - The merge gate, in order: the tester's evidence green → the reviewer's approval of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset: a set variable outranks the gh directory the daemon refreshes.
 - Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`. Request a secret only for your issue's work.
 

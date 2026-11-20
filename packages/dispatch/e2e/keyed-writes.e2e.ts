@@ -750,7 +750,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // whose success it actually held back - an open it matched by name but whose handler it
     // never caught counts for nothing - and the row asserts that count at its end, where no
     // wait of its own can close a window: a selector that cannot fail is no guard
-    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    // (`packages/dispatch/README.md`, "End-to-end tests").
     await page.addInitScript(() => {
       let held = 0;
       Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });

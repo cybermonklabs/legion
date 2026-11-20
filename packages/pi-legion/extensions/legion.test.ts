@@ -227,9 +227,9 @@ const environmentKeys = [
 
 /** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
  *  which it puts its own `bin/` first on when it loads, and the two a session's `dispatch`
- *  command reads (packages/pi-envoy/AGENTS.md). They go back with the keys above and are never
- *  deleted with them: the baseline below is "not a Legion pane", and a process with no `PATH`
- *  finds none of the programs these tests run. */
+ *  command reads (packages/pi-envoy/README.md, "The `dispatch` command"). They go back with the
+ *  keys above and are never deleted with them: the baseline below is "not a Legion pane", and a
+ *  process with no `PATH` finds none of the programs these tests run. */
 const entryEnvironmentKeys = ["PATH", "DISPATCH_HOST", "DISPATCH_SESSION_ID"] as const;
 restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 
@@ -442,7 +442,8 @@ afterAll(() => {
 
 beforeEach(async () => {
   // A suite run from inside a Legion pane inherits that pane's LEGION_*/DISPATCH_* launch
-  // environment; every test starts from none and sets only what it declares. The `dispatch`
+  // environment; every test starts from none and sets only what it declares, and a test that
+  // calls out stubs `fetch` itself (`afterEach` puts the real one back). The `dispatch`
   // command's state (the session title file `titleSession` writes) goes to a scratch directory.
   for (const key of environmentKeys) delete process.env[key];
   const dispatchState = await mkdtemp(path.join(os.tmpdir(), "legion-dispatch-state-"));
