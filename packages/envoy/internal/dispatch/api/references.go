@@ -603,7 +603,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, truncated, err := s.boundedClosure(r.Context(), issue.Key)
+	closure, err := s.boundedClosure(r.Context(), issue.Key)
 	if err != nil {
 		if closureBoundHit(err) {
 			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
@@ -613,8 +613,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	refKeys := make([]string, len(closure))
-	for index, member := range closure {
+	refKeys := make([]string, len(closure.Members))
+	for index, member := range closure.Members {
 		refKeys[index] = member.RefKey
 	}
 	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
@@ -622,8 +622,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	members := make([]model.ReferenceMember, 0, len(closure))
-	for _, closureMember := range closure {
+	members := make([]model.ReferenceMember, 0, len(closure.Members))
+	for _, closureMember := range closure.Members {
 		artifact, ok := artifacts[closureMember.RefKey]
 		if !ok {
 			s.writeHandlerError(w, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
@@ -635,13 +635,29 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
+	// The walk's cut at its ninth hop is no longer reported: refs.Closure answers none.
+	etag := referencesETag(issue.LastSeq, members, false, latestOnly)
 	w.Header().Set("ETag", etag)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+	WriteJSON(w, http.StatusOK, model.IssueReferences{
+		Members:    members,
+		Truncated:  false,
+		Links:      referenceLinks(closure.Links),
+		LinkedFrom: referenceLinks(closure.LinkedFrom),
+	})
+}
+
+// referenceLinks is rows as the answer writes them: [] when there is none, since a nil slice
+// encodes as null, which this build never writes.
+func referenceLinks(rows []refs.Related) []model.ReferenceLink {
+	links := make([]model.ReferenceLink, 0, len(rows))
+	for _, row := range rows {
+		links = append(links, model.ReferenceLink{Node: row.Node, Name: row.Name, Kinds: row.Kinds, Via: row.Via})
+	}
+	return links
 }
 
 // referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
@@ -657,12 +673,12 @@ const referencesClosureBound = 2 * time.Second
 // The rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the
 // read's context has expired exactly when the rollback matters, and pgx answers a rollback on an
 // expired context by destroying the connection instead of returning it to the pool.
-func (s *server) boundedClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+func (s *server) boundedClosure(ctx context.Context, issueKey string) (refs.References, error) {
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
-		return nil, false, err
+		return refs.References{}, err
 	}
 	defer func() {
 		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
@@ -670,7 +686,7 @@ func (s *server) boundedClosure(ctx context.Context, issueKey string) ([]refs.Me
 		_ = tx.Rollback(rollback)
 	}()
 	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = '%dms'", referencesClosureBound.Milliseconds())); err != nil {
-		return nil, false, err
+		return refs.References{}, err
 	}
 	return refs.Closure(ctx, tx, issueKey)
 }

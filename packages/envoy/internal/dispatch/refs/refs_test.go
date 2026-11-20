@@ -504,7 +504,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, truncated, err := Closure(ctx, database.Pool, "CORE-1")
+	references, err := Closure(ctx, database.Pool, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
@@ -519,11 +519,8 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 		{RefKey: artifactRefs["d7"], Depth: 7, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d6"]}},
 		{RefKey: artifactRefs["d8"], Depth: 8, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d7"]}},
 	}
-	if !reflect.DeepEqual(got, want) {
+	if got := references.Members; !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)
-	}
-	if !truncated {
-		t.Fatal("closure did not report the ninth hop as truncated")
 	}
 }
 

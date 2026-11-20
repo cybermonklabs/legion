@@ -14,6 +14,25 @@ type Member struct {
 	Via    model.ReferenceVia
 }
 
+// References is an issue's references read: Links, every node the issue's own content links to;
+// LinkedFrom, every node that links to the issue or to its own content; and Members, the
+// documents the read reaches.
+type References struct {
+	Members           []Member
+	Links, LinkedFrom []Related
+}
+
+// Related is one node at the other end of a link of an issue's references read: Node, the node as
+// the graph read names it; Name, the words the graph read shows for it (resolvedNode.name);
+// Kinds, the distinct kinds of its links, in order; and Via, the lowest of the issue's nodes at
+// the near end of those links.
+type Related struct {
+	Node  model.GraphNode
+	Name  string
+	Kinds []string
+	Via   model.ReferenceVia
+}
+
 // documentTarget is true of a refs row r whose target is a document, or a block a current
 // version of its document holds; documentOfTarget is that document's ref_key, which never holds
 // a '#'. documentBlockHeld is the join that answers whether a block target is held, and
@@ -71,37 +90,37 @@ const closureQuery = `
 		order by c.ref_key, c.depth, c.via_kind, c.via_id
 	`
 
-// Closure follows artifact references from an issue's own content to eight hops. A reference to
-// a block reaches the block's document, while a current version of the document holds that
-// block: a deleted block's links drop out of the closure until a version holds its id again. A
-// block of a comment or message reaches its item, as a document's block reaches its document: a
-// link one holds is read from its item's own refs row, which every comment and message keeps
-// beside its blocks' mentions, so the member's via is the item. An ask keeps no such row - its
-// refs are its question's alone - so the links its parts hold are read from ask_block_refs, by
-// the same rule: the member's via is the ask, at the depth the ask's own link has. A reference to
-// an item block, as one to its item, reaches no document.
-func Closure(ctx context.Context, q Queryer, issueKey string) ([]Member, bool, error) {
+// Closure reads an issue's references. It follows artifact references from the issue's own
+// content to eight hops, as Members, and leaves Links and LinkedFrom empty. A reference to a
+// block reaches the block's document, while a current version of the document holds that block:
+// a deleted block's links drop out of the closure until a version holds its id again. A block of
+// a comment or message reaches its item, as a document's block reaches its document: a link one
+// holds is read from its item's own refs row, which every comment and message keeps beside its
+// blocks' mentions, so the member's via is the item. An ask keeps no such row - its refs are its
+// question's alone - so the links its parts hold are read from ask_block_refs, by the same rule:
+// the member's via is the ask, at the depth the ask's own link has. A reference to an item block,
+// as one to its item, reaches no document. closureQuery answers the ninth hop's rows only to mark
+// the walk cut there; References reports no cut, so those rows are dropped.
+func Closure(ctx context.Context, q Queryer, issueKey string) (References, error) {
 	rows, err := q.Query(ctx, closureQuery, issueKey)
 	if err != nil {
-		return nil, false, err
+		return References{}, err
 	}
 	defer rows.Close()
 
 	members := []Member{}
-	truncated := false
 	for rows.Next() {
 		var member Member
 		if err := rows.Scan(&member.RefKey, &member.Depth, &member.Via.Kind, &member.Via.ID); err != nil {
-			return nil, false, err
+			return References{}, err
 		}
 		if member.Depth == 9 {
-			truncated = true
 			continue
 		}
 		members = append(members, member)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return References{}, err
 	}
 	sort.Slice(members, func(left, right int) bool {
 		if members[left].Depth != members[right].Depth {
@@ -109,5 +128,5 @@ func Closure(ctx context.Context, q Queryer, issueKey string) ([]Member, bool, e
 		}
 		return members[left].RefKey < members[right].RefKey
 	})
-	return members, truncated, nil
+	return References{Members: members, Links: []Related{}, LinkedFrom: []Related{}}, nil
 }

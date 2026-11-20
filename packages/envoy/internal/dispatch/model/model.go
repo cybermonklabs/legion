@@ -3488,6 +3488,23 @@ type ReferenceMember struct {
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.
