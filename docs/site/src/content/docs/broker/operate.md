@@ -1102,10 +1102,19 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
     names exist, though the store takes one call to say it holds no secret by a name and more to
     describe one it holds. The `reason` is the same for every name; it is there for an
     `agent-secrets` of an earlier release, which reads this answer as a refusal and prints its
-    reason. A panic in the reread or its peer notice logs one line naming that step. A pod that
-    stops waits for such rereads after its shutdown, out of the shutdown's own budget, before it
-    ends its reread listener and closes its database pools, so a reread it answered `202` for
-    still reaches the other pods; one still running when that budget runs out is logged at WARN.
+    reason. A pod that stops waits for such rereads after its shutdown, out of the shutdown's own
+    budget, before it ends its reread listener and closes its database pools, so a reread it
+    answered `202` for still reaches the other pods. The reread run after a `202` writes these
+    lines:
+    - `broker: reread secret failed`, at ERROR, when the store or the writer lock fails it: the
+      line an alert on a failing store counts;
+    - `broker: reread panicked` and `broker: peer notice panicked`, at ERROR with the panic and
+      its stack, when the reread or its notice to the other pods panics, which the broker
+      recovers;
+    - `broker: reread after its answer was not run because the pod is stopping`, at WARN, for a
+      reread answered after the pod began to wait for them, which it neither counts nor runs;
+    - `broker: a reread run after its answer was still running when the shutdown's budget ran out`,
+      at WARN, from the stop sequence.
   - A call an enrolled session signs is answered once the reread is done: whether the broker now
     serves the secret, as which type (`type`: `github-app`, `google-login`, `azure-login` or
     `google-service-account`, absent for a stored secret) and, if not, why (`absent`, or a

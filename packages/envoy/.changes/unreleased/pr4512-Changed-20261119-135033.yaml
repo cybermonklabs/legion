@@ -38,3 +38,5 @@ body: |-
   `create`, `set`, `retag` and `restore` then exit 1, and its `delete` exits 0; every one of those
   writes stands.
 time: 2026-11-19T13:50:33Z
+custom:
+    Issue: pr4512

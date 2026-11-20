@@ -232,27 +232,36 @@ func (s *server) refreshAndTell(ctx context.Context, name string, beforeNotify f
 // No caller waits on it, so a store or writer lock failure is the broker's and logs
 // "broker: reread secret failed". A reread whose value read alone the bound cuts has merged its
 // tags, so it tells the peers all the same (refreshAndTell); one cut before that merge tells none.
-// It runs outside net/http's handler goroutine, so it recovers a panic and names the step that
-// panicked, the reread or its peer notice. Nor does srv.Shutdown wait for it, so Deps.Detached
-// counts work that starts before Wait begins. A reread answered after Wait begins is not counted or
-// run, and logs that fact, so no WaitGroup Add races its Wait.
+// It runs outside net/http's handler goroutine, so it recovers a panic and logs the step that
+// panicked: "broker: reread panicked" or "broker: peer notice panicked". Nor does srv.Shutdown
+// wait for it, so Deps.Detached counts work that starts before Wait begins. A reread answered
+// after Wait begins is neither counted nor run, since the pod is stopping, and logs
+// "broker: reread after its answer was not run because the pod is stopping", so no WaitGroup Add
+// races its Wait.
 func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadAfterAnswerTimeout)
 	if !s.deps.Detached.start() {
 		cancel()
-		slog.Warn("broker: reread after its answer was not counted because shutdown is waiting", "name", name)
+		slog.Warn("broker: reread after its answer was not run because the pod is stopping", "name", name)
 		return
 	}
 	go func() {
 		defer s.deps.Detached.done()
 		defer cancel()
-		step := "reread"
+		notifying := false
 		defer func() {
-			if p := recover(); p != nil {
-				slog.Error("broker: "+step+" panicked", "name", name, "error", fmt.Errorf("panic: %v", p), "stack", string(debug.Stack()))
+			p := recover()
+			if p == nil {
+				return
 			}
+			err, stack := fmt.Errorf("panic: %v", p), string(debug.Stack())
+			if notifying {
+				slog.Error("broker: peer notice panicked", "name", name, "error", err, "stack", stack)
+				return
+			}
+			slog.Error("broker: reread panicked", "name", name, "error", err, "stack", stack)
 		}()
-		if _, err := s.refreshAndTell(ctx, name, func() { step = "peer notice" }); err != nil {
+		if _, err := s.refreshAndTell(ctx, name, func() { notifying = true }); err != nil {
 			slog.Error("broker: reread secret failed", "name", name, "error", err)
 		}
 	}()

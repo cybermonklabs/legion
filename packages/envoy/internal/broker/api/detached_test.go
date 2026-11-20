@@ -32,7 +32,7 @@ func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("a reread after detached wait began = %d %s; want 202", recorder.Code, recorder.Body.String())
 	}
-	if text := logged.String(); !strings.Contains(text, "broker: reread after its answer was not counted because shutdown is waiting") || !strings.Contains(text, "WORKER_TOKEN") {
-		t.Fatalf("a reread after detached wait began logged %q; want the uncounted reread line naming WORKER_TOKEN", text)
+	if text := logged.String(); !strings.Contains(text, "broker: reread after its answer was not run because the pod is stopping") || !strings.Contains(text, "WORKER_TOKEN") {
+		t.Fatalf("a reread after detached wait began logged %q; want the not-run reread line naming WORKER_TOKEN", text)
 	}
 }
