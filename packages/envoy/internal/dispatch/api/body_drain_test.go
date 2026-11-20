@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sendWholeBodyThenRead posts body to target over a connection of its own, sending all of it
@@ -42,7 +43,8 @@ type heldBackBody struct {
 }
 
 // sendPartOfBody posts a body of size bytes to target, sending its head and first, and none of
-// the rest. The connection gives up on the server after 30 s.
+// the rest. The connection gives up on the server at the shared wait's bound (testwait.Context),
+// so an answer that never comes fails its read by name rather than hanging the binary.
 func sendPartOfBody(t *testing.T, address, target string, header http.Header, size int, first []byte) *heldBackBody {
 	t.Helper()
 	connection, err := net.Dial("tcp", address)
@@ -50,7 +52,8 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	if err := connection.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	bound, _ := testwait.Context(t).Deadline()
+	if err := connection.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}
 	var head bytes.Buffer
@@ -147,18 +150,10 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 	file := bytes.Repeat([]byte("a"), 24<<20)
 	first := make(chan sentUpload, 1)
 	go func() { first <- sendUpload(t, handler, running.Key, "running-upload", file) }()
-	select {
-	case <-held.reached:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never reached the file store")
-	}
+	testwait.Receive(t, "the first upload to reach the file store", held.reached)
 	t.Cleanup(func() {
 		releaseOnce()
-		select {
-		case <-first:
-		case <-time.After(10 * time.Second):
-			t.Error("the first upload never answered once released")
-		}
+		testwait.Receive(t, "the first upload to answer once released", first)
 	})
 
 	body, bodyType, err := apitest.MultipartUpload(map[string]string{"name": "big.bin"}, "big.bin",
@@ -198,7 +193,7 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 			assertAnswer(t, response.StatusCode, answer)
 		})
 		t.Run(early.name+", to net/http's client", func(t *testing.T) {
-			request, err := http.NewRequest(http.MethodPost, served.URL+target, bytes.NewReader(upload))
+			request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodPost, served.URL+target, bytes.NewReader(upload))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -445,34 +440,21 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
-			select {
-			case <-first.running:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the first request never ran")
-			}
+			testwait.Receive(t, "the first request to run", first.running)
 			header := http.Header{}
 			header.Set("Content-Type", "application/json")
 			header.Set("X-Dispatch-User", "alice")
 			header.Set(contracts.IdempotencyKeyHeader, judged.key)
 			repeat := sendPartOfBody(t, server.Listener.Addr().String(), path, header, len(judged.repeat), []byte(judged.repeat[:5]))
-			select {
-			case <-found:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the repeat never found its key in flight")
-			}
+			testwait.Receive(t, "the repeat to find its key in flight", found)
 			finishFirst := func() keyedAnswered {
 				t.Helper()
 				release()
-				select {
-				case answered := <-firstAnswer:
-					if answered.err != nil {
-						t.Fatalf("the first request: %v", answered.err)
-					}
-					return answered
-				case <-time.After(10 * time.Second):
-					t.Fatal("the first request never answered once released")
+				answered := testwait.Receive(t, "the first request to answer once released", firstAnswer)
+				if answered.err != nil {
+					t.Fatalf("the first request: %v", answered.err)
 				}
-				return keyedAnswered{}
+				return answered
 			}
 			var firstGot keyedAnswered
 			if judged.finishFirst {
