@@ -1464,6 +1464,12 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps
 // one per issue (issuePods, the Kubernetes runtime's), and otherwise the workspace directory a
 // daemon on its own host provisions for the issue and repo under stateDir (workspace.Location).
+//
+// Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
+// answers a Sandbox its store holds absent only where a release kept it with the issue's volume
+// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
+// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
+// present for as long as it lives.
 func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
 	if pods, ok := rt.(issuePods); ok {
 		return func(issue string, _ ghrepo.Repository) bool {

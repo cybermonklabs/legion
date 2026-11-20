@@ -2366,9 +2366,10 @@ func (w *workflowRuntime) keptRepository(key string) (ghbranch.Repository, bool)
 	return ghbranch.Repository{}, false
 }
 
-// dropLaunchedRepository drops the repository kept for issue (keptRepository), so the next launch
-// of a claim on it reads its repository from Dispatch again: what the end of the issue's pod
-// calls, once nothing of the issue's workspace is left to restore into another repository.
+// dropLaunchedRepository drops the repository kept for issue (keptRepository): what the end of
+// the issue's pod calls (podEndsOn). Each of the three hooks of that end (outbox.podEnded) runs
+// for an issue the workflow records, which works its record's repository (repositoryOf), so the
+// drop clears only a repository kept before the issue was recorded.
 func (w *workflowRuntime) dropLaunchedRepository(issue string) {
 	w.launchedMu.Lock()
 	defer w.launchedMu.Unlock()

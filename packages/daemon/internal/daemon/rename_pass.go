@@ -128,10 +128,12 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 // moment, so the pass of a close under keep_volume may leave the write to the next boot, which
 // errs toward keeping.
 //
-// The rule does not read the Sandbox (IssueSandbox). The informer's store can still hold a Sandbox
-// that the teardown has just deleted, and a keep on that Sandbox would hold the write of an
-// ordinary release, with keep_volume off, until the next boot. Under tmux, whose tree cleanup does
-// nothing and which suspends no issue, P2's workspace-directory rule decides (workspaceKeep).
+// The rule does not ask whether the runtime holds the Sandbox (IssueSandbox): the informer's store
+// can still hold a Sandbox that the teardown has just deleted, and a keep on that Sandbox would
+// hold the write of an ordinary release, with keep_volume off, until the next boot.
+// IssueKeepsVolume reads the same stored Sandbox, but it is true only for one that owns a kept
+// volume, so such a deleted Sandbox keeps nothing. Under tmux, whose tree cleanup does nothing and
+// which suspends no issue, P2's workspace-directory rule decides (workspaceKeep).
 func podEndKeep(rt runtime.Runtime, stateDir string) renameKeep {
 	pods, ok := rt.(issuePods)
 	if !ok {

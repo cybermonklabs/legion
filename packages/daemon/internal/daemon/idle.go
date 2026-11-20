@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -31,10 +32,7 @@ const idleTickInterval = time.Minute
 // runtime keeps the issue's volume for its next pod (runtime.IssueVolumeReader). It is the one
 // test of whether a runtime runs a pod per issue, so every rule that asks it gives one answer: the
 // idle pass and its release (attachIdleRelease, outbox.issueSandboxName), whether an issue holds
-// its workspace (workspaceHeldBy) and the rename pass's live-pod rules (bootKeep, podEndKeep). The
-// rename pass's two rules ask it about the kept volume too: under keep_volume, an idle release
-// keeps the issue's Sandbox and its volume, and the issue's next pod mounts that volume, with the
-// workspace directory on it under the name the issue's record held when that directory was made.
+// its workspace (workspaceHeldBy) and the rename pass's live-pod rules (bootKeep, podEndKeep).
 // The Kubernetes runtime implements it; a runtime that runs no pods implements none of it, and the
 // daemon then releases nothing, which is also what `runtime: tmux` wants.
 type issuePods interface {
@@ -43,6 +41,9 @@ type issuePods interface {
 	runtime.IssuePodReader
 	runtime.IssueVolumeReader
 }
+
+// Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
+var _ issuePods = (*sandbox.Runtime)(nil)
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
