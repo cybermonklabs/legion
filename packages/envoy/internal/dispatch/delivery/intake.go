@@ -322,9 +322,8 @@ func consumerGenerationMetadata() map[string]string {
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
-// ack floor hands it to the new holder once. It is also withheld, as every hand-back is, when NATS
-// does not answer within bus.ConnLockWait that the connection is connected
-// (intakeDelivery.handBackOwn), since a stop waits for this handler.
+// ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
+// on a reconnecting link it is refused at once (intakeDelivery.handBackOwn).
 //
 // It is handed back a bounded number of times and then acknowledged, with an Error naming the
 // envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a

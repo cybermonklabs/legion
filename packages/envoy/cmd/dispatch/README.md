@@ -1594,7 +1594,8 @@ That normally finishes inside the shutdown reserve, but a write can hold nats.go
 A process killed before that ends the renewal with its connection, and the standby takes over at the lapse, up to the hold's TTL after its last renewal:
 a hand-back that reached the server after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
 Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
-Once the stop has begun it is withheld unless NATS took the stop's drain on a live link, and any hand-back is withheld when NATS does not answer within `bus.ConnLockWait` that the connection is connected:
+Outside any stop, the hand-back is published; one made while a write holds nats.go's lock is left running and lands when the lock frees, and one on a reconnecting link is refused at once and comes back after the ack wait.
+Once the stop has begun it is withheld unless NATS took the stop's drain on a live link, and after that, withheld when NATS does not answer within `bus.ConnLockWait` that the connection is connected:
 nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
 It is withheld too once the hold's loss deadline has passed, as the head-write hand-back above is:
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.

@@ -411,7 +411,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		awaitDrainWait(t, row)
 		delivery := row.delivery()
 		delivery.mu.Lock()
-		taken := delivery.drainTaken
+		taken := delivery.handBackAllowed
 		delivery.mu.Unlock()
 		if !taken {
 			t.Fatal("control: the stop's drain was not taken on a moving link")
@@ -426,12 +426,15 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 // connected read that follows the hand-back rule runs only during a stop (mayHandBack), so it
 // never blocks the hand-back here, and the publish is left running (callNATS's bound expires).
 // Once the lock is released the hand-back reaches the server. The negative control is
-// ec2d01a1a1's code, which reads the connection outside any stop and withholds the hand-back.
+// a mayHandBack that makes the connected read outside any stop.
 func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing.T) {
 	handlerReady := make(chan struct{}, 1)
 	writeHeld := make(chan struct{})
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
-		handlerReady <- struct{}{}
+		select {
+		case handlerReady <- struct{}{}:
+		default:
+		}
 		<-writeHeld
 		delivery.handBack(message.msg)
 	}, true)
@@ -458,10 +461,73 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 		t.Fatal("the hand-back did not land within 30 s of the lock's release")
 	}
 	if err := row.conn.Flush(); err != nil {
-		t.Logf("flush the intake's client: %v", err)
+		t.Fatalf("flush the intake's client: %v", err)
 	}
 	if n := nakCount(); n == 0 {
 		t.Fatal("the hand-back outside any stop did not reach the server after the lock was released: a connected read outside any stop withheld it")
+	}
+}
+
+// A hand-back outside any stop on a reconnecting link logs at INFO, not ERROR. The bus sets
+// ReconnectBufSize -1 (connect.go:267), which disables the reconnect buffer: nats.go returns
+// ErrReconnectBufExceeded at once for every publish during a reconnect. The message stays
+// outstanding for its ack wait. The negative control is a callNATS without the INFO case for
+// ErrReconnectBufExceeded.
+func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
+	logs := captureLogs(t)
+	handlerReady := make(chan struct{}, 1)
+	linkCut := make(chan struct{})
+	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+		select {
+		case handlerReady <- struct{}{}:
+		default:
+		}
+		<-linkCut
+		delivery.handBack(message.msg)
+	}, true)
+	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
+	})
+	select {
+	case <-handlerReady:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the handler did not reach its wait within 30 s")
+	}
+	row.hold.Cut()
+	deadline := time.Now().Add(30 * time.Second)
+	for row.conn.Status() != natsgo.RECONNECTING {
+		if time.Now().After(deadline) {
+			t.Fatalf("control: the connection did not reach RECONNECTING within 30 s: status %v", row.conn.Status())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(linkCut)
+	delivery := row.delivery()
+	select {
+	case <-delivery.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
+	}
+	// The error is logged in callNATS's Bounded goroutine after the deferred that closes
+	// published runs. A brief wait lets that goroutine log before the read.
+	time.Sleep(50 * time.Millisecond)
+	var found bool
+	for _, record := range logs() {
+		msg, _ := record["msg"].(string)
+		if !strings.Contains(msg, "hand a message back for redelivery") {
+			continue
+		}
+		level, _ := record["level"].(string)
+		if level == "ERROR" {
+			t.Fatalf("the hand-back on a reconnecting link logged at ERROR: %v; want INFO for ErrReconnectBufExceeded", record)
+		}
+		if level != "INFO" {
+			t.Fatalf("the hand-back on a reconnecting link logged at %s: %v; want INFO", level, record)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("no log record for the hand-back on a reconnecting link; logged: %v", loggedMessages(logs()))
 	}
 }
 

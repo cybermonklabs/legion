@@ -167,8 +167,7 @@ func heardReconnects(client *Client) <-chan struct{} {
 // at the next, and of the reconnect by the last; and a window pinned after the client heard sends.
 // The negative controls: a check that reads nothing of nats.go's until the client has heard of an
 // event lets the old window send before the client hears of the drop; a check that takes any client
-// event since the pin for a loss refuses the new window once the client heard; and a check that
-// compares the reconnect count with >= rather than == lets the old window send once the client heard.
+// event since the pin for a loss refuses the new window once the client heard.
 func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()

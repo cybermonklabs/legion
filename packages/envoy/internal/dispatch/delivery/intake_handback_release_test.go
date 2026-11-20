@@ -259,8 +259,8 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 // does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
 // a publish was left running fails the first's release; a release made at the deadline with a
 // hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
-// pending fails the second's renewal; and an untracked
-// finalizer fails the third by returning from its shutdown stop with the hold live.
+// pending fails the second's renewal; and an untracked finalizer fails the third
+// by returning from its shutdown stop with the hold live.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)

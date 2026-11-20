@@ -62,16 +62,7 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
-// openBucket opens a bucket (bus.OpenKeyValue). A row runs openBucketHook before each open, to see
-// that the open runs with b.mu released.
-func openBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, name string) (bus.KeyValue, error) {
-	if hook := openBucketHook.Load(); hook != nil {
-		(*hook)()
-	}
-	return bus.OpenKeyValue(ctx, conn, js, name)
-}
-
-// openBucketHook, when set, runs as each bucket open begins (openBucket). It is nil outside tests.
+// openBucketHook, when set, runs before each bucket open (bucket). It is nil outside tests.
 var openBucketHook atomic.Pointer[func()]
 
 // bucket returns the handle of bucket on the client's current connection, opening it within ctx
@@ -101,7 +92,11 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 		return kv, nil
 	}
 	b.mu.Unlock()
-	kv, err := openBucket(ctx, b.client.Connection(), js, name)
+	conn := b.client.Connection()
+	if hook := openBucketHook.Load(); hook != nil {
+		(*hook)()
+	}
+	kv, err := bus.OpenKeyValue(ctx, conn, js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}

@@ -87,8 +87,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // at its stop deadline with a hand-back still waiting for NATS; close settles that hand-back, sent
 // in the client's close flush or dropped with its connection, and its finalizer releases the hold
 // through the still-open pool before stop returns. A message in its handler finishes and is
-// acknowledged before the Run returns; messages behind it are handed back while the hold covers
-// them, and the next process takes the durable over at once rather than at the hold's lapse. Each Run's stop has
+// acknowledged before the Run returns; messages behind it are handed back while the hold covers them,
+// and the next process takes the durable over at once rather than at the hold's lapse. Each Run's stop has
 // one deadline, intakeStopBudget after ctx ends (stopContext), which a take-over under way at that
 // moment spends rather than extends: the handlers still running then are given up and their
 // messages handed back too. Every handler of Intake's has returned by the time stop does, and each
