@@ -15,6 +15,6 @@ body: |-
     Repository cache pods and the image probe stay in gVisor. The daemon now refuses at boot, in
     every deployment, an operator `runtime.kubernetes.pod.volume_mounts` path at or under
     `/var/run/legion/workload-identity`, and `legion config check` shows the refusal. Daemon API
-    contract 192.
+    contract 196.
 custom:
     Issue: pr4485

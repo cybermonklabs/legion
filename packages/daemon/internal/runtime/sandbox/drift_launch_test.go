@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -84,6 +85,12 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 		"an operator mount added":  {now: withOperatorMount, replaced: true, key: controllerInGVisor},
 		"another disk size": {
 			now: func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, replaced: true, key: controllerInGVisor,
+		},
+		"another leak check manifest digest": {
+			now: func(o *Options) {
+				o.LeakCheckSetting = leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+			},
+			replaced: true, key: controllerInGVisor,
 		},
 		"an installing launch into a pod on another image": {
 			now: func(o *Options) { o.Image = nextImage }, plugins: plugins, replaced: true, key: controllerInGVisor,

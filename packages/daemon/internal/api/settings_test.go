@@ -227,6 +227,7 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.LeakCheck":                "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",

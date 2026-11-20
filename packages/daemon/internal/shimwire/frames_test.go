@@ -579,6 +579,46 @@ func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
 	}
 }
 
+// A start that names a session by its id alone (resumeSession) is the launcher's to look up, and
+// the launcher resumes what it finds by replacing the argv's one `--resume=<id>` with the found
+// file's path: a start that also names a file names two sessions, and one whose argv does not
+// hold exactly one `--resume=<id>` of that session leaves the launcher no element to replace, or
+// two. The sandbox runtime is the frame's only sender, so each is a bug to name. The negative
+// control is the round-trip table's start naming its session by id in place of its file, with the
+// one element, which validates.
+func TestALauncherStartNamingASessionMustNameOneResumeOfIt(t *testing.T) {
+	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	byID := LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc", "--resume=" + session},
+		Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeSession: session}
+	if err := byID.Validate(); err != nil {
+		t.Fatalf("a start naming its session by id with one --resume of it was refused: %v", err)
+	}
+	for name, change := range map[string]func(*LauncherStart){
+		"a session file as well": func(s *LauncherStart) { s.ResumeFile = "/sessions/test.jsonl" },
+		"no --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc"}
+		},
+		"two --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--resume=" + session, "--mode", "rpc", "--resume=" + session}
+		},
+		"a --resume of another session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume=01a1f5de-4835-7667-b005-e99e3e28aa01"}
+		},
+		"the session as an element of its own": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume", session}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := byID
+			change(&start)
+			err := start.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "resumeSession") {
+				t.Fatalf("a start naming session %s with %s validated as %v, want ErrMalformedFrame naming resumeSession", session, name, err)
+			}
+		})
+	}
+}
+
 func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
 	identity := &AgentSecretsHello{Thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.sig"}
 	for name, frame := range map[string]Hello2{

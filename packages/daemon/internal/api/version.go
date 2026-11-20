@@ -2464,7 +2464,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 192: dispatch://INFRA-3531 and dispatch://INFRA-4567, two changes that reach main together as
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 196: dispatch://INFRA-3531 and dispatch://INFRA-4567, two changes that reach main together as
 // cybermonklabs/legion#4273, into whose branch #4485 merged, so they take one number. First,
 // dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
 // which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
@@ -2576,12 +2618,16 @@ package api
 // read main's own number and every open head again at the next forward merge rather than from
 // this line.)
 // (They took 181 together at the forward merge of 2026-11-20 that brought main in at
-// c7e1cbd53237. They take 192 together since the forward merge of 2026-11-20 that brought main in
-// at 1c7c8253678f, where main carried 188, #4543's, the entry right above. A reading of
-// `const DaemonAPIVersion` at the head of each of the 264 open pull requests of this repository,
-// #4273 among them at its earlier 181, made between 2026-11-20T10:25:07Z and 10:30:02Z, gave above
-// main's 188: 189 (#3831, #4592 and #4596), 190 (#4493 and #4578) and 191 (#4495), so 192 was the
-// lowest free number above main's 188 at that reading. That is a reading and never the rule: read
-// main's own number and every open head again at the next forward merge rather than from this
-// line.)
-const DaemonAPIVersion = 192
+// c7e1cbd53237, and 192 at the one that brought it in at 1c7c8253678f, where main carried 188,
+// #4543's: a reading of the 264 open pull requests, made between 2026-11-20T10:25:07Z and
+// 10:30:02Z, found 189 (#3831, #4592 and #4596), 190 (#4493 and #4578) and 191 (#4495) above it.
+// They take 196 together since the forward merge of 2026-11-20 that brought main in at
+// a4cd4949fce7, where main carried 189, #4581's, the entry right above. A reading of `const
+// DaemonAPIVersion` at the head of each of the 283 open pull requests of this repository, #4273
+// among them at its earlier 192, made between 2026-11-20T16:08:35Z and 16:17:22Z, gave above
+// main's 189: 190 (#4578), 191 (#2230, #4049, #4495 and #4573), 192 (#3993, #4173, #4175, #4182,
+// #4193, #4392 and #4580), 193 (#3659, #3712, #4065, #4432, #4539 and #4553), 194 (#3831 and
+// #4030) and 195 (#4493 and #4590), so 196 was the lowest free number above main's 189 at that
+// reading. That is a reading and never the rule: read main's own number and every open head again
+// at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 196

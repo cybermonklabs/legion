@@ -54,6 +54,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -134,6 +135,9 @@ type Runtime struct {
 	// launcher of the controller's pod is handed on the answer to each hello (LauncherResolver),
 	// nil for a deployment that turned that pod's guard off.
 	controllerMemoryGuard *shimwire.LauncherMemoryGuard
+	// leakCheck is Options.LeakCheckSetting: the deployment's shared public leak check, whose
+	// install and checker every role is told where it is configured (mainEnvironment).
+	leakCheck leakguard.Setting
 	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
 	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
 	volumeTrim *shimwire.LauncherVolumeTrim
@@ -424,8 +428,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres,
-		memoryGuard:  opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting,
+		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -447,7 +451,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	// before any of its roles start, take its memory guard's kill reports, an issue pod's and the
 	// controller pod's, and its cache trimmer's sweep reports, and log what they could not carry or
 	// record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
 		opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
@@ -1202,13 +1206,14 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 }
 
 // warnPodDrift logs, for the Sandbox u, what the pod it owns in the store runs that a pod created
-// now would not: a container on an image other than the runtime's (imageDrift), and the pod
-// running as a ServiceAccount other than the configured one (accountDrift). Each kind of drift is
-// one warning of its own, naming the Sandbox, what was found and what is configured, as
-// ReconcileOrphans says, so a pod holding both is named twice. A same-named pod u does not own is
-// an earlier Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is
-// ever warned of, for the account as for the image: ReconcileOrphans passes over it before the
-// call, since its own sweep replaces its pod for either drift without a relaunch to wait for.
+// now would not: a container on an image other than the runtime's (imageDrift), the pod running as
+// a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
+// manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
+// of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
+// pod holding several is named once for each. A same-named pod u does not own is an earlier
+// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
+// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
+// own sweep replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
@@ -1222,6 +1227,15 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
 			u.GetName(), account, serviceAccountOr(r.pod.ServiceAccount)),
 			"sandbox", u.GetName(), "pod", pod.UID)
+	}
+	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	if held, recorded := recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)); len(r.leakCheckDrift(held, recorded)) > 0 {
+		current := r.leakCheck.ManifestSHA256
+		if current == "" {
+			current = "none"
+		}
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs leak check manifest %s, the configured manifest is %s; its agents keep the held check until its update round replaces the pod",
+			u.GetName(), held, current), "sandbox", u.GetName(), "pod", pod.UID)
 	}
 }
 

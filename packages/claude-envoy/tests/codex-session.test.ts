@@ -5,6 +5,7 @@ import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
@@ -24,8 +25,8 @@ import {
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
-import { sessionAdmission } from "../src/envoy-channel-server"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
+import { FakeNats, waitFor } from "./channel-session-harness"
 
 const directory = temporaryDirectory("codex-session")
 
@@ -155,12 +156,14 @@ describe("the Codex session record", () => {
 })
 
 /** A connection that records what is published, the subjects subscribed and given up, and hands
- *  control messages to the stream. */
+ *  control messages to the stream. `closeForGood` closes it as nats.js closes one for good. */
 function fakeConnection() {
   const published: { subject: string; payload: unknown }[] = []
   const queues: { push(message: { data: Uint8Array; reply?: string }): void }[] = []
   const subscribed = new Set<string>()
+  let closedForGood = false
   const connection = {
+    isClosed: () => closedForGood,
     publish(subject: string, data: Uint8Array) {
       published.push({ payload: JSON.parse(new TextDecoder().decode(data)), subject })
     },
@@ -201,7 +204,15 @@ function fakeConnection() {
       })
     }
   }
-  return { connection, control, published, subscribed }
+  return {
+    connection,
+    control,
+    published,
+    subscribed,
+    closeForGood: () => {
+      closedForGood = true
+    },
+  }
 }
 
 describe("the Codex live view", () => {
@@ -281,6 +292,24 @@ describe("the Codex live view", () => {
   // Under a broker token the connection is admitted as one session at a time, and the server
   // refuses and closes a subscribe to a subject the session it is admitted as may not take. These
   // run the channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+  // The live view starts after the session does, which can be after a `/new` whose move has not
+  // landed: its first control subject waits for the admission as every later one does.
+  test("a live view started for an id the connection is not admitted as yet takes its control subject once it is", async () => {
+    const { connection, subscribed } = fakeConnection()
+    const admission = sessionAdmission("s1-before-new")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection,
+      sessionId: "s2",
+    })
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    admission.admit("s2")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s2")])
+    stream.stop()
+  })
+
   test("a /new takes the new id's control subject only once the connection is admitted as it", async () => {
     const { connection, subscribed } = fakeConnection()
     const admission = sessionAdmission("s3")
@@ -289,6 +318,8 @@ describe("the Codex live view", () => {
       connection,
       sessionId: "s3",
     })
+    // The first subject goes through the gate too, which answers an id already admitted at once.
+    await Bun.sleep(10)
     expect([...subscribed]).toEqual([agentStreamControlSubject("s3")])
     stream.rebind("s4")
     await Bun.sleep(10)
@@ -342,6 +373,89 @@ describe("the Codex live view", () => {
     expect([...subscribed]).toEqual([agentStreamControlSubject("s10")])
     stream.stop()
   })
+
+  // A connection that closes for good while a `/new`'s move is still to land is replaced by one
+  // that may still not take the new id's subjects, so the stream takes them through the same gate.
+  test("on a connection swapped in while a /new's move is pending, the new id's control subject waits for the admission", async () => {
+    const first = fakeConnection()
+    const admission = sessionAdmission("s11")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection: first.connection,
+      sessionId: "s11",
+    })
+    stream.rebind("s12")
+    first.closeForGood()
+    const swapped = fakeConnection()
+    stream.useConnection(swapped.connection)
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([])
+    admission.admit("s12")
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s12")])
+    expect([...first.subscribed]).toEqual([])
+    stream.stop()
+  })
+
+  test("on a connection swapped in for an admitted id, the control subject is taken at once, and frames go out on it", async () => {
+    const first = fakeConnection()
+    const stream = startCodexAgentStream({
+      admitted: sessionAdmission("s13").admitted,
+      connection: first.connection,
+      sessionId: "s13",
+    })
+    first.closeForGood()
+    const swapped = fakeConnection()
+    stream.useConnection(swapped.connection)
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s13")])
+    swapped.control("watch")
+    await Bun.sleep(10)
+    stream.event({ at: 1, id: "u1", kind: "user", text: "after the swap" })
+    expect(swapped.published.length).toBeGreaterThan(0)
+    stream.stop()
+  })
+
+  // A control subscription can end while the connection stays up (the server refused it): the
+  // view takes the subject again a second later (`../src/control-subscription`), and takes nothing
+  // for an id it moved off, or once it stopped, while that retake waits.
+  test("a control subscription that ends on a live connection is taken again a second later, and not after a /new or a stop", async () => {
+    const nats = new FakeNats()
+    const stream = startCodexAgentStream({ connection: nats, sessionId: "s15", warn: () => {} })
+    const subject = agentStreamControlSubject("s15")
+    const renewed = agentStreamControlSubject("s16")
+    const takes = (taken: string): number =>
+      nats.calls.filter((call) => call === `nats.subscribe ${taken}`).length
+    const refusal = Object.assign(new Error("Permissions Violation for Subscription"), {
+      name: "NatsError",
+      code: "PERMISSIONS_VIOLATION",
+    })
+    expect(takes(subject)).toBe(1)
+
+    // Ended on a live connection: taken again about a second later.
+    const endedAt = performance.now()
+    nats.failSubscription(subject, refusal)
+    await waitFor(async () => takes(subject) === 2, "the control subject taken again")
+    expect(performance.now() - endedAt).toBeGreaterThanOrEqual(900)
+    expect(nats.liveSubscriptions(subject)).toBe(1)
+
+    // Ended again, and a `/new` lands while the retake waits: the old id is not taken again.
+    nats.failSubscription(subject, refusal)
+    await Bun.sleep(100)
+    stream.rebind("s16")
+    expect(takes(renewed)).toBe(1)
+    await Bun.sleep(1_500)
+    expect(takes(subject)).toBe(2)
+    expect(takes(renewed)).toBe(1)
+
+    // Ended again, and the view stops while the retake waits: nothing is taken again.
+    nats.failSubscription(renewed, refusal)
+    await Bun.sleep(100)
+    stream.stop()
+    await Bun.sleep(1_500)
+    expect(takes(renewed)).toBe(1)
+    expect(nats.liveSubscriptions(renewed)).toBe(0)
+  }, 15_000)
 })
 
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {

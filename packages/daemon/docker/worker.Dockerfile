@@ -101,10 +101,12 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
 ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
 ARG GH_TOOL=gh@2.98.0
-# The pin of the shared public leak check: the tag of the private repository whose leak-check
+# The pin of the shared public leak check: the tag of the repository a deployment names in its
+# leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
-# daemon, which reads the check at it and pushes it to the launcher, and the launcher installs it
-# under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
+# daemon, which, under that setting, reads the check at it and pushes it to the launcher, and the
+# launcher installs it under the issue's scratch before any role's agent starts
+# (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
 # newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,

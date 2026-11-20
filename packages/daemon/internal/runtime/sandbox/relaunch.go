@@ -20,31 +20,54 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Spawn starts a fresh agent for spec's claim, over whatever the claim's Sandbox already holds
 // (decision 3a): a relaunch before the agent's first registration — the registration deadline, a
 // death before registration, a retried launch, boot finishing a launch a crash interrupted — is a
-// Spawn over an existing Sandbox. A spec with a ResumeSessionFile is refused: continuing a
-// recorded agent is Resume's. spec.Plugins travels with a claim that has registered a session
-// (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here anyway, so Spawn
-// always installs nothing and a fresh pod always loads the image's copies.
+// Spawn over an existing Sandbox. A spec that names a session to continue, by its file
+// (ResumeSessionFile) or by its id (ResumeSession), or that asks the agent's own command to
+// resolve one (ResumeByAgent), is refused before anything is touched: continuing a recorded agent
+// is Resume's, and a fresh agent continues nothing. spec.Plugins travels with a claim that has
+// registered a session (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here
+// anyway, so Spawn always installs nothing and a fresh pod always loads the image's copies.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	if spec.ResumeSessionFile != "" {
+	switch {
+	case spec.ResumeSessionFile != "":
 		return runtime.Locator{}, fmt.Errorf("spawn %s: a ResumeSessionFile is Resume's to set", spec.Claim)
+	case spec.ResumeSession != "":
+		return runtime.Locator{}, fmt.Errorf("spawn %s: a ResumeSession is Resume's to set", spec.Claim)
+	case spec.ResumeByAgent:
+		return runtime.Locator{}, fmt.Errorf("spawn %s: ResumeByAgent is Resume's to set, with a ResumeSession", spec.Claim)
 	}
 	spec.Plugins = nil
 	return r.relaunch(ctx, nil, spec)
 }
 
-// Resume starts the agent spec's claim recorded, again, from spec.ResumeSessionFile. prev is a
-// hint: the issue's Sandbox is found by name. A suspended Sandbox waits out its pod before
-// restarting; an active issue pod starts only this role. The launcher checks the session file
-// before starting the child, so a missing retained session never becomes a fresh agent.
+// Resume starts the agent spec's claim recorded, again, from the session spec names by exactly one
+// of its file (ResumeSessionFile) and its id (ResumeSession, for a claim that records no file of
+// it): a spec naming neither has nothing to continue, and one naming both names two sessions. A
+// spec that asks the agent's own command to resolve the id (ResumeByAgent) names that id, or it is
+// refused: there is nothing for the agent to resolve. Each refusal comes before anything is
+// touched. prev is a hint: the issue's Sandbox is found by name. A suspended Sandbox waits out its
+// pod before restarting; an active issue pod starts only this role. The launcher checks the
+// session file before starting the child, and looks a session named by its id alone up in the
+// session table, so a missing retained session never becomes a fresh agent. A session named by its
+// id alone is named only to a launcher whose hello said it can make that lookup: through any other,
+// relaunch answers runtime.ErrSessionLookupUnavailable having sent nothing, and the caller's next
+// Resume, with ResumeByAgent, names no session to the launcher and has Oh My Pi's own
+// `--resume=<id>` resolve it (agentArgv, launcherCommand).
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	if spec.ResumeSessionFile == "" {
-		return runtime.Locator{}, fmt.Errorf("resume %s: no session file to resume from", spec.Claim)
+	switch {
+	case spec.ResumeSessionFile == "" && spec.ResumeSession == "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: no session file or session id to resume from", spec.Claim)
+	case spec.ResumeSessionFile != "" && spec.ResumeSession != "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: the spec names both session file %s and session id %s; a resume continues one session",
+			spec.Claim, spec.ResumeSessionFile, spec.ResumeSession)
+	case spec.ResumeByAgent && spec.ResumeSession == "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: ResumeByAgent asks the agent to resolve a session id the spec does not name", spec.Claim)
 	}
 	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
 		return runtime.Locator{}, fmt.Errorf("sandbox runtime: resume: %w", err)
@@ -184,6 +207,13 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Sandbox (secretsReleasedAnnotation). A launch that keeps such a Sandbox removes that record
 // before it writes the first Secret (provision), so the record is never on a Sandbox that owns a
 // Secret. A Sandbox that a replacement creates carries no record.
+//
+// A Resume of a session by its id alone (spec.ResumeSession without ResumeByAgent) whose role's
+// launcher has not said in its hello that it can look the id up ends once that launcher has
+// connected, with an error wrapping runtime.ErrSessionLookupUnavailable that names the claim, its
+// Sandbox and the pod, having stopped, recorded and sent nothing in the pod; the supervisor's next
+// Resume, which has the agent's own command resolve the id, ensures the Sandbox, reads the launcher
+// bindings and waits for the launcher again.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -258,7 +288,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	replace := !live || (accountDrifted && !covered) ||
 		(replacement != "" && !drifted) ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && drifted) ||
+		(!installing && !covered && (drifted ||
+			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
 		(installing && !covered && podImageDrift(s, r.podShapes[l.shapeKey()]))
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
@@ -276,7 +307,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
 		// replaces the pod where it stands, which is what every launch into a drifted pod did
 		// before the round existed.
-		kept, readable := r.keptBy(s, l)
+		kept, readable := r.keptBy(s, string(pod.UID), l)
 		if !readable {
 			replace = true
 		} else {
@@ -369,6 +400,21 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		r.join(loc)
 		return loc, nil
 	}
+	// A session named by its id alone goes only to a launcher whose hello said it can look the id
+	// up (launchers.resumesBySession). Any other would ignore the id and start Oh My Pi on the
+	// argv's bare `--resume=<id>`, a launch the supervisor built as a lookup by the launcher and
+	// not as the agent's own (ResumeByAgent), whose prompt says the workspace may have been
+	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
+	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
+	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
+	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
+	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
+	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
+		return fail("resume session "+spec.ResumeSession+" by its id", fmt.Errorf(
+			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
+			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
+	}
 	// A launcher still running an earlier generation of this role runs a process the supervisor has
 	// already given up on: it is stopped before the new generation starts, so two generations of a
 	// role never run side by side.
@@ -381,6 +427,26 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
+	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
+	// whose template records none, record that digest only after the launcher that will receive
+	// the push has connected, then tell this generation that same digest. A launcher replacement
+	// during that sequence refuses this launch before its Start frame goes out; the retry makes the
+	// decision for the replacement session.
+	session, err := r.launchers.serveLeakCheck(starting, spec.Claim, string(pod.UID),
+		func(_ *launcherSession, served leakguard.Served) (string, error) {
+			if l.kept == nil || l.kept.recorded {
+				return l.leakChecker(r), nil
+			}
+			if err := r.recordLeakCheckPushed(starting, s, string(pod.UID), served.ManifestSHA256); err != nil {
+				return "", err
+			}
+			l.kept.checker, l.kept.recorded = served.ManifestSHA256, true
+			return l.leakChecker(r), nil
+		},
+	)
+	if err != nil {
+		return fail("serve the shared public leak check", err)
+	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
@@ -388,7 +454,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
+	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), session, command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
@@ -396,12 +462,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	return loc, nil
 }
 
-// keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
-// it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
+// keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
+// in it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
-// overlays
-// its container holds (heldRoleOverlays), and the session store it was built under
-// (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
+// overlays its container holds (heldRoleOverlays), the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at), and the leak check digest the pod
+// records (recordedLeakChecker: its template's, else the one this daemon pushed into it, the one
+// its install hashes to). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to do the steps of that round's
@@ -416,27 +483,29 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // annotation existed does not carry. readable is false when the template
 // holds no container for the role — a template of another shape, or one this daemon cannot read:
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
-func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
+func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 	spec := s.Spec.PodTemplate.Spec
 	overlays, variantFiles, readable := r.heldRoleOverlays(spec, l.spec.Role)
 	if !readable {
 		return keptPod{}, false
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind}, true
+	checker, recorded := recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, podUID)
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
+		checker: checker, recorded: recorded}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
-// unless the launcher answered that Start with a refusal (startRefusal), which started nothing, or
-// the start was refused before its Start was sent because the pod's shared public leak check could
-// not be installed (runtime.LeakCheckRefusal, launchers.serveLeakCheck).
+// unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
+// launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
+// refuses that launch before its Start is built.
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
 // same connection, so the launcher handles it once it has handled the Start. It runs with its own
 // bound, since the start's own deadline may be what ended it.
 func (r *Runtime) stopIssuedChild(ctx context.Context, token claim.Token, podUID string, generation uint64, startErr error) error {
 	var refused startRefusal
-	if errors.As(startErr, &refused) || runtime.LeakCheckCause(startErr) != "" {
+	if errors.As(startErr, &refused) {
 		return nil
 	}
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.bootTimeout+r.terminationGrace)
