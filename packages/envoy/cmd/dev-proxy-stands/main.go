@@ -12,7 +12,7 @@
 // why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
-//	                   [--github-owner <owner>=<installation id> ...]
+//	                   [--installation <owner>=<installation id> ...]
 //	                   [--installation-permissions <owner>=<permission>:<level>,... ...]
 //	                   [--google-lifetime <duration>]
 //	                   [--aws-key <key id>=<secret key>] [--aws-session-token <token>]
@@ -297,7 +297,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.dir, "dir", "", "write the authority's and the services' files into `<path>`, and with none a directory of this run's own")
 	fs.Var(&o.addresses, "address", "bind `<stand>=<host:port>` at that address rather than 127.0.0.1 on a port the system picks (repeatable)")
 	fs.Var(&o.hosts, "host", "add `<stand>=<name>`'s name or address to that stand's certificate (repeatable)")
-	fs.Var(ownerFlags{installations: o.installations}, "github-owner", "the GitHub stand answers `<owner>=<installation id>` as an installation of the App (repeatable)")
+	fs.Var(installationFlags{installations: o.installations}, "installation", "the GitHub stand answers `<owner>=<installation id>` as an installation of the App (repeatable)")
 	fs.Var(permissionFlags{held: o.permissions}, "installation-permissions", "the App's installation on the owner of `<owner>=<permission>:<level>,...` holds those permissions, and nothing for an owner followed by nothing, in place of the stand's own map (repeatable)")
 	fs.DurationVar(&o.googleLifetime, "google-lifetime", time.Hour, "the Google stand's answer says the access token lasts `<duration>`")
 	fs.StringVar(&o.recordsAddress, "records-address", "127.0.0.1:0", "serve the recording routes at `<host:port>`")
@@ -328,7 +328,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if len(o.installations) == 0 {
-		// One owner, so a github-app secret released with no --github-owner still mints: a
+		// One owner when no --installation names any, so a github-app secret still mints: a
 		// check that cares which owner says so itself.
 		o.installations["acme-org"] = 7
 	}
@@ -336,7 +336,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if _, installed := o.installations[owner]; !installed {
 			// A map for an owner the App is not installed on would answer nothing: a check
 			// that named the wrong owner reads that here, not as a cut that never happened.
-			fmt.Fprintf(stderr, "dev-airlock-stands: --installation-permissions names %s, on which no --github-owner installs the App\n", owner)
+			fmt.Fprintf(stderr, "dev-airlock-stands: --installation-permissions names %s, on which no --installation installs the App\n", owner)
 			return exitUsageError
 		}
 	}
@@ -388,14 +388,14 @@ func (f *hostFlags) Set(value string) error {
 	return nil
 }
 
-// ownerFlags is --github-owner: the installation id the App has on each owner.
-type ownerFlags struct {
+// installationFlags is --installation: the installation id the App has on each owner.
+type installationFlags struct {
 	installations map[string]int64
 }
 
-func (f ownerFlags) String() string { return "" }
+func (f installationFlags) String() string { return "" }
 
-func (f ownerFlags) Set(value string) error {
+func (f installationFlags) Set(value string) error {
 	owner, id, ok := strings.Cut(value, "=")
 	if !ok || owner == "" {
 		return errors.New("want <owner>=<installation id>")
@@ -405,7 +405,7 @@ func (f ownerFlags) Set(value string) error {
 		return fmt.Errorf("the installation id %q is no positive number", id)
 	}
 	if _, twice := f.installations[owner]; twice {
-		return fmt.Errorf("--github-owner names %s twice", owner)
+		return fmt.Errorf("--installation names %s twice", owner)
 	}
 	f.installations[owner] = installation
 	return nil
