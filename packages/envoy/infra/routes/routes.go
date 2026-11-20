@@ -610,28 +610,31 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 // the lines its server wrote (serversLines), judges the server's lines of itself (ownLines), opens
 // the window of the reload that loaded authorization (authorizationWindow) and judges each route
 // connection in it (routeConnections). When auth says authorization is not in force, it says so,
-// with what the log shows of why, since only it knows whether it read the log. It returns the index
-// in r.Findings of its start line finding, or -1 when it made none.
+// with what the log shows of why, since only it knows whether it read the log and judged it whole:
+// that no reload has loaded authorization since the server started, it says only of a log that
+// begins at the server's start line. It returns the index in r.Findings of its start line
+// finding, or -1 when it made none.
 func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, split bool, auth authState) int {
 	pod := s.pod.Name
-	body, err := src.Log(ctx, pod)
-	if err != nil {
+	startFinding, why := -1, ""
+	if body, err := src.Log(ctx, pod); err != nil {
 		r.add(pod, Unknown, "its nats container's log could not be read: %v", err)
-		if auth == authOff {
-			r.add(pod, Unknown, "authorization is not in force: its route port's INFO has no auth_required; apply authorization, then check again")
+	} else {
+		var lines []logLine
+		var whole bool
+		lines, startFinding, whole = serversLines(r, s, parseLog(body))
+		ownLines(r, pod, lines)
+		window, from, loaded := authorizationWindow(r, s, lines, auth)
+		routeConnections(r, pod, window, from, ips, split)
+		switch {
+		case loaded:
+			why = ", and a reload that changed its cluster block left it without authorization"
+		case whole:
+			why = ", and no reload has loaded authorization since the server started"
 		}
-		return -1
 	}
-	lines, startFinding := serversLines(r, s, parseLog(body))
-	ownLines(r, pod, lines)
-	window, from, loaded := authorizationWindow(r, s, lines, auth)
-	routeConnections(r, pod, window, from, ips, split)
 	if auth == authOff {
-		why := "no reload has loaded authorization since the server started"
-		if loaded {
-			why = "a reload that changed its cluster block left it without authorization"
-		}
-		r.add(pod, Unknown, "authorization is not in force: its route port's INFO has no auth_required, and %s; apply authorization, then check again", why)
+		r.add(pod, Unknown, "authorization is not in force: its route port's INFO has no auth_required%s; apply authorization, then check again", why)
 	}
 	return startFinding
 }
@@ -644,8 +647,9 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 // A log with lines that carry no time of the runtime's is judged by none of this, since which of
 // its lines the server wrote cannot be told: it is Unknown, and serversLines returns no line.
 // Every rule after this one reads only the lines it returns. It returns, too, the index in
-// r.Findings of its start line finding, or -1.
-func serversLines(r *Report, s server, lines []logLine) ([]logLine, int) {
+// r.Findings of its start line finding, or -1, and whether the log was judged and begins at the
+// server's start line, so its lines reach back to the server's start.
+func serversLines(r *Report, s server, lines []logLine) ([]logLine, int, bool) {
 	pod := s.pod.Name
 	unstamped := 0
 	for _, l := range lines {
@@ -656,7 +660,7 @@ func serversLines(r *Report, s server, lines []logLine) ([]logLine, int) {
 	if unstamped > 0 {
 		r.add(pod, Unknown, "%d of its log's %d line(s) carry no time of the container runtime's, so which lines its server wrote cannot be told; "+
 			"read the log as kubectl logs --timestamps gives it", unstamped, len(lines))
-		return nil, -1
+		return nil, -1, false
 	}
 	startPID, startFinding := "", -1
 	switch {
@@ -690,7 +694,7 @@ func serversLines(r *Report, s server, lines []logLine) ([]logLine, int) {
 			"through its server name, which nats-server prints unquoted when the route closes (client.go:2125), and the auth service through "+
 			"its error text (auth_callout.go:460); the check reads none of them, and cannot clear the log", forged, stampSkew)
 	}
-	return own, startFinding
+	return own, startFinding, startPID != ""
 }
 
 // ownLines judges the lines the server wrote of itself, not of a connection: no failed reload, and

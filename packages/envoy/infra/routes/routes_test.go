@@ -591,6 +591,43 @@ func TestCheckNeedsTheRuntimesTimes(t *testing.T) {
 			"read the log as kubectl logs --timestamps gives it"}}, report.Findings)
 }
 
+// The "not in force" finding says that no reload has loaded authorization since the server started
+// only of a log the check judged whole, from the server's own start line. Of a log without the
+// runtime's times, which no rule judges, and of one that does not begin at the start line, which
+// may have lost that reload, it says only what the route port's INFO shows. Control: the same hub
+// with its log whole says it.
+func TestCheckSaysNoReloadLoadedAuthorizationOnlyOfAWholeLog(t *testing.T) {
+	const plain = "authorization is not in force: its route port's INFO has no auth_required; apply authorization, then check again"
+	const whole = "authorization is not in force: its route port's INFO has no auth_required, and no reload has loaded authorization " +
+		"since the server started; apply authorization, then check again"
+	for _, row := range []struct {
+		name   string
+		change func(h *fakeHub)
+		want   string
+	}{
+		{"control: the log whole", func(*fakeHub) {}, whole},
+		{"a log without the runtime's times", func(h *fakeHub) { h.unstamped["envoy-nats-0"] = true }, plain},
+		{"a log that does not begin at the start line", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] = strings.SplitN(h.logs["envoy-nats-0"], "\n", 2)[1]
+		}, plain},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := cleanHub()
+			rec := recordOf(t, h)
+			h.withoutAuthorizationReload("envoy-nats-0")
+			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
+			row.change(h)
+			var notInForce []string
+			for _, f := range routes.Check(context.Background(), h, rec).Findings {
+				if f.Pod == "envoy-nats-0" && strings.HasPrefix(f.Detail, "authorization is not in force") {
+					notInForce = append(notInForce, f.Detail)
+				}
+			}
+			require.Equal(t, []string{row.want}, notInForce)
+		})
+	}
+}
+
 // Take records every pod, sorted by name, once all are Ready with a running nats container and no
 // route port requires authorization, and refuses otherwise, naming each pod that is not so, and a
 // pod whose route port's INFO it cannot read.
