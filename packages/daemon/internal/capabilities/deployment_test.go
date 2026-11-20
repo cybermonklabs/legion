@@ -566,22 +566,21 @@ func TestTheRepositoryCacheRoomRow(t *testing.T) {
 		{"tmux", Deployment{Runtime: "tmux"}, StatusPresent, "the tmux runtime runs no repository cache", nil},
 		{"kubernetes, no caches", kubernetes(), StatusPresent, "no repository cache is running", nil},
 		{"kubernetes, 3 caches reported, none failed", kubernetes(roomy("acme/gadgets"), roomy("acme/tools"), roomy("acme/widgets")), StatusPresent,
-			"no repository cache reports a failure for lack of space (3 caches read)", []string{"3 caches read"}},
+			"no repository cache reports a failure for lack of space (3 caches read)", nil},
 		{"one cache with no room fields (older image) and none failed", kubernetes(roomy("acme/gadgets"), older, roomy("acme/widgets")), StatusPresent,
-			"no repository cache reports a failure for lack of space (3 caches read, 1 sends no room figures)", []string{"sends no room figures"}},
+			"no repository cache reports a failure for lack of space (3 caches read, 1 sends no room figures)", nil},
 		{"one cache whose read failed", kubernetes(roomy("acme/gadgets"), unread, roomy("acme/widgets")), StatusPresent,
-			"no repository cache reports a failure for lack of space (2 caches read, 1 unread)", []string{"1 unread"}},
+			"no repository cache reports a failure for lack of space (2 caches read, 1 unread)", nil},
 		{"one of three caches with repackOutOfSpaceAt", kubernetes(roomy("acme/gadgets"), roomy("acme/tools"), repackFull), StatusOpen,
 			"1 of 3 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim " + claimOf("acme/widgets") + ") with 0.1 GiB available, its clone 19.4 GiB; " +
 				"its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,
-			[]string{"acme/widgets", "20.0 GiB volume", "0.1 GiB available", "its clone 19.4 GiB", "repack", "2026-11-19T02:15:33Z", claimOf("acme/widgets"),
-				"runtime.kubernetes.repository_cache.volume", "growing the cache's claim in place"}},
+			nil},
 		{"two failing caches, one by fetch", kubernetes(fetchFull, roomy("acme/tools"), repackFull), StatusOpen,
 			"2 of 3 repository caches ran out of room: acme/gadgets on a 20.0 GiB volume (claim " + claimOf("acme/gadgets") + ") with 0.5 GiB available, its clone 19.0 GiB; " +
 				"its fetch failed for lack of space at 2026-11-19T04:00:00Z. " +
 				"acme/widgets on a 20.0 GiB volume (claim " + claimOf("acme/widgets") + ") with 0.1 GiB available, its clone 19.4 GiB; " +
 				"its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,
-			[]string{"acme/gadgets", "its fetch failed", "acme/widgets", "its repack failed"}},
+			nil},
 		{"a failing cache whose volume could not be read, both steps failed", kubernetes(unreadable), StatusOpen,
 			"1 of 1 repository caches ran out of room: acme/widgets on a volume (claim " + claimOf("acme/widgets") + ") whose room it could not read (statfs /cache: input/output error), its clone 19.4 GiB; " +
 				"its fetch failed for lack of space at 2026-11-19T04:00:00Z and its repack failed for lack of space at 2026-11-19T02:15:33Z. " + remedy,

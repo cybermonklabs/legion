@@ -1531,7 +1531,7 @@ func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 // address configured: each address-valued argument of every launcher's command and of the
 // generation's worker-shim argv (the words before `--`), by its flag, and each address-valued
 // variable the runtime itself sets in the generation's environment, an address being a value with a
-// scheme. The git configuration entries (gitConfigEnv) are not addresses but git configuration
+// scheme. The git configuration entries (GitConfigEnv) are not addresses but git configuration
 // keys the binary fixes, `credential.https://github.com.helper` among them, so no configuration
 // moves them. An address added to a launch and not to handedAddresses is one the daemon could move
 // without any role it re-adopts being relaunched (evaluate). A workflow role's launch and the
@@ -1564,7 +1564,7 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 				}
 			}
 			gitConfig := map[string]bool{}
-			for _, entry := range gitConfigEnv() {
+			for _, entry := range GitConfigEnv() {
 				gitConfig[entry.Name] = true
 			}
 			for _, pair := range start.Env {

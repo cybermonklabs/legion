@@ -58,8 +58,9 @@
 #                                   mozilla-firefox/firefox: one 5.86 GB pack, 489,990 files).
 #   --walk-file <path>              the file the git log row walks and the jj rows edit (default
 #                                   config/milestone.txt).
-#   --dry-run                       render the manifest, have the server admit it without creating
-#                                   anything, and exit.
+#   --dry-run                       render the manifest, validate it with kubectl (the namespace's
+#                                   admission where this pod may create a Job, else kubectl's own
+#                                   schema), create nothing, and exit.
 #
 # Fixed here: gVisor; both deadlines; ttlSecondsAfterFinished; backoffLimit 6 with
 # podReplacementPolicy Failed, so a pod lost with its machine is followed by a whole new attempt
@@ -151,7 +152,8 @@ usage: scripts/e2e/pack-memory-job.sh --image <ref>@sha256:<64 hex>
   --prefix         the Job's metadata.generateName, ending in a hyphen.
   --repo           the public repository to measure (default mozilla-firefox/firefox).
   --walk-file      the file git log walks and the jj rows edit (default config/milestone.txt).
-  --dry-run        render the manifest, have the server admit it, create nothing, and exit.
+  --dry-run        render the manifest, validate it with kubectl (the namespace's admission where
+                   this pod may create a Job, else kubectl's own schema), create nothing, and exit.
 
 The values of the first three, of --namespace and of the labels and annotations are the
 deployment's own; this public repository carries none of them.

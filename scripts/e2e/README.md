@@ -116,7 +116,7 @@ Each item below names a script, then what it proves.
   the harness refuses to run when `packages/daemon/internal/shim/commands.go` or `packages/pi-shared/src/handoff-record.ts` no longer builds a command the probe copies.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `go` and a checkout of the head measured, the image to measure by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`), whose values are in that deployment's own declaration and in no file of this repository.
   `--repo` and `--walk-file` name another public repository and file than firefox's;
-  `--dry-run` renders the manifest and has the server admit it without creating anything.
+  `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), creates nothing, and exits.
   Legion pod only
 
 - `controller-start-tmux.sh`

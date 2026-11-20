@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -376,20 +375,11 @@ func capabilityRowServed(t *testing.T, body []byte, name capabilities.Name) (map
 func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
 	const dropped = "the source of each capability read from the repository caches"
 	state := populatedState(t)
-	encoded, err := json.Marshal(state.Capabilities)
+	encoded, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal(encoded, &rows); err != nil {
-		t.Fatal(err)
-	}
-	var full map[string]any
-	for _, row := range rows {
-		if row["name"] == string(capabilities.RepositoryCacheRoom) {
-			full = row
-		}
-	}
+	full, _ := capabilityRowServed(t, encoded, capabilities.RepositoryCacheRoom)
 	if full["source"] != cachesSource || full["status"] != capabilities.StatusOpen || full["configLine"] == nil {
 		t.Fatalf("the fixture's %s row is %v, want an open row from the caches; this test proves nothing", capabilities.RepositoryCacheRoom, full)
 	}
@@ -448,8 +438,8 @@ func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
 		})
 	}
 
-	if got := state.Capabilities; !slices.ContainsFunc(got, func(row CapabilityState) bool { return row.Source == cachesSource }) {
-		t.Errorf("the strip wrote through to the state the source answered: its capability rows are %+v", got)
+	if !carriesCachesSource(state) {
+		t.Errorf("the strip wrote through to the state the source answered: its capability rows are %+v", state.Capabilities)
 	}
 }
 

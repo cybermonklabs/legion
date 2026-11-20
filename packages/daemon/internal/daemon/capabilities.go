@@ -1,7 +1,7 @@
 // Package daemon: this file holds the deployment's capabilities — what the configuration alone
 // states (Deployment) and what a boot, a live session or a repository cache adds to it
-// (supervision.deployment, supervision.caches) — and the live sessions' capability reports: how
-// they are kept (capabilityReportStore), taken from a session's ready
+// (supervision.deploymentWith, supervision.caches) — and the live sessions' capability reports:
+// how they are kept (capabilityReportStore), taken from a session's ready
 // (supervision.capabilityReported), copied for the state route (supervision.capabilityReports),
 // read from the store at boot (reportsOfClaims), and logged when the open set changes
 // (supervision.reportCapabilities).
@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -25,7 +26,7 @@ import (
 // that reserve no CPU and memory (config.Reservation.Reserved) and the pods that request less cpu
 // or memory than their limit (config.Reservation.Burstable) — the issue pod, and the controller's
 // pod when the daemon launches it. What boot learns (the broker login, the probe, model fallback)
-// is the supervision's to add (supervision.deployment); `legion config check` reports from
+// is the supervision's to add (supervision.deploymentWith); `legion config check` reports from
 // this alone.
 func Deployment(cfg config.Config) capabilities.Deployment {
 	d := capabilities.Deployment{Decided: cfg.Capabilities.Decided, Runtime: cfg.Runtime.Name}
@@ -49,25 +50,37 @@ func Deployment(cfg config.Config) capabilities.Deployment {
 	return d
 }
 
-// deployment is Deployment with what this boot learned: the broker login's state, whether the
+// deployment is deploymentWith the runtime's repository caches as cacheStatuses reads them now,
+// none when it is nil: how the tick's report (reportCapabilities) reads the deployment. The state
+// route reads the caches the same way, once, and hands that read to deploymentWith itself
+// (source.State), so its row and its `repositories` describe one read.
+func (s *supervision) deployment() capabilities.Deployment {
+	var statuses []sandbox.CacheStatus
+	if s.cacheStatuses != nil {
+		statuses = s.cacheStatuses()
+	}
+	return s.deploymentWith(statuses)
+}
+
+// deploymentWith is Deployment with what this boot learned: the broker login's state, whether the
 // image passed its probe, the model-fallback mark the probe or the gate read, how many of the
 // probe's attempts waited on the pool's capacity before one scheduled, with the scheduler's
-// reason, the repository caches as their last health reads found them (caches), and the live
-// sessions' reports of the live rows (LEGION-663). A session is live when its claim is ready,
-// working or idle with a process, and its report is that process's: a report from a claim since
-// relaunched, suspended or retired names a session that no longer runs and contributes nothing,
-// until the new process reports. The claims are read as their machines last published them
-// (supervise.Machine.View), never waiting on a decision in flight, so the tick and the state route
-// read the deployment while a relaunch waits on its pods; the sessions are in claim token order.
-// It reads memory alone: no store, no context.
-func (s *supervision) deployment() capabilities.Deployment {
+// reason, the repository caches statuses names as their last health reads found them (caches),
+// and the live sessions' reports of the live rows (LEGION-663). A session is live when its claim
+// is ready, working or idle with a process, and its report is that process's: a report from a
+// claim since relaunched, suspended or retired names a session that no longer runs and
+// contributes nothing, until the new process reports. The claims are read as their machines last
+// published them (supervise.Machine.View), never waiting on a decision in flight, so the tick and
+// the state route read the deployment while a relaunch waits on its pods; the sessions are in
+// claim token order. It reads memory alone: no store, no context.
+func (s *supervision) deploymentWith(statuses []sandbox.CacheStatus) capabilities.Deployment {
 	d := Deployment(s.cfg)
 	if s.plan.secretsLogin != nil {
 		d.SecretsLogin = s.plan.secretsLogin.LoginStatus().State
 	}
 	d.Probed, d.ModelFallback = s.probed, s.imageReport.ModelFallback
 	d.ProbeCapacityWaits, d.ProbeCapacityReason = s.imageReport.CapacityWaits, s.imageReport.CapacityReason
-	d.Caches = s.caches()
+	d.Caches = s.caches(statuses)
 	if s.supervisor == nil {
 		return d
 	}
@@ -89,20 +102,17 @@ func (s *supervision) deployment() capabilities.Deployment {
 	return d
 }
 
-// caches is the runtime's repository caches (cacheStatuses) as the capability report reads them,
-// in the runtime's order: each cache's repository, its volume claim's name, and what its last
-// health read answered of its room — the volume's size and available bytes, or why the cache could
-// not read them, the clone's bytes, and each step's last failure for lack of space. Reported is
-// whether that answer carried any of the room fields, which a cache on an older worker image
-// sends none of; a cache with no answer, not Ready or with a read that failed (HealthError), is
-// unread. None when the runtime keeps no caches. The one place a sandbox.CacheStatus becomes a
-// capabilities.Cache, so the state route and the tick's report read the caches alike; it reads
-// the runtime's memory alone, the last health read the gh refresher's tick made.
-func (s *supervision) caches() []capabilities.Cache {
-	if s.cacheStatuses == nil {
-		return nil
-	}
-	statuses := s.cacheStatuses()
+// caches is statuses, the runtime's repository caches (cacheStatuses), as the capability report
+// reads them, in the runtime's order: each cache's repository, its volume claim's name, and what
+// its last health read answered of its room — the volume's size and available bytes, or why the
+// cache could not read them, the clone's bytes, and each step's last failure for lack of space.
+// Reported is whether that answer carried any of the room fields, which a cache on an older worker
+// image sends none of; a cache with no answer, not Ready or with a read that failed
+// (HealthError), is unread. None when the runtime keeps no caches. The one place a
+// sandbox.CacheStatus becomes a capabilities.Cache, so the state route and the tick's report read
+// the caches alike; statuses are the runtime's memory alone, the last health read the gh
+// refresher's tick made.
+func (s *supervision) caches(statuses []sandbox.CacheStatus) []capabilities.Cache {
 	caches := make([]capabilities.Cache, 0, len(statuses))
 	for _, status := range statuses {
 		cache := capabilities.Cache{Repo: status.Repo.String(), Claim: status.Claim}

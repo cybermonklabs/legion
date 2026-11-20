@@ -403,7 +403,7 @@ func (d Deployment) cacheRoom() (bool, string) {
 			silent++
 		}
 		read++
-		if cache.Reported && (!cache.FetchOutOfSpaceAt.IsZero() || !cache.RepackOutOfSpaceAt.IsZero()) {
+		if !cache.FetchOutOfSpaceAt.IsZero() || !cache.RepackOutOfSpaceAt.IsZero() {
 			failing = append(failing, cache.outOfRoom())
 		}
 	}

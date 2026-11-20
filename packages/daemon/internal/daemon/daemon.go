@@ -1359,9 +1359,10 @@ type supervision struct {
 	imageReport bootprobe.ImageReport
 	probed      bool
 	// cacheStatuses is the runtime's repository caches, each with its last health read, which the
-	// capability report reads their room from (caches): repositoryCachesOf(runtime), nil under any
-	// runtime but the Sandbox runtime, which alone keeps caches. A field, so that a test gives the
-	// report caches of its own without a cluster.
+	// tick's capability report reads their room from (caches) and the state route reads once a
+	// request (source.caches): repositoryCachesOf(runtime), nil under any runtime but the Sandbox
+	// runtime, which alone keeps caches. A field, so that a test gives the report caches of its own
+	// without a cluster.
 	cacheStatuses func() []sandbox.CacheStatus
 	// reportMu guards reportedGaps and reports: the tick's reads, the API's readies and boot's run
 	// on different goroutines. reportedGaps are the open capabilities the last report logged
@@ -2593,11 +2594,11 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			admissionCap: cfg.AdmissionCap,
 			startedAt:    startedAt,
 			secretsLogin: p.secretsLogin,
-			deployment:   s.deployment,
+			deployment:   s.deploymentWith,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
-			caches:       repositoryCachesOf(s.runtime),
+			caches:       s.cacheStatuses,
 			gatedSteps:   cfg.Gates.Steps(),
 			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
@@ -2756,9 +2757,9 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *agentsecrets.Client
-	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
-	// whose report the state carries.
-	deployment func() capabilities.Deployment
+	// deployment is the deployment's capabilities as this boot knows them with the repository
+	// caches it is handed (supervision.deploymentWith), whose report the state carries.
+	deployment func([]sandbox.CacheStatus) capabilities.Deployment
 	// reports is each claim's latest capability report (supervision.capabilityReports), which the
 	// projection shows on the claim's view whatever process reported it.
 	reports func() map[claim.Token]capabilities.Report
@@ -2769,7 +2770,9 @@ type source struct {
 	// daemon with no workflow, whose state serves no repository.
 	repositories *repositories
 	// caches is the Kubernetes runtime's repository caches with their last health reads
-	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
+	// (supervision.cacheStatuses, sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps
+	// none. State reads it once and hands that read to deployment and to the repositories' view
+	// alike, so the capability row and `repositories` describe one read.
 	caches func() []sandbox.CacheStatus
 	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
 	// root of the state answers its own state of; the empty list gates none.
@@ -3020,12 +3023,12 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
-	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
+	var caches []sandbox.CacheStatus
+	if s.caches != nil {
+		caches = s.caches()
+	}
+	state.Capabilities = api.CapabilityStatesOf(s.deployment(caches).Report())
 	if s.repositories != nil {
-		var caches []sandbox.CacheStatus
-		if s.caches != nil {
-			caches = s.caches()
-		}
 		state.Repositories = s.repositories.view(caches)
 	}
 	return state, claims, nil

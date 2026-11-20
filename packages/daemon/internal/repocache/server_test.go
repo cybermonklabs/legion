@@ -330,13 +330,8 @@ func start(t *testing.T, opts Options) *running {
 // health is GET /healthz, with the cache's bearer: its status and its body.
 func (c *running) health(t *testing.T) (int, Health) {
 	t.Helper()
-	response := c.get(t, "/healthz", c.bearer(t))
-	defer response.Body.Close()
-	var health Health
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		t.Fatalf("/healthz answered %d with a body that is not its JSON: %v", response.StatusCode, err)
-	}
-	return response.StatusCode, health
+	status, health, _ := c.healthFields(t)
+	return status, health
 }
 
 // ready waits until /healthz answers 200 and returns what it said.
@@ -1505,15 +1500,30 @@ func TestTheLastRepackOutlivesTheProcess(t *testing.T) {
 // recorded is the time the cache's last-repack record under root holds.
 func recorded(t *testing.T, root string) time.Time {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(root, lastRepackFile))
+	_, at, there := timeFile(t, root, lastRepackFile, "last-repack record")
+	if !there {
+		t.Fatalf("read the last-repack record: %s is not under %s", lastRepackFile, root)
+	}
+	return at
+}
+
+// timeFile reads the time file name under root, which the cache writes as one RFC 3339 time and
+// a line feed: its text, the time it holds, and whether it is there. what names the file in a
+// failure.
+func timeFile(t *testing.T, root, name, what string) (string, time.Time, bool) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(root, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", time.Time{}, false
+	}
 	if err != nil {
-		t.Fatalf("read the last-repack record: %v", err)
+		t.Fatalf("read the %s: %v", what, err)
 	}
 	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
 	if err != nil {
-		t.Fatalf("the last-repack record holds %q: %v", body, err)
+		t.Fatalf("the %s holds %q: %v", what, body, err)
 	}
-	return at
+	return string(body), at, true
 }
 
 // volumeSeam stands in for readVolume with the figures a case sets: a volume of a size with so
@@ -1719,21 +1729,11 @@ func (f *spaceFixture) failedInTheRefresh(at time.Time) bool {
 // keptRepackFailure is the time repackOutOfSpaceFile under root holds, and whether it is there.
 func keptRepackFailure(t *testing.T, root string) (time.Time, bool) {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(root, repackOutOfSpaceFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return time.Time{}, false
-	}
-	if err != nil {
-		t.Fatalf("read the kept repack failure: %v", err)
-	}
-	if !strings.HasSuffix(string(body), "Z\n") {
+	body, at, there := timeFile(t, root, repackOutOfSpaceFile, "kept repack failure")
+	if there && !strings.HasSuffix(body, "Z\n") {
 		t.Errorf("the kept repack failure holds %q, want one RFC 3339 UTC time and a line feed", body)
 	}
-	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
-	if err != nil {
-		t.Fatalf("the kept repack failure holds %q: %v", body, err)
-	}
-	return at, true
+	return at, there
 }
 
 // A fetch's and a repack's failure for lack of space reach /healthz, each with its step and its

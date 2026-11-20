@@ -392,7 +392,7 @@ if [ -z "$bad_arguments" ] && ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 fi
 if [ -z "$bad_arguments" ]; then
   case "/$walk_file/" in
-    //* | */../* | */./*) bad_arguments="--walk-file $walk_file is no relative path inside the repository" ;;
+    //* | */../* | */./* | *//*) bad_arguments="--walk-file $walk_file is no relative path inside the repository" ;;
   esac
 fi
 owner=${repo%%/*}

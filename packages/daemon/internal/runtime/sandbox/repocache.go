@@ -70,7 +70,7 @@ func (c RepositoryCache) check() error {
 // pod's last health read: what its /healthz answered (Health), or why it could not be read
 // (HealthError), both empty when it was not Ready to be read. The daemon's capability report reads
 // Repo, Claim, Health's room on the volume (VolumeBytes, AvailableBytes, VolumeError, the two
-// failure times) and Bytes, and HealthError (daemon's supervision.caches).
+// failure times) and Bytes, a nil Health counting the cache unread (daemon's supervision.caches).
 type CacheStatus struct {
 	Repo          ghrepo.Repository
 	Sandbox       string

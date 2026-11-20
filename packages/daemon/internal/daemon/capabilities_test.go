@@ -153,11 +153,12 @@ func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
 
 // The report the tick reads (reportCapabilities) reads each repository cache's last health read,
 // through the runtime's caches (cacheStatuses). While no cache's read carries a failure for lack of
-// space, repository-cache-room is not among the open names, and the state's row is present,
-// counting the caches read, its source the caches. Once a cache's last read carries its repack's
-// failure, the name is open and the gap is logged once, naming the cache's repository, its claim,
-// the failed step with its time and where room comes from, however many ticks read it; once the
-// read no longer carries it, the name is gone.
+// space, repository-cache-room is not among the open names, and the state's row, which the state
+// route renders from the caches it read (deploymentWith), is present, counting the caches read, its
+// source the caches. Once a cache's last read carries its repack's failure, the name is open and
+// the gap is logged once, naming the cache's repository, its claim, the failed step with its time
+// and where room comes from, however many ticks read it; once the read no longer carries it, the
+// name is gone.
 func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
 	cfg := config.Config{
 		Runtime:      config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Resources: config.DefaultResources()}},
@@ -184,7 +185,7 @@ func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
 	if got := s.reportCapabilities(); slices.Contains(got, string(capabilities.RepositoryCacheRoom)) {
 		t.Fatalf("reportCapabilities with no cache out of room = %v, want no %s", got, capabilities.RepositoryCacheRoom)
 	}
-	row := states(s.deployment().Report())[capabilities.RepositoryCacheRoom]
+	row := states(s.deploymentWith(statuses).Report())[capabilities.RepositoryCacheRoom]
 	if row.Status != capabilities.StatusPresent || row.Source != capabilities.SourceCaches || row.Detail != "no repository cache reports a failure for lack of space (2 caches read)" {
 		t.Fatalf("the state's row with no cache out of room = %s from %q (%s), want present from the caches, counting the two read", row.Status, row.Source, row.Detail)
 	}

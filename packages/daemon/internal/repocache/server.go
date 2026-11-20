@@ -399,18 +399,14 @@ const lastRepackFile = ".legion-last-repack"
 // records it, and whether it records one that reads as an RFC 3339 time. With none, the process's
 // first fetch starts the record and repacks nothing: a clone just cloned needs no repack.
 func (c *cache) recordedRepack() (time.Time, bool) {
-	body, err := os.ReadFile(filepath.Join(c.opts.Root, lastRepackFile))
-	if err != nil {
-		return time.Time{}, false
-	}
-	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
+	at, err := c.readTime(lastRepackFile)
 	return at, err == nil
 }
 
 // recordRepack writes at to lastRepackFile, logging a failure: a lost record costs one repack too
 // early, nothing more.
 func (c *cache) recordRepack(at time.Time) {
-	if err := os.WriteFile(filepath.Join(c.opts.Root, lastRepackFile), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+	if err := c.writeTime(lastRepackFile, at); err != nil {
 		c.opts.Log("record the last repack: " + oneLine(err))
 	}
 }
@@ -427,7 +423,7 @@ const repackOutOfSpaceFile = ".legion-repack-out-of-space"
 // keepRepackFailure writes at to repackOutOfSpaceFile, logging a failure: room keeps it in memory
 // all the same, so only a process that replaces this one misses it.
 func (c *cache) keepRepackFailure(at time.Time) {
-	if err := os.WriteFile(filepath.Join(c.opts.Root, repackOutOfSpaceFile), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+	if err := c.writeTime(repackOutOfSpaceFile, at); err != nil {
 		c.opts.Log("keep the repack's failure for lack of space: " + oneLine(err))
 	}
 }
@@ -445,20 +441,31 @@ func (c *cache) dropRepackFailure() {
 // process before it kept. A file it cannot read, or whose text is no RFC 3339 time, is logged and
 // ignored; no file is no failure.
 func (c *cache) loadRepackFailure() {
-	body, err := os.ReadFile(filepath.Join(c.opts.Root, repackOutOfSpaceFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return
-	}
-	if err != nil {
+	at, err := c.readTime(repackOutOfSpaceFile)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
 		c.opts.Log("read the kept repack failure for lack of space, ignoring it: " + oneLine(err))
-		return
+	default:
+		c.room.setRepack(at)
 	}
-	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
+}
+
+// writeTime writes at to the file name under Options.Root, beside the clone, as one RFC 3339 UTC
+// time and a line feed: the shape of lastRepackFile and repackOutOfSpaceFile alike.
+func (c *cache) writeTime(name string, at time.Time) error {
+	return os.WriteFile(filepath.Join(c.opts.Root, name), []byte(at.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// readTime is the time the file name under Options.Root holds, as writeTime writes it. Its error is
+// os.ReadFile's as it returns it, so a caller tells a file that is not there (fs.ErrNotExist), or
+// time.Parse's for a text that is no RFC 3339 time.
+func (c *cache) readTime(name string) (time.Time, error) {
+	body, err := os.ReadFile(filepath.Join(c.opts.Root, name))
 	if err != nil {
-		c.opts.Log("read the kept repack failure for lack of space, ignoring it: " + oneLine(err))
-		return
+		return time.Time{}, err
 	}
-	c.room.setRepack(at)
+	return time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
 }
 
 // fetch fetches the clone under the write lock and publishes what it holds, answering when, and

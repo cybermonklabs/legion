@@ -138,8 +138,8 @@ var runtimeOwned = func() map[string]bool {
 		// operator's pod env naming another server would point every test of the pod at it.
 		launcher.TestPGVariable: true,
 	}
-	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> gitConfigEnv sets.
-	for _, entry := range gitConfigEnv() {
+	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> GitConfigEnv sets.
+	for _, entry := range GitConfigEnv() {
 		owned[entry.Name] = true
 	}
 	return owned
@@ -1517,7 +1517,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // image's, so no directory of the issue's disk leads PATH. The GIT_CONFIG pairs are the GitHub
 // credential of every git the role runs, in the issue's clone or outside it, and two settings that
 // would run a program another role planted in the clone, the fsmonitor and the hooks, turned off
-// (gitConfigEnv); other settings of the shared clone can still run one. A Claude Code role, and no
+// (GitConfigEnv); other settings of the shared clone can still run one. A Claude Code role, and no
 // other, is also told Claude Code's own three (claudelaunch.Environment, runsClaude) and the
 // session its launcher keeps (claudelaunch.SessionVariable).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
@@ -1544,7 +1544,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PATH", podPath(legionDir))
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
-	env = append(env, gitConfigEnv()...)
+	env = append(env, GitConfigEnv()...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
 	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
@@ -1640,7 +1640,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	return env
 }
 
-// gitConfigPairs are the git configuration entries gitConfigEnv sets: the helper for
+// gitConfigPairs are the git configuration entries GitConfigEnv sets: the helper for
 // https://github.com reset, then set to `legion git-credential` (workspace.GitHubCredentialHelper),
 // and credential.useHttpPath on for github.com, so git hands the helper the path whose owner picks
 // the token; then core.fsmonitor off and core.hooksPath at /dev/null, so no git a role runs starts
@@ -1663,7 +1663,7 @@ var gitConfigPairs = [][2]string{
 // and value alike (cmd/legion's ghChildGitConfig).
 func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 
-// gitConfigEnv is gitConfigPairs as GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>,
+// GitConfigEnv is gitConfigPairs as GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>,
 // which git reads after every configuration file, the repository's own `.git/config` among them,
 // as it reads `-c`. Every git a role process runs then answers https://github.com from the role's
 // gh files, in the issue's clone or outside it: a clone the setup command makes
@@ -1673,8 +1673,9 @@ func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 // git in the clone asks what it asked before. Any other host is left to the configuration files.
 // `legion git-credential` answers only an owner of the project, from that owner's directory of
 // LEGION_GH_OWNERS_DIR (ghAgentEnv), and `legion gh` adds its own entry after these
-// (withGitHubUseHTTPPath, cmd/legion/gh.go).
-func gitConfigEnv() []corev1.EnvVar {
+// (withGitHubUseHTTPPath, cmd/legion/gh.go). Exported for rolegitconfig, which prints it for a Job
+// that runs no daemon.
+func GitConfigEnv() []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "GIT_CONFIG_COUNT", Value: strconv.Itoa(len(gitConfigPairs))}}
 	for i, pair := range gitConfigPairs {
 		env = append(env,

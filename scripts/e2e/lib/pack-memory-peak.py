@@ -120,9 +120,14 @@ def tree(root):
     return found
 
 
+def empty():
+    """The record of an instant that holds nothing: every total and count zero."""
+    return {"total": 0, "pack": 0, "anon": 0, "other": 0, "mappings": 0, "resident": 0, "files": 0}
+
+
 def sample(root):
     """One instant of the tree under root: its totals and the pack mappings' counts."""
-    totals = {"total": 0, "pack": 0, "anon": 0, "other": 0, "mappings": 0, "resident": 0}
+    totals = empty()
     files = set()
     for pid in tree(root):
         try:
@@ -223,7 +228,7 @@ def main():
         time.sleep(INTERVAL)
     wall = time.monotonic() - started
     if largest is None:
-        largest = {"total": 0, "pack": 0, "anon": 0, "other": 0, "mappings": 0, "resident": 0, "files": 0, "at": None}
+        largest = {**empty(), "at": None}
 
     maxrss, status, sig = gnu_time_report(time_file)
     if timed_out:

@@ -13,9 +13,7 @@ import (
 //
 // It is a package-level variable rather than a function because it is the trimmer's one reading
 // of the machine: every test of a sweep injects a reading through it and counts the calls, which
-// is this package's seam for a thing a test must fake (roleInitLaunch, testPGInterval). The statfs
-// itself is volumestat's, shared with the repository cache, so this package holds no reader of its
-// own.
+// is this package's seam for a thing a test must fake (roleInitLaunch, testPGInterval).
 var readVolumeUsage = func(path string) (volumeUsage, error) {
 	reading, err := volumestat.Read(path)
 	if err != nil {
@@ -24,12 +22,7 @@ var readVolumeUsage = func(path string) (volumeUsage, error) {
 	return volumeUsage{UsedBytes: reading.UsedBytes, AvailableBytes: reading.AvailableBytes}, nil
 }
 
-// volumeUsage is one reading of the pod's volume.
-//
-// The reading itself is one statfs, which is Linux's call and has no portable form, so it is
-// volumestat's, whose package holds the Linux reader and the non-Linux twin that refuses by name
-// (volumestat_linux.go, volumestat_other.go); this type holds what the trimmer takes of it, so the
-// fraction below has one body and a reading taken on either platform is read the same way.
+// volumeUsage is one reading of the pod's volume: what the trimmer takes of a volumestat.Reading.
 type volumeUsage struct{ UsedBytes, AvailableBytes uint64 }
 
 // Percent is the fraction df prints: used over used plus available, as a float. Available is what
