@@ -369,12 +369,12 @@ func rootApprovalEvent() json.RawMessage {
 func preparedApprovalOf(t *testing.T, view *dispatch.Issue, log []json.RawMessage) intake.DispatchArtifact {
 	t.Helper()
 	fact := approvalOf(askPerson, view)
-	if fact.MayQueueHandover() && fact.Mark.Seq > 0 {
+	if fact.MayQueueHandover() {
 		changed, err := intake.StatusChangedAfter(log, fact.Mark.Seq)
 		if err != nil {
 			t.Fatalf("read the status changes of LEGION-208's log: %v", err)
 		}
-		fact.StatusChangedAt = changed
+		fact.StatusChangedSeq = changed
 	}
 	return fact
 }
@@ -447,8 +447,8 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 // is no silent drop. Once the fact commits the daemon logs one warning naming the approval's
 // sequence and the sequence of the Dispatch event that changed the root's status after it, which
 // the preparation read from the root's event log, and the controller gets one parked-decision of
-// the approval, whose reason says it is older than the root's newest status reading and that todo
-// on the root brings it back. The root's own gate records the approval quietly, so it writes no
+// the approval, whose reason says it came before a change of the root's status and that todo on
+// the root brings it back. The root's own gate records the approval quietly, so it writes no
 // design-approved notice that the outbox would relay as a second parked-decision. A root the
 // daemon does not record has no tree to relay for, and is told by the warning alone. An approval
 // no later status change refuses queues the handover and tells nobody, as before.
@@ -520,8 +520,8 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 				if !ok || notice.Kind != record.ParkedDecisionNotice {
 					continue
 				}
-				if !strings.Contains(notice.Reason, "older than LEGION-208's newest status reading") || !strings.Contains(notice.Reason, "set LEGION-208 to todo") {
-					t.Errorf("the parked-decision's reason %q does not say the approval is older than the root's newest status reading and that todo brings it back", notice.Reason)
+				if !strings.Contains(notice.Reason, "came before a change of LEGION-208's status") || !strings.Contains(notice.Reason, "set LEGION-208 to todo") {
+					t.Errorf("the parked-decision's reason %q does not say the approval came before a change of the root's status and that todo brings it back", notice.Reason)
 				}
 				notice.Reason = ""
 				told[i] = notice

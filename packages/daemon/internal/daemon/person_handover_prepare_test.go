@@ -143,21 +143,33 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 // (intake.DispatchArtifact.Issue) only for an approval a person made that is not Dispatch's carry
 // of an earlier one, in one read of the issue: a session's approval, a carried approval, a changes
 // request and a version event read nothing and carry no view, and a read that fails fails the
-// preparation, so the event is delivered again.
+// preparation, so the event is delivered again. The issue's Dispatch event log is read, once, only
+// for such an approval that carries a sequence and that the view shows can queue its root
+// (intake.DispatchArtifact.MayQueueHandover: here a parked labelled root whose primary document is
+// the one approved): a person's approval of a root Dispatch shows in todo, and one with no
+// sequence, read the issue alone, and a failed read of the log fails the preparation, naming the
+// issue. The log served here is empty, so it leaves StatusChangedSeq at 0, and every prepared fact
+// is the decoded one apart from its view.
 func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 	const key = "LEGION-755"
 	person := dispatch.Actor{Kind: "user", ID: "sami"}
-	approval := intake.DispatchArtifact{Key: key, ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 9, Actor: person}
+	approval := intake.DispatchArtifact{Key: key, ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 9, Actor: person,
+		Mark: record.EventMark{Seq: 9}}
 	shown := dispatch.Issue{Key: key, Status: "backlog", Title: key, Rank: "A", HandedOver: true, PrimaryArtifactID: "art-1", LastSeq: 40}
 	for _, tc := range []struct {
-		name    string
-		fact    func(fact intake.DispatchArtifact) intake.DispatchArtifact
-		failing bool
-		reads   int
-		fails   bool
+		name string
+		fact func(fact intake.DispatchArtifact) intake.DispatchArtifact
+		// status is the status Dispatch shows the issue at, shown's when empty.
+		status   string
+		failing  bool
+		logErr   error
+		reads    int
+		logReads int
+		fails    bool
 	}{
-		{name: "a person's approval", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { return a }, reads: 1},
-		{name: "a person's approval with a reason of their own", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { a.Reason = "Ship it."; return a }, reads: 1},
+		{name: "a person's approval", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { return a }, reads: 1, logReads: 1},
+		{name: "a person's approval with a reason of their own", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { a.Reason = "Ship it."; return a },
+			reads: 1, logReads: 1},
 		{name: "a session's approval", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact {
 			a.Actor = dispatch.Actor{Kind: "session", ID: "architect-1"}
 			return a
@@ -175,9 +187,20 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 			return a
 		}},
 		{name: "a failed read of the issue", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { return a }, failing: true, reads: 1, fails: true},
+		{name: "a person's approval of a root Dispatch shows in todo", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { return a }, status: "todo",
+			reads: 1},
+		{name: "a person's approval with sequence 0", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { a.Mark = record.EventMark{}; return a },
+			reads: 1},
+		{name: "a failed read of the log", fact: func(a intake.DispatchArtifact) intake.DispatchArtifact { return a }, logErr: errors.New("Dispatch is restarting"),
+			reads: 1, logReads: 1, fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := &chainDispatch{issues: map[string]dispatch.Issue{key: shown}}
+			view := shown
+			if tc.status != "" {
+				view.Status = tc.status
+			}
+			client := &eventLogDispatch{logErr: tc.logErr}
+			client.issues = map[string]dispatch.Issue{key: view}
 			if tc.failing {
 				client.failing = key
 			}
@@ -185,17 +208,20 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 			fact := tc.fact(approval)
 
 			got, err := w.prepareArtifact(context.Background(), fact)
-			if tc.fails {
-				if err == nil || !strings.Contains(err.Error(), key) {
-					t.Fatalf("prepareArtifact = %#v, %v; want the failed read to fail the preparation, naming %s", got, err, key)
-				}
-				return
-			}
-			if err != nil {
+			switch {
+			case tc.fails && (err == nil || !strings.Contains(err.Error(), key)):
+				t.Fatalf("prepareArtifact = %#v, %v; want the failed read to fail the preparation, naming %s", got, err, key)
+			case !tc.fails && err != nil:
 				t.Fatalf("prepareArtifact: %v", err)
 			}
 			if client.reads[key] != tc.reads {
 				t.Fatalf("%s was read %d times, want %d", key, client.reads[key], tc.reads)
+			}
+			if client.logReads[key] != tc.logReads {
+				t.Fatalf("the event log of %s was read %d times, want %d", key, client.logReads[key], tc.logReads)
+			}
+			if tc.fails {
+				return
 			}
 			if tc.reads == 0 {
 				if got.Issue != nil {
@@ -207,7 +233,7 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 				}
 				return
 			}
-			if got.Issue == nil || got.Issue.Key != key || got.Issue.Status != shown.Status || got.Issue.PrimaryArtifactID != shown.PrimaryArtifactID || !got.Issue.HandedOver {
+			if got.Issue == nil || got.Issue.Key != key || got.Issue.Status != view.Status || got.Issue.PrimaryArtifactID != view.PrimaryArtifactID || !got.Issue.HandedOver {
 				t.Fatalf("Issue = %#v, want Dispatch's view of %s", got.Issue, key)
 			}
 			got.Issue = nil

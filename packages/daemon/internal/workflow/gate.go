@@ -636,8 +636,8 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // handover with source approval, so the proof reads which path queued a root from that field.
 //
 // An approval that would be that handover but for a change of the root's status after it, which
-// the issue's Dispatch event log showed when the fact was prepared (personHandoverQueues'
-// refusedAt), queues nothing, and is no silent drop: the root's own gate takes it as quietly
+// the issue's Dispatch event log showed when the fact was prepared (fact.StatusChangedSeq),
+// queues nothing, and is no silent drop: the root's own gate takes it as quietly
 // (recordHandover), and the controller is told (refuseHandover). Through applyArtifact the root's
 // own gate would write a design-approved notice that nobody in the parked tree hears, which the
 // outbox would relay to the controller (its parkDecision) with no word of the refusal, so the
@@ -671,7 +671,7 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 			return intake.Result{}, err
 		}
 	}
-	if handover.refusedAt > 0 {
+	if handover.parked && fact.StatusChangedSeq > 0 {
 		return intake.Result{}, e.refuseHandover(ctx, tx, fact, handover, step)
 	}
 	if !handover.parked {
@@ -689,12 +689,12 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 }
 
 // refuseHandover tells of a person's approval that a later change of its parked root's status
-// kept from queuing the root (personHandoverQueues' refusedAt). It logs a warning once the fact
+// kept from queuing the root (fact.StatusChangedSeq). It logs a warning once the fact
 // commits, naming the approval's sequence and the sequence of the Dispatch event that changed the
 // root's status after it, and hands the approval to the one rule for a decision nobody in its
 // tree hears (record.RelayParkedDecision): the controller is sent the parked-decision a person's
 // approval on a parked tree takes, under the reference of the document's step (stepRef), whose
-// reason says the approval is older than the root's newest status reading and that todo on the
+// reason says the approval came before a change of the root's status and that todo on the
 // root brings it back, and the approval is kept for the root's next architect start. It is kept
 // at Dispatch's time of the approval (decidedAt), so it replaces no newer decision kept under the
 // same reference. A root the daemon does not record has no tree to relay for, as the rule's other
@@ -703,8 +703,8 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact, handover handoverDecision, step record.DesignStep) error {
 	outcome := record.RelayNone
 	if handover.root != nil {
-		reason := fmt.Sprintf("the approval, at Dispatch event %d, is older than %s's newest status reading: its status changed after the approval, by event %d, "+
-			"so Legion did not queue %s as the person's handover; set %s to todo to bring it back", fact.Mark.Seq, fact.Key, handover.refusedAt, fact.Key, fact.Key)
+		reason := fmt.Sprintf("the approval, at Dispatch event %d, came before a change of %s's status: its status changed after the approval, by event %d, "+
+			"so Legion did not queue %s as the person's handover; set %s to todo to bring it back", fact.Mark.Seq, fact.Key, fact.StatusChangedSeq, fact.Key, fact.Key)
 		var err error
 		outcome, err = record.RelayParkedDecision(ctx, tx, e.store, fact.Key, *handover.root, true,
 			record.ParkedDecision{Ref: stepRef(fact.Key, step), Decision: record.DecisionDesignApproved, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)},
@@ -715,7 +715,7 @@ func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.Disp
 	}
 	e.warnOnCommit(ctx, "workflow: a person's approval of a parked root is older than a change of the root's status; the root is not queued as their handover",
 		"issue", fact.Key, "artifact", fact.ArtifactID, "version", fact.Version, "actor", fact.Actor.Name(),
-		"approval_seq", fact.Mark.Seq, "status_change_seq", handover.refusedAt, "controller_told", outcome == record.RelaySent)
+		"approval_seq", fact.Mark.Seq, "status_change_seq", fact.StatusChangedSeq, "controller_told", outcome == record.RelaySent)
 	return nil
 }
 
@@ -794,15 +794,15 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // so it cannot say whether the park it shows came before the approval or after it. Dispatch's own
 // event log of the issue says, and the preparation reads it for an approval that may queue its
 // root: the first event after the approval that changed the issue's status
-// (fact.StatusChangedAt). An approval after which the status changed — delivered late, or
+// (fact.StatusChangedSeq). An approval after which the status changed — delivered late, or
 // replayed from a message the intake gave up on, however late — queues nothing: a person who
 // approved and then parked the root again keeps it parked. The log is read when the fact is
 // prepared, so a replay reads Dispatch at replay time, and the order in which the daemon applies
 // the issue's other events changes nothing. It is refused rather than dropped
-// (handoverDecision.refusedAt), so dispatchArtifact tells the controller of it. That is asked
-// last, of a root the approval would otherwise queue: a live tree's gate hears the approval
-// itself. Any other later event, a rename say, changes no status and leaves the approval queuing
-// the root, as the walk expects.
+// (fact.StatusChangedSeq), so dispatchArtifact tells the controller of it, and only for a root
+// the approval would otherwise queue: a live tree's gate hears the approval itself. Any other
+// later event, a rename say, changes no status and leaves the approval queuing the root, as the
+// walk expects.
 //
 // dispatchArtifact ties its skip of the root's own gate to this decision rather than to the tree
 // being live: a lingering root that is not parked — closed as done, or still in triage — queues
@@ -821,21 +821,17 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 			return handoverDecision{}, err
 		}
 	}
-	return handoverDecision{parked: true, refusedAt: fact.StatusChangedAt, root: stored}, nil
+	return handoverDecision{parked: true, root: stored}, nil
 }
 
 // handoverDecision is what a person's approval comes to as the handover of its parked root
 // (personHandoverQueues). The zero value is an approval that is no such handover.
 type handoverDecision struct {
 	// parked says the approval is of a parked labelled root whose tree is not live, whose own gate
-	// takes it quietly (recordHandover): it queues the root as the person's handover unless
-	// refusedAt says a change of the root's status after it kept it from doing so.
+	// takes it quietly (recordHandover): it queues the root as the person's handover unless a
+	// change of the root's status after it kept it from doing so
+	// (intake.DispatchArtifact.StatusChangedSeq).
 	parked bool
-	// refusedAt is the sequence of the Dispatch event that changed the root's status after the
-	// approval, as the preparation read it from the issue's event log
-	// (intake.DispatchArtifact.StatusChangedAt), when that change kept the approval from queuing
-	// the root; 0 otherwise.
-	refusedAt int64
 	// root is the root's record, nil for a root the daemon does not record.
 	root *record.Issue
 }

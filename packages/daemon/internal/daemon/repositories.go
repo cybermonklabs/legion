@@ -3041,7 +3041,7 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // The view is the issue as it is now, so it cannot say whether the status changed after the
 // approval. For an approval that can queue its root by that view (MayQueueHandover) and carries a
 // sequence to place it by, a second read takes the issue's whole Dispatch event log, and the
-// first change of the issue's status after the approval is set on the fact (StatusChangedAt, by
+// first change of the issue's status after the approval is set on the fact (StatusChangedSeq, by
 // intake.StatusChangedAfter), so the workflow refuses an approval after which the person parked
 // the root again, however late it is applied or replayed. That read is one paged read of the
 // issue's whole log, the same read labelSetter makes for an unrecorded issue's admission event,
@@ -3064,7 +3064,7 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 	if err != nil {
 		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
 	}
-	if fact.StatusChangedAt, err = intake.StatusChangedAfter(events, fact.Mark.Seq); err != nil {
+	if fact.StatusChangedSeq, err = intake.StatusChangedAfter(events, fact.Mark.Seq); err != nil {
 		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
 	}
 	return fact, nil

@@ -223,7 +223,7 @@ type ConsumerSpec struct {
 	// decoded.
 	PrepareRepository func(ctx context.Context, issue DispatchIssue) (DispatchIssue, error)
 	// PrepareArtifact readies what the workflow reads of the issue a Dispatch review event is on
-	// (DispatchArtifact.Issue and StatusChangedAt), before the fact is applied, within AckWait,
+	// (DispatchArtifact.Issue and StatusChangedSeq), before the fact is applied, within AckWait,
 	// which bounds this one preparation rather than the delivery (ReviewPermission), and returns
 	// the fact to apply: the workflow performs no I/O, and decides from Dispatch's view of the issue
 	// and its event log whether a person's approval of a parked labelled root's primary document
