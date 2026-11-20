@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1012,10 +1011,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	// The message as the writer reads it (access.MessageClause): one it does not see is a message
 	// no row holds, before anything says whose delivery it was.
-	message, err := scanMessage(tx.QueryRow(r.Context(), `
-		select `+messageColumns+`
-		from messages where id = $1 and `+access.MessageClause("messages", "$2"),
-		r.PathValue("id"), refs.VisibilityArg(who)))
+	message, err := s.loadMessage(r.Context(), tx, who, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
