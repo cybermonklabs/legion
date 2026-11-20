@@ -66,9 +66,6 @@ func lifeOf(conn *nats.Conn) *connLife {
 	if life != nil {
 		return life
 	}
-	if entered := lifeOfBeforeRegister.Load(); entered != nil {
-		(*entered)()
-	}
 	reports := conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
 	connLives.mu.Lock()
 	if existing := connLives.of[conn]; existing != nil {
@@ -106,10 +103,6 @@ func (l *connLife) pinIf(ch <-chan struct{}, reconnects uint64) bool {
 	}
 	return true
 }
-
-// lifeOfBeforeRegister is nil outside a row. The row stages reports before the first listener
-// registration, an interleaving nats.go otherwise does not expose (conn_lives_check_test.go).
-var lifeOfBeforeRegister atomic.Pointer[func()]
 
 // current is the channel closed when the connection's current life ends.
 func (l *connLife) current() <-chan struct{} {
