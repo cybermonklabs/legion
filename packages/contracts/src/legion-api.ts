@@ -2141,9 +2141,12 @@ const ISSUE_RECORD_READS = [
 
 /**
  * The declared read set: every field of an answer schema that a read in plugin code names, by the
- * answer schema's exported name and the path of the field within it. A read names a field by the
- * field's name under its parent's name, whichever answer schema that read took the value from, so
- * a field is named in every answer schema that has one of that name under a parent of that name.
+ * answer schema's exported name and the path of the field within it. A read names a field below
+ * an answer's root by the field's name under its parent's name, whichever answer schema that read
+ * took the value from, so such a field is named in every answer schema that has one of that name
+ * under a parent of that name. A field at an answer's root has no parent: a read names it by its
+ * bare name, and this set names it only where plugin code takes its value off that answer, as it
+ * names `LegionHealthResponse`'s `project` and not its `status`.
  * A path names each key from that schema's root, with a record's value written `{}` and a list's
  * element `[]`, as the object census in `legion-api.test.ts` writes them, and a discriminated
  * union's member by its index after `|` (`paused.by|0.session`, the controller's entry). An

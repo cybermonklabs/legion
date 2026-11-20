@@ -1,8 +1,10 @@
 kind: Changed
 body: |-
-  Every field of a daemon answer that no plugin code reads is optional, so a daemon that stops
-  serving one is read rather than refused. `LEGION_ANSWER_READS` declares the set of fields
-  plugin code takes the value of, over the schemas the client parses, and a census in
+  Every field of a daemon answer that no read in plugin code names is optional, so a daemon that
+  stops serving one is read rather than refused. `LEGION_ANSWER_READS` declares the set of fields
+  a read in plugin code names, over the schemas the client parses: a field below an answer's root
+  is named by its name under its parent's, in every answer that has it there, and a field at the
+  root by its bare name, only where plugin code takes it off that answer. A census in
   `@legion/pi-shared` holds the two to each other: a field the set does not name is optional, a
   name of the set is read by the consumer sources, and a field those sources read is in the set.
   Two answer schemas arrive with daemon API contract 193: `LegionIssueRecordResponse`, the body of

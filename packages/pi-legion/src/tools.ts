@@ -146,8 +146,9 @@ const pauseWords = (id: number, since: string, by: string, reason: string): stri
  * ended. The state carries one of the two at most, and neither before the project's first pause,
  * when the summary has no such line.
  *
- * Each field is taken off the pause it belongs to, under the state's own names (`paused.id`,
- * `paused.by.kind`, `lastPause.endedBy.session`), the names `LEGION_ANSWER_READS` declares.
+ * Each field is taken off the pause it belongs to, under the state's own names, which
+ * `LEGION_ANSWER_READS` declares as `paused.id`, `paused.by|0.kind` and
+ * `lastPause.endedBy|0.session` among others.
  */
 function pauseSummary(state: LegionState): string | undefined {
   const paused = state.paused;
