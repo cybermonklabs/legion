@@ -96,8 +96,8 @@ const FOLD_AFTER = 10;
 export const PARENT_ERROR_ID = "issue-parent-error";
 
 /** What the line of a write the reader stopped says on a closed issue, whose row of Details draws
- *  no Retry and no control that would save `field` again, since Dispatch refuses every change to
- *  a closed issue (`ISSUE_CLOSED`). `what` is what Dispatch has not confirmed. */
+ *  no Retry and no control that would save `field` again, since Dispatch refuses that field of a
+ *  closed issue (`ISSUE_CLOSED`). `what` is what Dispatch has not confirmed. */
 function closedStoppedNote(what: string, field: string): string {
   return stoppedWriteNote(what, "saved", {
     anew: `The issue is closed, so the ${field} cannot be saved again.`,

@@ -17,9 +17,10 @@ export interface BlockedByRefusal {
 
 export interface BlockedByWrite {
   /** Why Dispatch refused the last save, until the next save starts or the control forgets it
-   *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else what Dispatch
-   *  said, so a string here is only ever Dispatch's own words; `undefined` for a save that ended
-   *  without Dispatch's answer, which `failed` or `stopped` says. */
+   *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else Dispatch's answer
+   *  (its message, or the client's line for an answer that carried none, as the page's other
+   *  controls mark it too); `undefined` for a save that ended without Dispatch's answer, which
+   *  `failed` or `stopped` says. */
   readonly error: BlockedByRefusal | string | undefined;
   /** The page's line for a save that ended in an error of the page's own rather than Dispatch's
    *  answer, and that the reader did not stop, until the next save starts or the control forgets
