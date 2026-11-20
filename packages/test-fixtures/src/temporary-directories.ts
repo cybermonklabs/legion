@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
+  constants,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -10,6 +12,7 @@ import {
   realpathSync,
   rmSync,
   type Stats,
+  statfsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,34 +39,51 @@ export type TemporaryDirectoryOptions = {
   root?: string;
 };
 
+/** Where {@link memoryRoot} looks, for a test that judges files of its own. */
+export type MemoryRootOptions = {
+  /** The mount table it reads, `/proc/self/mountinfo` by default. */
+  mountinfo?: string;
+  /** The mount point it judges, `/dev/shm` by default. */
+  at?: string;
+};
+
 /**
- * `/dev/shm` where `mountinfo` shows a tmpfs mounted there read-write and without `noexec`, else
- * `tmpdir()`, and `tmpdir()` when it cannot read `mountinfo`. The last mount at `/dev/shm` in the
- * file is the one a process sees. A suite that makes or removes many directory entries inside one
- * row's or hook's time passes it as `root`: on a disk other programs share, one creation can take
- * milliseconds, and the suite's time then follows what those programs do. `noexec` is refused
- * because a suite may write programs into its directory and run them.
+ * `/dev/shm` where `mountinfo` shows a tmpfs mounted there read-write and without `noexec`, this
+ * process may write and search it, and it has `need` bytes free; else `tmpdir()`, and `tmpdir()`
+ * when it cannot read `mountinfo`. The last mount at `/dev/shm` in the file is the one a process
+ * sees. A suite that makes or removes many directory entries inside one row's or hook's time passes
+ * it as `root`: on a disk other programs share, one creation can take milliseconds, and the suite's
+ * time then follows what those programs do. `noexec` is refused because a suite may write programs
+ * into its directory and run them. `need` is the most the caller's suite holds there at once, times
+ * the runs of it that may share the host: a tmpfs is often small (a Kubernetes pod's `/dev/shm` is
+ * 64 MiB), it keeps what a stopped run never removed, and a write past its end fails with ENOSPC.
  */
-export function memoryRoot(mountinfo = "/proc/self/mountinfo"): string {
+export function memoryRoot(need: number, options: MemoryRootOptions = {}): string {
+  const at = options.at ?? "/dev/shm";
   let text: string;
   try {
-    text = readFileSync(mountinfo, "utf8");
+    text = readFileSync(options.mountinfo ?? "/proc/self/mountinfo", "utf8");
   } catch {
     return tmpdir();
   }
   // A line is the mount's id, its parent's, the device, the root, the mount point, its options,
   // optional fields, `-`, then the filesystem type.
-  const shm = text
+  const mount = text
     .split("\n")
     .map((line) => line.split(" "))
-    .filter((fields) => fields[4] === "/dev/shm")
+    .filter((fields) => fields[4] === at)
     .at(-1);
-  if (shm === undefined) return tmpdir();
-  const options = (shm[5] ?? "").split(",");
-  const type = shm[shm.indexOf("-") + 1];
-  return type === "tmpfs" && options.includes("rw") && !options.includes("noexec")
-    ? "/dev/shm"
-    : tmpdir();
+  if (mount === undefined) return tmpdir();
+  const flags = (mount[5] ?? "").split(",");
+  const type = mount[mount.indexOf("-") + 1];
+  if (type !== "tmpfs" || !flags.includes("rw") || flags.includes("noexec")) return tmpdir();
+  try {
+    accessSync(at, constants.W_OK | constants.X_OK);
+    const { bavail, bsize } = statfsSync(at);
+    return bavail * bsize >= need ? at : tmpdir();
+  } catch {
+    return tmpdir();
+  }
 }
 
 /**

@@ -44,6 +44,7 @@ export const bash = hostTool("bash") ?? "bash";
 export const curl = hostTool("curl") ?? "curl";
 const hostSleep = hostTool("sleep") ?? "sleep";
 const mkdir = hostTool("mkdir") ?? "mkdir";
+const hostEnv = hostTool("env") ?? "env";
 
 /** The timeout of a row that stops before the probes. It only stops a run that hangs: each such row
  *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
@@ -362,21 +363,21 @@ const listFeeder = [
 /** The bash wrapper `driveEach` runs: the script once for each run in its arguments, each with the
  *  variables its run names on top of the wrapper's own environment, `together` runs at a time, and
  *  each run's stdout, stderr and exit code in the files `<n>.out`, `<n>.err` and `<n>.code` of the
- *  directory it is given, `n` counted from 0. Its arguments: the shell, the script, the directory
- *  and `together`, then for each run the count of its variables and each variable as
- *  `NAME=VALUE`. */
+ *  directory it is given, `n` counted from 0. Its arguments: the host's `env`, the shell, the
+ *  script, the directory and `together`, then for each run the count of its variables and each
+ *  variable as `NAME=VALUE`. `env` puts each variable into the environment it starts the shell
+ *  with, so no name passes through the wrapper's own bash, which keeps some names read-only, sets
+ *  others for itself (`SHLVL`, `PIPESTATUS`, `DIRSTACK`) and uses its own loop's. */
 const eachRunner = [
-  "shell=$1 script=$2 out=$3 together=$4",
-  "shift 4",
+  "env=$1 shell=$2 script=$3 out=$4 together=$5",
+  "shift 5",
   "n=0",
   'while [ "$#" -gt 0 ]; do',
   "  count=$1",
   "  shift",
   "  (",
-  "    (",
-  '      while [ "$count" -gt 0 ]; do export "$1"; shift; count=$((count - 1)); done',
-  '      exec "$shell" "$script" </dev/null >"$out/$n.out" 2>"$out/$n.err"',
-  "    )",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's slice of its arguments, the run's variables.
+  '    (exec "$env" -- "${@:1:count}" "$shell" "$script" </dev/null >"$out/$n.out" 2>"$out/$n.err")',
   '    printf "%s" "$?" >"$out/$n.code"',
   "  ) &",
   '  shift "$count"',
@@ -386,25 +387,6 @@ const eachRunner = [
   "wait",
 ].join("\n");
 
-/** Upper-case names bash keeps read-only or sets for itself, which `export` in the runner would
- *  refuse or the runner's bash would change before its run starts. */
-const runnerOwnNames: Record<string, true> = {
-  BASHOPTS: true,
-  BASHPID: true,
-  BASH_ARGC: true,
-  BASH_ARGV: true,
-  BASH_LINENO: true,
-  BASH_SOURCE: true,
-  BASH_VERSINFO: true,
-  EUID: true,
-  FUNCNAME: true,
-  GROUPS: true,
-  PPID: true,
-  SHELLOPTS: true,
-  SHLVL: true,
-  UID: true,
-};
-
 /** Reserves the calling test file's scratch directory and returns it with the helpers that write
  *  there. Call it at the test file's module scope: `temporaryDirectory` registers the hooks that
  *  make and remove the directory in the scope it is called from, and this module is evaluated
@@ -413,8 +395,11 @@ export function reachFixtures() {
   // The rows write about 3,600 entries here, the target files and the three result files of each
   // `driveEach` run, and the removal hook removes them inside its 60 s. On a disk other programs
   // share one creation took up to 84 ms, so the directory is on tmpfs where the host has one that
-  // allows exec, which the `curl` and `sleep` the rows write here need.
-  const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot() });
+  // allows exec, which the `curl` and `sleep` the rows write here need, and that has room for six
+  // runs at once: one run of outside-path-reach-input.test.ts held 10.7 MiB and 11.9 MiB of tmpfs
+  // at its peak (two readings, 2026-11-19 and 2026-11-20), so 12 MiB a run. A Kubernetes pod's
+  // 64 MiB `/dev/shm` has less, and the runs there use `tmpdir()`.
+  const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot(6 * 12 * 2 ** 20) });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
    *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, the
@@ -507,16 +492,16 @@ export function reachFixtures() {
    *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored, where `drive`'s
    *  run has them as the test process gives them (bash 5.2 restores them at the `exec`); the runs
    *  of one call share one HOME, in which none is given a `.curlrc`; and its stdout and stderr are
-   *  files, where `drive`'s are the sockets Bun.spawn's `pipe` gives. The runner sets each
-   *  variable with `export` in its own bash, so a name of its own loop (all lower case) or one
-   *  bash keeps read-only would not reach the run as given: `driveEach` refuses such a name. */
+   *  files, where `drive`'s are the sockets Bun.spawn's `pipe` gives. The runner hands each run's
+   *  variables to the host's `env`, so every name reaches the run as given, as `drive`'s
+   *  `Bun.spawn` passes it; a name no environment can hold (empty, or holding `=`) is refused. */
   async function driveEach(
     runs: Record<string, string>[],
     options: { path?: string; together?: number } = {}
   ): Promise<Run[]> {
     for (const name of runs.flatMap(Object.keys)) {
-      if (!/^[A-Z][A-Z0-9_]*$/.test(name) || Object.hasOwn(runnerOwnNames, name)) {
-        throw new Error(`driveEach cannot pass ${name} to a run whole: give it through drive`);
+      if (name === "" || name.includes("=")) {
+        throw new Error(`driveEach cannot pass ${JSON.stringify(name)}: no environment holds it`);
       }
     }
     const out = join(scratch, `each-${randomUUID()}`);
@@ -527,6 +512,7 @@ export function reachFixtures() {
         "-c",
         eachRunner,
         "each",
+        hostEnv,
         bash,
         script,
         out,
@@ -546,17 +532,21 @@ export function reachFixtures() {
     const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     if (code !== 0) throw new Error(`the runner of ${runs.length} runs exited ${code}:\n${stderr}`);
     return runs.map((_, n) => {
-      const exit = readFileSync(join(out, `${n}.code`), "utf8");
-      if (!/^\d+$/.test(exit)) {
+      try {
+        const exit = readFileSync(join(out, `${n}.code`), "utf8");
+        if (!/^\d+$/.test(exit)) throw new Error(`it left no exit code (${JSON.stringify(exit)})`);
+        return {
+          code: Number(exit),
+          stdout: readFileSync(join(out, `${n}.out`), "utf8"),
+          stderr: readFileSync(join(out, `${n}.err`), "utf8"),
+        };
+      } catch (error) {
+        // The runner exits 0 whatever became of a run, and a redirect it could not make is named
+        // only on its own stderr.
         throw new Error(
-          `run ${n} of ${runs.length} left no exit code (${JSON.stringify(exit)}):\n${stderr}`
+          `run ${n} of ${runs.length}: ${(error as Error).message}; the runner's stderr:\n${stderr}`
         );
       }
-      return {
-        code: Number(exit),
-        stdout: readFileSync(join(out, `${n}.out`), "utf8"),
-        stderr: readFileSync(join(out, `${n}.err`), "utf8"),
-      };
     });
   }
 
