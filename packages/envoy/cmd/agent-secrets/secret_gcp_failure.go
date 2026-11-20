@@ -11,12 +11,14 @@ import (
 	"context"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -25,9 +27,12 @@ import (
 // storeInterceptor is the gRPC interceptor every Secret Manager call this client makes goes
 // through (gcpClientDial installs it): a call's failure is storeFailure's, named by the call's
 // method, so no call site wraps a refusal by hand, and a call a later change adds cannot forget
-// to.
+// to. It asks gRPC for the call's peer (grpc.Peer), which gRPC fills only once the call went out
+// on a connection it made, so storeFailure knows whether anything answered.
 func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-	return b.storeFailure(path.Base(method), invoker(ctx, method, req, reply, cc, opts...))
+	var answered peer.Peer
+	err := invoker(ctx, method, req, reply, cc, append(slices.Clip(opts), grpc.Peer(&answered))...)
+	return b.storeFailure(path.Base(method), answered.Addr != nil, err)
 }
 
 // storeFailure is err, the failure of the Secret Manager call method, as a message prints it: the
@@ -35,14 +40,15 @@ func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, r
 // where it names one this client's calls need (gcpMissingPermission), never the rest of its
 // message, which the server writes what it likes in, an echo of what the call sent among it; a
 // call that did not reach Secret Manager by the class of gRPC's own failure (storeUnreached); and a
-// failure that is no status at all by its class (redact.Class). An Unauthenticated whose cause was
-// this client's own token source failing prints that failure (storeTokens): gRPC writes it into
-// the status message, and its words are this program's own (redactedTokens, gcloudToken,
-// googleidentity). A failure with a status is a storeRefusal, whose status holds the call's code
-// and these words alone, so status.Code, isAccessDenied, gcpDefiniteRefusal and gax's retries still
-// read the code, and gax, which builds its APIError from that status and prints the status's
-// details beside its text, prints none of the server's.
-func (b *gcpBackend) storeFailure(method string, err error) error {
+// failure that is no status at all by its class (redact.Class). reached is whether the call went
+// out on a connection (storeInterceptor). An Unauthenticated whose cause was this client's own
+// token source failing prints that failure (storeTokens): gRPC writes it into the status message,
+// and its words are this program's own (redactedTokens, gcloudToken, googleidentity). A failure
+// with a status is a storeRefusal, whose status holds the call's code and these words alone, so
+// status.Code, isAccessDenied, gcpDefiniteRefusal and gax's retries still read the code, and gax,
+// which builds its APIError from that status and prints the status's details beside its text,
+// prints none of the server's.
+func (b *gcpBackend) storeFailure(method string, reached bool, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -52,7 +58,7 @@ func (b *gcpBackend) storeFailure(method string, err error) error {
 		return redact.Masked(err, call+" failed: "+redact.Class(err).Error())
 	}
 	words := call + " answered " + answer.Code().String() + " (its message is not printed)"
-	if class, unreached := storeUnreached(answer); unreached {
+	if class, unreached := storeUnreached(answer, reached); unreached {
 		words = call + " failed: it did not reach Secret Manager (" + class + ")"
 	} else if answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil {
 		words = call + " answered Unauthenticated: " + b.tokens.failure().Error()
@@ -67,17 +73,24 @@ func (b *gcpBackend) storeFailure(method string, err error) error {
 // here does not appear by waiting, so a call that failed so keeps them in its words.
 const x509UnknownAuthority = "x509: certificate signed by unknown authority"
 
-// storeUnreached is the class of a call's failure where the status is gRPC's own, Unavailable for
-// a call that never reached Secret Manager, and whether it is one: gRPC words a failed connection
-// "connection error: desc = ...", and a name its resolver could not turn into an address "name
-// resolver error: ...". Its text names the address it dialed and the system's reason, so it prints
-// as fixed words: a TLS handshake that failed (with x509UnknownAuthority where the text says it), a
-// name that did not resolve, a connection that could not be made, or any other connection that
-// failed. A status Secret Manager answered has text of its own and is no class here.
-func storeUnreached(answer *status.Status) (string, bool) {
+// storeUnreached is the class of a call's failure where the call never went out on a connection
+// (reached false) and gRPC failed it Unavailable, and whether it is one. Whether anything answered
+// is the transport's own fact, the call's peer (storeInterceptor), never the status's text: a
+// server can answer Unavailable with any words, gRPC's own among them, and an answer is no call
+// that did not reach Secret Manager. gRPC hands the client no error but that text for a
+// connection it could not make - its picker (picker_wrapper.go) and its transport's error mapping
+// (rpc_util.go) turn the dial's error into a status of code Unavailable and that error's text,
+// with no details and no cause - so the class is read from the text, which only gRPC itself wrote
+// where nothing was reached: "connection error: desc = ..." for a failed connection and "name
+// resolver error: ..." for a name its resolver could not turn into an address. That text names the
+// address it dialed and the system's reason, so it prints as fixed words: a TLS handshake that
+// failed (with x509UnknownAuthority where the text says it), a name that did not resolve, a
+// connection that could not be made, or any other connection that failed. A connection that broke
+// after the call went out on it has a peer, and reads as Secret Manager's own Unavailable.
+func storeUnreached(answer *status.Status, reached bool) (string, bool) {
 	text := answer.Message()
 	switch {
-	case answer.Code() != codes.Unavailable:
+	case reached || answer.Code() != codes.Unavailable:
 		return "", false
 	case strings.HasPrefix(text, "name resolver error: "):
 		return "the name did not resolve", true

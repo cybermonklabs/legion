@@ -83,25 +83,32 @@ func zeroAddressesUnreached() unreachedTarget {
 // Manager - a TLS handshake no root here trusts, a refused connection, a name with no such host, a
 // name the resolver gave no address - prints that the call did not reach Secret Manager and the
 // class of the failure, never gRPC's text, its address and the system's reason among it, and never
-// "answered". Control: Secret Manager's own Unavailable, with a made-up secret in its message,
-// prints as its answer.
+// "answered". A server that answers Unavailable in gRPC's own words for a failed connection
+// reached nothing it can claim: it prints as Secret Manager's answer, its message not printed.
+// Control: Secret Manager's own Unavailable, with a made-up secret in its message, prints as its
+// answer.
 func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 	planted := "hunter2pw-" + "unavailable-" + "6d2c"
 	forbidden := []string{planted, "connection error", "transport:", "desc =", "127.0.0.1", "resolver error", "zero addresses"}
 	for _, row := range []struct {
 		name string
 		to   func(t *testing.T) unreachedTarget
-		says string
+		// answers is the message of the Unavailable a local server answers, where to is nil.
+		answers string
+		says    string
 	}{
-		{"a TLS handshake no root here trusts", tlsUnreached,
+		{"a TLS handshake no root here trusts", tlsUnreached, "",
 			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the TLS handshake failed: " + unknownAuthority + ")"},
-		{"a refused connection", refusedUnreached,
+		{"a refused connection", refusedUnreached, "",
 			"Secret Manager ListSecrets failed: it did not reach Secret Manager (could not connect)"},
-		{"a name with no such host", func(*testing.T) unreachedTarget { return unresolvedUnreached() },
+		{"a name with no such host", func(*testing.T) unreachedTarget { return unresolvedUnreached() }, "",
 			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the name did not resolve)"},
-		{"a name the resolver gave no address", func(*testing.T) unreachedTarget { return zeroAddressesUnreached() },
+		{"a name the resolver gave no address", func(*testing.T) unreachedTarget { return zeroAddressesUnreached() }, "",
 			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the name did not resolve)"},
-		{"control: Secret Manager's own Unavailable", nil,
+		{"a server answering Unavailable in gRPC's own words for a failed connection", nil,
+			`connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.1:443: connect: connection refused"; echo: ` + planted,
+			"Secret Manager ListSecrets answered Unavailable (its message is not printed)"},
+		{"control: Secret Manager's own Unavailable", nil, "the service is busy; echo: " + planted,
 			"Secret Manager ListSecrets answered Unavailable (its message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -115,12 +122,12 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 					t.Fatal(err)
 				}
 				server := grpc.NewServer(grpc.UnaryInterceptor(func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
-					return nil, status.Error(codes.Unavailable, "the service is busy; echo: "+planted)
+					return nil, status.Error(codes.Unavailable, row.answers)
 				}))
 				secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
 				go func() { _ = server.Serve(lis) }()
 				t.Cleanup(server.Stop)
-				to = unreachedTarget{lis.Addr().String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, nil}
+				to = unreachedTarget{lis.Addr().String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, []string{"10.0.0.1", "did not reach"}}
 			}
 			restore := gcpClientDial
 			gcpClientDial = func(ctx context.Context, _ *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
