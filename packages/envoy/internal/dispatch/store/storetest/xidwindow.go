@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,14 +53,18 @@ import (
 // opens a gap of milliseconds behind code that ran for microseconds (TestXidWindowsOnTheLargeSpec
 // read 13 ms after one batch at a load of 660 on a 288-CPU machine). So the rig holds what it can
 // still. The goroutine that begins a marked transaction is locked to its OS thread until the
-// transaction ends (XidTracer.lockTransaction), so that thread sends every statement of the
-// window and runs nothing else; and the operation runs with the collector held off
-// (runWithoutCollector), so none of the runtime's pauses lands in a window. And each gap is read
-// off that thread's own scheduler clocks (readXidThreadClock) as well as the process's clock: the
-// time the kernel kept the thread runnable on a run queue is the machine's load, and the rest -
-// the time it ran, and the time it was off a CPU because the code waited on something - is the
-// code's. A sleep, a lock, a channel or a document call in the window is in that rest, and a
-// machine that is merely busy is not.
+// transaction ends, and that thread is kept out of NUMA balancing meanwhile
+// (XidTracer.lockTransaction), so it sends every statement of the window, runs nothing else, and
+// has no page moved under it. The operation runs with the collector held off, after a collection
+// that leaves the window memory the heap has already used (runWithoutCollector), so none of the
+// runtime's pauses lands in a window and no allocation in it is the first touch of a page. And
+// the rig does its own work on a statement inside that statement, between its Start and its End,
+// and none in the gaps around it (XidTracer.begin, XidTracer.end). Each gap is read off that
+// thread's own scheduler clocks (readXidThreadClock) as well as the process's clock: the time the
+// kernel kept the thread runnable on a run queue is the machine's load, and the rest - the time it
+// ran, and the time it was off a CPU because the code waited on something - is the code's. A
+// sleep, a lock, a channel or a document call in the window is in that rest, and a machine that
+// is merely busy is not.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -171,15 +176,38 @@ type xidThreadClock struct {
 // XidTracer is a pgx QueryTracer, BatchTracer and CopyFromTracer that records the statements each
 // backend runs while Measure runs. Install it on a pool with Traced.
 type XidTracer struct {
-	mu         sync.Mutex
-	recording  bool
-	statements []XidStatement
+	mu sync.Mutex
+	// recording is read at the start of every statement, before the statement's Start, so it is
+	// read without the mutex: a statement waiting on it would wait inside the gap before it.
+	recording atomic.Bool
+	// spans are the statements begun while the tracer records, in the order they began. A span is
+	// a statement of the trace once its end has filled it in (xidSpan.done).
+	spans []*xidSpan
 	// blind is how long Measure's poller waits before its first read of pg_stat_activity; zero
 	// polls from the start (BlindPoller).
 	blind time.Duration
 	// locked is, for each backend whose marked transaction began while the tracer recorded and
-	// has not ended, the OS thread the goroutine that began it is locked to (lockTransaction).
-	locked map[uint32]int
+	// has not ended, the OS thread the goroutine that began it is locked to and held on
+	// (lockTransaction).
+	locked map[uint32]xidHeldThread
+}
+
+// xidHeldThread is the OS thread a marked transaction's goroutine is locked to, whether the rig
+// holds it out of NUMA balancing (xidHoldThread), and what puts it back as it was when the
+// transaction ends. Only a held thread's clocks are a gap's (XidStatement.locked).
+type xidHeldThread struct {
+	thread  int
+	held    bool
+	release func()
+}
+
+// gapThread is the thread a statement's gaps are read off: the locked thread when the rig holds
+// it, and none when it does not.
+func (h xidHeldThread) gapThread() int {
+	if !h.held {
+		return 0
+	}
+	return h.thread
 }
 
 // NewXidTracer returns a tracer that records nothing until Measure starts it.
@@ -201,53 +229,59 @@ type xidSpan struct {
 	// ends is true for a COMMIT or a ROLLBACK, whose end lets its transaction's goroutine go
 	// (unlockTransaction).
 	ends bool
+	// done is set once end has written the statement whole. Measure reads a span's statement only
+	// after it sees done, and leaves out a span still in flight.
+	done atomic.Bool
 }
 
+// begin opens a statement's span. The thread's clocks are read and Start is taken first, and the
+// rig's own work on the statement - classifying it, locking and holding its transaction's thread,
+// recording the span - comes after, inside the statement. A gap is the code's (XidGap.Made), and
+// before this order the rig's work ran in it: on a loaded machine its allocations' first touches
+// of fresh pages took 3.5 to 10 ms of the thread's CPU in the kernel (runWithoutCollector),
+// which the gap's clocks read as the code's.
 func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) context.Context {
-	pid := conn.PgConn().PID()
-	verb := xidVerb(sql)
-	ends := verb == "commit" || verb == "rollback"
-	x.mu.Lock()
-	recording := x.recording
-	x.mu.Unlock()
-	if !recording {
-		if ends {
-			x.unlockTransaction(pid)
+	if !x.recording.Load() {
+		if verb := xidVerb(sql); verb == "commit" || verb == "rollback" {
+			x.unlockTransaction(conn.PgConn().PID())
 		}
 		return ctx
 	}
+	started := readXidThreadClock()
+	start := time.Now()
+	pid := conn.PgConn().PID()
+	verb := xidVerb(sql)
 	marked := markedXid(ctx)
 	if verb == "begin" && marked {
 		x.lockTransaction(pid)
 	}
-	x.mu.Lock()
-	locked := x.locked[pid]
-	x.mu.Unlock()
-	span := &xidSpan{ends: ends, statement: XidStatement{
-		PID: pid, SQL: sql, Marked: marked, started: readXidThreadClock(), locked: locked,
+	span := &xidSpan{ends: verb == "commit" || verb == "rollback", statement: XidStatement{
+		PID: pid, Start: start, SQL: sql, Marked: marked, started: started,
 	}}
-	span.statement.Start = time.Now()
+	x.mu.Lock()
+	span.statement.locked = x.locked[pid].gapThread()
+	x.spans = append(x.spans, span)
+	x.mu.Unlock()
 	return context.WithValue(ctx, xidSpanKey{}, span)
 }
 
 // end closes the span ctx carries with tag, the command tag the statement answered - the zero tag
-// for a batch, whose queries report their own (TraceBatchQuery).
+// for a batch, whose queries report their own (TraceBatchQuery). What the rig works out about the
+// statement - its batch's text, whether it wrote - is worked out before its End, inside it, as
+// begin's work is after its Start; after End the rig only reads the thread's clocks and marks the
+// span done, so the gap that follows holds the code's work and not the rig's.
 func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 	span, ok := ctx.Value(xidSpanKey{}).(*xidSpan)
 	if !ok {
 		return
 	}
-	span.statement.End = time.Now()
-	span.statement.ended = readXidThreadClock()
 	if len(span.sql) > 0 {
 		span.statement.SQL = strings.Join(span.sql, "; ")
 	}
 	span.statement.Wrote = span.statement.Wrote || xidAssigned(span.statement.SQL, tag)
-	x.mu.Lock()
-	if x.recording {
-		x.statements = append(x.statements, span.statement)
-	}
-	x.mu.Unlock()
+	span.statement.End = time.Now()
+	span.statement.ended = readXidThreadClock()
+	span.done.Store(true)
 	if span.ends {
 		x.unlockTransaction(span.statement.PID)
 	}
@@ -255,34 +289,39 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 
 // lockTransaction locks the calling goroutine, which is sending the BEGIN of a marked
 // transaction on backend pid, to its OS thread until that transaction's COMMIT or ROLLBACK
-// (unlockTransaction). A thread locked to a goroutine runs that goroutine and no other, so every
-// gap between two statements the goroutine sends from it is read off clocks of its own: the time
-// the thread ran, and waited for a CPU, is the goroutine's. It is the BEGIN that locks, not the
-// measured operation, because an operation sends a transaction from any goroutine it starts - a
-// broadcast delivers to each session on a goroutine of its own.
+// (unlockTransaction), and holds that thread out of NUMA balancing meanwhile (xidHoldThread). A
+// thread locked to a goroutine runs that goroutine and no other, so every gap between two
+// statements the goroutine sends from it is read off clocks of its own: the time the thread ran,
+// and waited for a CPU, is the goroutine's. It is the BEGIN that locks, not the measured
+// operation, because an operation sends a transaction from any goroutine it starts - a broadcast
+// delivers to each session on a goroutine of its own. A thread the rig could not hold is not
+// recorded as locked, so its gaps are read off no thread's clocks and are a rig problem
+// (analyzeXidWindows).
 func (x *XidTracer) lockTransaction(pid uint32) {
 	runtime.LockOSThread()
-	thread := xidThread()
+	release, held := xidHoldThread()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.locked == nil {
-		x.locked = map[uint32]int{}
+		x.locked = map[uint32]xidHeldThread{}
 	}
-	x.locked[pid] = thread
+	x.locked[pid] = xidHeldThread{thread: xidThread(), held: held, release: release}
 }
 
-// unlockTransaction lets go of the thread lockTransaction locked for backend pid's transaction,
-// when the calling goroutine is the one it locked: a transaction that ended on another goroutine
-// leaves the goroutine that began it locked, which the runtime then ends its thread with.
+// unlockTransaction puts back and lets go of the thread lockTransaction locked for backend pid's
+// transaction, when the calling goroutine is the one it locked: a transaction that ended on
+// another goroutine leaves the goroutine that began it locked, which the runtime then ends its
+// thread with.
 func (x *XidTracer) unlockTransaction(pid uint32) {
 	x.mu.Lock()
-	thread, held := x.locked[pid]
-	mine := held && thread == xidThread()
+	held, ok := x.locked[pid]
+	mine := ok && held.thread == xidThread()
 	if mine {
 		delete(x.locked, pid)
 	}
 	x.mu.Unlock()
 	if mine {
+		held.release()
 		runtime.UnlockOSThread()
 	}
 }
@@ -376,10 +415,10 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	}
 
 	x.mu.Lock()
-	x.statements = nil
-	x.recording = true
+	x.spans = nil
 	blind := x.blind
 	x.mu.Unlock()
+	x.recording.Store(true)
 
 	stop := make(chan struct{})
 	var polls []xidPoll
@@ -418,11 +457,17 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	close(stop)
 	<-polled
 
+	x.recording.Store(false)
 	x.mu.Lock()
-	x.recording = false
-	statements := x.statements
-	x.statements = nil
+	spans := x.spans
+	x.spans = nil
 	x.mu.Unlock()
+	statements := make([]XidStatement, 0, len(spans))
+	for _, span := range spans {
+		if span.done.Load() {
+			statements = append(statements, span.statement)
+		}
+	}
 	if pollErr != nil {
 		t.Fatalf("xid rig: poll pg_stat_activity: %v", pollErr)
 	}
@@ -435,11 +480,22 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 // operation's: a pause takes as long as the slowest thread of the process takes to stop, which on
 // a loaded machine is the load's doing, and beside these tests at a load of 400 on a 288-CPU
 // machine (2026-11-19) one took 33 ms.
+//
+// With the collector off the heap only grows, so an allocation would land on a page the process
+// has never touched; and a first touch that reads before it writes maps the kernel's shared zero
+// page, which the write then copies, changing a mapping every CPU the process ran on may cache.
+// The kernel waits for each of those CPUs to drop it, and on a loaded machine that wait is
+// milliseconds of the thread's CPU: traced at a load of 400 to 500 on a 288-CPU machine
+// (2026-11-20), 3.5 to 10 ms in the kernel's TLB shootdown behind a few microseconds of code. So
+// one collection runs first, with the collector and the scavenger already off (both goals at
+// their maximum, so nothing it frees is handed back to the system): the window allocates out of
+// what that collection freed, memory the heap has used before, as it does with the collector on.
 func runWithoutCollector(operation func()) {
 	limit := debug.SetMemoryLimit(math.MaxInt64)
 	defer debug.SetMemoryLimit(limit)
 	percent := debug.SetGCPercent(-1)
 	defer debug.SetGCPercent(percent)
+	runtime.GC()
 	operation()
 }
 
@@ -731,7 +787,7 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 			for i, gap := range window.Gaps {
 				if !gap.Read {
 					report.Problems = append(report.Problems, fmt.Sprintf(
-						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), or another goroutine sent its statements",
+						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), the rig could not hold that thread out of NUMA balancing (xidHoldThread), or another goroutine sent its statements",
 						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
 				}
 			}

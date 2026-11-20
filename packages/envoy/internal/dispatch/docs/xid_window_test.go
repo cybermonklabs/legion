@@ -89,6 +89,53 @@ func skipWhereNoGapIsJudged(t *testing.T) {
 	}
 }
 
+// The rig's own work on a statement - classifying its text, reading whether it wrote - is done
+// inside the statement, between its Start and its End, and none of it in the gaps around it
+// (storetest's XidTracer.begin and XidTracer.end). The statement here carries a comment long
+// enough that that work takes many times the bound of CPU: its text lowered to classify it, and
+// the two expressions that read whether a statement wrote run over it. Put back in a gap, as
+// before this rule, that CPU is the gap's and the window breaks D6; inside the statement, the
+// window keeps it. The test first holds that the work did take that long, so a machine that ran it
+// in no time cannot pass for one that kept it out of the gaps.
+func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
+	skipWhereNoGapIsJudged(t)
+	_, database, tracer := xidService(t)
+	long := "SELECT 1 /* " + strings.Repeat("Rig Work ", 1<<19) + "*/"
+	report := tracer.Measure(t, database.Pool, func() {
+		ctx := storetest.MarkXid(context.Background())
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "select pg_current_xact_id()"); err != nil {
+			t.Fatalf("take a transaction id: %v", err)
+		}
+		if _, err := tx.Exec(ctx, long); err != nil {
+			t.Fatalf("run the long statement: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the transaction: %v", err)
+		}
+	})
+	if len(report.Problems) > 0 || len(report.Windows) != 1 {
+		t.Fatalf("the rig judged %d windows with problems %v, want the one transaction", len(report.Windows), report.Problems)
+	}
+	window := report.Windows[0]
+	if len(window.Statements) != 3 {
+		t.Fatalf("the window holds %d statements, want the forced xid, the long statement and the commit:\n%s", len(window.Statements), window.Detail())
+	}
+	took := window.Statements[1].End.Sub(window.Statements[1].Start)
+	if took <= 4*storetest.XidMaxGap {
+		t.Fatalf("the long statement took %s with the rig's work on it, not past %s: the rig's work was too quick to tell where it fell\n%s",
+			storetest.XidMillis(took), storetest.XidMillis(4*storetest.XidMaxGap), window.Detail())
+	}
+	if err := report.Err(); err != nil {
+		t.Fatalf("the rig's own work on a long statement broke D6, so it ran in a gap:\n%v", err)
+	}
+	t.Logf("%s\n%s", window.Summary(), window.Detail())
+}
+
 // The rig sees a gap inside the window: the same transaction with Go work between its write and
 // its commit breaks D6, and the report names the statement the gap follows. The gap is four
 // times the bound and is spent in Go, so this test is a reading of the bound alone and skips in
