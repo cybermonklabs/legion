@@ -477,10 +477,12 @@ func decodeStoredState(doc *crdt.Doc, state []byte) error {
 // its load hook ran, the server's MaxPendingItems and MaxPendingDeleteRanges, which New sets to
 // maxParkedStructs and maxParkedDeleteRanges, and through decodeStoredState, so a refusal reads
 // as every other decode of stored state does: a state that would park past either fails the
-// room's load. The load decoded the same bytes once more, into the copy the room's replica takes
-// (decodeStoredCopy), under the service's own cap (Service.maxPendingItems; see maxUpdateItems),
-// which is no lower, and with the same cleanup off, so a room whose decode stands holds item for
-// item what that copy holds. An empty state - an empty history - decodes nothing.
+// room's load, and every read of the document answers it as one that cannot load, judged on its
+// copy against the same two caps (parkedPastRoomCaps). The load decoded the same bytes once more,
+// into the copy the room's replica takes (decodeStoredCopy), under the service's own cap
+// (Service.maxPendingItems; see maxUpdateItems), which is no lower, and with the same cleanup
+// off, so a room whose decode stands holds item for item what that copy holds. An empty state -
+// an empty history - decodes nothing.
 //
 // It decodes with ygo's format cleanup off (crdt.Doc.SetFormatCleanup), which would follow an
 // apply that touches formatted text with a commit of the room's own: that commit reaches no
@@ -524,6 +526,74 @@ func (s *Service) bootstrapLoadedState(room string, doc *crdt.Doc, state []byte)
 func loadableHistory(update []byte) error {
 	if items, named := updateItems(update); named && items > maxUpdateItems {
 		return itemCapRefusal(items, maxUpdateItems)
+	}
+	return nil
+}
+
+// parkedPastCapLoadLine is the line a room's load logs when the room's own decode refuses its
+// stored history for parking past one of the room's caps (onLoadDocument), and
+// parkedPastCapReadLine the line a read logs when it answers such a history as one that cannot
+// load (foldDocument). Each names the document, the cap, its figure and what the history parks
+// (parkedPastCap.attrs), and each message is fixed, so an operator finds every such document by
+// it.
+const (
+	parkedPastCapLoadLine = "dispatch: a document's room did not load: its stored history parks past the room's cap"
+	parkedPastCapReadLine = "dispatch: a read answered a document unloadable: its stored history parks past a room's cap"
+)
+
+// parkedPastCap is a stored history that parks more than a room's document may: parks of what
+// parked names, structs or delete ranges, past most, the room's cap for them
+// (Server.MaxPendingItems, maxParkedStructs; Server.MaxPendingDeleteRanges,
+// maxParkedDeleteRanges). The room's own decode of such a history is refused with
+// crdt.ErrPendingCap (bootstrapLoadedState), and so is this.
+type parkedPastCap struct {
+	parked string
+	most   int
+	parks  int
+}
+
+func (p *parkedPastCap) Error() string {
+	return fmt.Sprintf("the stored history parks %d %s, past the %d a room's document parks", p.parks, p.parked, p.most)
+}
+
+// Unwrap makes it crdt.ErrPendingCap, the room's own refusal of the same history.
+func (p *parkedPastCap) Unwrap() error { return crdt.ErrPendingCap }
+
+// attrs are the log line's fields for room's history: the document, the cap and its figure, and
+// what the history parks of it.
+func (p *parkedPastCap) attrs(room string) []any {
+	return []any{"room", room, "cap", "parked " + p.parked, "most", p.most, "parks", p.parks}
+}
+
+// parkedPastRoomCaps is the one judgement of whether a room's load takes a stored history its
+// decode would park in: doc is that history decoded under the service's own cap
+// (Service.maxPendingItems, PgVersioned.maxPendingItems), which parks what the history parks, and
+// what it parks is held against the caps ygo sets on each room's document before the room's own
+// decode (Server.MaxPendingItems and Server.MaxPendingDeleteRanges, which New sets to
+// maxParkedStructs and maxParkedDeleteRanges). It answers the first cap the history parks past,
+// the structs' before the delete ranges', as ygo's check of an update weighs its structs before
+// its delete set, and nil for a history the room's load takes, a doc of nil included. It reads
+// the copy's pending queue (crdt.Doc.PendingStats) and decodes nothing.
+//
+// A history whose decode parks past a room's cap is one only an earlier build can have stored:
+// a room stores nothing it parks (leaveParkedOut). Every read that judges a history loadable
+// takes this judgement after its decode - a socket's admission (loadTree), a cold read
+// (foldDocument), a cold write's fork (coldFork) and a rebuild's source (rebuildSource) - so
+// each answers such a history as it answers one that does not decode, ErrDocumentUnloadable,
+// and the rebuild takes it, from its own text. Read under the service's cap alone, the history
+// read as the document while its room failed every load: each socket that opened it was answered
+// ygo's 500 with nothing logged, and the rebuild was refused ErrDocumentLoads
+// (dispatch://INFRA-179, round 10).
+func (s *Service) parkedPastRoomCaps(doc *crdt.Doc) *parkedPastCap {
+	if doc == nil {
+		return nil
+	}
+	stats := doc.PendingStats()
+	if most := s.srv.MaxPendingItems; stats.Items > most {
+		return &parkedPastCap{parked: "structs", most: most, parks: stats.Items}
+	}
+	if most := s.srv.MaxPendingDeleteRanges; stats.DeleteRanges > most {
+		return &parkedPastCap{parked: "delete ranges", most: most, parks: stats.DeleteRanges}
 	}
 	return nil
 }
@@ -574,9 +644,11 @@ func (s *Service) allowInject(ctx context.Context, info websocket.InjectInfo) er
 // load read (servicePersistenceAdapter.LoadDoc) into doc (bootstrapLoadedState), and a state that
 // does not decode fails the room and drops the load's record (failRoomLoad) with the decode's
 // error, which it returns to ygo, so the room is not published and its next access loads it
-// afresh. Then it records what the room starts from: its issue's state, the settlement it owes,
-// its ask blocks, its replica and its instance, and the update observer that classifies and
-// credits every update the room commits.
+// afresh. A state the decode refuses for parking past one of the room's caps is logged as well,
+// naming the cap and what the state parks, read off the copy the load decoded under the
+// service's own cap (parkedPastCapLoadLine, parkedPastRoomCaps). Then it records what the room
+// starts from: its issue's state, the settlement it owes, its ask blocks, its replica and its
+// instance, and the update observer that classifies and credits every update the room commits.
 func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc) (err error) {
 	// A refusal of this hook is, but for one, this service's own answer to the load - the
 	// document is being rebuilt, the room has already failed, the store did not answer - and not
@@ -650,7 +722,14 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		// The load's own failure, not this service's refusal of it: these are the bytes the
 		// store held for this document, and no room can serve them. The room fails, so the
 		// reader who comes next reloads it (failRoomLoad, which the defer above then finds
-		// nothing left to drop).
+		// nothing left to drop). A history that parks past the room's cap is one a person
+		// loses the document to until they rebuild it, so its line says which cap and by how
+		// much; every read answers it as one that cannot load, and the rebuild takes it.
+		if errors.Is(decodeErr, crdt.ErrPendingCap) {
+			if parked := s.parkedPastRoomCaps(loaded.doc); parked != nil {
+				slog.Error(parkedPastCapLoadLine, parked.attrs(room)...)
+			}
+		}
 		if record != nil {
 			s.failRoomLoad(room, record, decodeErr)
 		} else {

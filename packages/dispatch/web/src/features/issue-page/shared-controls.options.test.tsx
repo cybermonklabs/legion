@@ -3056,7 +3056,7 @@ test("the default shapes keep main's class strings", async () => {
       "ProofDocument rebuild refusal",
       await scope.findByText("The stored history cannot load.")
     );
-    const rebuildButton = scope.getByRole("button", { name: "Rebuild from the latest version" });
+    const rebuildButton = scope.getByRole("button", { name: "Rebuild this document's history" });
     classAt("ProofDocument Rebuild", rebuildButton);
     await user.click(rebuildButton);
     classAt(
@@ -5761,7 +5761,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
         try {
           const scope = within(view.container);
           const rebuild = await scope.findByRole("button", {
-            name: "Rebuild from the latest version",
+            name: "Rebuild this document's history",
           });
           rebuild.focus();
           await user.keyboard("{Enter}");
@@ -5801,7 +5801,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
           } else {
             // The rebuild stopped pending as it landed, before its read.
             expect(rebuild.hasAttribute("disabled")).toBe(false);
-            expect(rebuild.textContent).toBe("Rebuild from the latest version");
+            expect(rebuild.textContent).toBe("Rebuild this document's history");
           }
 
           answerReread({

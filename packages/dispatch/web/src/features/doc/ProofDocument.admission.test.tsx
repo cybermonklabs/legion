@@ -34,7 +34,7 @@ import { compiledSchemaCreatable } from "./schema";
 const SCHEMA_REFUSAL =
   "document is outside the Proof schema. A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document";
 const UNLOADABLE_REFUSAL =
-  "the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document";
+  "the document's stored history cannot load. Where Dispatch can still read it, a rebuild keeps its text; otherwise a rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document";
 
 async function pendingEditCount(artifactId: string): Promise<number> {
   const store = await openPendingEdits(artifactId, -1);
@@ -376,12 +376,12 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
       token: "sha256:live-document",
       version: 1,
     });
-    await user.click(screen.getByRole("button", { name: "Rebuild from the latest version" }));
+    await user.click(screen.getByRole("button", { name: "Rebuild this document's history" }));
     await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
     expect(rebuildArtifact.mock.calls[0]).toEqual([artifact.id, undefined, keyedAttempt]);
     await waitFor(() => expect(connections).toHaveLength(1));
     expect(
-      screen.queryByRole("button", { name: "Rebuild from the latest version" })
+      screen.queryByRole("button", { name: "Rebuild this document's history" })
     ).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -397,7 +397,7 @@ test("a rebuild the reader stopped says it may have been made, not a message's w
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
     new ApiError(409, {
       code: "DOCUMENT_UNLOADABLE",
-      error: "the document's stored history cannot load; rebuild it from its latest saved version",
+      error: UNLOADABLE_REFUSAL,
     })
   );
   const rebuildArtifact = spyOn(api, "rebuildArtifact").mockRejectedValue(
@@ -407,10 +407,10 @@ test("a rebuild the reader stopped says it may have been made, not a message's w
   const queryClient = createQueryClient();
   const { view } = renderProofDocument({ queryClient });
   try {
-    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    await screen.findByRole("button", { name: "Rebuild this document's history" });
     jest.useFakeTimers();
     await userOnFakeClock().click(
-      screen.getByRole("button", { name: "Rebuild from the latest version" })
+      screen.getByRole("button", { name: "Rebuild this document's history" })
     );
     await stopTheLateWrite(queryClient);
     expect(
@@ -659,7 +659,7 @@ test("ProofDocument offers no rebuild for a document service that is unavailable
     ).not.toBeNull();
     expect(connections).toHaveLength(0);
     expect(
-      screen.queryByRole("button", { name: "Rebuild from the latest version" })
+      screen.queryByRole("button", { name: "Rebuild this document's history" })
     ).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -689,7 +689,7 @@ test("ProofDocument shows content this build cannot show yet without a replace d
     expect(connections).toHaveLength(0);
     expect(screen.queryByLabelText("Upload artifact")).toBeNull();
     expect(screen.queryByText("Upload markdown to replace and repair this document.")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Rebuild from the latest version" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rebuild this document's history" })).toBeNull();
     expect(within(view.container).queryByText(/This document could not load/)).toBeNull();
     await waitFor(() => expect(getArtifactText.mock.calls.length).toBeGreaterThan(1));
 
@@ -743,7 +743,7 @@ test("a pane draws neither prompt for a blocked admission and reports it to its 
     await waitFor(() => expect(reported).toHaveLength(2));
     expect(reported[1]).toBe(UNLOADABLE_REFUSAL);
     expect(
-      screen.queryByRole("button", { name: "Rebuild from the latest version" })
+      screen.queryByRole("button", { name: "Rebuild this document's history" })
     ).not.toBeInTheDocument();
     expect(history.connections).toHaveLength(0);
   } finally {

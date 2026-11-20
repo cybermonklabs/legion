@@ -298,7 +298,9 @@ type decodedState struct {
 // socket admission's schema check makes one of these too, of its own (loadTree). It decodes
 // under maxPending, the service's own pending queue (Service.maxPendingItems), which is no lower
 // than the room's own (maxParkedStructs, bootstrapLoadedState), so a history this refuses is one
-// that room would refuse too. The scans are counted over the transactions that decode the
+// that room would refuse too; one this takes and that parks past the room's caps the room refuses
+// as well, which every reader that judges a history learns from the copy's pending queue
+// (parkedPastRoomCaps). The scans are counted over the transactions that decode the
 // copy, so they are the copy's. A state that does not decode leaves no copy: what a refused
 // decode left in its document is no state the store holds.
 func decodeStoredCopy(update []byte, maxPending int) (decodedState, error) {

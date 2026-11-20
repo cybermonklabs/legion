@@ -832,6 +832,7 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
   ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxParkedStructs` (4,096, `internal/dispatch/docs/service.go` `New`), far below the 1,048,576-struct decode cap, since each parked struct counts twice against that cap and is charged in both of the room's copies,
   and parked delete ranges, apart, by `MaxPendingDeleteRanges`, which it sets to `maxParkedDeleteRanges` (4,096).
   A browser's update that would park past either is answered not applied, its socket left open, since the edits it waits on may still arrive and the browser sends it again.
+  A stored history whose decode would park past either, which only rows an earlier build stored can be, loads in no room: every read answers it `409 DOCUMENT_UNLOADABLE`, and a rebuild takes it from its own text (Document errors).
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -4978,7 +4979,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/rebuild` (POST; cookie, trusted header, or bearer; needs the `person` scope)
 
   Rebuild a document whose durable history no write can change:
-  a history that cannot load (`409 DOCUMENT_UNLOADABLE` on its reads), rebuilt from the latest saved version or optional `{markdown}`;
+  a history that does not decode (`409 DOCUMENT_UNLOADABLE` on its reads), rebuilt from the latest saved version or optional `{markdown}`;
+  a history that decodes but parks more than a room's document may, 4,096 structs or 4,096 delete ranges (`409 DOCUMENT_UNLOADABLE` on its reads too, since no room loads it), rebuilt from its own text, unsettled edits included, or optional `{markdown}`, the fresh update holding nothing the history parked;
   and a history that loads but stands so near a cap that a write it must still take is refused (`docs.nearACap`), rebuilt from its own text, unsettled edits included, or optional `{markdown}`.
 
   - Near the decode cap (1,048,576 structs) means that a write's smallest replacement, or a write of the document's whole text in its own shape, would carry its struct total past the cap;
@@ -4988,8 +4990,8 @@ Each item below names a path with its method and identity, then its purpose.
     every other write the decode cap refuses is told to shorten the change.
 
   - The rebuilt document keeps its block ids, its open comments', suggestions' and asks' anchor marks, and its margin records:
-    from a history that loads, those of its own tree and marks, or of supplied markdown taken as an upload over that tree (unchanged blocks keep their ids, and anchors are marked again where their quotes stand);
-    from a history that cannot load, what the rows record of it (the block index's ids for blocks of the same type and text, each open anchor marked again nearest the block its row names, and each marked comment's and suggestion's margin record rebuilt from its rows).
+    from a history that decodes, those of its own tree and marks, or of supplied markdown taken as an upload over that tree (unchanged blocks keep their ids, and anchors are marked again where their quotes stand);
+    from a history that does not decode, what the rows record of it (the block index's ids for blocks of the same type and text, each open anchor marked again nearest the block its row names, and each marked comment's and suggestion's margin record rebuilt from its rows).
 
   It deletes the document's updates, checkpoints, and snapshots, then writes one fresh update that lists the replaced history's clients as retired, so a browser still holding that history is closed `4413` with reason `DOC_REBUILT` rather than handing it back.
   A document near a cap whose room this server holds is judged by that room alone, and the room is closed first, flushed into the stored history, so the document is rebuilt whatever a decode of that history would weigh;
@@ -5427,9 +5429,14 @@ Each item below names a status and code, then its meaning.
 
 - `409 DOCUMENT_UNLOADABLE`
 
-  A document's stored history does not decode, so nothing can read or open it.
-  A rebuild from its latest saved version (`POST /api/v1/artifacts/{id}/rebuild`) discards every edit made after that version, and a person decides whether to do it;
-  the dashboard offers that rebuild for this code, and for the `4413 DOC_NEEDS_REBUILD` close below.
+  A document's stored history cannot load, so nothing can read or open it:
+  it does not decode, or its decode parks more than a room's document may, 4,096 structs or 4,096 delete ranges, which only rows an earlier build stored can do.
+  Where Dispatch can still read the history, a rebuild (`POST /api/v1/artifacts/{id}/rebuild`) keeps its text and drops only what it parked;
+  otherwise a rebuild from its latest saved version discards every edit made after that version.
+  A person decides whether to rebuild;
+  the dashboard offers the rebuild for this code, and for the `4413 DOC_NEEDS_REBUILD` close below.
+  The document socket refuses such a document `503` at its admission, before any room loads.
+  For a history past a room's cap, the server logs each read that answers this code (`dispatch: a read answered a document unloadable: its stored history parks past a room's cap`) and each room load the history fails (`dispatch: a document's room did not load: its stored history parks past the room's cap`), each with the document (`room`), the cap (`cap`), its figure (`most`) and what the history parks (`parks`).
   A room or store that could not serve the document stays `503 DOC_SERVICE_UNAVAILABLE`, which is retried, not rebuilt.
 
 - `409 DOCUMENT_LIVE`
@@ -5448,7 +5455,7 @@ Each item below names a status and code, then its meaning.
 
   A rebuild found that the document's durable history loads and stands far from both the decode cap and the edit-scan total, so a write can still change it.
   Nothing was deleted.
-  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load or stands so near a cap that a write it must take is refused, and tells the caller to stop and ask a person what to do with the document;
+  The message names the latest saved version, says that Dispatch rebuilds only a document whose stored history cannot load, because it does not decode or parks more than a room may, or stands so near a cap that a write it must take is refused, and tells the caller to stop and ask a person what to do with the document;
   it offers no repair.
 
 - `4413 DOC_TOO_LARGE`

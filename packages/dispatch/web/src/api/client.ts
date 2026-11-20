@@ -391,8 +391,9 @@ export function isDecisionBlockInBody(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
 }
 
-// A document whose stored history cannot load at all: the state a rebuild from its latest saved
-// version repairs, and retrying the read cannot.
+// A document whose stored history cannot load at all: the state a rebuild repairs - from the
+// history's own text where Dispatch can still read it, else from its latest saved version - and
+// retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }

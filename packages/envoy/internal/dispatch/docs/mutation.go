@@ -1238,7 +1238,9 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 //
 // A durable history that does not decode is ErrDocumentUnloadable and fails the room, as ygo's
 // own load of it would, and so is one whose runs do not apply in order (unappliedHistory), which
-// the store answers with no bytes to decode.
+// the store answers with no bytes to decode, and one whose decode parks past a room's cap
+// (parkedPastRoomCaps), which the room's own decode refuses: such a socket is answered 503 before
+// ygo loads a room the history cannot make.
 //
 // The read's fold, when the history holds several updates, and the decode run under one grant of
 // the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
@@ -1268,6 +1270,10 @@ func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node,
 		// failed room answers as DOC_SERVICE_UNAVAILABLE; this read met the history itself.
 		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", history.refused))
 		return nil, nil, 0, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, history.refused)
+	}
+	if parked := s.parkedPastRoomCaps(history.decoded.doc); parked != nil {
+		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", parked))
+		return nil, nil, 0, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
 	}
 	if len(history.loaded.Update) == 0 {
 		return nil, &history.loaded, 0, nil

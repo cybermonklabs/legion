@@ -171,7 +171,12 @@ const maxParkedDeleteRanges = 4096
 // The room's own decode of its stored state runs under it too, as under the ranges' cap: ygo sets
 // both before the load hook decodes that state into the room (bootstrapLoadedState). A room stores
 // nothing it parks (leaveParkedOut), so only rows an earlier build stored of what parked can park
-// at a load, and a history whose decode would park more than this fails that load.
+// at a load, and a history whose decode would park more than this, or more delete ranges than
+// maxParkedDeleteRanges, fails that load, logged with the cap and what it parks
+// (parkedPastCapLoadLine). Every read that judges a history holds it against the same two caps
+// (parkedPastRoomCaps): it answers such a history as one that cannot load
+// (ErrDocumentUnloadable, logged as parkedPastCapReadLine), and the rebuild takes it from its own
+// text.
 const maxParkedStructs = 4096
 
 // roomChargeWeight is what the budget charges a loaded room in all (roomCharge.weigh): its two

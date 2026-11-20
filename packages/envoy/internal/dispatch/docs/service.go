@@ -974,7 +974,10 @@ func New(deps Deps) *Service {
 	// provider/websocket/server.go:1921-1924), so that hook's own decode of the stored state and
 	// every peer's apply are capped (bootstrapLoadedState,
 	// TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad); a stored state whose decode would park
-	// more fails the room's load. Bounding what one peer's update can do to a room is LEGION-487.
+	// more fails the room's load. Every read that judges whether a history loads holds what its
+	// decode parks against these two fields (parkedPastRoomCaps), so such a history reads as one
+	// that cannot load and the rebuild takes it. Bounding what one peer's update can do to a room
+	// is LEGION-487.
 	// ygo's check of each update the service broadcasts (Server.BroadcastUpdate) takes no pending
 	// queue: the room has already applied the update (reearth/ygo#268, in the pinned fork).
 	srv.MaxPendingItems = maxParkedStructs

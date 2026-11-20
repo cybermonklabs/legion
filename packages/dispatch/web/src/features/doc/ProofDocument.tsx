@@ -1288,8 +1288,8 @@ export function ProofDocument({
         <div className="space-y-3" role="alert">
           <p className={failedText}>{rebuildError.message}</p>
           <p>
-            Rebuilding discards the unreadable document history and restores its latest saved
-            version.
+            Rebuilding discards the unreadable document history. It keeps the document&apos;s text
+            where Dispatch can still read it, and otherwise restores its latest saved version.
           </p>
           <button
             // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
@@ -1302,7 +1302,7 @@ export function ProofDocument({
               if (rebuild.isPending) return;
               if (
                 window.confirm(
-                  "Rebuild this document from its latest version? This discards its unreadable history."
+                  "Rebuild this document's history? This discards the unreadable history, keeping the document's text where Dispatch can still read it and otherwise restoring its latest saved version."
                 )
               ) {
                 rebuild.mutate();
@@ -1310,7 +1310,7 @@ export function ProofDocument({
             }}
             type="button"
           >
-            {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
+            {rebuild.isPending ? "Rebuilding…" : "Rebuild this document's history"}
           </button>
           {rebuild.isError ? (
             <p className={failedText}>

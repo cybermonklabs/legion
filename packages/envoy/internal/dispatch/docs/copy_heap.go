@@ -329,7 +329,9 @@ type loadedHistory struct {
 	// refused is ygo's refusal of the history, the document's own failure rather than the
 	// service's, and nil for one that decoded: a history no room can load, which each reader
 	// answers its own way (loadTree's ErrDocumentUnloadable, rebuildSource's reason to rebuild,
-	// LoadDoc's failure of the load).
+	// LoadDoc's failure of the load). A history that decodes here and parks past a room's cap is
+	// no more loadable, and is not refused here: each reader judges decoded against the room's
+	// caps itself (parkedPastRoomCaps), and the rebuild builds from that decode.
 	refused error
 }
 
@@ -340,7 +342,8 @@ type loadedHistory struct {
 // admission (loadTree), a room's load (loadDecoded) and a rebuild's source (rebuildSource) - so
 // that no new way out of one of them can leave a grant held. It decodes under maxPending, the
 // pending queue the service that reads decodes its copies of stored state under
-// (Service.maxPendingItems).
+// (Service.maxPendingItems), which parks what the history parks, for the reader to hold against a
+// room's caps (parkedPastRoomCaps).
 // The grant is the history's own weight, which the read has in hand by the time the grant is
 // taken (copyWeight of the bytes it read). Nothing has decoded the history yet, so no struct
 // count can be read of it and the state term alone weighs it; a room of a mebibyte of prose

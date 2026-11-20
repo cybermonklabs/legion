@@ -2,11 +2,11 @@ package docs
 
 // What a rebuild keeps of the document it replaces, beside its text: the ids of its blocks, the
 // anchor marks of its open comments, suggestions and asks, and the margin records a browser shows
-// beside it (RebuildDocument). A history that loads holds all three, and a rebuild from its own
-// text keeps them by building from its tree and its marks map; a rebuild from markdown has the
-// text alone, so it takes back what the history or the rows still name: from a history that loads,
-// what an upload over that history keeps (keptReplacement); from one that does not, what the rows
-// recorded of it (restoredFromRows).
+// beside it (RebuildDocument). A history that decodes holds all three, whether a room loads it or
+// it parks past a room's cap, and a rebuild from its own text keeps them by building from its tree
+// and its marks map; a rebuild from markdown has the text alone, so it takes back what the history
+// or the rows still name: from a history that decodes, what an upload over that history keeps
+// (keptReplacement); from one that does not, what the rows recorded of it (restoredFromRows).
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func (s *Service) keptReplacement(ctx context.Context, q Queryer, artifactID str
 	return reanchored(target, heldReanchors(current, anchors), false)
 }
 
-// restoredFromRows is tree, the text of a history that does not load, read from markdown alone -
+// restoredFromRows is tree, the text of a history that does not decode, read from markdown alone -
 // its latest version's, or a caller's - with what the rows still record of the history: each
 // untyped block takes the id the block index recorded for a block of its type and text
 // (carryIndexedBlockIDs), each open anchor is marked again where its quote stands nearest the

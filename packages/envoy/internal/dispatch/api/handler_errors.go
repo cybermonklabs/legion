@@ -40,8 +40,9 @@ const (
 // decode - and that error says nothing of this request: the caller retries once the room is
 // evicted, and its retry meets the document itself.
 //
-// A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree holding an element this build does not know is DOC_NEWER_CONTENT: a
+// A stored history this request itself could not decode, or one whose decode parks more than a
+// room's document may, which no room loads, is DOCUMENT_UNLOADABLE, the state a rebuild repairs. A
+// tree holding an element this build does not know is DOC_NEWER_CONTENT: a
 // newer build wrote it while two builds serve one database, so the caller tries again later,
 // perhaps on that build, and no repair applies. A tree outside the schema is DOC_SCHEMA, which both
 // take only after the branches that name the caller's own input or a block the document does not

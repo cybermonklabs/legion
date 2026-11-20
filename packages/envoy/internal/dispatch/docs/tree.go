@@ -33,18 +33,22 @@ var (
 	// every route answers it alike (OutsideSchemaError), and its message names what that
 	// replacement discards.
 	ErrDocOutsideSchema = errors.New(ErrDocSchema.Error() + ". " + outsideSchemaRepair)
-	// ErrDocumentUnloadable is a document whose stored history does not decode, so nothing can read
-	// or open it. A rebuild from its latest saved version (RebuildDocument) restores it and discards
-	// every edit made after that version, so a person decides it.
-	ErrDocumentUnloadable = errors.New("the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document")
+	// ErrDocumentUnloadable is a document whose stored history no room can load, so nothing can
+	// read or open it: the history does not decode, or its decode parks more than a room's
+	// document may (parkedPastRoomCaps). A rebuild (RebuildDocument) restores it. One whose
+	// history still decodes under the service's own cap is rebuilt from that history's own text,
+	// which keeps every edit it holds; one that does not decode is rebuilt from its latest saved
+	// version, which discards every edit made after that version. So a person decides it.
+	ErrDocumentUnloadable = errors.New("the document's stored history cannot load. Where Dispatch can still read it, a rebuild keeps its text; otherwise a rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document")
 	// ErrDocumentLive is a rebuild refused because the document is resident in this server or in
 	// another Dispatch process.
 	ErrDocumentLive = errors.New("document is live")
-	// ErrDocumentLoads is a rebuild refused because the document's stored history loads and stands
+	// ErrDocumentLoads is a rebuild refused because the document's stored history loads in a room
+	// - it decodes, and parks no more than a room's document may (parkedPastRoomCaps) - and stands
 	// near no cap. A rebuild is only for a history that cannot load or that stands so near a cap
 	// that a write it must take is refused (nearACap), so its message offers no repair and tells
 	// the caller to stop and ask a person.
-	ErrDocumentLoads = errors.New("this document's stored history loads and stands near no cap, so Dispatch refused the rebuild. Dispatch rebuilds only a document whose stored history cannot load or stands so near a cap that a write it must take is refused. Stop. Ask a person what to do with this document")
+	ErrDocumentLoads = errors.New("this document's stored history loads in a room and stands near no cap, so Dispatch refused the rebuild. Dispatch rebuilds only a document whose stored history cannot load, because it does not decode or parks more than a room may, or stands so near a cap that a write it must take is refused. Stop. Ask a person what to do with this document")
 	// ErrDocNewerContent is the tree a document holds refused because it holds an element this
 	// build does not know (pmdoc.ErrUnknownElement): two builds serve one database during a
 	// release, and a newer build wrote it. It is not ErrDocSchema: no repair applies, and a

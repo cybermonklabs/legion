@@ -324,14 +324,16 @@ func nearACapUnencoded(doc *crdt.Doc, tracked int64) bool {
 }
 
 // RebuildDocument replaces a history no write can change with one fresh update, inside the
-// transaction the context's ledger joined: a history ygo cannot load, built afresh from its latest
-// saved markdown or supplied markdown; and a history that loads but stands so near the decode cap
-// or the scan total that a write it must still take is refused (nearACap), built from its own text
-// or supplied markdown. It is deliberately never a load fallback: a history that loads can contain
-// unsettled edits newer than its latest version, so one further from both caps than that is
-// refused unchanged, and one that is rebuilt keeps those edits, since what it is built from is its
-// own tree. Every path keeps the block ids, the open anchors and the margin records of what it is
-// built from, as far as that names them (rebuild_keeps.go).
+// transaction the context's ledger joined: a history ygo cannot decode, built afresh from its
+// latest saved markdown or supplied markdown; a history that decodes but parks more than a room's
+// document may (parkedPastRoomCaps), which no room loads, built from its own text or supplied
+// markdown, the fresh seed holding nothing it parked; and a history that loads but stands so near
+// the decode cap or the scan total that a write it must still take is refused (nearACap), built
+// from its own text or supplied markdown. It is deliberately never a load fallback: a history
+// that loads can contain unsettled edits newer than its latest version, so one further from both
+// caps than that is refused unchanged, and one that is rebuilt keeps those edits, since what it is
+// built from is its own tree. Every path keeps the block ids, the open anchors and the margin
+// records of what it is built from, as far as that names them (rebuild_keeps.go).
 //
 // A document near a cap cannot take the writes its writers make: near the decode cap, a write of
 // its whole text is refused while a small one may still land, and at the cap every write that adds
@@ -345,7 +347,7 @@ func nearACapUnencoded(doc *crdt.Doc, tracked int64) bool {
 //
 // Every refusal comes before the first write: a room resident in this server whose document is far
 // from both caps, a room resident in another envoy-dispatch process (a holds query,
-// roomQueries.ask), a history that loads and is not near a cap, a history another rebuild or an
+// roomQueries.ask), a history a room loads that is not near a cap, a history another rebuild or an
 // append moved past the one this rebuild loaded (RebuildTx), a closed issue (for supplied
 // markdown, which changes the document), a tree it would be built from - the history's own or the
 // latest version's - holding an element this build does not know (ErrDocNewerContent, as every
@@ -512,15 +514,17 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// What the rebuild keeps beside the text (rebuild_keeps.go): every path keeps the document's
 	// block ids, its open anchors and its margin records as far as what it is built from names
-	// them. A history that loads holds all three: its own tree is the document, with every edit
+	// them. A history that decodes holds all three, whether a room loads it or it parks past a
+	// room's cap (parkedPastRoomCaps): its own tree is the document, with every edit
 	// settlement has not yet written into a version, its anchor marks and its typed blocks' state,
 	// and its marks map holds the margin; supplied markdown over it is taken as an upload over it
 	// is, its unchanged blocks keeping their ids and its anchors marked again (keptReplacement). A
 	// tree outside the schema has no text to carry anything from, and the markdown repairs it, as
 	// an upload repairs one; a tree holding an element this build does not know is refused, with
 	// or without markdown, as every read and write of the document refuses it, since a rebuild
-	// from here would drop that element. A history that does not load holds nothing that reads,
-	// so the text it is rebuilt from takes back what the rows record of it (restoredFromRows).
+	// from here would drop that element. A history that does not decode holds nothing that
+	// reads, so the text it is rebuilt from takes back what the rows record of it
+	// (restoredFromRows).
 	//
 	// stored is the tree the document already holds where the rebuild is built from it - the
 	// history's own tree, or the latest version's as the version holds it - which the seed puts
@@ -699,15 +703,25 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 
 // rebuildSource is what a rebuild of artifactID starts from: the stored history decoded (nil for
 // one that does not decode), the version that history stood at, which RebuildTx replaces only
-// while the head is still it, why it must be rebuilt - how near a cap it stands (nearACap), or
-// the decode's refusal - and the clients it retires. A history whose runs do not apply in order
-// has no bytes to decode, and carries its version and clients itself (unappliedHistory). decided
-// is why the room this server held stood near a cap, which RebuildDocument judged and closed, or
-// "" where no room decided: a history that loads is judged here only then, and one that stands
-// near no cap is ErrDocumentLoads, which RebuildDocument answers with the latest saved version
-// named. The read's fold, its decode (loadDecodedHistory) and the check's re-scan of it run under
-// one slot of the pod's load concurrency, whose wait ends with ctx, held here rather than by the
-// read, since the check runs inside it, and given back once the history is the rebuild's.
+// while the head is still it, why it must be rebuilt - how near a cap it stands (nearACap), the
+// decode's refusal, or the room's cap the history parks past (parkedPastRoomCaps) - and the
+// clients it retires. A history whose runs do not apply in order has no bytes to decode, and
+// carries its version and clients itself (unappliedHistory). decided is why the room this server
+// held stood near a cap, which RebuildDocument judged and closed, or "" where no room decided: a
+// history that loads is judged here only then, and one that stands near no cap is
+// ErrDocumentLoads, which RebuildDocument answers with the latest saved version named.
+//
+// A history that parks past a room's cap is one no room loads and every read answers as one that
+// cannot load, so it is rebuilt, with that cap and what the history parks as its reason. It
+// decodes under the service's own cap all the same, and is the source, as a history near a cap
+// is: the rebuild keeps its text, unsettled edits included, and its block ids, anchors and margin
+// records, and the fresh seed built from its tree holds nothing it parked. Before it was judged
+// against the room's caps, this read took such a history as one that loads, and the rebuild was
+// refused ErrDocumentLoads while its room failed every load (dispatch://INFRA-179, round 10).
+//
+// The read's fold, its decode (loadDecodedHistory) and the check's re-scan of it run under one
+// slot of the pod's load concurrency, whose wait ends with ctx, held here rather than by the read,
+// since the check runs inside it, and given back once the history is the rebuild's.
 func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
 	ctx, _, done := withLoadSlot(ctx)
 	defer done()
@@ -730,6 +744,9 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 	}
 	if decided != "" {
 		return history, read.loaded.Version, decided, historyClients(history), nil
+	}
+	if parked := s.parkedPastRoomCaps(history); parked != nil {
+		return history, read.loaded.Version, parked.Error(), historyClients(history), nil
 	}
 	// The stored history has not been decoded here, so no struct count can be read of it and
 	// the state term alone weighs the grant nearACap takes (copyWeight).
@@ -769,7 +786,7 @@ func rebuiltSeed(tree, held *pmdoc.Node, retired map[crdt.ClientID]uint64, margi
 	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
 }
 
-// historyClients is what a rebuild of history, a history that loads, retires: every client its
+// historyClients is what a rebuild of history, a history that decodes, retires: every client its
 // state vector names, at the clock it reached, and every client the history itself listed as
 // retired by an earlier rebuild, so a browser holding any history the document has had is refused.
 func historyClients(history *crdt.Doc) map[crdt.ClientID]uint64 {

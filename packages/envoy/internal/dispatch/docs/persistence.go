@@ -1059,7 +1059,9 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // load hook (sjawhar/ygo v1.55.1-sami.8, loadRoom, provider/websocket/server.go:1921-1924) and
 // which that hook's own decode of the stored state takes, ygo being handed no bytes to decode with
 // the queue lifted (bootstrapLoadedState), so a state whose decode parks past it fails the room's
-// load. ygo's decoder parks each item whose parent it cannot place yet, and each later item of
+// load; every read that judges a history holds what a decode under this queue parks against the
+// rooms' caps (parkedPastRoomCaps), so such a state reads as one that cannot load, and the rebuild
+// takes it. ygo's decoder parks each item whose parent it cannot place yet, and each later item of
 // that client behind it, and refuses the update once its queue is full, 100,000
 // items at ygo's default. An update decoded alone parks every item that leans on the document it
 // was written against, and no update carries more items than this, so no decode parks items past

@@ -914,6 +914,13 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 		s.failRoom(write.artifactID, fmt.Errorf("decode live document: %w", err))
 		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
 	}
+	// So would a room's load of a history that parks past the room's cap, and loadTree answers
+	// it the same way (parkedPastRoomCaps): a write appended onto it would stand on a history no
+	// room can open.
+	if parked := s.parkedPastRoomCaps(fork); parked != nil {
+		s.failRoom(write.artifactID, fmt.Errorf("decode live document: %w", parked))
+		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+	}
 	write.forkStructs = structCeiling(fork)
 	write.coldNear = coldForkNear(write.forkStructs, fork)
 	write.clientID = fork.ClientID()

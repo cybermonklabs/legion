@@ -1103,7 +1103,7 @@ test("a document that cannot be read falls back to the card, with Open page at t
     expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
     // Never the document page's own repair or rebuild prompt: the column opened no document.
     expect(opened).toEqual([]);
-    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Rebuild this document's history/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1130,7 +1130,7 @@ test("a document the editor is refused admission to leaves the column on the car
     expect(
       screen.queryByText(/Upload markdown to replace and repair this document/)
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Rebuild this document's history/)).not.toBeInTheDocument();
     expect(screen.queryByText(/This document is outside the Proof schema/)).not.toBeInTheDocument();
     // The refusal is what closed the editor: no room was ever opened.
     expect(opened).toEqual([]);

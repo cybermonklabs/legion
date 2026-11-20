@@ -315,7 +315,8 @@ type coldFold struct {
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
 // the fold to the others. Only the read's own context decides that it ended. A fold that fails
 // fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
-// unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
+// unless the history does not decode or parks past a room's cap (parkedPastRoomCaps), which is
+// ErrDocumentUnloadable, the state a rebuild repairs.
 func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
 	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
 	if err != nil {
@@ -357,7 +358,10 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 // foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
 // renders it (foldLoaded), storing the rendering under the stamp the load read in its own
 // transaction, never the one read before the miss, so a write between the two cannot store old
-// content under a new stamp.
+// content under a new stamp. A history whose decode parks past a room's cap is no document a room
+// can load, so it is ErrDocumentUnloadable here as a history ygo refuses the bytes of is, and
+// logged (parkedPastCapReadLine): read under the service's cap alone, every read served it while
+// every socket that opened it met its room's failed load.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
@@ -376,6 +380,10 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)
 		}
 		return coldFold{}, err
+	}
+	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
+		slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
+		return coldFold{}, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
 	}
 	// A rendering refused leaves the fold its tree, from which each read computes its own answer
 	// and refusal, as it would without the cache.

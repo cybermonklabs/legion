@@ -60,6 +60,14 @@ body: |-
     4,096 structs, so structs one writer parks under her own client id no longer lock a small
     document out of everyone else's edits, and an update that would park past either is answered
     not applied with its socket left open, since it waits on edits the room has not received yet.
+    A stored history that would park past either, which only rows an earlier build stored can be,
+    loads in no room: every read of it answers `409 DOCUMENT_UNLOADABLE`, its socket is refused
+    `503`, the server logs the cap and what the history parks at each such read and room load, and
+    the rebuild takes it from its own text, dropping only what it parked. The message of
+    `409 DOCUMENT_UNLOADABLE` says that a rebuild keeps the document's text where Dispatch can still
+    read it, and goes back to the latest saved version only where it cannot, and so does the
+    dashboard's offer for that code, whose button reads `Rebuild this document's history` where it
+    read `Rebuild from the latest version`.
     What the queue holds of content, the map keys of its structs included, is weighed as it holds
     it now, so content a later edit or a server write landed is no longer charged after it.
     A browser's edit is now answered saved only once the commit that holds it is stored. A frame
@@ -182,8 +190,8 @@ body: |-
     replaced history's clients, so no browser hands the old document back. A room this server holds
     decides on its own whether the document is near, so the rebuild never closes it and then
     refuses. Every rebuild keeps the document's block ids, its open comments', suggestions' and
-    asks' anchors and its margin records, as far as a history that loads or, for one that does not,
-    the rows still record them. The dashboard offers that rebuild to the person whose edit was
+    asks' anchors and its margin records, as far as a history that decodes or, for one that does
+    not, the rows still record them. The dashboard offers that rebuild to the person whose edit was
     refused `DOC_NEEDS_REBUILD`, wherever the page's read of the document says it is near the decode
     cap (`near_decode_cap`, answered only where the route takes it), and after a write the decode
     cap refused on such a document, whose refusal now names the rebuild and its route. The three
