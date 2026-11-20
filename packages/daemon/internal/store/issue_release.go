@@ -256,9 +256,10 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 			return err
 		}
 		if !overtaken && row == mark.boundary {
+			first, last := mark.rowBounds()
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4))`,
-				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
+				issue, idleWaitingKinds, first, last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -389,6 +390,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return err
 		}
 		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
+		first, last := mark.rowBounds()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string
@@ -427,7 +429,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, mark.last).Scan(&overtaken); err != nil {
+				release.Issue, last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -442,7 +444,6 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !may {
 			return nil
 		}
-		first, last := mark.rowBounds()
 		var saving bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
