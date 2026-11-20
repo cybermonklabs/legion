@@ -510,7 +510,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -542,7 +542,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -620,11 +620,10 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, err)}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
-			refusalBody(response)
-			return false, true, fmt.Errorf("%s failed (401)", what)
+			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return false, false, transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
+			return false, false, m.transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
 		}
 		body, err := readBody(response, what, responseBound)
 		if err != nil {
