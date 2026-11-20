@@ -73,6 +73,13 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		started := time.Now()
 		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
 		answeredWithin10s(t, started)
+		// The stop is the caller's own deadline, not a bound of the guard's shorter than it: a
+		// bound the guard set itself would end the check, and the call, while ctx is still alive,
+		// and stoppedByItsBound would read its shorter seconds as a late start.
+		if ctx.Err() == nil {
+			t.Fatalf("the call answered %s after it began, inside the caller's %s: a bound shorter than the caller's stopped the check",
+				time.Since(started).Round(time.Millisecond), theBound)
+		}
 		stoppedByItsBound(t, setupFailure(t, err), theBound)
 		if len(asked) != 0 {
 			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)

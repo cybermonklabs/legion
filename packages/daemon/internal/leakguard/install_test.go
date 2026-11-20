@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,9 +203,10 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 
 // A member of the directory that is neither a directory nor a regular file, one whose path leaves
 // the directory, a tarball that holds no such directory, one whose directory holds no file, one
-// whose directory misses a file of the manifest and one whose manifest file is past the read limit
-// are each refused by name, with no body and no digest. A missing manifest file is refused rather
-// than hashed as a digest with a gap.
+// whose directory misses a file of the manifest, one whose manifest file is past the read limit and
+// one that holds a manifest file twice are each refused by name, with no body and no digest. A
+// missing manifest file is refused rather than hashed as a digest with a gap, and a second copy of
+// one rather than hashed as whichever copy came last.
 func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -263,6 +265,39 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 				return leakguardtest.GitHubTarball(t, files)
 			},
 			want: `holds the manifest file "` + leakguardtest.ReadmeName + `", which is over the 8 MiB read limit`,
+		},
+		{
+			name: "a manifest file held twice",
+			raw: func(t *testing.T) []byte {
+				// A raw tar, since GitHubTarball's map holds each name once: every file of the
+				// check under its directory, then a second README.md of other bytes.
+				var raw bytes.Buffer
+				zipped := gzip.NewWriter(&raw)
+				archive := tar.NewWriter(zipped)
+				add := func(name, body string) {
+					t.Helper()
+					if err := archive.WriteHeader(&tar.Header{Name: leakguardtest.TarballPrefix + "leak-check/" + name, Typeflag: tar.TypeReg,
+						Mode: 0o644, Size: int64(len(body))}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := archive.Write([]byte(body)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				files := theCheck(answersItsHelp)
+				for _, name := range slices.Sorted(maps.Keys(files)) {
+					add(name, files[name].Body)
+				}
+				add(leakguardtest.ReadmeName, "a second README of other bytes\n")
+				if err := archive.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := zipped.Close(); err != nil {
+					t.Fatal(err)
+				}
+				return raw.Bytes()
+			},
+			want: `holds the manifest file "` + leakguardtest.ReadmeName + `" more than once`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
