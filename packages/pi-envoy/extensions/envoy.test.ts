@@ -1149,8 +1149,9 @@ const acceptOnce =
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
 /** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key (`key`) as Dispatch's keyed layer does. The client reads no echo: it asks again under its
- *  key whatever the answer carries. */
+ *  key (`key`) as Dispatch's keyed layer does. The resend ignores the echo: the client asks again
+ *  under its key whatever the answer carries, and reads the echo only to settle a fresh 4xx
+ *  refusal that echoes exactly its key. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
