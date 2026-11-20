@@ -43,21 +43,23 @@ import (
 // The row the record holds is read first, by its own key in the caller's transaction, so the
 // test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
 // redelivers a webhook, and the daemon's own passes rebuild a push or a settlement whose webhook
-// was lost, so the same fact reaches this code twice as a matter of course.
+// was lost, so the same fact reaches this code twice as a matter of course. It is read as the list
+// reads read a row (record.Store.PullRequestsOf), with none of what the pull request remembers of
+// its settled heads: the test reads none of that, and the record written is pr, never this one.
 //
 // The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
 // and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
 // is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
 // when the daemon saw the issue move.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
-	recorded, err := e.store.PullRequest(ctx, tx, pr.Issue)
+	of, err := e.store.PullRequestsOf(ctx, tx, []string{pr.Issue})
 	if err != nil {
 		return err
 	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
 	}
-	if recorded != nil && !pullRequestNews(*recorded, pr) {
+	if recorded, found := of[pr.Issue]; found && !pullRequestNews(recorded, pr) {
 		return nil
 	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())

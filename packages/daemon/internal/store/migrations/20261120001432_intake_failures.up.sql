@@ -10,7 +10,10 @@
 -- delivery decoded. A row is an open failure while given_up_at is null: the intake writes it at the
 -- message's first failed delivery and deletes it when a later delivery succeeds. A row given up is
 -- a record the operator or the controller replays or discards; closed_* is its latest close, and
--- discarded_* its discard, which a later replay's close keeps.
+-- discarded_* its discard, which a later replay's close keeps. A row is as large as its message,
+-- which the NATS server bounds at its max_payload (1 MB unless its configuration raises it). The
+-- failure path, the state and the controller's notice read no payload and no headers
+-- (record's intakeGiveUpColumns); only a replay's claim of a record reads them.
 -- internal/record's intake_failures.go holds every statement on the table. Every row carries its
 -- project, because the daemons of several projects can share one database.
 --
@@ -40,11 +43,13 @@
 -- request remembering 16 such heads holds 27,600 bytes as stored (114,368 as jsonb prints them),
 -- and 55,200 (228,736) in its 32 rows while a head run is open. As a column, every read of a pull
 -- request would load it - the state's read of each issue and the list reads among them - and every
--- write would write it whole. Here only the three reads of one pull request load it (record's
--- loadSettledHeads), and a write writes only the rows whose place or fence changed (record's
--- putSettledHeads). An earlier daemon never reads or writes the table: a pull request row it
--- deletes takes that pull request's rows with it (on delete cascade), and the way back keeps the
--- rest.
+-- write would write it whole. Here the state and the list reads load none of it (the state reads
+-- every issue's pull request with record's PullRequestsOf); only the three reads of one pull
+-- request load it, up to 32 rows (record's loadSettledHeads), which is the cost that stays on the
+-- reads a fact's handling makes; and a write sends it in one statement that writes only the rows
+-- whose place or fence changed (record's putSettledHeads). An earlier daemon never reads or writes
+-- the table: a pull request row it deletes takes that pull request's rows with it (on delete
+-- cascade), and the way back keeps the rest.
 --
 -- dispatch_issues.status_seq is the sequence of the Dispatch event at which the mirror last saw the
 -- issue's status change (record.Postgres.PutDispatchIssue): set when a row is written first, and

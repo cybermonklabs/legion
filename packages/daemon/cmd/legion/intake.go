@@ -112,13 +112,14 @@ func runIntakeReplay(ctx context.Context, c *intakeCall) int {
 // replayLines are the lines an operator reads for a replay: one per record it took, `<id>
 // <consumer> seq <n>: <outcome>`, with the error after a failed one, then how many open give-ups
 // of the selection are left: a record that failed, and the records past what one call takes, which
-// the same command run again reaches.
+// the same command run again reaches. The error can carry text a publisher wrote (a decode error
+// names what it read), so it is shown as the terminal shows another party's text (terminalText).
 func replayLines(replay api.IntakeReplayResponse) []string {
 	lines := make([]string, 0, len(replay.Replayed)+1)
 	for _, record := range replay.Replayed {
 		line := fmt.Sprintf("%d %s seq %d: %s", record.ID, record.Consumer, record.StreamSeq, record.Outcome)
 		if record.Error != "" {
-			line += ": " + record.Error
+			line += ": " + terminalText(record.Error)
 		}
 		lines = append(lines, line)
 	}

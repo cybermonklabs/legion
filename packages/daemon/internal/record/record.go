@@ -1918,7 +1918,9 @@ type Store interface {
 	// whatever the number of issues, for a caller that must name the pull request of every
 	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
 	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
-	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
+	// a tree that has stopped with its work merged is exactly the tree such a caller reports. It
+	// loads no settled heads, so the state's build and every reader of one pull request that
+	// never writes it read here, and PutPullRequest refuses its records.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, and refuses a
 	// record a list read made (PullRequest.SettledHeads says why).

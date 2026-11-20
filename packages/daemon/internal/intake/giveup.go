@@ -376,7 +376,8 @@ func (r consumerRun) recordFailure(ctx context.Context, message jetstream.Msg, m
 	defer func() { _ = tx.Rollback(ctx) }()
 	records := record.NewStore()
 	lastError := outcome.err.Error()
-	failure, err := records.NoteFailure(ctx, tx, r.intakeMessage(message, metadata, decoded.Source, decoded.EventID), int(delivered), lastError, now)
+	failing := r.intakeMessage(message, metadata, decoded.Source, decoded.EventID)
+	failure, err := records.NoteFailure(ctx, tx, failing, int(delivered), lastError, now)
 	if err != nil {
 		return false, err
 	}
@@ -397,18 +398,16 @@ func (r consumerRun) recordFailure(ctx context.Context, message jetstream.Msg, m
 			return false, err
 		}
 		_ = tx.Rollback(ctx)
-		return false, errors.Join(err, r.noteFailureAlone(ctx, message, metadata, decoded, lastError, now))
+		return false, errors.Join(err, r.noteFailureAlone(ctx, failing, int(delivered), lastError, now))
 	}
 	return true, nil
 }
 
-// noteFailureAlone records, in a transaction of its own, that the delivery of message failed with
-// lastError at now (NoteFailure).
-func (r consumerRun) noteFailureAlone(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, decoded decodedMessage,
-	lastError string, now time.Time) error {
+// noteFailureAlone records, in a transaction of its own, that delivery delivered of failing, the
+// message as recordFailure built it, failed with lastError at now (NoteFailure).
+func (r consumerRun) noteFailureAlone(ctx context.Context, failing record.IntakeMessage, delivered int, lastError string, now time.Time) error {
 	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		_, err := record.NewStore().NoteFailure(ctx, tx, r.intakeMessage(message, metadata, decoded.Source, decoded.EventID),
-			int(metadata.NumDelivered), lastError, now)
+		_, err := record.NewStore().NoteFailure(ctx, tx, failing, delivered, lastError, now)
 		return err
 	})
 }

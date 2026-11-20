@@ -63,7 +63,6 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		if own == nil {
 			continue
 		}
-		own.BaseMoved = fact.After
 		if err := e.store.SetPullRequestBaseMoved(ctx, tx, own.Issue, fact.After); err != nil {
 			return intake.Result{}, err
 		}

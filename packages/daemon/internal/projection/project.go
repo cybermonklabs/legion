@@ -50,11 +50,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		return api.State{}, err
 	}
 	knownIssues := make(map[string]struct{}, len(issues))
+	keys := make([]string, 0, len(issues))
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
@@ -97,6 +99,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	checks := make(map[string]record.ProductionCheck, len(openChecks))
 	for _, check := range openChecks {
 		checks[check.Issue] = check
+	}
+	// Every issue's pull request, by issue key, in one statement for the whole state rather than a
+	// read an issue (record.Store.PullRequestsOf). It loads none of what each pull request
+	// remembers of its settled heads: the state shows none of it, a read of one pull request would
+	// load up to 32 rows of it for every issue, and the state writes no record back.
+	pullRequests, err := s.PullRequestsOf(ctx, tx, keys)
+	if err != nil {
+		return api.State{}, err
 	}
 
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
@@ -256,9 +266,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		pr, err := s.PullRequest(ctx, tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
+		var pr *record.PullRequest
+		if recorded, found := pullRequests[issue.Key]; found {
+			pr = &recorded
 		}
 		if pr != nil {
 			reviewDecision := ""

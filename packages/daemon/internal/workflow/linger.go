@@ -377,9 +377,11 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
 // left to merge it — green and approved, with nothing in the workflow that would ever merge it.
 // Whether that pull request is open is the one fact here that record.Issue does not carry, so it
-// is read from the pull_requests row (record.Store.PullRequest), and only for a member of a
-// non-done root's tree that this clause could take — one at phase.Merging that is in the
-// workflow — so a tree of many members costs a handful of reads at most.
+// is read from the pull_requests row, as the list reads read it (record.Store.PullRequestsOf):
+// its state is all this reads, so the read loads none of what the pull request remembers of its
+// settled heads. It is read only for a member of a non-done root's tree that this clause could
+// take — one at phase.Merging that is in the workflow — so a tree of many members costs a
+// handful of reads at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for every role of every member and a workspace removal for
@@ -410,11 +412,11 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			if member.Phase != phase.Merging {
 				continue
 			}
-			pr, err := e.store.PullRequest(ctx, tx, member.Key)
+			of, err := e.store.PullRequestsOf(ctx, tx, []string{member.Key})
 			if err != nil {
 				return nil, err
 			}
-			if pr == nil || pr.State != record.PullRequestOpen {
+			if pr, found := of[member.Key]; !found || pr.State != record.PullRequestOpen {
 				continue
 			}
 		}

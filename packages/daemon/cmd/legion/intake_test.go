@@ -128,6 +128,18 @@ func TestIntakeReplayPrintsEachOutcomeAndExitsOneOnAFailure(t *testing.T) {
 			t.Fatalf("legion intake replay = %d, stdout %q, stderr %q; want 0 and %q", code, out, errb, want)
 		}
 	})
+	// A replay's error can carry a publisher's text, and the terminal shows its control
+	// characters as escapes, as it shows a give-up's in `legion state`.
+	t.Run("an error with control characters", func(t *testing.T) {
+		d := newIntakeDaemon(t, &standInGiveUps{replay: intake.ReplayAnswer{Replayed: []intake.ReplayedGiveUp{
+			{ID: 44, Consumer: consumer, StreamSeq: 40, Outcome: intake.ReplayFailed, Error: "decode \x1b[2J envelope\x07\nsecond line"},
+		}}})
+		code, out, errb := d.intake("replay", "--give-up", "44")
+		want := "44 legion-go-LEGION-dispatch seq 40: failed: decode \\x1b[2J envelope\\a\\nsecond line\nremaining 0\n"
+		if code != 1 || out != want || errb != "" {
+			t.Fatalf("legion intake replay = %d, stdout %q, stderr %q; want 1 and %q", code, out, errb, want)
+		}
+	})
 	t.Run("the daemon refuses", func(t *testing.T) {
 		d := newIntakeDaemon(t, &standInGiveUps{err: record.ErrIntakeGiveUpNotFound})
 		code, out, errb := d.intake("replay", "--give-up", "41")

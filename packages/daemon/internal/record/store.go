@@ -834,34 +834,42 @@ func collectPullRequests(rows pgx.Rows, describe, listedBy string) ([]PullReques
 
 // PullRequestsOf is the pull request of each of issues, by issue key, in one query whatever the
 // number of issues: a caller that must name the pull request of every issue of a tree makes no
-// read per issue (admit's tellStalledTrees). An issue the record holds no pull request for has
-// no entry, and no issues at all reads nothing — the query is not made.
+// read per issue (admit's tellStalledTrees), and the state's build reads every issue's in one
+// (projection's Project). An issue the record holds no pull request for has no entry, and no
+// issues at all reads nothing — the query is not made.
 //
 // It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
 // several of this table, answers the open ones alone and could not serve this caller: a tree
 // that has stopped with its work already merged is exactly the tree that caller reports, and a
 // merged pull request is the fact its controller most needs to read. It reads none of what each
-// pull request remembers of its settled heads (PullRequest.SettledHeads).
+// pull request remembers of its settled heads (PullRequest.SettledHeads), so a reader of one
+// pull request that never writes it reads it here too, as a list of one, and loads no memory it
+// would not use. An error names how many issues the read was of and the first of them, not every
+// key: the state's read asks for each issue of the project.
 func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
 	if len(issues) == 0 {
 		return nil, nil
 	}
+	describe := "read the pull request of " + issues[0]
+	if len(issues) > 1 {
+		describe = fmt.Sprintf("read the pull requests of %d issues from %s", len(issues), issues[0])
+	}
 	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1)", issues)
 	if err != nil {
-		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	defer rows.Close()
 	requests := make(map[string]PullRequest, len(issues))
 	for rows.Next() {
 		pr, err := scanPullRequest(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 		pr.listedBy = "PullRequestsOf"
 		requests[pr.Issue] = *pr
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return requests, nil
 }

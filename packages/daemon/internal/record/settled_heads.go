@@ -158,7 +158,11 @@ type settledRow struct {
 // the rows of a run when pr has none open among them, and writes each entry at its place in its
 // list. An entry whose place and fence are as stored writes no new version of its row.
 func putSettledHeads(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
-	held := make([]settledRow, 0, len(pr.SettledHeads))
+	size := len(pr.SettledHeads)
+	if pr.Run != nil {
+		size += len(pr.Run.Settled)
+	}
+	held := make([]settledRow, 0, size)
 	for i, entry := range pr.SettledHeads {
 		held = append(held, settledRow{Kind: settledOfPullRequest, Position: i, Head: entry.Head, Fence: fenceOfEntry(entry)})
 	}
