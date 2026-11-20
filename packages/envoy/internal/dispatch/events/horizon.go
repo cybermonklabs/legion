@@ -220,6 +220,11 @@ type Horizon struct {
 	// production sets it; the package's own test of concurrent callers waits on it instead of
 	// sleeping for a share of them to arrive.
 	afterObservationParked func()
+	// afterObservationBoundary runs, outside the lock, each time Safe or Await has read the count
+	// of observations started at its call (observationBoundary), before it looks for one. Nothing
+	// in production sets it; the package's tests hold a caller in it to have it look only after
+	// another caller has run an observation to its end.
+	afterObservationBoundary func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -229,9 +234,10 @@ type Horizon struct {
 	// its order, and Safe and Await each wait for one numbered above the count when called.
 	started  uint64
 	inFlight *horizonFlight
-	// ended is the newest observation to have ended, nil before the first: observations run one
-	// at a time, so it is also the highest numbered. A caller that waited one out takes it when
-	// it is numbered above that one (observe).
+	// ended is the newest observation to have ended that its runner's cancellation did not
+	// abandon, nil before the first: observations run one at a time, so it is the highest
+	// numbered of those. A caller takes it when it is numbered above the count the caller waits
+	// past (observe).
 	ended *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
@@ -293,8 +299,8 @@ type horizonFlight struct {
 	done       chan struct{}
 	err        error
 	// abandoned is an observation that failed because its runner's context ended; a waiter
-	// whose own context is still live takes the next rather than return a cancellation not its
-	// own.
+	// whose own context is still live takes a later one rather than return a cancellation not its
+	// own, and h.ended never holds it.
 	abandoned bool
 }
 
@@ -384,10 +390,8 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // before the call, so each such id is at or below H, or stands above it and keeps a gap open
 // until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
-	if err := h.observe(ctx, after); err != nil {
+	after := h.observationBoundary()
+	if _, err := h.observe(ctx, after); err != nil {
 		return 0, err
 	}
 	h.mu.Lock()
@@ -410,19 +414,21 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 //
 // The observation has to start after the call: one already in flight took its snapshot before
 // the call and can miss an id committed just before it, so Await waits that one out rather than
-// share it. An observation error is retried after the backoff, like a held observation, until
-// observations have failed for horizonAwaitFailFor with no success between, measured from the
-// first failure since the last success, and is then returned; if ctx ends first, the last one is
-// reported with ctx's error. A failure the caller's own ctx caused counts for neither.
+// share it. Each observation it takes after its first is numbered above the one it took before,
+// and may be one another caller ran meanwhile. An observation error is retried after the backoff,
+// like a held observation, until observations have failed for horizonAwaitFailFor with no
+// success between, measured from the first failure since the last success, and is then returned;
+// if ctx ends first, the last one is reported with ctx's error. A failure the caller's own ctx
+// caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
+	after := h.observationBoundary()
+	taken := after
 	wait := horizonBackoffMin
 	var failed error
 	var failingSince time.Time
 	for {
-		err := h.observe(ctx, after)
+		number, err := h.observe(ctx, taken)
+		taken = max(taken, number)
 		again := false
 		if err == nil {
 			failed = nil
@@ -454,6 +460,18 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 			return 0, fmt.Errorf("await event horizon: %w", ctx.Err())
 		}
 	}
+}
+
+// observationBoundary answers the count of observations started so far, read at a Safe or Await
+// call: the call waits for an observation numbered above it.
+func (h *Horizon) observationBoundary() uint64 {
+	h.mu.Lock()
+	after := h.started
+	h.mu.Unlock()
+	if h.afterObservationBoundary != nil {
+		h.afterObservationBoundary()
+	}
+	return after
 }
 
 // Gap reports what a gap above H waits for, as the observations recorded so far leave it: none
@@ -647,31 +665,24 @@ func (h *Horizon) Reset() {
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed: it
-// joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes a later one; so
-// does one abandoned by its runner's context while the caller's is live. Back at h.mu, the caller
-// first takes the newest ended observation (h.ended) when it is numbered above the one it waited
-// out and is one the caller would take, and only otherwise joins the one in flight or runs one:
-// observations run one at a time, so one numbered above the one waited out started after that one
-// had ended, so after the call. Callers that wait out the same observation therefore run at most
-// one more between them however the scheduler wakes them, unless an observation that ends between
-// their wakes is abandoned; each that found the next one already ended would otherwise run one of
-// its own.
-func (h *Horizon) observe(ctx context.Context, after uint64) error {
-	takes := func(flight *horizonFlight) bool {
-		return flight.number > after && !(flight.abandoned && ctx.Err() == nil)
-	}
-	// waitedOut is the number of the last observation this call waited out, 0 before it has
-	// waited one out. That one has ended, so h.ended is set once it is above 0. It stands above
-	// after when the one waited out was abandoned, so h.ended must stand above it, and not only
-	// above after.
-	var waitedOut uint64
+// observe returns once an observation numbered above after has ended, recorded or failed, and
+// answers that observation's number. It takes the newest that has ended (h.ended) when that one is
+// numbered above after; otherwise it joins the one in flight, or runs one itself when none is.
+// Observations run one at a time, so one numbered above after started after the count after was
+// read. One in flight numbered at or below after started before the caller needed it, so the
+// caller waits it out and looks again; so does one abandoned by its runner's context while the
+// caller's is live, which h.ended never holds.
+//
+// Callers that read the count while one observation ran, or that wait out the same one, therefore
+// run at most one more between them, unless that one is abandoned, however the scheduler wakes
+// them: the first back at h.mu runs it, and each of the others joins it in flight or, once it has
+// ended, takes it. Each that found it already ended would otherwise run one of its own.
+func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, error) {
 	for {
 		h.mu.Lock()
-		if ended := h.ended; waitedOut > 0 && ended.number > waitedOut && takes(ended) {
+		if ended := h.ended; ended != nil && ended.number > after {
 			h.mu.Unlock()
-			return ended.err
+			return ended.number, ended.err
 		}
 		flight := h.inFlight
 		run := flight == nil
@@ -690,14 +701,13 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 			select {
 			case <-flight.done:
 			case <-ctx.Done():
-				return ctx.Err()
+				return 0, ctx.Err()
 			}
 		}
-		if !takes(flight) {
-			waitedOut = flight.number
+		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
 			continue
 		}
-		return flight.err
+		return flight.number, flight.err
 	}
 }
 
@@ -715,9 +725,12 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	observation, xmin, err := h.take(ctx)
 	h.mu.Lock()
-	h.inFlight, h.ended = nil, flight
+	h.inFlight = nil
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
+	if !flight.abandoned {
+		h.ended = flight
+	}
 	var stalled *horizonObservation
 	var safe, toPersist int64
 	var toPersistAt time.Time
