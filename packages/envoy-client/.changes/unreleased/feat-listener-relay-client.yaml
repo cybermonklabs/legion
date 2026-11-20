@@ -19,7 +19,8 @@ body: |-
   to a minute, the first two codes of the credential with a fresh trade; a refused trade is told
   to the session once per outage (`inboundUnavailable`). `test/relay-socket-stand-in`
   (`@legion/envoy-client/test/relay-socket-stand-in`) serves the socket and a broker's token
-  exchange on one origin, for a plugin's tests.
+  exchange on one origin, and a test's own listener routes beside them (`routes`), for a plugin's
+  tests and an outside driver's.
 time: 2026-11-20T09:58:42Z
 custom:
     Issue: feat-listener-relay-client

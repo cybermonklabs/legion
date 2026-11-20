@@ -355,6 +355,28 @@ describe("a relay socket", () => {
     expect(opens(server).map((upgrade) => upgrade.session)).toEqual(["ses_a", "ses_b"]);
     expect(server.minted.map((one) => one.session)).toEqual(["ses_a", "ses_b"]);
   });
+
+  test("the stand-in serves a test's own listener routes on the socket's origin", async () => {
+    // A driver registers and sends at the same listener whose socket it opens, so the routes a
+    // test serves answer on the one origin; a route none of them answers is still 404, and the
+    // trade and the relay path are never handed to them.
+    const asked: string[] = [];
+    const server = startRelaySocketStandIn({
+      routes: (request) => {
+        const { pathname } = new URL(request.url);
+        asked.push(`${request.method} ${pathname}`);
+        return pathname === "/v1/subscribe" ? Response.json({ registered: true }) : undefined;
+      },
+    });
+    started.push(() => server.stop());
+    const registered = await fetch(`${server.url}/v1/subscribe`, { method: "POST" });
+    expect(registered.status).toBe(200);
+    expect(await registered.json()).toEqual({ registered: true });
+    expect((await fetch(`${server.url}/v1/messages/send`, { method: "POST" })).status).toBe(404);
+    await opened(server, "ses_a");
+    expect(asked).toEqual(["POST /v1/subscribe", "POST /v1/messages/send"]);
+    expect(opens(server).map((upgrade) => upgrade.session)).toEqual(["ses_a"]);
+  });
 });
 
 /** The settings `env` and an envoy.json holding `file` resolve, as a session of `ses_a` reads
