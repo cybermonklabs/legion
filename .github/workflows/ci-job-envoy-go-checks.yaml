@@ -58,6 +58,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The deployer suite's order cases run the worker image's jj against a real repository.
+      - uses: ./.github/actions/install-jj
       # The composite action other repositories call, run over this repository's own
       # .dispatch/architecture (its default path), so every part of it is exercised here before
       # another repository relies on it: its setup-go, its removal of setup-go's `go` problem

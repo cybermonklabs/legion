@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // testPGScript is the worker image's script, which every other test of this file's package runs a
@@ -83,13 +85,9 @@ func newScriptRig(t *testing.T) *scriptRig {
 		tools[name] = path
 	}
 	// The server's admin socket is <dir>/sockets/.s.PGSQL.<port>, and a Unix socket's path holds at
-	// most 107 bytes (sun_path), which a test's own TempDir under a long TMPDIR runs past, so the rig
-	// lives in a directory of its own under /tmp.
-	root, err := os.MkdirTemp("/tmp", "legion-testpg-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	// most 107 bytes (sun_path). testtmp.Dir keeps that path under the limit, falling back from a
+	// long TMPDIR to /tmp only where the measured path needs it.
+	root := testtmp.Dir(t, filepath.Join("testpg", "sockets", ".s.PGSQL.65535"))
 	r := &scriptRig{t: t, dir: filepath.Join(root, "testpg"), calls: filepath.Join(root, "calls"),
 		partial: filepath.Join(root, "partial-initdb"), bin: filepath.Join(root, "bin"),
 		pgbin: filepath.Join(root, "pgbin"), realBin: realBin}
