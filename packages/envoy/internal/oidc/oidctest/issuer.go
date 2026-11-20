@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +95,11 @@ type Issuer struct {
 	keysDelay         time.Duration
 	omitCodeFlow      bool
 	omitRevocation    bool
-	codeFlow          *codeFlow
+	// tokenAuthMethods is the discovery document's token_endpoint_auth_methods_supported, no such
+	// member when empty (AdvertiseTokenAuthMethods). It is replaced whole and never changed in
+	// place, since every issuer starts from the one googleTokenAuthMethods.
+	tokenAuthMethods []string
+	codeFlow         *codeFlow
 }
 
 // codeFlowClient is one confidential client the code flow serves: its secret,
@@ -122,7 +127,11 @@ type codeFlow struct {
 	deviceCodes     map[string]*deviceGrant
 	refreshes       int
 	token           tokenFailure
-	revocation      revocation
+	// tokenRequests is each token request's client authentication (TokenRequests).
+	tokenRequests []string
+	// tokenDelay is the token endpoint's wait before it answers (DelayToken).
+	tokenDelay time.Duration
+	revocation revocation
 	// omitRefresh makes a code exchange answer with no refresh token
 	// (OmitRefreshTokens).
 	omitRefresh bool
@@ -205,6 +214,11 @@ const (
 	userCodeAlphabet = "BCDFGHJKLMNPQRSTVWXZ"
 )
 
+// googleTokenAuthMethods is the token_endpoint_auth_methods_supported of Google's discovery
+// document, in its order, as https://accounts.google.com/.well-known/openid-configuration read
+// on 2026-11-20: the issuer lists it until AdvertiseTokenAuthMethods says otherwise.
+var googleTokenAuthMethods = []string{"client_secret_post", "client_secret_basic"}
+
 // New starts an issuer on a random loopback port, serving no keys yet. The
 // server is closed at cleanup.
 func New(t TB) *Issuer {
@@ -220,6 +234,7 @@ func New(t TB) *Issuer {
 	issuer.server = httptest.NewServer(mux)
 	t.Cleanup(issuer.server.Close)
 	issuer.issuerClaim = issuer.server.URL
+	issuer.tokenAuthMethods = googleTokenAuthMethods
 	return issuer
 }
 
@@ -378,6 +393,18 @@ func (i *Issuer) OmitRevocationEndpoint() {
 	i.omitRevocation = true
 }
 
+// AdvertiseTokenAuthMethods makes the discovery document list methods as its
+// token_endpoint_auth_methods_supported (RFC 8414 section 2), how the token endpoint takes a
+// client's credentials, in place of Google's list, which it names until then. With no methods
+// the document names no such member, the shape of an issuer that does not say. Whatever it
+// lists, the token endpoint takes the client's secret by HTTP Basic or in the form, as Google's
+// and Cognito's do, and TokenRequests records which one each request used.
+func (i *Issuer) AdvertiseTokenAuthMethods(methods ...string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.tokenAuthMethods = slices.Clone(methods)
+}
+
 // FailToken makes the token endpoint answer every grant, a code exchange or a
 // refresh, with status instead of granting it, with code as the body's OAuth
 // error when code is not empty: 400 invalid_grant is an issuer refusing the
@@ -396,6 +423,26 @@ func (i *Issuer) DropToken() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.codeFlow.token = tokenFailure{drop: true}
+}
+
+// DelayToken makes the token endpoint wait d before it answers each grant, or until the client
+// hangs up: an issuer slow to answer. The answer, a grant or a refusal, is the one the issuer's
+// state gives once the wait is over.
+func (i *Issuer) DelayToken(d time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.tokenDelay = d
+}
+
+// TokenRequests is how every request the token endpoint has received authenticated its client,
+// in order, whatever it answered, each named as token_endpoint_auth_methods_supported names it:
+// client_secret_basic for HTTP Basic, client_secret_post for the client's secret in the form,
+// and none for neither. A client that asks once by HTTP Basic and again in the form is two
+// entries.
+func (i *Issuer) TokenRequests() []string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return slices.Clone(i.codeFlow.tokenRequests)
 }
 
 // FailRevocation makes the revocation endpoint answer status, with code as the
@@ -615,13 +662,10 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	i.discoveryRequests++
 	status, issuer, omitCodeFlow, omitRevocation, delay := i.discoveryStatus, i.issuerClaim, i.omitCodeFlow, i.omitRevocation, i.discoveryDelay
+	tokenAuthMethods := i.tokenAuthMethods
 	i.mu.Unlock()
-	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-r.Context().Done():
-			return
-		}
+	if !wait(r, delay) {
+		return
 	}
 	if status != 0 {
 		http.Error(w, "discovery unavailable", status)
@@ -637,6 +681,9 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		document["token_endpoint"] = i.server.URL + "/token"
 		document["device_authorization_endpoint"] = i.server.URL + "/device_authorization"
 		document["grant_types_supported"] = []string{"authorization_code", "refresh_token", deviceCodeGrantType}
+		if len(tokenAuthMethods) > 0 {
+			document["token_endpoint_auth_methods_supported"] = tokenAuthMethods
+		}
 	}
 	if !omitRevocation {
 		document["revocation_endpoint"] = i.server.URL + "/revoke"
@@ -756,12 +803,20 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	flow := i.codeFlow
 	if flow == nil {
+		i.mu.Unlock()
 		http.Error(w, "code flow not enabled", http.StatusNotFound)
 		return
 	}
+	flow.tokenRequests = append(flow.tokenRequests, clientAuthentication(r))
+	delay := flow.tokenDelay
+	i.mu.Unlock()
+	if !wait(r, delay) {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if failure := flow.token; failure.status != 0 || failure.drop {
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
@@ -780,7 +835,11 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	clientID, clientSecret, basic := r.BasicAuth()
+	clientID, clientSecret, basic, err := basicCredentials(r)
+	if err != nil {
+		tokenError(w, http.StatusUnauthorized, "invalid_client")
+		return
+	}
 	if !basic {
 		clientID, clientSecret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
@@ -878,6 +937,51 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// clientAuthentication is how a token request authenticates its client, named as
+// token_endpoint_auth_methods_supported names it: client_secret_basic for HTTP Basic,
+// client_secret_post for the client's secret in the form, and none for neither.
+func clientAuthentication(r *http.Request) string {
+	if _, _, basic := r.BasicAuth(); basic {
+		return "client_secret_basic"
+	}
+	if r.PostForm.Has("client_secret") {
+		return "client_secret_post"
+	}
+	return "none"
+}
+
+// basicCredentials is the client a request names by HTTP Basic, each part form-decoded, since RFC
+// 6749 section 2.3.1 has a client form-encode its id and secret before it joins them (x/oauth2's
+// AuthStyleInHeader does): basic is false for a request with no Basic credentials, and err is set
+// for one whose id or secret does not decode.
+func basicCredentials(r *http.Request) (clientID, clientSecret string, basic bool, err error) {
+	rawID, rawSecret, basic := r.BasicAuth()
+	if !basic {
+		return "", "", false, nil
+	}
+	if clientID, err = url.QueryUnescape(rawID); err != nil {
+		return "", "", true, err
+	}
+	if clientSecret, err = url.QueryUnescape(rawSecret); err != nil {
+		return "", "", true, err
+	}
+	return clientID, clientSecret, true, nil
+}
+
+// wait holds an answer back for delay, or until the client hangs up, and reports whether the
+// client is still there to answer.
+func wait(r *http.Request, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	select {
+	case <-time.After(delay):
+		return true
+	case <-r.Context().Done():
+		return false
+	}
+}
+
 // handleRevoke answers a revocation as Cognito's /oauth2/revoke does for a
 // client with a secret: the client authenticates with HTTP Basic, the body
 // carries the token, and a token the pool does not know, or has revoked
@@ -895,9 +999,9 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "code flow not enabled", http.StatusNotFound)
 		return
 	}
-	clientID, clientSecret, basic := r.BasicAuth()
+	clientID, clientSecret, basic, err := basicCredentials(r)
 	client, served := flow.clients[clientID]
-	if !basic || !served || clientSecret != client.clientSecret {
+	if err != nil || !basic || !served || clientSecret != client.clientSecret {
 		i.mu.Unlock()
 		tokenError(w, http.StatusUnauthorized, "invalid_client")
 		return
@@ -911,12 +1015,8 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	flow.revocation.requests = append(flow.revocation.requests, token)
 	status, code, redirect, delay := flow.revocation.status, flow.revocation.code, flow.revocation.redirect, flow.revocation.delay
 	i.mu.Unlock()
-	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-r.Context().Done():
-			return
-		}
+	if !wait(r, delay) {
+		return
 	}
 	if redirect != "" {
 		http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)

@@ -154,6 +154,22 @@ func TestDomainMembershipEndsTheSessionWhenTheRefreshedAccountNoLongerQualifies(
 	})
 }
 
+// A refresh Google refuses from a slow token endpoint still ends the sign-in when one request fits
+// the refresh's bound. The endpoint waits a tenth of a second more than half of refreshTimeout
+// before each answer, so a refresh that asked twice, by HTTP Basic and again in the form, could
+// never have the second answer in time, and would keep the sign-in of a person Google refused.
+// One request leaves 2.4 s of the ten seconds oidc gives a request: this row's margin under load.
+func TestDomainMembershipEndsTheSignInASlowTokenEndpointRefuses(t *testing.T) {
+	rig := newDomainMembershipRig(t)
+	rig.issuer.RevokeGrants()
+	rig.issuer.DelayToken(refreshTimeout/2 + 100*time.Millisecond)
+	rig.now = rig.now.Add(2 * time.Hour)
+	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {
+		t.Fatalf("Confirm: err = %v, want ErrNoIdentity", err)
+	}
+	assertSessionEnded(t, rig)
+}
+
 // A row whose refresh token no domain sign-in recorded holds no subject to compare: the domain rule
 // ends its sessions at the confirmation without asking Google, rather than refreshing with a token
 // whose account it cannot check.
