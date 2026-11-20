@@ -1122,7 +1122,7 @@ func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
 	}
 
 	for run := range 2 {
-		if _, _, err := buildSigner(); err != nil {
+		if _, _, err := buildSigner(io.Discard); err != nil {
 			t.Fatalf("command %d with no HOME: %v", run+1, err)
 		}
 	}

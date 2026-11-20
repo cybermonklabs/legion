@@ -548,18 +548,19 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 // session it registered, the machine's own identity. The key dir and socket are
 // AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, or their defaults where those are unset
 // (identity.go). While a box's launcher is still enrolling it (a fresh enrollment.pending in the
-// key dir), this first waits for key.pem and enrollment, for AGENT_SECRETS_ENROLL_WAIT at most.
+// key dir), this first waits for key.pem and enrollment, for AGENT_SECRETS_ENROLL_WAIT at most,
+// saying so on stderr (awaitEnrollment).
 // The enrollment id it returns is the key dir's, the sign-in's or the machine's own; helper mode
 // returns "" because nothing needs it as a literal except RenewEnrollment's URL path, and a
 // machine session's lease is renewed by the helper itself — cmdRenew refuses outright once it
 // sees an empty id from a successful build.
-func buildSigner() (enrollmentID string, signer Signer, err error) {
+func buildSigner(stderr io.Writer) (enrollmentID string, signer Signer, err error) {
 	wait, err := enrollWait()
 	if err != nil {
 		return "", nil, &settingError{err}
 	}
 	dir := keyDir()
-	gaveUp := awaitEnrollment(dir, wait)
+	gaveUp := awaitEnrollment(stderr, dir, wait)
 	enrollmentID, signer, err = selectSigner(dir)
 	if err != nil && gaveUp {
 		err = fmt.Errorf("%w (waited %s while %s was there)", err, wait, filepath.Join(dir, pendingMarker))
@@ -633,12 +634,13 @@ func signInSigner() (*fileSigner, error) {
 // sessionContext resolves the broker URL and this process's Signer every session-authenticated
 // subcommand (renew, request, status, cancel, revoke, self, and the exec form) needs, plus the
 // enrollment id buildSigner read (empty in helper mode). A missing broker URL is a settingError.
-func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Signer, err error) {
+// stderr is the command's, which buildSigner's wait for a launcher still enrolling speaks on.
+func sessionContext(stderr io.Writer) (base brokeraddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
 	if base.Empty() {
 		return brokeraddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
 	}
-	enrollmentID, signer, err = buildSigner()
+	enrollmentID, signer, err = buildSigner(stderr)
 	if err != nil {
 		return brokeraddr.Address{}, "", nil, err
 	}
@@ -733,7 +735,7 @@ func cmdRenew(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets renew: no arguments are accepted")
 		return exitUsageError
 	}
-	base, enrollmentID, signer, err := sessionContext()
+	base, enrollmentID, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets renew", err)
 	}
@@ -839,7 +841,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets request: at least one secret NAME is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
+	base, _, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets request", err)
 	}
@@ -892,7 +894,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets status: exactly one request_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
+	base, _, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets status", err)
 	}
@@ -934,7 +936,7 @@ func cmdCancel(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets cancel: exactly one request_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
+	base, _, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets cancel", err)
 	}
@@ -961,7 +963,7 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets revoke: exactly one grant_id is required")
 		return exitUsageError
 	}
-	c, failed, err := revokeAsSession(positional[0])
+	c, failed, err := revokeAsSession(positional[0], stderr)
 	switch {
 	case failed != nil:
 		return sessionFailed(stderr, "agent-secrets revoke", failed)
@@ -978,9 +980,9 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 // and the exit codes of every session command (sessionContext, sessionFailed). failed is why this
 // process has no such identity, for the form to report through sessionFailed, so the exit code
 // comes from a function broker-refgen follows; otherwise err is the broker's answer to c's call,
-// unreported, for the form to word.
-func revokeAsSession(grantID string) (c *client, failed, err error) {
-	base, _, signer, failed := sessionContext()
+// unreported, for the form to word. stderr is the form's, for the enrollment wait.
+func revokeAsSession(grantID string, stderr io.Writer) (c *client, failed, err error) {
+	base, _, signer, failed := sessionContext(stderr)
 	if failed != nil {
 		return nil, failed, nil
 	}
@@ -1004,7 +1006,7 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
-	base, _, signer, err := sessionContext()
+	base, _, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets "+name, err)
 	}
@@ -1101,7 +1103,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	base, _, signer, err := sessionContext()
+	base, _, signer, err := sessionContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets", err)
 	}

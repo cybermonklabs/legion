@@ -186,17 +186,45 @@ func enrollWait() (time.Duration, error) {
 }
 
 // awaitEnrollment waits, for wait at most, while dir holds a fresh marker and not yet both
-// key.pem and enrollment. It reports whether it gave up with the marker still there.
-func awaitEnrollment(dir string, wait time.Duration) (gaveUp bool) {
+// key.pem and enrollment. It says on stderr what it waits for before it waits, and again each
+// time that changes (the launcher wrote key.pem and not yet enrollment), so a call held at a
+// box's start says why it is held and how far the launcher got. It reports whether it gave up
+// with the marker still there.
+func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (gaveUp bool) {
 	deadline := time.Now().Add(wait)
-	for freshMarker(dir) && !(exists(filepath.Join(dir, keyFile)) && exists(filepath.Join(dir, enrollmentFile))) {
+	said := ""
+	for freshMarker(dir) {
+		missing := missingSessionFiles(dir)
+		if missing == "" {
+			return false
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return true
 		}
+		switch {
+		case said == "":
+			fmt.Fprintf(stderr, "agent-secrets: the launcher is still enrolling this process (%s is there); waiting up to %s for its %s\n",
+				filepath.Join(dir, pendingMarker), wait, missing)
+		case missing != said:
+			fmt.Fprintf(stderr, "agent-secrets: still waiting for the launcher's %s\n", missing)
+		}
+		said = missing
 		time.Sleep(min(enrollPollInterval, remaining))
 	}
 	return false
+}
+
+// missingSessionFiles names the files of key.pem and enrollment that dir does not hold yet, as
+// "key.pem and enrollment", "key.pem" or "enrollment", and "" when it holds both.
+func missingSessionFiles(dir string) string {
+	var missing []string
+	for _, name := range []string{keyFile, enrollmentFile} {
+		if !exists(filepath.Join(dir, name)) {
+			missing = append(missing, name)
+		}
+	}
+	return strings.Join(missing, " and ")
 }
 
 // helperInstalled reports whether this machine has the helper's user unit, the file
@@ -284,7 +312,7 @@ func identitySource(stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	dir := keyDir()
-	awaitEnrollment(dir, wait)
+	awaitEnrollment(stderr, dir, wait)
 	name, detail, err := describeSource(dir)
 	if err != nil {
 		reportError(stderr, "agent-secrets identity", err)

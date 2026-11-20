@@ -58,7 +58,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	_, signer, err := buildSigner()
+	_, signer, err := buildSigner(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets sign", err)
 	}

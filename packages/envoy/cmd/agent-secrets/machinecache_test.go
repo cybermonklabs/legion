@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_URL", broker.URL())
 	metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 
-	_, _, err := buildSigner()
+	_, _, err := buildSigner(io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "has nowhere to be kept") || strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("buildSigner = %v; want the machine source to refuse, naming that its session has nowhere to be kept", err)
 	}

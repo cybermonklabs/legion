@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  `agent-secrets` now says on stderr when it waits for a box's launcher that is still enrolling it
+  (a fresh `enrollment.pending` in the key directory), before it waits:
+  `agent-secrets: the launcher is still enrolling this process (<key dir>/enrollment.pending is there); waiting up to 20s for its key.pem and enrollment`.
+  Once `key.pem` is there and `enrollment` is not, it says
+  `agent-secrets: still waiting for the launcher's enrollment`. Before, such a call was silent for
+  up to `AGENT_SECRETS_ENROLL_WAIT` (20 s by default), so an MCP server held at a box's start gave
+  no reason. Every form that acts as a session says it, and `identity --source` too. The refusal at
+  the end of the wait is unchanged.
+time: 2026-11-20T15:22:21Z
+custom:
+    Issue: enroll-wait-says-so

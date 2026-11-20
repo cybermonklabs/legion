@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -235,35 +234,19 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		marker := writePendingMarker(t, r.keyDir(), 0)
 		fixture := t.TempDir()
 		writeSessionFiles(t, fixture, "launcher-enrollment")
-		// The launcher writes each file whole (writeFileAtomic), so the waiting call never reads
-		// one half-written.
-		setupDone := make(chan error, 1)
-		go func() {
-			time.Sleep(time.Second)
-			var err error
-			for _, name := range []string{"key.pem", "enrollment"} {
-				var data []byte
-				if data, err = os.ReadFile(filepath.Join(fixture, name)); err == nil {
-					err = writeFileAtomic(filepath.Join(r.keyDir(), name), data, 0o600)
-				}
-				if err != nil {
-					break
-				}
-			}
-			if err == nil {
-				err = os.Remove(marker)
-			}
-			setupDone <- err
-		}()
+		// A day, so that nothing but the launcher's two files ends the wait; the launcher writes
+		// each once the call says it waits for it (playTheLauncher).
+		r.env["AGENT_SECRETS_ENROLL_WAIT"] = "24h"
 
 		grantID := uuid.NewString()
-		code, stdout, stderr := r.run("grant", "revoke", grantID)
-		if err := <-setupDone; err != nil {
-			t.Fatal(err)
-		}
+		c := startCall(t, r.command("grant", "revoke", grantID))
+		playTheLauncher(t, c, r.keyDir(), fixture, "24h0m0s")
+		code := c.end(t)
 		want := "revoked " + grantID + " at " + brokerSource(brokeraddr.New(broker.URL())).String() + "\n"
-		if code != 0 || stdout != want || stderr != "" {
-			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0 and %q once it has", code, stdout, stderr, want)
+		waited := launcherWaitLine(marker, "24h0m0s") + enrollmentWaitLine
+		if stdout, stderr := c.stdout.String(), c.stderr.String(); code != 0 || stdout != want || stderr != waited {
+			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0, %q once it has, and the wait's two lines %q",
+				code, stdout, stderr, want, waited)
 		}
 		requests, signedBy := broker.seen()
 		if !slices.Equal(requests, []string{"POST /v1/grants/" + grantID + "/revoke"}) || !slices.Equal(signedBy, []string{"launcher-enrollment"}) {
