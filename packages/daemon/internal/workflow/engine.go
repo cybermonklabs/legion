@@ -571,7 +571,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 		return false, err
 	}
 	if agent {
@@ -666,7 +666,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 		return false, err
 	}
 	if issue.Status != fact.Status {
-		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 			return false, err
 		}
 	}

@@ -1,0 +1,173 @@
+[
+  {
+    "id": 593687,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 22,
+    "type": "message.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a1de41-6350-7124-a481-cdf23be15a2b",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion controller · ACME"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T02:18:12.660042Z",
+    "payload": {
+      "id": "47563d1c-b5cb-4aa4-b5a7-4bbbdc7f3f49",
+      "issue_key": "ACME-2766",
+      "created_at": "2026-11-16T02:18:12.660042Z"
+    }
+  },
+  {
+    "id": 593688,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 23,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "01a1de41-6350-7124-a481-cdf23be15a2b",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion controller · ACME"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T02:18:12.720646Z",
+    "payload": {
+      "key": "ACME-2766",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzi",
+      "claim": null,
+      "labels": [],
+      "number": 2766,
+      "parent": "ACME-1395",
+      "status": "done",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "last_seq": 23,
+      "priority": 1,
+      "ancestors": [
+        "ACME-1395"
+      ],
+      "closed_at": "2026-11-16T02:18:12.720646Z",
+      "blocked_by": [
+        "ACME-2764"
+      ],
+      "created_at": "2026-11-10T19:42:03.788307Z",
+      "updated_at": "2026-11-16T02:18:12.732894Z"
+    }
+  },
+  {
+    "id": 593958,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 24,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
+    "notify": false,
+    "created_at": "2026-11-16T02:19:16.35313Z",
+    "payload": {
+      "key": "ACME-2766",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzi",
+      "claim": null,
+      "labels": [],
+      "number": 2766,
+      "parent": "ACME-1395",
+      "status": "todo",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "last_seq": 24,
+      "priority": 1,
+      "ancestors": [
+        "ACME-1395"
+      ],
+      "closed_at": null,
+      "blocked_by": [
+        "ACME-2764"
+      ],
+      "created_at": "2026-11-10T19:42:03.788307Z",
+      "updated_at": "2026-11-16T02:19:16.364975Z"
+    }
+  },
+  {
+    "id": 601878,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 25,
+    "type": "artifact.version",
+    "actor": {
+      "kind": "session",
+      "id": "01a1db45-7f94-7519-998f-4556d50e219a",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1395"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T06:11:47.133313Z",
+    "payload": {
+      "name": "spec.md",
+      "artifact_id": "346d7b8b-804e-4f30-b759-f87848f504cf"
+    }
+  },
+  {
+    "id": 601886,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 26,
+    "type": "artifact.version",
+    "actor": {
+      "kind": "session",
+      "id": "01a1db45-7f94-7519-998f-4556d50e219a",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1395"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T06:11:52.078229Z",
+    "payload": {
+      "name": "verification.md",
+      "artifact_id": "3e0b35fb-e786-40bf-8236-7307073146e1"
+    }
+  },
+  {
+    "id": 602736,
+    "issue_key": "ACME-2766",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 27,
+    "type": "artifact.version",
+    "actor": {
+      "kind": "session",
+      "id": "01a1db45-7f94-7519-998f-4556d50e219a",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1395"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-16T06:34:41.369588Z",
+    "payload": {
+      "name": "spec.md",
+      "artifact_id": "346d7b8b-804e-4f30-b759-f87848f504cf"
+    }
+  }
+]

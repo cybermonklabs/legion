@@ -368,9 +368,9 @@ func (r *ownerRig) assertLeft(key, status string) {
 
 // assertSetBack holds that the write fact, of status on the issue whose record was before, is set
 // back: the record keeps its phase, its status and its run, it records the event's sequence, and
-// one status write of the daemon's own status over status is queued for it. Nothing ends: no claim
-// of the tree is stopped, no pod goes, and no architect is told, since the writer holds a claim in
-// the tree.
+// one status write of the daemon's own status over status is queued for it, at the sequence of the
+// write it undoes. Nothing ends: no claim of the tree is stopped, no pod goes, and no architect is
+// told, since the writer holds a claim in the tree.
 func (r *ownerRig) assertSetBack(before record.Issue, status string, fact intake.DispatchIssue) {
 	r.t.Helper()
 	key := before.Key
@@ -380,7 +380,7 @@ func (r *ownerRig) assertSetBack(before record.Issue, status string, fact intake
 			key, status, got.Phase, got.Status, got.Generation, got.LingerUntil, got.LastDispatchSeq, before.Phase, before.Status, before.Generation, fact.Seq)
 	}
 	rows := effects(r.t, r.pool)
-	if writes, want := payloadsOf[record.StatusWrite](rowsFor(rows, key)), []record.StatusWrite{record.ReassertStatusWrite(before.Status, status)}; !reflect.DeepEqual(writes, want) {
+	if writes, want := payloadsOf[record.StatusWrite](rowsFor(rows, key)), []record.StatusWrite{record.ReassertStatusWrite(before.Status, status, fact.Seq)}; !reflect.DeepEqual(writes, want) {
 		r.t.Fatalf("status writes queued for %s after the write of %s = %+v, want the set-back alone, %+v", key, status, writes, want)
 	}
 	for _, op := range []record.SuperviseOp{"suspend", "issue_close", "tree_close"} {

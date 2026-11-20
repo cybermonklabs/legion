@@ -1,0 +1,197 @@
+[
+  {
+    "id": 406776,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 12,
+    "type": "message.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a1b4c8-6677-7524-b42e-6cff930d6286",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1557"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-12T01:11:42.182796Z",
+    "payload": {
+      "id": "66b489bd-a1e1-496e-83f1-2986f441fa8a",
+      "issue_key": "ACME-3021",
+      "created_at": "2026-11-12T01:11:42.182796Z"
+    }
+  },
+  {
+    "id": 406777,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 13,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "01a1b4c8-6677-7524-b42e-6cff930d6286",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1557"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-12T01:11:42.222396Z",
+    "payload": {
+      "key": "ACME-3021",
+      "rank": "zzzrVUZUUUUX",
+      "claim": null,
+      "labels": [
+        "legion"
+      ],
+      "number": 3021,
+      "parent": "ACME-1557",
+      "status": "done",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "last_seq": 13,
+      "priority": 1,
+      "ancestors": [
+        "ACME-1557"
+      ],
+      "closed_at": "2026-11-12T01:11:42.222396Z",
+      "blocked_by": [],
+      "created_at": "2026-11-11T09:50:01.330439Z",
+      "updated_at": "2026-11-12T01:11:42.227983Z"
+    }
+  },
+  {
+    "id": 406779,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 14,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
+    "notify": false,
+    "created_at": "2026-11-12T01:11:42.456955Z",
+    "payload": {
+      "key": "ACME-3021",
+      "rank": "zzzrVUZUUUUX",
+      "claim": null,
+      "labels": [
+        "legion"
+      ],
+      "number": 3021,
+      "parent": "ACME-1557",
+      "status": "backlog",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "last_seq": 14,
+      "priority": 1,
+      "ancestors": [
+        "ACME-1557"
+      ],
+      "closed_at": null,
+      "blocked_by": [],
+      "created_at": "2026-11-11T09:50:01.330439Z",
+      "updated_at": "2026-11-12T01:11:42.464649Z"
+    }
+  },
+  {
+    "id": 416604,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 15,
+    "type": "comment.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a1b4c8-6677-7524-b42e-6cff930d6286",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion architect · ACME-1557"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-12T05:25:06.636208Z",
+    "payload": {
+      "id": "07da9975-6f1d-4998-b826-6d0b6aef8333",
+      "issue_key": "ACME-3021",
+      "created_at": "2026-11-12T05:25:06.638437Z",
+      "artifact_id": null
+    }
+  },
+  {
+    "id": 551585,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 16,
+    "type": "message.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a1bcac-dd96-74fc-9a20-4fc75e8968ca",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion controller · ACME"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-15T00:44:38.129246Z",
+    "payload": {
+      "id": "d02f69eb-b290-49d8-8c35-0f5f20bd6f3d",
+      "issue_key": "ACME-3021",
+      "created_at": "2026-11-15T00:44:38.129246Z"
+    }
+  },
+  {
+    "id": 551586,
+    "issue_key": "ACME-3021",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 17,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "01a1bcac-dd96-74fc-9a20-4fc75e8968ca",
+      "origin": {
+        "host": "omp",
+        "session_title": "Legion controller · ACME"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-15T00:44:38.16699Z",
+    "payload": {
+      "key": "ACME-3021",
+      "rank": "zzzrVUZUUUUX",
+      "claim": null,
+      "labels": [
+        "legion"
+      ],
+      "number": 3021,
+      "parent": "ACME-1557",
+      "status": "done",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "last_seq": 17,
+      "priority": 1,
+      "ancestors": [
+        "ACME-1557"
+      ],
+      "closed_at": "2026-11-15T00:44:38.16699Z",
+      "blocked_by": [],
+      "created_at": "2026-11-11T09:50:01.330439Z",
+      "updated_at": "2026-11-15T00:44:38.1732Z"
+    }
+  }
+]

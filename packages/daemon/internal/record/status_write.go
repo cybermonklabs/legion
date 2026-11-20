@@ -84,6 +84,15 @@ type StatusWrite struct {
 	// known for — one migration 20261102003600 gave its kind, queued by a release that fenced
 	// such a write on nothing — which writes as that release wrote it.
 	CloseGeneration uint64 `json:"closeGeneration,omitempty"`
+	// ObservedSeq is the Dispatch sequence of the session's write that a set-back undoes
+	// (ReassertStatusRow). Before each write the runner reads the issue's events after it and
+	// finishes the row without writing when a later event changed the status and the daemon did
+	// not write that event, so a set-back never writes over a move that came after the write it
+	// undoes: the owning architect's, or a person's (dispatch://INFRA-3178 R3). A row with zero,
+	// which an earlier release queued, writes as that release wrote it. That release decodes a
+	// payload strictly, so a rollback removes the key first (the way back of migration
+	// 20261120012547).
+	ObservedSeq int64 `json:"observedSeq,omitempty"`
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
@@ -103,9 +112,9 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 }
 
 // ReassertStatusWrite is the daemon's own status set back over the one a session wrote, which the
-// row observes (ReassertStatusRow).
-func ReassertStatusWrite(status, observed string) StatusWrite {
-	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed}
+// row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of that session's write.
+func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
+	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
 }
 
 // HandOverStatusWrite hands a child of tree to Legion at status, fenced on that tree and on the
