@@ -1710,7 +1710,9 @@ notice comes once per handoff commit, from whichever read finds it first.
 - **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
   that says where the settlement stopped. Each line names the head and the generation, and the
   publish line and the drop lines also name the snapshot, so a drop line matches the publish line
-  of the same settlement. Each line is written once for each record state or settlement.
+  of the same settlement. Each line is written once for each record state or settlement while the
+  listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
+  dropped settlements since: each remembers in memory what it logged.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
     names each check run that has not finished, `suites` names each check suite that is not
@@ -1723,8 +1725,10 @@ notice comes once per handoff commit, from whichever read finds it first.
     reads), `workflow: a checks settlement was dropped: no pull request is recorded
     for it`, `workflow: a checks settlement stands for no head the record holds` (with
     `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
-    applied` (with `classification`, `stale` or `conflict`). A settlement delivered again after
-    it applied writes no line.
+    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
+    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
+    message` (an error with the `subject`) and dropped. A settlement delivered again after it
+    applied writes no line.
 
   A published settlement with no new `CI settled` message and no drop line is one of three things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
