@@ -1,5 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
@@ -44,10 +52,11 @@ const tmuxDirectory = temporaryDirectories(tmuxPrefix, {
   ),
 });
 
-/** The tmux binary behind PATH's command, resolved while the caller's own HOME still applies. */
-function realTmux(): string {
-  const env = { ...process.env, TMUX_TMPDIR: tmuxDirectory() };
-  const name = `resolve-${process.pid}`;
+/** The tmux binary behind PATH's command, resolved while the caller's own HOME still applies. It
+ *  uses the budgeted socket name, so it fits wherever the teardown row's tmux socket fits. */
+function realTmux(directory = tmuxDirectory()): string {
+  const env = { ...process.env, TMUX_TMPDIR: directory };
+  const name = "teardown";
   const made = Bun.spawnSync(
     ["tmux", "-L", name, "-f", "/dev/null", "new-session", "-d", "sleep 60"],
     {
@@ -64,6 +73,25 @@ function realTmux(): string {
     Bun.spawnSync(["tmux", "-L", name, "kill-server"], { env });
   }
 }
+
+test.skipIf(skip)("resolves tmux at the socket-path boundary the teardown row budgets", () => {
+  const base = mkdtempSync("/tmp/pdt-");
+  try {
+    const padding = 107 - Buffer.byteLength(base) - 2 - Buffer.byteLength(tmuxSocket);
+    if (padding < 1) throw new Error(`${base} leaves no room for the boundary directory`);
+    const directory = join(base, "x".repeat(padding));
+    mkdirSync(directory);
+    expect(socketPathRefusal(join(directory, tmuxSocket))).toBeUndefined();
+    expect(
+      socketPathRefusal(
+        join(directory, `tmux-${process.getuid?.() ?? 0}`, `resolve-${process.pid}`)
+      )
+    ).toBeDefined();
+    expect(realTmux(directory)).toStartWith("/");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 const started: number[] = [];
 // What the test started that no pid of its own names: a tmux server to kill, a session a process
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
