@@ -339,6 +339,19 @@ test.describe("outside passkey sign-in", () => {
           });
           expect(answer.status(), `POST ${canonical}${path}`).toBe(404);
         }
+        // At the outside origin, a ceremony step a page of another origin sends is refused before
+        // it runs; the same step from the outside origin's own page is answered (the control).
+        const crossOrigin = await request.post(`${outside}/auth/passkey/login/begin`, {
+          data: {},
+          headers: { Origin: canonical },
+        });
+        expect(crossOrigin.status(), "POST login/begin from the canonical origin's page").toBe(403);
+        expect(await crossOrigin.json()).toEqual({ error: "invalid request origin" });
+        const sameOrigin = await request.post(`${outside}/auth/passkey/login/begin`, {
+          data: {},
+          headers: { Origin: outside },
+        });
+        expect(sameOrigin.status(), "POST login/begin from the outside origin's page").toBe(200);
       });
     } finally {
       await Promise.all([aliceContext.close(), outsiderContext.close(), strangerContext.close()]);
