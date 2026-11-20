@@ -71,6 +71,7 @@ INFRA_TARGETS = ".github/envoy-infra-targets.json"
 NOTICES = "scripts/go-third-party-notices.sh"
 NOTICES_LOOPS = ".github/scripts/go-release-notices.sh"
 CI = ".github/workflows/ci.yaml"
+CI_FILTERS = ".github/ci-filters.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
 BROWSER_SITE = ".github/workflows/dispatch-browser.yaml"
 BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
@@ -96,11 +97,12 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
     steps.
 
-    Every such gate reads two files: ci.yaml, where every job's `if:` is, and the job's own
-    ci-job-<id>.yaml, where the steps it runs are. That pair is appended here rather than
-    written out on each gate, so a gate's own `reads` say only what is its own. The two gates
-    that name a file - docs and dispatch_browser, whose called workflows carry job ids of their
-    own - declare the pair they read themselves."""
+    Every such gate reads three files: ci.yaml, where every job's `if:` is, .github/ci-filters.yaml,
+    where the filter that selects it is (both CI_SELF), and the job's own ci-job-<id>.yaml, where
+    the steps it runs are. Those are appended here rather than written out on each gate, so a
+    gate's own `reads` say only what is its own. The two gates that name a file - docs and
+    dispatch_browser, whose called workflows carry job ids of their own - declare what they read
+    themselves, CI_SELF among it."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
     return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
@@ -188,15 +190,18 @@ def envoy_go_files_but_infra():
     `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
     does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
     out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
-    starts - holds binaries alone."""
+    starts - holds binaries alone. Only a file of repo_files() counts, so a directory a local run
+    filled with files git ignores names no glob either."""
+    known = set(repository_files())
+
     def holds_go(directory: Path) -> bool:
         for current, subdirs, names in os.walk(directory):
             subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
-            if any(n.endswith(".go") for n in names):
+            if any(n.endswith(".go") and f"{current}/{n}" in known for n in names):
                 return True
         return False
 
-    globs = [f"{ENVOY}/*.go"] if any(Path(ENVOY).glob("*.go")) else []
+    globs = [f"{ENVOY}/*.go"] if any(p.as_posix() in known for p in Path(ENVOY).glob("*.go")) else []
     for entry in sorted(Path(ENVOY).iterdir()):
         if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
             globs.append(f"{ENVOY}/{entry.name}/**/*.go")
@@ -235,7 +240,14 @@ def files_but_tests(directory, suffix=".go", tree=False, skip=()):
     with no edit here. The repository is repo_files(): a build output a local run leaves in the
     tree, such as the e2e harness's packages/envoy/out/dispatch-e2e-broker, is in no checkout CI
     makes, and rule 9 would refuse a read of it as matching no file. They come in the order a
-    top-down walk visits them: a directory's own files, then each directory under it."""
+    top-down walk visits them: a directory's own files, then each directory under it.
+    `directory` is refused unless it is relative and in normal form (os.path.normpath), since
+    repo_files() spells every path that way: `./d`, `d/` or an absolute path would match no file
+    of it, and the reads would go missing with nothing failing."""
+    if os.path.isabs(directory) or directory == "." or os.path.normpath(directory) != directory:
+        raise ValueError(f"files_but_tests is given {directory!r}, which is not a path relative to the "
+                         f"repository root in normal form, so no file of repo_files() would match it; "
+                         f"write it as {os.path.normpath(directory)!r}")
     prefix, pruned = f"{directory}/", {"node_modules", *skip}
     out = []
     for path in repository_files():
@@ -357,7 +369,15 @@ def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
-CI_SELF = reads((CI, "a job reads its own definition"))
+# Every job reads ci.yaml, where its `if:` is, and .github/ci-filters.yaml, where the filter that
+# selects it is: ci.yaml's `changes` job hands that file to dorny/paths-filter by its path, so a
+# change to it reaches every job as a change to ci.yaml does. The docs and dispatch_browser gates
+# add this by hand, since they name the file their steps are in, and take both through it.
+CI_SELF = reads(
+    (CI, "a job reads its own definition"),
+    (CI_FILTERS, "the filter that selects the job is in it, which ci.yaml's `changes` job hands "
+                 "dorny/paths-filter by its path"),
+)
 
 
 def job_self(job):
@@ -404,8 +424,9 @@ TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
-    packages/broker-client's with them. envoy-client's src/broker-credential.ts:21-28,30-34 imports
-    @legion/broker-client/environment and /token-client, and that package's exports map every
+    packages/broker-client's with them. envoy-client's src/broker-credential.ts imports
+    @legion/broker-client/environment (brokerTokenClient), /signins (chooseSignIn) and
+    /token-client (isFinalRefusal), and that package's exports map every
     entry to ./src/<module>.ts, so all seven of its sources land in the same program - measured
     with `bunx tsc --listFilesOnly`, which counts seven of them in each of claude-envoy,
     envoy-client, pi-envoy, pi-legion, pi-shared and scripts/dispatch, and in the closures of
@@ -417,7 +438,8 @@ def envoy_client_dep(why):
     return reads(
         (ENVOY_CLIENT_SRC, why),
         (BROKER_CLIENT_SRC, f"{why}; and @legion/broker-client comes with it, through "
-                            "packages/envoy-client/src/broker-credential.ts:21-34"),
+                            "packages/envoy-client/src/broker-credential.ts, which imports brokerTokenClient from "
+                            "@legion/broker-client/environment"),
     )
 
 
@@ -457,6 +479,22 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's "
+                                                                 "check of the packed tarball passes a listing longer than a pipe holds\" "
+                                                                 "copies it into a root of its own and runs it over a long listing"),
+        (".github/scripts/release-claude-envoy-manifest-repository.sh", "packages/claude-envoy/tests/release-manifest-repository.test.ts's "
+                                                                        "tests \"the publishing repository's url is written into both "
+                                                                        "manifests\" and \"a manifest jq cannot parse fails the step before "
+                                                                        "the next manifest is written\" copy it into a root of their own and "
+                                                                        "run it"),
+        (".github/scripts/release-claude-envoy-version.sh", "packages/claude-envoy/tests/release-version.test.ts's tests \"the release's "
+                                                            "version is written into all five manifests\" and \"a manifest jq cannot "
+                                                            "parse fails the step before the next manifest is written\" copy it into a "
+                                                            "root of their own and run it"),
+        (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's check of the "
+                                          "packed tarball passes a listing longer than a pipe holds\" runs it for the repository "
+                                          "url, and copies it beside the release's check, which runs it, and release-manifest-repository.test.ts "
+                                          "copies it beside the script that runs it"),
         (".github/actions/private-names-packed-plugin/**",
          at("private-names", "./.github/actions/private-names-packed-plugin", job_file("claude-envoy"))),
         (".github/scripts/check-private-names.sh", ".github/actions/private-names-packed-plugin/action.yml runs it, "
@@ -554,7 +592,8 @@ RULES = {
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:142")),
+    f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
+    f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
@@ -583,8 +622,9 @@ RULES = {
     # but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
     # patterns (credential_check_reads says how the read is written).
     f"{DAEMON}/internal/textcheck/credential_argument_test.go": reads(
-        *[(glob, "internal/textcheck/credential_argument_test.go:143 lists the repository's files with git ls-files "
-                 "under ../../../.. and :174 reads each of them but docs/plans and docs/superpowers")
+        *[(glob, "internal/textcheck/credential_argument_test.go's credentialTextFiles lists the repository's files with "
+                 "git ls-files under ../../../.. but docs/plans and docs/superpowers, and "
+                 "TestNoTextGivesACredentialAsACommandArgument reads each of them")
           for glob in credential_check_reads()]),
     # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
     # it moved here because it walks every .go file of the module, test files included, and a row
@@ -791,7 +831,7 @@ RULES = {
                                                             "internal/broker/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
-    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
+    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:50"),
@@ -1087,8 +1127,9 @@ AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
-# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (ci.yaml's comment on the step says
-# why), so its line is a shell assignment and a script, not a go command the simple form reduces.
+# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
+# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
+# go command the simple form reduces.
 RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
@@ -2144,8 +2185,17 @@ BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
+# The merge job's three other readings and its verdict, each a step running a script of its own.
+BROWSER_READ_TWO_STEP = "Reading two, the flake rate"
+BROWSER_READ_THREE_STEP = "Reading three, the leg exits with no failed row"
+BROWSER_READ_FOUR_STEP = "Reading four, the row durations"
+BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a failed row"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# One name, two steps: the shard job's and the alone job's, each running a script of its own,
+# since the shard job's machine also runs the file store whose log that job collects.
+BROWSER_RECORD_STEP = "What the run left behind"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
 # e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
@@ -2183,6 +2233,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
@@ -2191,6 +2242,9 @@ TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
 # .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
 TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
+TOOL_NOWHERE_STEP = "Check all eight installs with nowhere to go failed, and failed in their own time"
+TOOL_VERSIONS_STEP = "Check every tool is the version its row pins"
+TOOL_FINAL_STEP = "Print what every tool answers now"
 TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
 TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
@@ -2215,8 +2269,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
 # script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
 # (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now names what these
-# gates name, through the anchors ci.yaml holds each of these lists under, so a change to a
-# harness or its subject selects the job and exactly that step's gate is true in it.
+# gates name, through the anchors .github/ci-filters.yaml holds each of these lists under, so a
+# change to a harness or its subject selects the job and exactly that step's gate is true in it.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
 # so each of those gates reads it and a change to it runs them all;
@@ -2239,11 +2293,12 @@ def harness(filter, step, harness_script, subjects, lib=True):
 
 # The private-name port harness, a job of its own since dispatch://INFRA-1413: it is the one
 # harness of this repository that builds a binary of this head, so the filter that selects it
-# has to name that build's whole closure (LEGION_BUILD, ci.yaml's legion_command). While the
+# has to name that build's whole closure (LEGION_BUILD, ci-filters.yaml's legion_command). While the
 # step was the test job's, that closure was on the `test` filter and a change to any package of
 # the daemon ran thirty-odd shell harnesses and the Bun suites of scripts/ beside it; a gate on
 # the step inside that job was no cure either, since the gate's own filter would be the closure
-# a second time and the changes job's filters string has no room for one (rule 18).
+# a second time, written out once more in .github/ci-filters.yaml for a gate that decides one
+# step of a job the `test` filter had already started.
 PRIVATE_NAMES_PORT_JOB = "private-names-port"
 PRIVATE_NAMES_PORT_STEP = "Test the private-name rules' port against the frozen script"
 PRIVATE_NAMES_PORT_BUILD = script_run(
@@ -2335,6 +2390,12 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
+    ]),
+    harness("check_workflow_files_test", "Test the workflow file check", f"{SCRIPTS}/check-workflow-files.test.sh", [
+        (f"{SCRIPTS}/check-workflow-files.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh imports repeated_keys from it, beside the "
+                                         "script's own file that every fixture links in"),
+        (".github/ci-notes/README.md", "the file both size refusals name, which the over-cap case holds to exist"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
@@ -2455,17 +2516,17 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:80-82)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2818 imports this table to derive the plain step's -run lists"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50-52)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the engine imports, linked in beside it"),
@@ -2817,7 +2878,7 @@ GATES = [
 
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
-        ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts:21-28,30-34 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
+        ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts imports brokerTokenClient from @legion/broker-client/environment, chooseSignIn from @legion/broker-client/signins and isFinalRefusal from @legion/broker-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),
         (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:3"),
@@ -2915,8 +2976,9 @@ GATES = [
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
       + bun_job("pi-legion")),
 
-    # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
-    # what they are). No go command runs here.
+    # The dashboard's and the proof editor's fast checks
+    # (.github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
+    # says what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:127-150"),
@@ -3037,22 +3099,61 @@ GATES = [
          f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
          "could not complete"),
+        (".github/scripts/dispatch-browser-wait-for-store.sh",
+         f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
+         "before it started, which it makes a bucket in and writes, reads back and deletes one "
+         "object in"),
+        (".github/scripts/dispatch-browser-shard-suite.sh",
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
+        (".github/scripts/dispatch-browser-shard-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
+         "and the stacks' own logs"),
+        (".github/scripts/dispatch-browser-alone-suite.sh",
+         f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} runs it for this leg's one "
+         "unsharded project"),
+        (".github/scripts/dispatch-browser-alone-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
+         "stack's own logs, there being no file store on that machine"),
+        (".github/scripts/dispatch-browser-visual-suite.sh",
+         f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
+         "e2e/visual-run.sh the comparison against the baselines needs"),
+        (".github/scripts/dispatch-browser-merge-reports.sh",
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} runs it to join the legs' blob "
+         "reports into the one HTML and JSON report of the run"),
+        (".github/scripts/dispatch-browser-reading-rows.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs it for the rows each leg's "
+         "log printed against the rows the merged report holds, and for the legs that owed a "
+         "blob report and uploaded none"),
+        (".github/scripts/dispatch-browser-reading-flake-rate.sh",
+         f"{at_browser(BROWSER_READ_TWO_STEP, BROWSER_MERGE)} runs it for the count and the "
+         "percentage of the rows that passed on a retry"),
+        (".github/scripts/dispatch-browser-reading-leg-exits.sh",
+         f"{at_browser(BROWSER_READ_THREE_STEP, BROWSER_MERGE)} runs it to name every leg that "
+         "concluded anything but success beside what its own blob report holds"),
+        (".github/scripts/dispatch-browser-reading-row-durations.sh",
+         f"{at_browser(BROWSER_READ_FOUR_STEP, BROWSER_MERGE)} runs it for the row count, the "
+         "median and the 95th percentile of each layer's passing rows"),
+        (".github/scripts/dispatch-browser-verdict.sh",
+         f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
+         "upstream result that is neither success nor skipped and on a failed row in the "
+         "merged report"),
         (".github/scripts/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
-        # the citation is that key's own line rather than a step of the job.
+        # the citation is the two jobs that carry that key rather than a step of either.
         (".github/ci-images.yaml",
-         "dispatch-browser.yaml:216 (shard) and :724 (alone) run in the image at the digest the "
+         "dispatch-browser.yaml's shard and alone jobs run in the image at the digest the "
          "one `built:` row of this file carries, so a row that moves moves what those two jobs "
          "run inside"),
         (".github/docker/browser.Dockerfile",
          "the Dockerfile that image is built from: its bytes are the browsers, their host "
-         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:216 and :724 start"),
+         "packages and the PostgreSQL the lanes of dispatch-browser.yaml's shard and alone jobs "
+         "start"),
         (".github/workflows/browser-image.yaml",
          "the build that publishes that image: its labels, platforms and action pins decide the "
-         "bytes the row at dispatch-browser.yaml:216 and :724 names"),
+         "bytes of the image dispatch-browser.yaml's shard and alone jobs pin"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
@@ -3146,7 +3247,8 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
     # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
-    # (ci.yaml's comment on envoy-go-checks says why they are split out), with the tests of the
+    # (.github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
+    # says why they are split out), with the tests of the
     # architecture-note and spec-file rules and their commands, the note check over this
     # repository's notes through the composite action, the spec-file check over its spec
     # directory through the other one, and the guard that no CI file compares the spec files with
@@ -3579,7 +3681,7 @@ GATES = [
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
-        (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-34"),
+        (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
@@ -3593,7 +3695,8 @@ GATES = [
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
-    # engine, data, rules and path model.
+    # engine, data, rules and path model. The job runs the workflow-file size check beside it,
+    # which reads that same directory and is a script of its own.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -3604,11 +3707,20 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        (CI_FILTERS, f"{at('ci-filters', CHECK_STEP)} reads every filter from it, and writes rule 17's "
+                     f"generated blocks into it in its write mode"),
+        (".github/scripts/check-workflow-files.sh",
+         at("ci-filters", "Check every workflow file GitHub can read and its size")),
+        (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
+                                    "from the project it runs in"),
+        (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
+                               "local action a step's `uses:` names, for the inputs it checks"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
-        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
+        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
+                                              "check-workflow-files.sh imports its repeated-key test"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                      "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
                      "stream decoder"),
@@ -3628,8 +3740,9 @@ GATES = [
         # Rule 17 computes each gate filter's generated block from two sets: the repository's Go
         # test files and the ones each gate reads. A test file added or deleted anywhere changes
         # what that rule writes, so the change that adds one has to start this job - otherwise
-        # ci.yaml goes stale on a pull request this check never ran on, and the next pull
-        # request that does start it goes red for a commit of its own that changed nothing here.
+        # .github/ci-filters.yaml goes stale on a pull request this check never ran on, and the
+        # next pull request that does start it goes red for a commit of its own that changed
+        # nothing here.
         ("**/*_test.go", "rule 17 of check-ci-filters.sh writes each filter's exclusions out of the repository's Go "
                          "test files, so one added or deleted changes this check's own answer"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
@@ -3696,6 +3809,21 @@ GATES = [
         (".github/scripts/check-ci-tools.sh", f"{at('tool-fallback', TOOL_ROWS_STEP)} prints the one literal both "
                                               "paths are held to, which that gate holds every row and every call "
                                               "site of the tree to"),
+        (".github/scripts/tool-fallback-package-blobs.sh",
+         f"{at('tool-fallback', TOOL_BLOB_STEP)} is that script, which asks the registry for the "
+         "blob of every ghcr-mirror row"),
+        (".github/scripts/tool-fallback-row-call-sites.sh",
+         f"{at('tool-fallback', TOOL_ROWS_STEP)} is that script, which prints each row beside the "
+         "manifest line and the call sites that read its digest"),
+        (".github/scripts/tool-fallback-nowhere-controls.sh",
+         f"{at('tool-fallback', TOOL_NOWHERE_STEP)} is that script, which reads the outcome and "
+         "the window of each install with nowhere to go"),
+        (".github/scripts/tool-fallback-installed-versions.sh",
+         f"{at('tool-fallback', TOOL_VERSIONS_STEP)} is that script, which holds every tool the "
+         "faulted installs left to the version its row pins"),
+        (".github/scripts/tool-fallback-final-state.sh",
+         f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
+         "holds after the sixteen refusals"),
         (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),

@@ -48,6 +48,26 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header|--prox
 // `--socks4`, `--socks4a`, `--socks5`, `--socks5-hostname`), or a whole header
 // (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
 // `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
+// actionsCredential is a GitHub Actions credential expression, which workflowCredential finds
+// given to a command as an argument. Actions writes its value into the command as a shell writes a
+// variable's, so tokenValue and passwordWord take it as a flag's value where they take a variable.
+const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
+
+// workflowCredential matches a GitHub Actions credential expression, `${{ github.token }}` or
+// `${{ secrets.<name> }}`, given to a command as an argument: on a `run:` line after a word, quoted
+// or not (`run: .github/scripts/read.sh "${{ github.token }}"`), or quoted after a word on any line,
+// as in a `run: |` body (`gh-read.sh --token "${{ github.token }}"`). Actions writes the expression's
+// value into the command, so it is in that process's command line. The forms that put it in a
+// process's environment or in an action's input name a key or a variable before it - a step's
+// `env:` key (`GH_TOKEN: ${{ github.token }}`), a `with:` input, `export GH_TOKEN="${{ … }}"` - and
+// match nothing, and so does prose that writes the expression unquoted. A credential flag's value,
+// unquoted or after `=` (`--token=${{ github.token }}`), is credentialFlag's to find.
+var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])` + actionsCredential)
+
+// credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
+// request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
+// itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
+// case-sensitive, since `-D` and `-U` are other flags; `--token-file` and `--github-token` are
 // other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|--proxy1\.0|--socks4|--socks4a|--socks5|--socks5-hostname|-H|--header|--proxy-header)(?:=|[ \t]+)`)
 
@@ -55,12 +75,14 @@ var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|
 // and whose `-b` is a cookie; grep's, sed's and sudo's `-E` and git's `-b` are other flags.
 var curlCommand = regexp.MustCompile(`(?:^|[^\w-])curl(?:\s|$)`)
 
-// passwordWord matches a `-u` word whose password is a variable, a token file read into it or a
-// placeholder (`"$user:$token"`, `"ada:$(cat …)"`, `"ada:<password>"`), or a variable named for a
-// credential (`"$credential"`); curl's `-U` and a certificate's `:password` are read the same way. A
+// passwordWord matches a `-u` word whose password is a variable, a token file read into it, a
+// placeholder or an Actions credential expression, a value like a variable (`"$user:$token"`,
+// `"ada:$(cat …)"`, `"ada:<password>"`, `"ci:${{ secrets.REGISTRY_PASSWORD }}"`), or a variable
+// named for a credential (`"$credential"`). shellWord cuts an unquoted expression at its first
+// blank, so a word that ends at an expression's `${{` after the `:` matches too. A
 // `--user "$(id -u):$(id -g)"` of docker's names no password, and `env -u "$name"` unsets a
 // variable, so neither matches.
-var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<)|\$\{?\w*(?:token|credentials?)\b`)
+var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<|` + actionsCredential + `|\$\{\{$)|\$\{?\w*(?:token|credentials?)\b`)
 
 // tokenWord matches a body word that carries a token: a form field `token=$…` or `token=<…>`, a
 // JSON field `"…token": "$…"`, a variable named for one (`$agent_token`, but not
@@ -72,12 +94,12 @@ var tokenWord = regexp.MustCompile(`(?i)token\\?["']?\s*[=:]\s*\\?["']?\\?[$<]|\
 // substitution or a placeholder. A cookie jar's file (`-b "$jar"`) names none.
 var cookieWord = regexp.MustCompile(`(?i)(?:^|[\s;"'])[\w.-]*(?:session|sid|auth|token|secret|jwt)[\w.-]*\s*=\s*\\?["']?\\?[$<]`)
 
-// tokenValue matches a value that is one variable, one command substitution or one placeholder,
-// quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`, given to `--token`, `--oauth2-bearer` or
-// one of curl's other password flags. A value that joins several, dev-oidc-issuer's `--token
-// "$audience=$account=$file"`, names a file and no token, and a fixed fixture value (`--token
-// fixture-token`) is no secret, so neither matches.
-var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
+// tokenValue matches a `--token` or `--oauth2-bearer` value that is one variable, one command
+// substitution, one placeholder or one Actions credential expression, a value like a variable,
+// quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`, `${{ secrets.ADMIN_PAT }}`. A value
+// that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file and no
+// token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither matches.
+var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>|` + actionsCredential + `)\\?["']?(?:[\s;|&)]|$)`)
 
 // urlUserinfo matches a URL whose user's password is a variable, a command substitution or a
 // placeholder: `http://agent-secrets:$PROXY_PASSWORD@host`, `https://ada:<password>@proxy`,
@@ -266,7 +288,7 @@ func shellWord(s string) string {
 // credentialArgument says whether a line gives a command a credential as an argument, h naming
 // what its script holds a credential in (nil for a line read alone).
 func credentialArgument(line string, h held) bool {
-	if credentialHeader.MatchString(line) {
+	if credentialHeader.MatchString(line) || workflowCredential.MatchString(line) {
 		return true
 	}
 	curl := curlCommand.MatchString(line)
@@ -512,6 +534,16 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`git config --file="$cfg" https.proxy "$HTTPS_PROXY"`,
 		`git config "http.proxy" "$HTTPS_PROXY"`,
 		`git config http.proxy "http://127.0.0.1:3128" && git config https.proxy "$HTTPS_PROXY"`,
+		`        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"`,
+		`        run: .github/scripts/publish.sh ${{ secrets.DEPLOY_KEY }}`,
+		`          gh-read.sh --token "${{ github.token }}" jobs`,
+		// An Actions expression is the value of a credential flag as much as a shell variable is:
+		// after --token, -u's password or a body flag, with or without `=`, quoted or not.
+		`          gh api --token ${{ secrets.ADMIN_PAT }} /user`,
+		`          gh-read.sh --token="${{ github.token }}" jobs`,
+		`        run: gh-read.sh --token=${{ github.token }} jobs`,
+		`          curl -u "ci:${{ secrets.REGISTRY_PASSWORD }}" https://registry.internal.example/v2/`,
+		`          curl -d "token=${{ secrets.DISPATCH_TOKEN }}" https://dispatch.internal.example/api`,
 	} {
 		if !credentialArgument(line, nil) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -584,6 +616,13 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		// git config with no credential.
 		`git config --add http.proxy http://proxy.example:3128`,
 		`git -C "$repo" config http.proxy "$HTTPS_PROXY_HOST"`,
+		`          GH_TOKEN: ${{ github.token }}`,
+		`          password: ${{ secrets.GITHUB_TOKEN }}`,
+		`            github_token=${{ secrets.GITHUB_TOKEN }}`,
+		`          export GH_TOKEN="${{ github.token }}"`,
+		`        run: echo "${{ steps.download-blobs.conclusion }}"`,
+		`  * its step's token is ${{ github.token }}, and its time limit is short: the act is a`,
+		`mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' $'        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n'`,
 	} {
 		if credentialArgument(line, nil) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)
