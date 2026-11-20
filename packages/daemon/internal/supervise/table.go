@@ -213,9 +213,8 @@ type StalePlugin struct {
 	Trigger string
 	// Credit is the refresh gate credit the pass that posted this took for this claim, or nil
 	// when the post carries none: the controller's claim, a claim in a turn, or a post with no
-	// gate. The credit's Publish and Release are idempotent, and Release of an unpublished
-	// credit takes it off the floor. The machine holds the credit until the decision that
-	// raises the relaunch ends (endRefreshLane).
+	// gate. The machine holds it from here until the end of the decision that runs the turn of
+	// the wake it pays for, and gives it back there (endRefreshLane); Release is idempotent.
 	Credit *RefreshCredit
 }
 

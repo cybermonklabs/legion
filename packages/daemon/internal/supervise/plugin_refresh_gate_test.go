@@ -60,7 +60,7 @@ func (g *fakeAdmitter) Admit() *RefreshCredit {
 	}
 	g.asks.granted++
 	return &RefreshCredit{
-		doRelease: func(published bool) {
+		doRelease: func() {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.asks.released++

@@ -4,6 +4,8 @@ import "testing"
 
 const gateRate = 8
 
+// admissions is how many credits the gate grants in a row, up to limit, before it refuses one.
+// The credits it grants stay out.
 func admissions(t *testing.T, g *RefreshGate, limit int) int {
 	t.Helper()
 	granted := 0
@@ -17,6 +19,7 @@ func admissions(t *testing.T, g *RefreshGate, limit int) int {
 	return 0
 }
 
+// admit is one admission the test needs granted.
 func admit(t *testing.T, g *RefreshGate) *RefreshCredit {
 	t.Helper()
 	c := g.Admit()
@@ -44,10 +47,10 @@ func TestTheRefreshGateGrantsTheRateAndNoMoreUntilACreditComesBack(t *testing.T)
 	for _, c := range credits[1:] {
 		c.Release()
 	}
-	// Extra releases are harmless.
+	// A credit given back again gives nothing back: Release is idempotent.
 	credits[0].Release()
 	if granted := admissions(t, g, gateRate+1); granted != gateRate {
-		t.Fatalf("got %d admissions after all released, want %d", granted, gateRate)
+		t.Fatalf("got %d admissions after every credit came back, want %d", granted, gateRate)
 	}
 }
 
@@ -60,8 +63,8 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 			}
 		}
 		g.Correct(gateRate * 4)
-		if g.held != 0 || g.unpublished != 0 {
-			t.Fatalf("at rate %d the gate holds %d and counts %d unpublished, want neither counted", rate, g.held, g.unpublished)
+		if g.held != 0 || g.out != 0 {
+			t.Fatalf("at rate %d the gate holds %d with %d credits out, want neither counted", rate, g.held, g.out)
 		}
 		for i := range gateRate * 4 {
 			if g.Admit() == nil {
@@ -75,23 +78,28 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 	}
 }
 
+// The sweep's correction sets the count to the refresh wakes it re-read waiting or to the credits
+// out, whichever is more: a re-read misses the refresh posted a moment before it and the one whose
+// turn is running, so it never lowers the count below the credits out, and a re-read above them
+// counts the lane's wakes with no admission behind them.
 func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
+		name string
+		// admit is the credits granted, release how many of them came back, and waiting what the
+		// sweep's re-read reports.
 		admit   int
-		publish int // published then released
-		release int // released unpublished
+		release int
 		waiting int
 		held    int
 	}{
-		{name: "all published, all in waiting", admit: 5, publish: 5, waiting: 5, held: 5},
-		{name: "unpublished admissions are the floor", admit: 5, waiting: 0, held: 5},
-		{name: "published and released is no floor", admit: 5, publish: 5, waiting: 0, held: 0},
-		{name: "unpublished release lowers floor", admit: 5, release: 2, waiting: 0, held: 3},
-		{name: "a reading above the floor", admit: 3, publish: 3, waiting: 6, held: 6},
-		{name: "a credit lost to a path that returns none", admit: 0, waiting: 2, held: 2},
-		{name: "nothing held nothing waiting", admit: 0, waiting: 0, held: 0},
-		{name: "K admitted, 2 published, rest unpublished", admit: gateRate, publish: 2, waiting: 2, held: gateRate},
+		{name: "a reading that sees every credit's wake is the count", admit: 5, waiting: 5, held: 5},
+		{name: "a reading that sees none of the credits out is floored at them", admit: 5, waiting: 0, held: 5},
+		{name: "a credit given back is no floor", admit: 5, release: 5, waiting: 0, held: 0},
+		{name: "the floor is the credits still out", admit: 5, release: 2, waiting: 0, held: 3},
+		{name: "a reading above the credits out is taken as it stands", admit: 3, waiting: 6, held: 6},
+		{name: "a wake with no admission behind it is counted", admit: 0, waiting: 2, held: 2},
+		{name: "a lane whose credits are all back is given its whole share again", admit: 0, waiting: 0, held: 0},
+		{name: "a gate whose whole share is out keeps it", admit: gateRate, waiting: 2, held: gateRate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewRefreshGate(gateRate)
@@ -99,186 +107,131 @@ func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 			for i := range tc.admit {
 				credits[i] = admit(t, g)
 			}
-			for i := range tc.publish {
-				credits[i].Publish()
-				credits[i].Release()
-			}
 			for i := range tc.release {
-				credits[tc.publish+i].Release() // release unpublished
+				credits[i].Release()
 			}
 			g.Correct(tc.waiting)
 			if g.held != tc.held {
-				t.Fatalf("held %d after Correct(%d), want %d (admit=%d publish=%d release=%d)",
-					g.held, tc.waiting, tc.held, tc.admit, tc.publish, tc.release)
+				t.Fatalf("the gate holds %d after a correction from %d waiting with %d granted and %d back, want %d",
+					g.held, tc.waiting, tc.admit, tc.release, tc.held)
 			}
 			want := max(gateRate-tc.held, 0)
 			if granted := admissions(t, g, gateRate+1); granted != want {
-				t.Fatalf("got %d free, want %d", granted, want)
+				t.Fatalf("the gate granted %d admissions after that correction, want %d: %d of %d credits held",
+					granted, want, tc.held, gateRate)
 			}
 		})
 	}
 }
 
-func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) {
+// The floor is the credits still out, not every credit of the gate's life: a sweep after every
+// credit of the last batch came back sees no floor, and counts only what was taken since.
+func TestTheRefreshGateCountsOnlyTheCreditsStillOut(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	credits := make([]*RefreshCredit, 4)
 	for i := range 4 {
 		credits[i] = admit(t, g)
 	}
-	for _, c := range credits {
-		c.Publish()
-	}
 	g.Correct(4)
-	fifth := admit(t, g)
-	g.Correct(0) // only the fifth is unpublished
-	if g.held != 1 {
-		t.Fatalf("held %d, want 1: the four published credits are in waiting, not the floor", g.held)
-	}
-	fifth.Release()
 	for _, c := range credits {
 		c.Release()
 	}
+	admit(t, g)
+	g.Correct(0)
+	if g.held != 1 {
+		t.Fatalf("the gate holds %d after a correction reading nothing with one credit out, want 1: the four given back are no floor", g.held)
+	}
+	if granted := admissions(t, g, gateRate+1); granted != gateRate-1 {
+		t.Fatalf("the gate granted %d admissions after that correction, want %d", granted, gateRate-1)
+	}
 }
 
+// A lane whose batch came back is given its whole share at every sweep: the rate, every minute.
 func TestTheRefreshGateGivesItsWholeShareBackAtTheNextSweep(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	for sweep := 1; sweep <= 3; sweep++ {
 		g.Correct(0)
-		credits := make([]*RefreshCredit, 0, gateRate)
-		for {
-			c := g.Admit()
-			if c == nil {
-				break
-			}
+		var credits []*RefreshCredit
+		for c := g.Admit(); c != nil; c = g.Admit() {
 			credits = append(credits, c)
 		}
 		if len(credits) != gateRate {
-			t.Fatalf("sweep %d: got %d admissions, want %d", sweep, len(credits), gateRate)
+			t.Fatalf("the gate granted %d admissions at sweep %d, want the rate, %d", len(credits), sweep, gateRate)
 		}
-		// Each admitted wake is published, then released (its turn ran).
 		for _, c := range credits {
-			c.Publish()
 			c.Release()
 		}
 	}
 }
 
-func TestTwoCorrectionsInOneWindowDoNotLoseTheGrantedFloor(t *testing.T) {
+// Two corrections in one window — the sweep's ticker buffers a tick while a sweep runs long, and
+// the next sweep runs at once — keep the credits out as the floor of both. A floor counted from
+// the admissions since the previous correction is zeroed by the first and lost by the second,
+// which then admits on top of the batch the first sweep left out.
+func TestTwoCorrectionsInOneWindowKeepTheCreditsOutAsTheFloor(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	credits := make([]*RefreshCredit, gateRate)
 	for i := range gateRate {
 		credits[i] = admit(t, g)
 	}
-	credits[0].Publish()
 	g.Correct(1)
 	if got := admissions(t, g, gateRate+1); got != 0 {
-		t.Fatalf("got %d after first Correct(1), want 0: 7 unpublished hold the floor", got)
+		t.Fatalf("the gate granted %d after a correction reading one wake with %d credits out, want 0", got, gateRate)
 	}
-	credits[1].Publish()
 	credits[1].Release()
-	credits[2].Publish()
 	credits[2].Release()
-	g.Correct(1) // 1 still waiting, 5 unpublished: held = 1+5 = 6
+	g.Correct(1)
 	if got := admissions(t, g, gateRate+1); got != 2 {
-		t.Fatalf("got %d after second Correct(1), want 2: 1 waiting + 5 unpublished = 6 held", got)
+		t.Fatalf("the gate granted %d after a second correction reading one wake with %d credits out, want 2", got, gateRate-2)
 	}
 }
 
-func TestAPublishBetweenCorrectionsDropsTheFloorByOne(t *testing.T) {
+// A credit whose turn is running is out until that turn's decision ends, though no view shows its
+// wake any longer: the turn took the wake off the machine, and the credit goes back only at the end
+// of the decision (endRefreshLane). A correction in that window reads no wake for it and must still
+// count it, or the gate grants one more than its share while the turn runs.
+func TestACreditWhoseTurnIsRunningStaysCountedThroughACorrection(t *testing.T) {
 	g := NewRefreshGate(gateRate)
-	credits := make([]*RefreshCredit, 4)
-	for i := range 4 {
-		credits[i] = admit(t, g)
-	}
-	g.Correct(0) // held = 0 + 4 = 4
-	if g.held != 4 {
-		t.Fatalf("held %d, want 4", g.held)
-	}
-	credits[0].Publish()
-	g.Correct(1) // held = 1 + 3 = 4
-	if g.held != 4 {
-		t.Fatalf("held %d after 1 published, want 4", g.held)
-	}
-	credits[1].Publish()
-	g.Correct(2) // held = 2 + 2 = 4
-	if g.held != 4 {
-		t.Fatalf("held %d after 2 published, want 4", g.held)
-	}
-	for _, c := range credits {
-		c.Publish()
-		c.Release()
-	}
+	running := admit(t, g)
 	g.Correct(0)
-	if g.held != 0 {
-		t.Fatalf("held %d after all returned, want 0", g.held)
+	if got := admissions(t, g, gateRate+1); got != gateRate-1 {
+		t.Fatalf("the gate granted %d with one credit's turn running and no wake of it waiting, want %d", got, gateRate-1)
 	}
+	running.Release()
 }
 
-func TestAReleaseOfAnUnpublishedCreditDropsTheFloor(t *testing.T) {
-	g := NewRefreshGate(gateRate)
-	credits := make([]*RefreshCredit, 4)
-	for i := range 4 {
-		credits[i] = admit(t, g)
-	}
-	credits[0].Release() // unpublished release: held=3, unpublished=3
-	g.Correct(0)         // held = 0 + 3 = 3
-	if g.held != 3 {
-		t.Fatalf("held %d after releasing an unpublished credit, want 3", g.held)
-	}
-	credits[1].Release() // another unpublished release
-	g.Correct(0)         // held = 0 + 2 = 2
-	if g.held != 2 {
-		t.Fatalf("held %d after two unpublished releases, want 2", g.held)
-	}
-	credits[2].Publish()
-	credits[2].Release()
-	credits[3].Publish()
-	credits[3].Release()
-	g.Correct(0)
-	if g.held != 0 {
-		t.Fatalf("held %d after all returned, want 0", g.held)
-	}
-}
-
-func TestACreditReleasedTwiceAndPublishedAfterReleaseChangesNothingMore(t *testing.T) {
-	g := NewRefreshGate(gateRate)
-	c := admit(t, g)
-	c.Release()
-	c.Release()  // idempotent
-	c.Publish()  // harmless after release
-	g.Correct(0) // held = 0 + 0 = 0
-	if g.held != 0 {
-		t.Fatalf("held %d after double release and publish-after-release, want 0", g.held)
-	}
-	if got := admissions(t, g, gateRate+1); got != gateRate {
-		t.Fatalf("got %d free, want %d", got, gateRate)
-	}
-}
-
-// A credit that the caller releases because the post was dropped (the claim was removed between
-// Admit and post) lowers the floor. Without the caller's release, the credit stays on the floor
-// forever and the gate never empties, which is the production defect this PR fixes.
+// A credit the daemon's pass gives back because its post went nowhere lowers the count by one: the
+// claim is no longer supervised, so no machine will ever end a decision holding that credit.
 func TestADroppedPostsCreditIsReleasedByTheCaller(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	credits := make([]*RefreshCredit, gateRate)
 	for i := range gateRate {
 		credits[i] = admit(t, g)
 	}
-	// One claim is removed between Admit and post. The caller releases its credit.
-	dropped := credits[3]
-	dropped.Release()
-	// The other 7 are posted and their wakes are published.
-	for i, c := range credits {
-		if i == 3 {
-			continue
-		}
-		c.Publish()
-	}
-	g.Correct(7) // 7 wakes published, 0 unpublished: held = 7
-	if g.held != 7 {
-		t.Fatalf("held %d after the dropped post's release and 7 publishes, want 7", g.held)
+	credits[3].Release()
+	g.Correct(gateRate - 1)
+	if g.held != gateRate-1 {
+		t.Fatalf("the gate holds %d after the dropped post's credit came back, want %d", g.held, gateRate-1)
 	}
 	if got := admissions(t, g, 2); got != 1 {
-		t.Fatalf("got %d free after a dropped post, want 1: the released credit freed one slot", got)
+		t.Fatalf("the gate granted %d after a dropped post, want 1: the credit it gave back is free again", got)
+	}
+}
+
+// A credit given back twice gives back one: every path that ends a credit's life may release it,
+// and a second release takes nothing more off the count.
+func TestACreditReleasedTwiceComesBackOnce(t *testing.T) {
+	g := NewRefreshGate(gateRate)
+	kept := admit(t, g)
+	c := admit(t, g)
+	c.Release()
+	c.Release()
+	g.Correct(0)
+	if g.held != 1 || g.out != 1 {
+		t.Fatalf("the gate holds %d with %d out after one credit released twice and one kept, want 1 and 1", g.held, g.out)
+	}
+	kept.Release()
+	if got := admissions(t, g, gateRate+1); got != gateRate {
+		t.Fatalf("the gate granted %d once both credits were back, want %d", got, gateRate)
 	}
 }
