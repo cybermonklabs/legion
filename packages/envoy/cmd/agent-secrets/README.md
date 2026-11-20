@@ -185,7 +185,9 @@ are under the home the password database gives the process's user.
 `agent-secrets identity` answers by exit status alone (0 for a launcher's key dir or a helper
 session, 1 otherwise) and asks nothing of the network. `agent-secrets identity --source` walks the
 chain without registering anything and prints the source a command would use — `key-dir:
-AGENT_SECRETS_KEY_DIR` (or its default, `$XDG_RUNTIME_DIR/agent-secrets`), `sign-in: <person>`,
+AGENT_SECRETS_KEY_DIR`, or where it is unset `key-dir: $XDG_RUNTIME_DIR/agent-secrets
+(AGENT_SECRETS_KEY_DIR is unset)` or `key-dir: /run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR
+and XDG_RUNTIME_DIR are unset)`, `sign-in: <person>`,
 `helper: <socket>`, `machine: the cached enrollment in the machine cache (…)`, or `machine:` and
 the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
 that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1. The key

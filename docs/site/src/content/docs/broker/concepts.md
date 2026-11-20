@@ -259,7 +259,7 @@ sign-ins and the machine cache are under the home the password database gives th
 `agent-secrets identity` answers by its exit status alone, as it always has: 0 for a launcher's
 key directory or a helper session, 1 otherwise, asking nothing of the network. `agent-secrets
 identity --source` walks the chain, registering nothing, and prints the source a command would
-use (`key-dir: AGENT_SECRETS_KEY_DIR` or its default `$XDG_RUNTIME_DIR/agent-secrets`,
+use (`key-dir: AGENT_SECRETS_KEY_DIR`, or where it is unset `key-dir: $XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)` or `key-dir: /run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR and XDG_RUNTIME_DIR are unset)`,
 `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in the machine cache (…)`,
 or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the helper
 answered and is not that source; with none it prints the refusal above and exits 1. The key
