@@ -9,8 +9,8 @@
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
 # 0 so that only the three cases about the waits pay for one: two set it to 1 and read that the
-# drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
-# drive took no time at all, which a script that slept whatever it was given would fail.
+# drive took that long with bash's own SECONDS, and the control sets it to 60 and reads that the
+# drive took under 30 s, which a script that slept whatever it was given would fail.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, and the script.
@@ -73,6 +73,7 @@ calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ -f "$work/kill-wrapper.\$calls" ]; then
   [ ! -f "$work/stderr.\$calls" ] || cat "$work/stderr.\$calls" >&2
+  # no-wait: the wrapper is the script's own child; the script reads its end after its own wait.
   if ! kill -9 "\$(awk '{print \$4}' "/proc/\$PPID/stat")"; then
     echo "dispatch-browser-run-reads.test.sh could not stage a killed wrapper: the kill of" \
       "the wrapper this stand-in was run by failed, so what follows is this harness failing" \
@@ -534,15 +535,17 @@ check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
 
 echo "case: the negative control, a gh that answers at once"
 # Without this, the two cases above would pass for a script that slept whatever it was given.
-# The knob is 10 here and the gh answers at once, so an unconditional sleep would take 10 s and
-# this drive takes none; the bound is an upper one because SECONDS counts whole seconds and a
-# drive that straddles a tick reads 1 however short it was.
+# The knob is 60 here and the gh answers at once, so an unconditional sleep would take 60 s. The
+# bound is half of that, not a second: SECONDS counts whole seconds, and on a loaded machine the
+# drive itself (bash, jq and the stand-in gh) took 2 s and more, which read as a wait that never
+# happened. The seconds it took are in the line, so a failure says by how much.
 fixture 0
-retry_seconds=10
+retry_seconds=60
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(at_most "$seconds" 1)"
+check "and waits not at all: the drive took $seconds s, under the 30 s an unconditional wait of 60 s cannot" \
+  "$(at_most "$seconds" 30)"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

@@ -60,6 +60,6 @@ testing round 0 handoff fact`: the takeover's checks-red move had counted the im
 so `review_round` was 1 where the script asked for 0. The tester traced it to #1850 (`.legion/LEGION-632/test.json`
 `observations`); the script was byte-identical to main's at those lines (main f3e990f7:2572 and
 siblings), so main's own proof carried the defect; the architect directed one harness commit
-(bb12c138, `scripts/e2e/stage4b-sandbox-tree.sh:2814-2888`), and the reviewer counted it a new
+(bb12c138, `scripts/e2e/stage4b-sandbox-tree.sh:2830-2904`), and the reviewer counted it a new
 round by the fingerprint rule (`review.json` `round`). The coordinator reran stage 4b at the merged
 head on that head's own image.

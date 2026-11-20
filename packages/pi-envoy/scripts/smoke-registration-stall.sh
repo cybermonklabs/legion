@@ -48,6 +48,9 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
 repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
 readonly repo_root
+# scripts/e2e/lib/wait-gone.sh holds stop_gone, the stop stop_pid below runs.
+# shellcheck source=scripts/e2e/lib/wait-gone.sh
+source "${repo_root}/scripts/e2e/lib/wait-gone.sh"
 
 # The loopback stack --local-stack brings up, shared with scripts/smoke-role-takeover.sh: the
 # ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
@@ -192,17 +195,14 @@ pane_fd=""
 nats_pid=""
 listener_pid=""
 
-# stop_pid PID: TERM, then KILL after 5 s. Best effort, for the services --local-stack started.
+# stop_pid PID: stop_gone (scripts/e2e/lib/wait-gone.sh): SIGTERM, up to 5 s, then SIGKILL and a
+# wait until 15 s from the call, and the process reaped once it is gone. For the services
+# --local-stack started, in the cleanup, which goes on whatever it finds: stop_gone names one still
+# there, and it is left unreaped rather than waited on without a bound.
 stop_pid() {
-  local pid=${1:-} i
+  local pid=${1:-}
   [[ -n "$pid" ]] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for ((i = 0; i < 25; i++)); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  if stop_gone 5 "$((EPOCHSECONDS + 15))" "$pid"; then wait "$pid" 2>/dev/null || true; fi
 }
 
 cleanup() {

@@ -633,7 +633,7 @@ live_shape() {
   sleep_until_ms "$recreate_ms"
   say "recreate-live (${shape}): recreating the session bucket with ${after}, the listener running"
   if ! "$rig" recreate -nats "$nats_url" -bucket sessions -sets "$after" -fill-log "${run_dir}/fill.json" >&2; then
-    kill "$awaiter" 2>/dev/null || true
+    kill "$awaiter" 2>/dev/null || true # no-wait: await_finish, next, runs wait on it
     await_finish || true
     kill -CONT "$nats_pid" 2>/dev/null || true
     poll_stop

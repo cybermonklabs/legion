@@ -26,7 +26,25 @@
 # (marked_processes, lib/process-tree.sh). The caller marks its run (export LEGION_E2E_RUN) after
 # this call, so the tee, which takes the caller's environment as it stands now, carries no mark,
 # whatever FILE and the caller's working directory are.
+#
+# The tee keeps none of the caller's descriptors but its stdin, stdout and stderr: it closes
+# every other one it inherited before it execs tee, which opens FILE itself. A process that outlives
+# every sweep by design must hold nothing the run gives up at its teardown: a box-login run's lock
+# (lib/box-login.sh's box_login_lock_fd, which the stages take before this call) stays held while
+# any process keeps its descriptor, so a tee that kept it would hold the lock until the driver's
+# last line, and the run's own wait for the lock to be free (stop_box_login_run) would always fail.
+# A port a keeper hands on, or the write end of a pipe a reader waits on, is the same.
 transcript_to() {
   : >>"$1" || return
-  exec > >(trap '' HUP INT TERM PIPE && exec tee -a "$1" /dev/null) 2>&1
+  exec > >(
+    trap '' HUP INT TERM PIPE
+    for fd in /dev/fd/*; do
+      fd=${fd##*/}
+      case $fd in
+        '' | *[!0-9]* | 0 | 1 | 2) ;;
+        *) eval "exec $fd>&-" ;;
+      esac
+    done
+    exec tee -a "$1" /dev/null
+  ) 2>&1
 }

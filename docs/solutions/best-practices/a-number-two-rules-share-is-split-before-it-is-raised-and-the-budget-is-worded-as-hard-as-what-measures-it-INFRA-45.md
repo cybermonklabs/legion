@@ -41,7 +41,7 @@ that stated 2,000. One of them was `skills/legion-controller/SKILL.md:341`, whic
 `dispatch message … --body-file -` of at most 2,000 characters, written as `skill://dispatch`'s
 'Writing for the human' says". That sentence carried two facts at once: the server would refuse
 more, and a daily report to a person should be about that long. The two had the same value by
-accident. The sweep raised it to 32,000 and `scripts/e2e/stage4b-sandbox-tree.sh:5460` was relaxed
+accident. The sweep raised it to 32,000 and `scripts/e2e/stage4b-sandbox-tree.sh:6154` was relaxed
 to `(.payload.body | length) <= 32000` to match, which told every controller it may write a
 32,000-character report to a human reading it on a phone — a product change nobody asked for. The
 reviewer caught it as a minor and reported it to the architect as a product consequence rather
@@ -54,7 +54,7 @@ wording that says so: `skills/legion-retro/SKILL.md:181` and
 `docs/site/src/content/docs/dispatch/for-agents.md:101`.
 
 That fix then produced the next round's only held finding. The new budget read "under **about**
-2,000 characters" while `stage4b-sandbox-tree.sh:5461` asserts `<= 2000` with no margin, inside
+2,000 characters" while `stage4b-sandbox-tree.sh:6154` asserts `<= 2000` with no margin, inside
 `until_true 300 … report_posted` whose timeout ends in `fail` (`scripts/e2e/lib/rig.sh:79`): a
 controller obeying the instruction with a 2,050-character report would burn 300 seconds and fail
 that row blaming a *missing* report. Both halves of the thermonuclear pair and the tester found it

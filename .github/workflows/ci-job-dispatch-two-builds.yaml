@@ -82,9 +82,9 @@ jobs:
       # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
       # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
       # before it reuses a directory: it deletes index.lock and shallow.lock alone
-      # (src/git-directory-helper.ts). So the step between the two attempts ends every git
-      # process on the runner, which runs this one job, and then empties the workspace, and the
-      # second attempt is a fresh clone.
+      # (src/git-directory-helper.ts). So the step between the two attempts ends every process
+      # working in the workspace, which are the git processes the cut attempt left, waits for
+      # each to be gone, and then empties the workspace, and the second attempt is a fresh clone.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
@@ -95,12 +95,71 @@ jobs:
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
-        run: |
-          pgrep -a git || true
-          pkill -KILL -x git || true
-          pkill -KILL -f git-remote-http || true
-          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
-          pgrep -a git || echo "no git process is left"
+        run: &end-cut-checkout |
+          # The git and git-remote-http a cut checkout leaves run in the workspace, so the ones
+          # working there are ended, and nothing else of the runner's. The walk, the kill and the
+          # wait share one bound, 100 s from the step's start and inside its own 2 minutes, so a
+          # walk or a wait that runs long is named here rather than cut by the runner with nothing
+          # said: the walk reads the bound before each process, and reads each one's working
+          # directory with cd -P, a builtin, so it starts no process per entry. Each process found
+          # is read with its start time (stat field 22), all are sent SIGKILL at once, and each is
+          # waited for until it is gone: its stat missing, naming another start time (another
+          # process on a reused pid), or a zombie whose task directory lists no thread but the
+          # main one, which holds no directory and is reaped in its parent's own time.
+          # scripts/e2e/lib/wait-gone.sh's process_start holds this rule for the scripts, and the
+          # checkout that failed may have left no copy of it here. One still there at the bound
+          # fails the step, named, before the workspace is emptied under it. This shell works
+          # outside the workspace.
+          cd /
+          bound=100
+          deadline=$((EPOCHSECONDS + bound))
+          declare -A start=()
+          # all_gone PID... succeeds once every PID is gone by that rule. The command name, stat
+          # field 2, may hold spaces and a `) `, so the fields are read after its last `) `.
+          all_gone() {
+            local pid stat
+            local -a f tasks
+            for pid in "$@"; do
+              stat=
+              { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
+              if [ -z "$stat" ]; then
+                # There but unreadable is not known to be gone.
+                [ ! -e "/proc/$pid" ] || return 1
+                continue
+              fi
+              read -r -a f <<<"${stat##*) }"
+              [ "${f[19]:-}" = "${start[$pid]}" ] || continue
+              [ "${f[0]}" = Z ] || return 1
+              tasks=("/proc/$pid/task/"*)
+              [ "${#tasks[@]}" -le 1 ] || return 1
+            done
+          }
+          left=()
+          for p in /proc/[0-9]*; do
+            [ "$EPOCHSECONDS" -lt "$deadline" ] || { echo "::error::the walk of /proc had not ended $bound s after the step began, its bound, at $p, so no process was ended and the workspace is left as it is"; exit 1; }
+            cd -P "$p/cwd" 2>/dev/null || continue
+            here=$PWD/
+            cd /
+            case "$here" in "$GITHUB_WORKSPACE"/*) ;; *) continue ;; esac
+            stat=
+            { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
+            [ -n "$stat" ] || continue
+            read -r -a fields <<<"${stat##*) }"
+            left+=("${p#/proc/}")
+            start[${p#/proc/}]=${fields[19]}
+          done
+          echo "working in the workspace: ${left[*]:-none}"
+          if [ "${#left[@]}" -gt 0 ]; then
+            kill -KILL -- "${left[@]}" 2>/dev/null || true
+            until all_gone "${left[@]}" || [ "$EPOCHSECONDS" -ge "$deadline" ]; do sleep 0.2; done
+            all_gone "${left[@]}" || {
+              for pid in "${left[@]}"; do
+                ! all_gone "$pid" || continue
+                echo "::error::pid $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)) is still there at the step's bound, $bound s after it began"
+              done
+              exit 1
+            }
+          fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
@@ -319,13 +378,8 @@ jobs:
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
-        run: |
-          pgrep -a git || true
-          pkill -KILL -x git || true
-          pkill -KILL -f git-remote-http || true
-          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
-          pgrep -a git || echo "no git process is left"
-          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+        # The job above's step of the same name, its run script the same YAML node (an alias).
+        run: *end-cut-checkout
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

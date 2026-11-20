@@ -1640,11 +1640,27 @@ start_daemon() {
   kill -0 "$daemon_pid" 2>/dev/null || fail "the Go daemon exited before it answered /healthz: $(tail -3 "$daemon_log" | cut -c1-300 | tr '\n' ' ')"
   ports_ours
 }
+# stop_daemon_ports stops the run's daemon (stop_pid, lib/process-tree.sh) and waits for its two
+# ports too, which a child of the daemon, or any process that inherited its socket, keeps after the
+# daemon's pid is gone: the daemon's next start (start_daemon, whose ports_free refuses a port still
+# held) and the next run's ports_free read those ports. It returns stop_pid's status, 1 with what is
+# still there named. Every stop of the daemon runs it, and no other command signals its pid
+# (wait-gone-scripts.test.ts reads the script as bash reads it for one): restart_stop, the
+# hygiene check's stop and cleanup's. A port not set yet (a run cut before then) is no target.
+stop_daemon_ports() {
+  stop_pid "$daemon_pid" "" ${port_daemon:+"port:$port_daemon"} ${port_worker_stream:+"port:$port_worker_stream"}
+}
+# restart_stop is every restart's stop of the daemon: restart_daemon's, and the checks' own that
+# change what the daemon is started with between its stop and its start. A daemon or a port still
+# there fails the check, since the new daemon binds the old one's ports.
+restart_stop() {
+  stop_daemon_ports || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); its restart would meet its ports"
+  daemon_pid=
+}
 # restart_daemon stops the run's daemon and starts it again on a legion.yaml written afresh
 # (write_legion_config).
 restart_daemon() {
-  stop_pid "$daemon_pid"
-  daemon_pid=
+  restart_stop
   write_legion_config
   start_daemon
 }
@@ -2905,7 +2921,9 @@ cleanup() {
   # that has nothing to record.
   [ -z "$pair_session" ] || record_pair >/dev/null 2>&1
   remove_negative_config >/dev/null 2>&1
-  stop_pid "$daemon_pid"
+  # Waited for, ports and all, so the next run's ports_free meets neither of the fixed ports; a run
+  # that started no daemon holds neither, and another run's daemon may.
+  [ -z "$daemon_pid" ] || stop_daemon_ports
   [ -z "$block_tree" ] || set_status "$block_tree" "done"
   if ! collect_transcripts; then
     teardown_failed+="${teardown_failed:+, }transcripts"
@@ -2932,6 +2950,7 @@ cleanup() {
       echo "CHECK production-audit: FAIL: $(audit_failure)"
     fi
   fi
+  # Waited for, so the next run's refuse_leftovers and ports_free meet nothing of this one.
   stop_marked_processes "$work" || true
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
@@ -5531,8 +5550,7 @@ begin restart-mid-tree
 before=$(claim_view "$tree1" merger | jq -c '{session, incarnation: .locator.incarnation, podUid: .locator.sandbox.podUid, container: .locator.sandbox.container}')
 live_before=$(live_claims) || fail "legion claims could not be read"
 stale_before=$(log_lines "$stale_msg" | wc -l)
-stop_pid "$daemon_pid"
-daemon_pid=
+restart_stop
 start_daemon
 on_tree "$tree1" until_true 300 "the merger to be re-adopted" sh -c \
   "'$work/legion' state --json --config '$work/legion.yaml' | jq -e --arg i '$tree1' '.issues[\$i].workers.merger.claim.state | IN(\"ready\", \"working\", \"idle\")' >/dev/null"
@@ -5584,8 +5602,7 @@ new_envoy_url=$(upper_host "$handed_envoy_url")
 [ "$new_envoy_url" != "$old_envoy_url" ] || fail "LEGION_E2E_ENVOY_URL's host has no lower-case letter to upper-case"
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid"
-daemon_pid=
+restart_stop
 handed_envoy_url=$new_envoy_url
 handed_envoy_source="LEGION_E2E_ENVOY_URL with its host upper-cased"
 write_legion_config
@@ -5638,8 +5655,7 @@ old_stream=tcp://$host:$port_worker_stream
 old_daemon_url=http://$host:$port_daemon
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid"
-daemon_pid=
+restart_stop
 read -r port_daemon port_worker_stream <<<"$port_worker_stream $port_daemon"
 write_legion_config
 new_stream=tcp://$host:$port_worker_stream
@@ -6868,7 +6884,7 @@ bad=$(pod_shape_verdict "$evidence/pod-watch.json")
 [ -z "$bad" ] || fail "Sandbox pods depart from the pod shape: $(tr '\n' ' ' <<<"$bad")"
 judged=$(jq -r -L "$root/scripts/e2e/lib" 'include "stage4b-pods"; ready_pods | .metadata.uid' "$evidence/pod-watch.json" | sort -u | wc -l)
 # The Secret-value check: the helper judges the recorded pods against every value it held, on TERM.
-stop_pid "$leaks_pid"
+stop_pid "$leaks_pid" || fail "lib/secret-leaks.ts (pid $leaks_pid) did not stop (named above), so its verdict may be unfinished"
 leaks_pid=
 [ -s "$work/secret-leaks.json" ] || fail "lib/secret-leaks.ts wrote no verdict ($evidence/logs/secret-leaks.err)"
 jq -e '.leaks == [] and .unseen == [] and .unreadable == 0' "$work/secret-leaks.json" >/dev/null ||
@@ -6950,7 +6966,7 @@ expect_failure pod-watch-scheduled-then-died pod_watch_verdict "$evidence/contro
 pass
 
 begin hygiene
-stop_pid "$daemon_pid"
+stop_daemon_ports || fail "the daemon (pid $daemon_pid) did not stop or its ports are still held (named above); the teardown would race it"
 daemon_pid=
 teardown
 delete_consumers

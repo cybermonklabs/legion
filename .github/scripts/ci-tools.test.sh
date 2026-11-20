@@ -79,6 +79,8 @@ repository=$(cd "$script_dir/../.." && pwd)
 helper="$script_dir/ci-tools.sh"
 work=$(mktemp -d)
 servers=()
+# no-wait: the origins take TERM at its default and write only while answering a request, and
+# none is in flight at exit, so the rm -rf meets no new file; their ports are the kernel's choice.
 trap 'for server in ${servers[@]+"${servers[@]}"}; do kill "$server" 2>/dev/null || true; done; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
@@ -342,6 +344,11 @@ PLUGIN_URL_PATH=url/plugins/plugin-v8.0.0-linux-amd64.tar.gz
 TARMEMBER_URL_PATH=url/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
 CLITOOL_URL_PATH=url/releases/sdk/clitool-v10.0.0-linux-x64.tar.gz
 CLITOOL_ASSET_PATH=github/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
+# Each row's max_time, the bound on one attempt of its curl, is 60. The origins below are python
+# servers on this machine, and on a busy one a server can be held off the CPU for seconds: with a
+# bound of 7, a run beside a load of 250 to 300 failed twice in about 100, each time with the
+# case's origin answering no request until after the case had failed both of its sources. No case
+# here waits on the bound: no origin hangs, and one that refuses answers at once.
 cat > "$manifest" <<YAML
 registry: $REGISTRY
 
@@ -356,7 +363,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
     mirror_from: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
     mirror_member: ""
   - name: jjlike
@@ -369,7 +376,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
     mirror_from: https://github.com/example/jjlike/releases/download/v2.0.0/jjlike.tar.gz
     mirror_member: ./jjlike
   - name: packaged
@@ -382,7 +389,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 7
+    max_time: 60
     npm_package: "@fixture/packaged"
     npm_member: package/bin/packaged
   # A row whose primary: the manifest leaves null, which is how a reader finds Python's own
@@ -398,7 +405,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
     mirror_from: https://github.com/example/nullprimary/releases/download/v4.0.0/nullprimary.tar.gz
     mirror_member: ""
   # A row whose second source is a word this repository does not write, which no reader of a
@@ -413,7 +420,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: s3
-    max_time: 7
+    max_time: 60
   # The pulumi CLI's shape: the primary is a service of its own and the second source is the
   # release asset of the same tarball, so each side is a word and a URL of its own.
   - name: clitool
@@ -428,7 +435,7 @@ tools:
     second_source: github-release
     second_url: https://github.com/example/clitool/releases/download/v10.0.0/clitool-v10.0.0-linux-x64.tar.gz
     second_member: ""
-    max_time: 7
+    max_time: 60
   # A row whose primary_source is a word this file reads as a second source and as no row's
   # primary, which is refused by the side it is written on.
   - name: oddprimary
@@ -441,7 +448,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 7
+    max_time: 60
   # uv's shape: the row's digest is of the binary, the primary serves a tarball holding it
   # under one member, and PyPI serves a wheel holding it under another.
   - name: wheeled
@@ -456,7 +463,7 @@ tools:
     second_source: pypi
     second_url: https://files.example.org/packages/py3/w/wheeled/wheeled-7.0.0-py3-none-any.whl
     second_member: wheeled-7.0.0.data/scripts/wheeled
-    max_time: 7
+    max_time: 60
   # The provider plugin's shape: one service serves the whole archive the row pins, at an
   # address of its own.
   - name: plugin
@@ -471,10 +478,10 @@ tools:
     second_source: pulumi-releases
     second_url: https://releases.example.com/plugins/plugin-v8.0.0-linux-amd64.tar.gz
     second_member: ""
-    # The one row whose bound is not the 7 every other row carries. The ladder case fetches
-    # this row after a row of 7 and holds the `--max-time` each call was handed to that row's
+    # The one row whose bound is not the 60 every other row carries. The ladder case fetches
+    # this row after a row of 60 and holds the `--max-time` each call was handed to that row's
     # own value, which is what shows the bound follows the row and is no constant.
-    max_time: 11
+    max_time: 61
   # A row whose second source serves a .tar.gz it names a member of, which is the member rule on
   # an archive that is no wheel. A third party fetches its primary bytes, as jj's does.
   - name: tarmembered
@@ -489,7 +496,7 @@ tools:
     second_source: pulumi-releases
     second_url: https://releases.example.com/plugins/tarmembered-v9.0.0-linux-amd64.tar.gz
     second_member: ./jjlike
-    max_time: 7
+    max_time: 60
 YAML
 
 # The origin: a directory server that writes every path it is asked for, served or not, to a log.

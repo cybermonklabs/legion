@@ -343,6 +343,9 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# lib/wait-gone.sh holds stop_gone, the stop stop_label runs.
+# shellcheck source-path=SCRIPTDIR source=lib/wait-gone.sh
+. "$repo_root/scripts/e2e/lib/wait-gone.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -371,29 +374,34 @@ running() {
   read -r _ _ state _ 2>/dev/null <"/proc/$1/stat" || return 1
   [[ "$state" != Z ]]
 }
-# kill_label LABEL SIGNAL: the process started under LABEL, and when it leads its own process group
-# (the proxies and the sessions run under setsid), everything in that group.
+# kill_label LABEL SIGNAL: SIGNAL to the process started under LABEL, and to everything in its group
+# when it leads one (the proxies and the sessions run under setsid), then a wait of up to 10 s for
+# all of it to be gone (kill_gone, lib/wait-gone.sh) and the process reaped. Each window restarts
+# or resumes what it killed next, on the same port or session id, so one still there fails the
+# run, named.
 kill_label() {
-  local label=$1 signal=$2 p=${pid[$1]:-} group
+  local label=$1 signal=$2 p=${pid[$1]:-} group="" target
   [[ "$p" =~ ^[1-9][0-9]*$ ]] || return 0
-  group=""
   if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
-  if [[ "$group" == "$p" ]]; then
-    kill "-$signal" -- "-$p" 2>/dev/null || true
-  else
-    kill "-$signal" "$p" 2>/dev/null || true
-  fi
-  if [[ "$signal" == KILL ]]; then
-    wait "$p" 2>/dev/null || true
-    unset "pid[$label]"
-  fi
+  target=$p
+  [[ "$group" != "$p" ]] || target=-$p
+  kill_gone "$signal" "$((EPOCHSECONDS + 10))" "$target" ||
+    fail "$label (pid $p) was still there 10 s after its SIG$signal (named above)"
+  wait "$p" 2>/dev/null || true
+  unset "pid[$label]"
 }
+# stop_label LABEL: the cleanup's stop of the process started under LABEL, and of its group when it
+# leads one: stop_gone (lib/wait-gone.sh), SIGTERM, up to 5 s, then SIGKILL and up to 10 s more, and
+# the process reaped once it is gone. The cleanup goes on whatever it finds: stop_gone names one
+# still there, left unreaped rather than waited on without a bound.
 stop_label() {
-  local p=${pid[$1]:-} i
-  [[ -n "$p" ]] || return 0
-  kill_label "$1" TERM
-  for ((i = 0; i < 25; i++)); do running "$p" || break; sleep 0.2; done
-  kill_label "$1" KILL
+  local p=${pid[$1]:-} group="" target
+  [[ "$p" =~ ^[1-9][0-9]*$ ]] || return 0
+  if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
+  target=$p
+  [[ "$group" != "$p" ]] || target=-$p
+  if stop_gone 5 "$((EPOCHSECONDS + 15))" "$target"; then wait "$p" 2>/dev/null || true; fi
+  unset "pid[$1]"
 }
 close_fd() {
   local f=${fd[$1]:-}

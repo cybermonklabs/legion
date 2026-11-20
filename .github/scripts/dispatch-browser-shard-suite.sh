@@ -58,13 +58,13 @@ export TMPDIR="$RUNNER_TEMP"
 # `path:` is translated into the container's own filesystem - the step below says what
 # that cost when it was not done.
 mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
-# The sampler, started as a background process of this step's own shell and killed by
-# the trap below, as the alone job starts and kills it. It writes memory-samples.txt
-# and cpu-samples.txt into the directory it is given, which the record below is, and
-# the reading at the end of this step takes them from there.
+# The sampler, started as a background process of this step's own shell, sent SIGTERM
+# and waited for before the reading below and by the trap, as the alone job does. It
+# writes memory-samples.txt and cpu-samples.txt into the directory it is given, which
+# the record below is, and the reading at the end of this step takes them from there.
 "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
 sampler=$!
-trap 'kill "$sampler" 2>/dev/null || true' EXIT
+trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
 # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
 # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
 # container has no docker to run the image provider's digest with.
@@ -166,7 +166,7 @@ rm -f "$RUNNER_TEMP/suite-status"
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
-kill "$sampler" 2>/dev/null || true
+kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true
 # The row count this leg printed, for the merge job's first reading. It travels beside
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |

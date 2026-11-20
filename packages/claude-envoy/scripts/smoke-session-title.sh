@@ -72,11 +72,13 @@ listener_pid=""
 server_pid=""
 fifo_pid=""
 
+# Each process is a child of this shell, and the bare `wait` after the kills waits for them all, so
+# the rm -rf meets nothing they write.
 cleanup() {
-  [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null
-  [[ -n "$fifo_pid" ]] && kill "$fifo_pid" 2>/dev/null
-  [[ -n "$listener_pid" ]] && kill "$listener_pid" 2>/dev/null
-  [[ -n "$nats_pid" ]] && kill "$nats_pid" 2>/dev/null
+  [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null # no-wait: the bare wait below
+  [[ -n "$fifo_pid" ]] && kill "$fifo_pid" 2>/dev/null # no-wait: the bare wait below
+  [[ -n "$listener_pid" ]] && kill "$listener_pid" 2>/dev/null # no-wait: the bare wait below
+  [[ -n "$nats_pid" ]] && kill "$nats_pid" 2>/dev/null # no-wait: the bare wait below
   wait 2>/dev/null || true
   rm -rf "$workdir"
   return 0

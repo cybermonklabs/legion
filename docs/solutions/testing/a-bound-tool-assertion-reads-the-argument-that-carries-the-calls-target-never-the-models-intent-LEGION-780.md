@@ -53,7 +53,7 @@ Extends docs/solutions/testing/a-live-proof-reads-what-a-tool-returned-paired-to
 sjawhar/legion#1982 (LEGION-780), the fast-follow the LEGION-578 retro named. Round 0 bound bash on
 `command` and kept the JSON-text match for every other tool; the reviewer's round-1 thread
 (PRRT_kwDORFy7ds6tDgTj) reproduced the same false PASS on the bound read at
-`stage4b-sandbox-tree.sh:3702` with `{path: ".omp/skills/fixture-omp-skill/SKILL.md", i: "Reading
+`stage4b-sandbox-tree.sh:4291` with `{path: ".omp/skills/fixture-omp-skill/SKILL.md", i: "Reading
 skill://fixture-omp-skill through its file path"}`, and the architect ruled the whole class in scope
 as the spec's item read to its purpose. The architect's "edit/write on their path" was read to the
 measured shapes above (the fixture's `edit {i,input}`, this implementer's own session's

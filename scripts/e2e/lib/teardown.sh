@@ -38,6 +38,7 @@ teardown_sequence() {
     session_db_torn_down=1
   fi
   if [ -z "$reminter_torn_down" ]; then
+    # no-wait: its TERM trap ends it between commands; it makes no new file in $work after it.
     [ -z "$agent_secrets_reminter" ] || kill "$agent_secrets_reminter" 2>/dev/null || true
     reminter_torn_down=1
   fi
@@ -54,6 +55,7 @@ teardown_sequence() {
 # itself running as an orphan unless something also kills the process.
 kill_harness() {
   [ -f "$work/harness.pid" ] || return 0
+  # no-wait: the Go test binary installs no signal handler, so it writes nothing after the TERM.
   kill "$(cat "$work/harness.pid")" 2>/dev/null || true
 }
 

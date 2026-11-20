@@ -509,7 +509,7 @@ run_attempt() {
   pass
 
   begin "$run teardown"
-  stop_pid "$dispatch_pid"
+  stop_pid "$dispatch_pid" || fail "Dispatch (pid $dispatch_pid) did not stop (named above); the next attempt's would meet it"
   dispatch_pid=''
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
     -c "drop database if exists \"$database\" with (force)" >>"$run_dir/logs/postgres.log" 2>&1 ||

@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `scripts/smoke-session-title.sh` says, beside each signal its cleanup sends, that the cleanup's
+  bare `wait` waits for that process before it removes the work directory. Comments only: the
+  script behaves as before.

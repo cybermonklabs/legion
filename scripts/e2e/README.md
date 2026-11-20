@@ -755,7 +755,7 @@ Every wait is bounded and names what it waited for;
 a failed assertion prints `FAIL <check>: <why>` and exits 1, and any other failing command names the check it ended.
 A failed run also [notes](#libmodel-gateway-unservedsh) each agent that could have failed that check for want of a model key, and still exits 1.
 The `EXIT` trap — on a pass, a failure, or an interrupt
-— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, ends every process of the run still alive with everything under it ([`stop_marked_processes`](#libprocess-treesh): each that carries the run's mark, `LEGION_E2E_RUN`, or a daemon pane's `XDG_CONFIG_HOME` under the work directory, and no other), removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
+— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, ends every process of the run still alive with everything under it and waits up to 10 s for each to leave the process table ([`stop_marked_processes`](#libprocess-treesh): each that carries the run's mark, `LEGION_E2E_RUN`, or a daemon pane's `XDG_CONFIG_HOME` under the work directory, and no other), removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
 The trap still runs when whoever reads the run's output goes first, for example a supervised launcher's own `tee` stopped with the run, and a stop follows:
 the run's output goes through [`lib/transcript.sh`](#libtranscriptsh)'s `tee`, which outlives the reader.
 The transcript's `tee` starts before the run exports its mark, so it carries none, and the teardown's sweep, which ends only the run's marked processes, leaves it running to write the run's last line.
@@ -3280,6 +3280,7 @@ The transcript records the duration of each wait.
   On the pinned build each service runs in a session of its own and ends when its broker ends.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
+  Its walks of every process's stat and of each member's environment, and the stop, end at one bound, 40 s from the call: a `/proc` entry that never answers its reader ends the walk there, named, and the check fails.
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
@@ -3659,7 +3660,9 @@ What the run touches, and nothing else:
   The boot refusals exit before any bind and get none.
 
 After any exit — pass, failure, or an interrupt
-— the `EXIT` trap signals both binaries and removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
+— the `EXIT` trap gives both binaries SIGTERM and waits up to 30 s for each to leave the process table, then SIGKILLs one still there and waits 10 s more, naming it ([`lib/wait-gone.sh`](#libwait-gonesh)).
+The next run's first step removes `/tmp/verifiers-e2e`, which a binary still draining would go on writing into.
+The trap then removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
 
 ### No raw token is printed
 
@@ -5739,6 +5742,66 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
 
+## lib/wait-gone.sh
+
+The one wait for a process a script has signalled, before a later step binds its port, takes its lock, reads a file it writes, removes its directory or reads the process table.
+[`lib/process-tree.sh`](#libprocess-treesh) (so `stop_pid`, `kill_held` and every stage proof's teardown sweep, `stop_marked_processes`), [`lib/box-login.sh`](#libbox-loginsh) through it, `verifiers-staging-token.sh`, `envoy-session-delivery.sh`, and outside this directory `airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` (`packages/envoy/scripts`), `autodeploy_test_env.sh` (`packages/envoy/deploy/scripts`), `smoke-registration-stall.sh` and `smoke-role-takeover.sh` (`packages/pi-envoy/scripts`), `replace-blocks.sh` (`packages/dispatch/e2e/acceptance`, through `lib/process-tree.sh`) and the temporal evaluation's `run.sh` source it.
+Sourced, never run; it needs nothing of its caller's but bash 5, for `EPOCHSECONDS` and `EPOCHREALTIME`.
+
+```sh
+. "$root/scripts/e2e/lib/wait-gone.sh"
+stop_gone 10 "$((EPOCHSECONDS + 20))" "$pid" "port:$port" || fail "pid $pid did not stop (named above)"
+```
+
+A signal ends nothing by itself.
+A process given SIGTERM goes on until its handler has run, and a server's handler drains first.
+One given SIGKILL keeps its port, its descriptors (an inherited lock among them) and its working directory until its exit has finished, which for a process holding a few GiB takes most of a second on a busy devbox.
+Each thread of a process exits on its own, and those are released only when the last one has: `/proc/PID/stat` shows the main thread alone, which can be a zombie while another thread of the same process still holds the port, as a Go program's or Bun's can.
+A pid gone does not make what it held free: a child it forked, or any process that inherited its socket or the lock's descriptor, keeps them after the pid is gone, and so does any process that still holds a reference to the open file.
+So a caller whose next step binds a port or takes a lock names that port or lock as a target too, and the wait reads that fact itself rather than inferring it from a pid.
+
+Every wait ends at a DEADLINE, an absolute time in seconds since the epoch, whole or with up to six decimals (`$((EPOCHSECONDS + 10))` is ten seconds from now, less the part of this second already gone): the caller's own, so the two waits of one stop share one bound.
+A DEADLINE that is no such time (a count of seconds from now) is refused with exit 2, naming it.
+
+- `wait_gone DEADLINE TARGET…`
+
+  Returns 0 once every TARGET is gone, and 1 once the clock reaches DEADLINE with one still there; never before DEADLINE, and it reads the targets once more at it.
+  A TARGET is a pid, `-PGID` for every process of that group, `port:N` (gone once no socket listens on TCP port N, as `ss -Hltn` reads it, which is what a stage proof's `ports_free` reads) or `lock:FILE` (gone once FILE's flock can be taken, or FILE is not there).
+  A pid is gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one, or holds it only as a zombie whose task directory lists no thread but the main one: that zombie holds nothing but its pid, which is its parent's to reap, and a parent that is itself waiting on the caller, as a test runner's synchronous spawn is, would not reap it while the wait went on.
+  A `/proc` entry that is there but cannot be read is not gone.
+  A group is gone once `kill -0` finds no process in it, or each process in it is gone as a pid is: `kill -0` alone answers for a zombie member too, which holds nothing, so while it answers the group's processes are read from one walk of every process's stat, held to DEADLINE (`read_until`), and a walk that does not end by then leaves the group there.
+  Where `/proc` cannot be read at all, `kill -0` answers for a pid and a group, a zombie included.
+  A port or a lock that cannot be read (no `ss`, a lock file that cannot be opened) is not gone.
+  It prints nothing; the targets still there are left in the array `wait_gone_left`, for the caller to name.
+  `wait_gone_proc` names the `/proc` it reads, which a test points at a tree of its own.
+
+- `kill_gone SIGNAL DEADLINE TARGET…`
+
+  Sends SIGNAL to every TARGET that is a pid or a process group, one already gone being no failure, and waits for every TARGET with `wait_gone`.
+  Each one still there at DEADLINE is named on stderr with its command line (for a port, what `ss -Hltnp` says listens on it), the deadline and the time since the signal (`wait_gone_name SIGNAL SENT`, which `lib/process-tree.sh`'s `kill_held` also names its leftovers with), and it returns 1.
+
+- `stop_gone GRACE DEADLINE TARGET…`
+
+  A stop: SIGTERM to every TARGET that is a pid or a process group, up to GRACE whole seconds from the call, counted to the microsecond and never past DEADLINE, for every TARGET to be gone, then SIGKILL to the processes still there and a wait until DEADLINE, so the two waits share the one bound.
+  It returns 1 when one is still there at DEADLINE, named as `kill_gone` names it.
+
+- `wait_gone_signal`
+
+  Names the command `kill_gone` and `stop_gone` send each signal with, given only the TARGETs that are pids or groups (`_wait_gone_send`, the one rule both share: a port or a lock is waited for, never signalled): a plain `kill` by default.
+  A caller that holds each pid to the process it recorded names its own as a local of its function: [`lib/process-tree.sh`](#libprocess-treesh)'s `stop_pid` and `parked-decision-devbox.sh`'s `stop_agent_daemons` send through `signal_recorded`, which signals a pid only while it is still the process that started when the run recorded it.
+
+- `process_start PID VAR`
+
+  Sets VAR to the start time `/proc/PID/stat` gives (field 22) and returns 0 while that process is there, 1 once it is gone by the rule above, and 2 when its entry cannot be read; a caller that records a pid with its start time tells by it whether the pid still names that process.
+
+- `read_until DEADLINE ARRAY PATTERN PATH…`
+
+  A walk held to its caller's bound: reads every PATH (each process's `/proc` stat, say) by one `grep` a batch under `timeout`, so the reads end at DEADLINE, and sets ARRAY to one `PATH:RECORD` element for each NUL-ended record that matches PATTERN (a stat is one record, read whole; an environment one record a variable).
+  It returns 0 once every PATH was read, and 124, with ARRAY empty, when DEADLINE came first, for the caller to name its bound: a `/proc` entry that never answers its reader holds the caller only until then.
+
+A caller whose next step needs a process gone fails when its wait returns 1, naming it; a teardown goes on, with `|| true` and a word on why.
+A signal that needs no wait says why on its own line, or in the comment block right above its command, as `# no-wait: <why>`: the end of a script with nothing after it that the process could disturb, a process another line already waits for, or a process whose end is itself what the check measures.
+
 ## lib/built-from.sh
 
 Prints what a stage proof ran, so a run can be tied to a commit after its scratch directory, and the binary in it, are gone.
@@ -6161,21 +6224,23 @@ Sourced, never run; Stage 2 and Stage 3 source it first.
 . "$root/scripts/e2e/lib/box-login.sh"
 take_box_login_lock || { echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2; exit 1; }
 …
-stop_marked_processes "$work" "$box_login_stop_grace"   # in the teardown (lib/process-tree.sh)
-unlink_box_login_db "$profile_agent"
+stop_box_login_run "$work" "$profile_agent"   # in the teardown, once the run's services are stopped
 ```
 
 `take_box_login_lock` takes a non-blocking `flock` on one fixed file per operator uid, `/tmp/legion-e2e-box-login.<uid>.lock` (`box_login_lock_file`), whatever `XDG_RUNTIME_DIR` or `TMPDIR` says, so every box-login run of that operator meets the same lock.
 The stages take it before they make a work or evidence directory.
-The lock stays on a file descriptor of the calling shell for its whole life, and of every process it starts that keeps the descriptor, so a pane a run leaves behind still holds it.
+The lock stays on a file descriptor of the calling shell for its whole life, and of every process it starts that keeps the descriptor, so a daemon or tmux server a run leaves behind still holds it.
+The run's transcript `tee`, which outlives every sweep by design, keeps none of the shell's descriptors ([`lib/transcript.sh`](#libtranscriptsh)).
 A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
 
-`box_login_stop_grace` (10) is the seconds a box-login teardown gives the run's marked processes after SIGTERM before any SIGKILL ([`stop_marked_processes`](#libprocess-treesh)), so a pane in the middle of a token refresh can write the rotated token back before it goes.
-`unlink_box_login_db
-AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
-the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
+`stop_box_login_run DIR [AGENT_DIR]` is a box-login run's teardown of its processes: [`stop_marked_processes`](#libprocess-treesh) `DIR` with `box_login_stop_grace` (10), SIGTERM to each of the run's marked processes and up to that many seconds for them to go before any SIGKILL, then a wait until each is gone, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+Only once every one is gone does it remove the profile's link to the operator's login (`unlink_box_login_db AGENT_DIR`), since a process that opened the database again after the link went would make a fresh database of its own in the profile, and close the run's own lock descriptor (`take_box_login_lock` left it open), so a second box-login run is refused until the first run's last process has gone: a tmux pane holds no copy of the descriptor, so the lock alone cannot tell that the panes are gone.
+It then waits up to 10 s for the lock itself to be free (`lock:FILE`, [`lib/wait-gone.sh`](#libwait-gonesh)), which a process that inherited the descriptor and carries no mark of the run would keep from the next run, and returns 1 naming what is still there.
+A sweep that fails, with a process of the run still there at its deadline or the run's processes not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused naming the run's shell for as long as it lives, and its login link, and `stop_box_login_run` prints one line naming what it keeps and each process it could not stop and returns the sweep's status:
+`stop_box_login_run: the run keeps its lock <file> until this shell exits, and its link <agent dir>/agent.db to the operator's login, since it could not stop pid <pid> (<command>), …`.
+`unlink_box_login_db AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names.
 
 ## lib/model-gateway-unserved.sh
 
@@ -6283,6 +6348,9 @@ the `tee` opens `FILE` in a process of its own, whose failure no caller sees, so
 - The `tee` must outlive the run's sweeps, which end every process that carries the run's mark ([`marked_processes`](#libprocess-treesh)).
   A caller marks its run (`export LEGION_E2E_RUN=$work`) after `transcript_to`, so the `tee`, which takes the caller's environment as it stands at the call, carries no mark, whatever `FILE` and the caller's working directory are.
 
+- The `tee` keeps none of the caller's descriptors but its stdin, stdout and stderr: it closes every other one it inherited before it execs `tee`, which opens `FILE` itself.
+  A box-login run's lock ([`lib/box-login.sh`](#libbox-loginsh)), which the stages take before `transcript_to`, stays held while any process keeps its descriptor, so a `tee` that kept it would hold the lock until the driver's last line, and the run's own wait for the lock to be free would always fail.
+
 `lib/transcript.test.ts` (`bun test scripts/e2e/lib`) sources the helper under `set -euo pipefail` and runs two lines after it, one on standard output and one on standard error:
 a file it can open takes both, which still reach the reader, and a file whose directory does not exist, or a directory in its place, ends the run before its line on standard output, naming the file.
 
@@ -6366,10 +6434,12 @@ Each item below names a function, then what it does.
 
   waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits
 
-- `stop_pid PID` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
+- `stop_pid PID [DEADLINE [TARGET…]]` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
 
-  TERM, then KILL after 10 s, each sent through `freeze_if` held to the start time recorded for PID when the run learned it (`record_start`; `start_process` records each service, and a script records each `$!` and pid file it reads), so a pid whose process ended and passed to another process since, another user's or another run's, gets no signal; best effort, so a failed cleanup never hides the check that failed.
-  An empty PID does nothing, a PID with no recorded start is named and left alone, and a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
+  TERM, up to `stop_pid_grace` (10) seconds for the process to be gone, then KILL and a wait until DEADLINE, by default (or when empty) 10 s past the grace ([`lib/wait-gone.sh`](#libwait-gonesh)'s `stop_gone`), each signal sent through `freeze_if` held to the start time recorded for PID when the run learned it (`record_start`; `start_process` records each service, and a script records each `$!` and pid file it reads), so a pid whose process ended and passed to another process since, another user's or another run's, gets no signal.
+  It returns 1, naming the process, when it is still there at DEADLINE, so a step that needs it gone fails, and a teardown goes on (`stop_pid PID || true`), since a failed cleanup must never hide the check that failed.
+  A caller whose next step binds a port or takes a lock passes it as a TARGET (`port:N`, `lock:FILE`), and the stop waits for that fact too: Stage 4b's daemon restarts pass the daemon's two ports, since a child of the daemon, or any process that inherited the socket, keeps a port after the daemon's pid is gone.
+  An empty PID, a PID with no recorded start (named), and a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader; refused with a printed line by [`signalable`](#libprocess-treesh), since `kill 0` signals the caller's whole process group) are not signalled, and the TARGETs are still waited for
 
 - `run_processes`
 
@@ -6443,7 +6513,7 @@ How a live proof knows a process it started: by the pid it had when it started, 
 On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other Oh My Pi there runs under the same name, its own daemon broker child among them; an `omp_invocation`, a wrapper or `exec -a` gives `argv[0]` any name;
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
 [`lib/rig.sh`](#librigsh) sources it, [`lib/leftovers.sh`](#libleftoverssh) sources it when no script has, and `stage2-tmux-supervision.sh`, which sources no rig, and `packages/dispatch/e2e/acceptance/replace-blocks.sh` source it on their own.
-It needs nothing of its caller's.
+It needs nothing of its caller's, and sources [`lib/wait-gone.sh`](#libwait-gonesh) beside it: every stop here that ends a process waits for it to be gone (`stop_pid`, `kill_held` and the sweep).
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
@@ -6462,14 +6532,16 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
 - `proc_start PID`
 
-  prints PID's start time, field 22 of `/proc/PID/stat`, which the kernel sets at the fork and exec keeps, and nothing for a process that is gone, a zombie included:
-  a pid and its start name one process even once the kernel has given the pid to another
+  prints PID's start time, field 22 of `/proc/PID/stat`, which the kernel sets at the fork and exec keeps, and nothing for a process that is gone, a zombie whose task directory lists no thread but its main one included:
+  a pid and its start name one process even once the kernel has given the pid to another.
+  A zombie main thread with another thread still listed is a process still there, as `lib/wait-gone.sh`'s `process_start` reads it, and `freeze_if` still signals it: a Go program's or Bun's other threads keep its port and its descriptors until the last of them exits
 
-- `record_start PID`, `record_pid_file FILE VAR`, `stop_pid PID`, `signal_group PID SIGNAL`
+- `record_start PID`, `record_pid_file FILE VAR`, `stop_pid PID [DEADLINE [TARGET…]]`, `signal_recorded SIGNAL PID…`, `signal_group PID SIGNAL`
 
   `record_start` records PID's start time in `started_at`, read where the run learns the pid (right after its `&`, or from its own pid file), and fails for a pid with no live process.
   `record_pid_file` reads the pid and start a process wrote of itself before it ran (`record_pid_sh`) into VAR and `started_at`, so a read made late, in a cleanup after the process ended, still holds the pid to that process's start; the broker walkthrough rig reads its helper's pid with it.
-  `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
+  `stop_pid` sends TERM, waits up to `stop_pid_grace` (10) seconds, sends KILL and waits until DEADLINE for the process and each TARGET to be gone ([`lib/rig.sh`](#librigsh)'s entry says when it returns 1), and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
+  `signal_recorded` is that sender for a `stop_gone` of its own (`wait_gone_signal`), over pids whose starts `started_at` holds.
   A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing.
   The Envoy session-states `stop_agent` reads its agent's descendants while the agent is held stopped and ends each that outlives the TERM by its start (`kill_held`), since Claude Code's mid-run stop is followed by a `--resume` of the same session id; otherwise a member that outlived its leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
   `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own and with a pid recorded `gone`, `stop_agent` with a member that ignores TERM, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
@@ -6489,7 +6561,8 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   Stage 3's and Stage 4b's watchers are stopped with it.
   `proc_descendants` prints `PID START` for every process below PID, each parent held to its process and not to its pid: with START, the parent's start must read START before its children are read and again after each child's parent check, and each child, taken only while its parent is that pid and its start reads the same before and after the check, has its own children walked held to its start; so a stranger that took a reaped pid under a running parent, and the stranger's children, are left out.
   `kill_frozen` ends a process a caller has stopped and held to its start and its mark (`freeze_if … STOP`) with every process under it, each child through `stop_tree` held to it as the parent, without reading its own parent again: a parent that exits after the freeze cannot leave it stopped and alive.
-  `kill_held` reads `PID START` lines on stdin and ends each through `freeze_if … STOP` and `kill_frozen` while it is still that process and still carries one of the NAMEs under DIR.
+  It appends each pid it ends to `frozen_killed`.
+  `kill_held` reads `PID START` lines on stdin and ends each through `freeze_if … STOP` and `kill_frozen` while it is still that process and still carries one of the NAMEs under DIR, then waits until 10 s after its SIGKILLs for every process it ended to be gone (`killed_gone SENT PID…`), and fails with 1, naming each, when one is still there then.
   The run's sweep and the skill-scenario rig's `stop_env_processes` end their walks' processes with it, the one copy of that loop
 
 - `incarnation_pid INCARNATION`
@@ -6518,6 +6591,8 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   are a stage proof's run's own processes and its sweep: each process that carries `LEGION_E2E_RUN=DIR`, which the run exports after its transcript starts, or the `XDG_CONFIG_HOME` under DIR that a daemon pane carries, its environment built from the daemon's allow-list (`paneEnvAllowList`, `packages/daemon/internal/runtime/tmux/environment.go`).
   `marked_processes` refuses an empty DIR and a run that has not marked itself.
   `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`kill_frozen`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, its children read while it was stopped for the TERM and theirs under running parents, each parent held to its start (`proc_descendants`), is ended by its own start time if it outlives the process that started it.
+  Then it waits until 10 s after its SIGKILLs for every process it ended to be gone ([`lib/wait-gone.sh`](#libwait-gonesh)), since a process SIGKILL has not finished ending still holds its port, its descriptors and its working directory, and the next run's `refuse_leftovers` or the checkpoint's own read of the table would meet it; it fails with 1, naming each, when one is still there then, and with 2 when the run's processes or a tree below one could not be read.
+  It leaves the pid of each one still there then in the array `stop_marked_left`, which [`stop_box_login_run`](#libbox-loginsh) names in the one line it prints when it keeps its lock.
   Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself.
   A fork of the driver that execs nothing, a background subshell or function such as a `pane_watcher`, carries the driver's environment from the driver's own exec, without the mark, so no sweep sees it: each is stopped by the pid it had when it started (the list is in `run_marks`'s comment)
 

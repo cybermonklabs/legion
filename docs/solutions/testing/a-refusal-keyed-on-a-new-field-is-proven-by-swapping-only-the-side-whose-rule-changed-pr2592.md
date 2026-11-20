@@ -39,8 +39,9 @@ only now send, swapping the wrong one proves nothing.
 - **An identity minted per process can only be proven across processes.** One child process per
   client instance, each loading the real extension, and the real channel-server process for the
   other client; `env -i` on each, so the operator's own environment cannot reach them
-  (`smoke-role-takeover.sh:266`, `:274`). An in-process double shares whatever the module mints
-  and cannot show two instances at all.
+  (`start_omp` and `start_claude` of `packages/pi-envoy/scripts/role-takeover/clients.sh`, which
+  `smoke-role-takeover.sh` sources: each starts its client with `exec env -i`). An in-process
+  double shares whatever the module mints and cannot show two instances at all.
 - **Assert inside the row that the two identities differ.** Otherwise a run where both sides
   happen to share an id satisfies the granting case and the row passes for the wrong reason: each
   row that turns on two instances reads both ids off the wire and requires them different.

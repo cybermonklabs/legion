@@ -205,15 +205,16 @@ cleanup() {
   stop_pid "$bridge_pid"
   # Under box-login the panes share the operator's login database: each gets SIGTERM and up to
   # box_login_stop_grace seconds to finish a token refresh before anything is killed, and the
-  # profile's link to that database goes (the link alone) once they are gone, before transcripts
-  # are kept, so a kept workspace holds no live path to the login (lib/box-login.sh). The panes
-  # stay up through the production audit above, which reads their sessions on production Envoy.
-  # The other routes keep the SIGKILL below.
+  # profile's link to that database goes (the link alone) once they are all gone, before
+  # transcripts are kept, so a kept workspace holds no live path to the login; a run that could not
+  # stop one keeps the link and its lock, named (lib/box-login.sh). The panes stay up through the
+  # production audit above, which reads their sessions on production Envoy. The other routes keep
+  # the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_marked_processes "$work" "$box_login_stop_grace"
-    unlink_box_login_db "$profile_agent"
+    stop_box_login_run "$work" "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
   stop_marked_processes "$work"
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
@@ -368,8 +369,10 @@ daemon_runs_the_pinned_omp() {
   note "the daemon resolved $pin's own omp, $expected, for its boot probes and panes"
 }
 
+# stop_dispatch: the outbox proof starts Dispatch again on the port it keeps, and services-stopped
+# reads the process table next, so a Dispatch still there at its stop's deadline fails the check.
 stop_dispatch() {
-  stop_pid "$dispatch_pid"
+  stop_pid "$dispatch_pid" || fail "Dispatch (pid $dispatch_pid) did not stop (named above)"
   dispatch_pid=
 }
 
@@ -1268,7 +1271,7 @@ restart_scenarios() {
   # The same session in the same process incarnation is what "no phase restarted" means; the claim's
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
-  stop_pid "$daemon_pid"
+  stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its port"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored
   # consumer must process. It changes only the board status; no phase is manually advanced. It is
@@ -1450,22 +1453,25 @@ pass
 begin services-stopped
 # Stop the remaining services explicitly and prove every one is gone, so no agent can take another
 # turn: an idle agent takes one on the next event the daemon delivers, until the daemon stops.
+# Each service still there at its stop's deadline fails the check; stop_pid has named it.
 stop_tree "$watcher_pid"; watcher_pid=
-stop_pid "$daemon_pid"; daemon_pid=
+stop_pid "$daemon_pid" || fail "the daemon did not stop (named above)"; daemon_pid=
 stop_dispatch
-stop_pid "$listener_pid"; listener_pid=
-stop_pid "$daemon_keeper_pid"; daemon_keeper_pid=
-stop_pid "$dispatch_keeper_pid"; dispatch_keeper_pid=
-stop_pid "$bridge_pid"; bridge_pid=
+stop_pid "$listener_pid" || fail "the listener did not stop (named above)"; listener_pid=
+stop_pid "$daemon_keeper_pid" || fail "the daemon's keeper did not stop (named above)"; daemon_keeper_pid=
+stop_pid "$dispatch_keeper_pid" || fail "Dispatch's keeper did not stop (named above)"; dispatch_keeper_pid=
+stop_pid "$bridge_pid" || fail "the bridge did not stop (named above)"; bridge_pid=
 # Under box-login the panes get SIGTERM and a bounded grace before the kills below, as cleanup
-# gives them (lib/box-login.sh); the profile's link to the operator's database goes with them.
+# gives them (lib/box-login.sh); the profile's link to the operator's database goes once they are
+# all gone, and stays, named, while one is there.
 if [ "$model_route" = box-login ]; then
-  stop_marked_processes "$work" "$box_login_stop_grace" || fail "the run's processes could not be read for their SIGTERM"
-  unlink_box_login_db "$profile_agent"
+  stop_box_login_run "$work" "$profile_agent" || fail "a process of the run is still there, the run's lock is still held, or the run's processes could not be read (named above)"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
-stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
+# Waited for: the read of the process table below would otherwise meet a process SIGKILL has not
+# finished ending.
+stop_marked_processes "$work" || fail "a process of the run is still there 10 s after its SIGKILL, or the run's processes could not be read (named above)"
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
 # An unread /proc is no empty run (run_processes exits 2 for it).

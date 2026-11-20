@@ -79,17 +79,34 @@ exec nsenter -t "$init" -U -m -p -i --preserve-credentials -- sh -c '"'$role_shi
 # in a process group of its own (Setpgid, internal/launcher/roleinit_linux.go runRoleShim), and Oh
 # My Pi, the shim's child, is in that group. The container's user owns the role's user namespaces,
 # so it may signal them. No shim, two of them, or a shim that is not the leader of its own group
-# is refused rather than signalled, since that group would be someone else's.
+# is refused rather than signalled, since that group would be someone else's. It reads INIT's own
+# children from INIT's own /proc entry (every thread's task/<tid>/children, as proc_children in
+# lib/process-tree.sh reads them, since a Go role-init forks from whichever thread runs the call),
+# and no other process's entry: a test on a devbox, whose /proc holds 22,000 to 30,000 processes,
+# ran a read of every PPid past its 120 s bound at a load of 542. Only where /proc lists no children
+# file (a sandbox's procfs may not, or a kernel built without CONFIG_PROC_CHILDREN) does it read
+# every process's PPid, in one grep (-s: a process that ends between the listing and the read is no
+# child): there the /proc is the pod's own, which holds the pod's processes alone. It reads
+# `${proc_root:-/proc}`, as every program here does, and sends its signal with `${role_kill:-kill}`:
+# a test of it over a fake tree names a stand-in kill there, since a group the fake tree names is a
+# real group's number on the host (kubectl exec hands the pod's sh neither variable, so the pod
+# always reads its /proc and runs kill).
 # shellcheck disable=SC2016  # expanded by the pod's shell
 role_kill_sh='
-init=$1 shim= proc=${proc_root:-/proc}
-for d in "$proc"/[0-9]*; do
-  [ "$(sed -n "s/^PPid:[[:space:]]*//p" "$d/status" 2>/dev/null)" = "$init" ] || continue
-  [ "$(tr "\0" "\n" 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] || continue
-  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and ${d##*/}" >&2; exit 1; }
-  shim=${d##*/}
+init=$1 shim= proc=${proc_root:-/proc} listed= children=
+for list in "$proc/$init/task/"*/children; do
+  [ -e "$list" ] || continue
+  listed=1
+  children="$children $(cat "$list" 2>/dev/null)"
+done
+[ -n "$listed" ] || children=$(cd "$proc" && grep -s -H "^PPid:" [0-9]*/status | awk -F "[/:\t ]+" -v init="$init" "\$4 == init { print \$1 }")
+for c in $children; do
+  [ "$(tr "\0" "\n" 2>/dev/null <"$proc/$c/cmdline" | sed -n 2p)" = worker-shim ] || continue
+  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and $c" >&2; exit 1; }
+  shim=$c
 done
 [ -n "$shim" ] || { echo "role-init $init runs no worker-shim" >&2; exit 1; }
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)
 [ "$group" = "$shim" ] || { echo "the shim $shim of role-init $init is in process group $group, not its own" >&2; exit 1; }
-kill -s KILL -- "-$group"'
+# no-wait: the last act; the caller waits, bounded, for the daemon to see the generation end.
+"${role_kill:-kill}" -s KILL -- "-$group"'

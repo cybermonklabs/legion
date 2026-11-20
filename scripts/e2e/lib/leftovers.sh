@@ -9,22 +9,20 @@
 # it is handed). A run of the same stage that is still alive owns its own, and two lanes may run a
 # stage at once, so only what a dead driver started is a leftover.
 
-# proc_walk_complaint, which reads the stderr of a walk of every process (lib/process-tree.sh).
+# proc_walk_complaint, which reads the stderr of a walk of every process, and process_start, the one
+# reader of a process's start (lib/process-tree.sh, which sources lib/wait-gone.sh).
 # shellcheck source-path=SCRIPTDIR source=process-tree.sh
 declare -F proc_walk_complaint >/dev/null || . "${BASH_SOURCE[0]%/*}/process-tree.sh"
 
 # leftover_started PID prints the process's start time, in clock ticks since boot (proc(5), stat
-# field 22), and fails for a pid with no process or a zombie. The stat is read whole, in this
-# shell, and cut after its last `) `: the command name, field 2, is parenthesised and may hold
-# spaces, a `) ` or a newline; the fields after it hold none.
+# field 22), read from the host's /proc by process_start (lib/wait-gone.sh), and fails for a pid with
+# no process, a zombie whose task directory lists no thread but its main one, and a stat that cannot
+# be read: a zombie main thread with another thread still listed is a process still there, whose
+# other threads keep its port and its descriptors.
 leftover_started() {
-  local stat=
-  local -a stat_fields
-  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-  [ -n "$stat" ] || return 1
-  read -r -a stat_fields <<<"${stat##*) }"
-  [ "${stat_fields[0]}" != Z ] || return 1
-  printf '%s\n' "${stat_fields[19]}"
+  local wait_gone_proc=/proc start=
+  process_start "$1" start || return 1
+  printf '%s\n' "$start"
 }
 
 # leftover_owner OWNER SINCE: OWNER is a live process that started no later than SINCE (clock ticks

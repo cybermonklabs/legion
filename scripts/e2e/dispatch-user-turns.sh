@@ -98,7 +98,8 @@ cleanup() {
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  stop_marked_processes "$work"
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
+  stop_marked_processes "$work" || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"

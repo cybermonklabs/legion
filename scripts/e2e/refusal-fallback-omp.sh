@@ -122,7 +122,8 @@ timeout_hook=
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
-  stop_pid "${nats_pid:-}"
+  # The cleanup goes on whatever the stop finds; stop_pid names a natsd still there.
+  stop_pid "${nats_pid:-}" || true
   [ -z "${work:-}" ] || rm -rf "${work:?}"
   if [ "$rc" -eq 0 ]; then
     echo "refusal fallback e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"

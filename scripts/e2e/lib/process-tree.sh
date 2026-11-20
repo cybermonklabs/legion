@@ -12,6 +12,11 @@
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
 # proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
 # packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
+#
+# A signal ends nothing by itself, so every stop here that ends a process waits for it to be gone
+# (lib/wait-gone.sh, beside this file): stop_pid, kill_held and stop_marked_processes.
+# shellcheck source-path=SCRIPTDIR source=wait-gone.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/wait-gone.sh"
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -84,22 +89,23 @@ proc_parent() { proc_stat_field "$1" 4 ppid; }
 proc_group() { proc_stat_field "$1" 5 pgid; }
 # proc_start PID prints PID's start time, field 22 of /proc/PID/stat: clock ticks since boot, which
 # the kernel sets once, at the fork, and exec keeps, so a pid and its start name one process even
-# once the kernel has given the pid to another. It prints nothing for a process that is gone, a
-# zombie included, since a zombie runs nothing any more. A host with no /proc asks ps for the start
-# as a date (lstart).
+# once the kernel has given the pid to another. It is process_start's reading of the host's /proc
+# (lib/wait-gone.sh, the one reader of a start, whichever /proc a test points the waits at): it
+# prints nothing for a process that is gone, a zombie whose task directory lists no thread but its
+# main one, which runs nothing any more and holds nothing but its pid, and for a stat that cannot be
+# read. A zombie main thread with another thread still listed is a process still there: a Go
+# program's or Bun's other threads keep its port, its descriptors and its memory until the last of
+# them exits, and freeze_if still signals it. A host with no /proc asks ps for the start as a date
+# (lstart).
 proc_start() {
-  local stat=
-  local -a fields
+  local wait_gone_proc=/proc start=
   if [ ! -d /proc/self ]; then
     [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
     proc_stat_field "$1" 22 lstart
     return 0
   fi
-  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-  [ -n "$stat" ] || return 0
-  read -r -a fields <<<"${stat##*) }"
-  [ "${fields[0]}" != Z ] || return 0
-  printf '%s\n' "${fields[19]}"
+  process_start "$1" start || return 0
+  printf '%s\n' "$start"
 }
 
 # proc_unreadable WHO WHAT prints "WHO: /proc has no self, so WHAT" and succeeds when this host's
@@ -195,31 +201,55 @@ record_pid_file() {
   printf -v "$2" '%s' "$pid"
 }
 
-# stop_pid PID ends PID, which the proof recorded with record_start (start_process records each
-# service): SIGTERM, then up to 10 s for it to exit, then SIGKILL, each sent through freeze_if held to
-# the recorded start, so a pid whose process ended, was reaped and passed to another process since,
-# another user's or another run's, gets no signal. On this box the pid counter wraps in about seven
-# minutes, so a daemon that crashed before the cleanup leaves its pid to a stranger well within a
-# run. A pid with no recorded start is a caller's bug: it is named and left alone. A pid recorded
-# `gone` (started_at) is left alone with no word. It is best effort: a failed cleanup must never
-# obscure the check that failed, so it always succeeds.
+# stop_pid PID [DEADLINE [TARGET...]] ends PID, which the proof recorded with record_start
+# (start_process records each service), with stop_gone (lib/wait-gone.sh): SIGTERM, up to
+# stop_pid_grace seconds for it to be gone, then SIGKILL and a wait until DEADLINE (empty: the
+# default, stop_pid_grace + 10 seconds from the call). Each signal goes through freeze_if held to
+# the recorded start (signal_recorded), so a pid whose process ended, was reaped and passed to
+# another process since, another user's or another run's, gets none. On this box the pid counter
+# wraps in about seven minutes, so a daemon that crashed before the cleanup leaves its pid to a
+# stranger well within a run; a pid whose start no longer reads the recorded one is gone, and is
+# neither signalled nor waited for. A caller restarts a service on the same fixed port next
+# (stage4b's restart_daemon, whose start_daemon refuses a port still held), drops a database the
+# process was connected to, or reads the process table, and a process SIGKILL has not finished
+# ending still holds its port, its connections and its pid. A caller whose next step binds a port or
+# takes a lock passes it as a TARGET (`port:N`, `lock:FILE`), and the stop waits for that fact
+# itself, since a child of PID, or any process that inherited the socket, keeps the port after PID
+# is gone. A pid with no recorded start is a caller's bug: it is named and not signalled. A pid
+# recorded `gone` (started_at), an empty PID and one signalable refuses are not signalled either;
+# the TARGETs are waited for all the same, until DEADLINE, and one still held then is named as
+# waited for since the call by a stop that sent no signal (`… after its SIGKILL, sent to no process
+# (no target was one)`, stop_gone). Returns 0 once PID is gone and every TARGET free; 1 when
+# one is still there at DEADLINE, named on stderr. A caller whose next step needs PID gone fails
+# there; a teardown goes on (`stop_pid PID || true`, or a cleanup under `set +e`), since a failed
+# cleanup must never obscure the check that failed.
+stop_pid_grace=10
 stop_pid() {
-  local pid=${1:-} start i
-  [ -n "$pid" ] || return 0
-  start=${started_at[$pid]:-}
-  [ -n "$start" ] || {
-    echo "stop_pid: no start time is recorded for pid $pid (record_start), so it was not signalled" >&2
-    return 0
-  }
-  [ "$start" != gone ] || return 0
-  signalable "$pid" || return 0
-  freeze_if "$pid" "$start" TERM || return 0
-  for i in $(seq 1 50); do
-    [ "$(proc_start "$pid")" = "$start" ] || return 0
-    sleep 0.2
-  done
-  freeze_if "$pid" "$start" KILL || true
-  return 0
+  local pid=${1:-} deadline=${2:-} start
+  [ $# = 0 ] || shift
+  [ $# = 0 ] || shift
+  [ -n "$deadline" ] || deadline=$((EPOCHSECONDS + stop_pid_grace + 10))
+  if [ -n "$pid" ]; then
+    start=${started_at[$pid]:-}
+    if [ -z "$start" ]; then
+      echo "stop_pid: no start time is recorded for pid $pid (record_start), so it was not signalled" >&2
+      pid=
+    elif [ "$start" = gone ] || [ "$(proc_start "$pid")" != "$start" ] || ! signalable "$pid"; then
+      pid=
+    fi
+  fi
+  local wait_gone_signal=signal_recorded
+  stop_gone "$stop_pid_grace" "$deadline" "$pid" "$@"
+}
+
+# signal_recorded SIGNAL PID... sends SIGNAL to each PID through freeze_if, held to the start
+# started_at records for it (record_start, or a walk that read it), so a pid that has passed to
+# another process since gets nothing. It is the sender (wait_gone_signal, lib/wait-gone.sh) of
+# stop_pid and of each other stop_gone a caller runs over pids it recorded so.
+signal_recorded() {
+  local signal=$1 pid
+  shift
+  for pid in "$@"; do freeze_if "$pid" "${started_at[$pid]:-}" "$signal" || true; done
 }
 
 # signal_group PID SIGNAL sends SIGNAL to the process group PID leads, PID being a group leader the
@@ -239,6 +269,8 @@ signal_group() {
   [ -n "$start" ] && [ "$start" != gone ] || return 0
   signalable "$pid" || return 0
   freeze_if "$pid" "$start" STOP || return 0
+  # no-wait: every caller stops the leader next with stop_pid, which waits for it, and the run's
+  # sweep (stop_marked_processes) ends and waits for a member that outlived it.
   kill "-$2" -- "-$pid" 2>/dev/null || true
   kill -CONT "$pid" 2>/dev/null || true
   return 0
@@ -345,6 +377,8 @@ freeze_if() {
     case $was in T | t) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
     return 1
   fi
+  # no-wait: freeze_if sends one signal. A caller that needs PID gone waits for it (stop_pid through
+  # stop_gone, kill_held, stop_marked_processes); every other caller says why it need not.
   kill -"$signal" "$pid" 2>/dev/null || true
   case $signal in KILL | STOP) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
 }
@@ -402,31 +436,54 @@ proc_descendants() {
 # held to PID as its parent, which a stopped PID cannot lose), then PID itself (SIGKILL). PID's own
 # parent is not read: it can exit and leave PID to another between two reads, and a stop_tree held
 # to the parent read first would then leave PID stopped and alive. When PID's children, or a
-# child's, could not be read (proc_children), PID is killed all the same and it fails with 2.
+# child's, could not be read (proc_children), PID is killed all the same and it fails with 2. It
+# appends PID, and each process of its tree it ends, to the array frozen_killed, which kill_held
+# waits on.
 kill_frozen() {
   local pid=$1 child children status=0
   children=$(proc_children "$pid") || status=2
   for child in $children; do stop_tree "$child" "$pid" || status=2; done
+  # no-wait: kill_held waits for each pid this appends to frozen_killed; stop_tree's callers end
+  # watchers, and at an exit panes, which hold no port, lock or file a later step reads, or wait
+  # themselves (the skill-scenario rig's stop_run waits for each service it stops).
   kill -KILL "$pid" 2>/dev/null || true
+  frozen_killed+=("$pid")
   return "$status"
+}
+
+# killed_gone SENT PID... waits until 10 s from now for each PID, sent SIGKILL at SENT
+# (EPOCHREALTIME's microseconds, its separator taken out), to be gone (wait_gone, lib/wait-gone.sh):
+# until its exit has finished, a process SIGKILL has ended still holds its port, its descriptors (a
+# lock among them) and its working directory, and the process table still lists it. It fails with 1
+# once 10 s have gone with one still there, naming each (wait_gone_name). No PID is no wait.
+killed_gone() {
+  local sent=$1
+  shift
+  [ "$#" = 0 ] || wait_gone "$((EPOCHSECONDS + 10))" "$@" && return 0
+  wait_gone_name SIGKILL "$sent"
+  return 1
 }
 
 # kill_held DIR NAME… reads `PID START` lines on stdin, as a walk of the run's processes prints them
 # (procs_naming), and ends each with everything under it (kill_frozen) once freeze_if has stopped it
 # while it is still the process that started at START and its environment still gives one of the
 # NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
-# the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
-# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
-# walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
-# tree's processes could not all be read (kill_frozen).
+# the walk gets no signal, and a blank line is skipped. Then it waits for every process it ended to
+# be gone (killed_gone). The run's sweep (stop_marked_processes, with run_marks) and the
+# skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their walks' processes
+# through it, so the loop and its rows are written once. It fails with 2 when a tree's processes
+# could not all be read (kill_frozen), and with 1 when one it ended is still there 10 s later.
 kill_held() {
-  local dir=$1 pid start status=0
+  local dir=$1 pid start status=0 sent
+  local -a frozen_killed=()
   shift
+  sent=${EPOCHREALTIME//[!0-9]/}
   while read -r pid start; do
     [ -n "$pid" ] || continue
     freeze_if "$pid" "$start" STOP names_dir "$dir" "$@" || continue
     kill_frozen "$pid" || status=2
   done
+  killed_gone "$sent" ${frozen_killed[@]+"${frozen_killed[@]}"} || [ "$status" = 2 ] || status=1
   return "$status"
 }
 
@@ -571,12 +628,20 @@ marked_processes() {
 # under running parents, each parent held to its start and each child to its parent and its own
 # start (proc_descendants), so a child it leaves behind when it exits is still ended, by its own
 # start time, and a stranger that took a reaped pid below is not. A process still alive after
-# GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
-# run's processes could not be read, having signalled nothing, and fails with 2 after its signals
-# when a process's tree below it could not be read (proc_children).
+# GRACE, or every one with no GRACE, is ended with its tree. Then it waits, until 10 s after its
+# SIGKILLs, for every process it ended to be gone (kill_held, killed_gone): a process SIGKILL has
+# not finished ending still holds its port, its descriptors (a box-login run's lock among them) and
+# its working directory, and the next run's refuse_leftovers, or the checkpoint's own read of the
+# table, would meet it. It prints why and fails with 2 when the run's processes could not be read,
+# having signalled nothing, and fails with 2 after its signals when a process's tree below it could
+# not be read (proc_children); it fails with 1, naming each, when one it ended is still there 10 s
+# after its SIGKILL. It leaves the pid of each one still there then in the array stop_marked_left
+# (empty when none is), for its caller to name in its own terms (stop_box_login_run).
+stop_marked_left=()
 stop_marked_processes() {
-  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found
-  local -a sent=() alive=() below=()
+  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found held=0 killed_at
+  local -a sent=() alive=() below=() killed=()
+  stop_marked_left=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
     return 2
@@ -587,6 +652,8 @@ stop_marked_processes() {
       freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
       found=$(proc_descendants "$pid" "$start") || status=2
       [ -z "$found" ] || mapfile -t -O "${#below[@]}" below <<<"$found"
+      # no-wait: the loop below waits out GRACE for it to be gone (its start read again), and
+      # kill_held ends each one still there then and waits for it.
       kill -TERM "$pid" 2>/dev/null || true
       kill -CONT "$pid" 2>/dev/null || true
       sent+=("$pid $start")
@@ -603,10 +670,19 @@ stop_marked_processes() {
     pairs=
     [ "${#alive[@]}" = 0 ] || pairs=$(printf '%s\n' "${alive[@]}")
   fi
-  kill_held "$dir" "${run_marks[@]}" <<<"$pairs" || status=2
+  # Each wait leaves what is still there at its deadline in wait_gone_left (lib/wait-gone.sh); a
+  # wait given no pid runs no read, so the array is emptied before each.
+  wait_gone_left=()
+  kill_held "$dir" "${run_marks[@]}" <<<"$pairs" || held=$?
+  stop_marked_left=(${wait_gone_left[@]+"${wait_gone_left[@]}"})
+  [ "$held" = 0 ] || [ "$status" = 2 ] || status=$held
+  killed_at=${EPOCHREALTIME//[!0-9]/}
   for entry in ${below[@]+"${below[@]}"}; do
-    freeze_if "${entry%% *}" "${entry#* }" KILL || true
+    ! freeze_if "${entry%% *}" "${entry#* }" KILL || killed+=("${entry%% *}")
   done
+  wait_gone_left=()
+  killed_gone "$killed_at" ${killed[@]+"${killed[@]}"} || [ "$status" = 2 ] || status=1
+  stop_marked_left+=(${wait_gone_left[@]+"${wait_gone_left[@]}"})
   return "$status"
 }
 

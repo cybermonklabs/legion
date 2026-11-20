@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
-# the sampler's least value falls when the watched file system fills, it writes a tick of the
-# series every second it is given and keeps the least memory and the greatest load it has seen,
-# a sampler held off the CPU leaves the seconds it never ran in out of the series rather than
-# writing them afterwards, `report` stops the sampler and prints the series, the three worst
-# readings and the four numbers in that order, and it exits 0 whether the margin is ok or short,
-# when a reading was never made, when there is no series file and when there is no state file at
-# all.
+# the sampler's least value falls when free space falls, the free kB it reads of a path is df's,
+# it writes a tick of the series every second it is given and keeps the least memory and the
+# greatest load it has seen, a sampler held off the CPU leaves the seconds it never ran in out of
+# the series rather than writing them afterwards, `report` stops the sampler and prints the
+# series, the three worst readings and the four numbers in that order, and it exits 0 whether the
+# margin is ok or short, when a reading was never made, when there is no series file and when
+# there is no state file at all.
 #
 # `start` runs here with a PATH holding python3 alone, so neither `go` nor `docker` is on it:
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
 # database), and it proves the two tools are named and skipped rather than failing the step. The
 # two margins are driven from state files written here by hand, so the numbers in the line are
-# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes,
-# and the stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
+# chosen rather than measured. So is the fall in free space: on a shared file system other writers
+# move free space by gigabytes in seconds, so 64 MiB of this test's own writes left the least above
+# before_kb in 13 of 19 trials on a busy one. The fall case runs the sampler itself, `sample`, with
+# a reader of free kB this test hands it that returns the number a file here holds, and the real
+# reader is held to `df` of the same path. The stall case is measured against a real sampler
+# stopped with SIGSTOP for four seconds.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
 # Run from anywhere: .github/scripts/disk_watch.test.sh
@@ -29,13 +33,18 @@ source "$script_dir/test-lib.sh"
 
 work=$(mktemp -d)
 pid=""
+fall_pid=""
 cleanup() {
   if [ -n "$pid" ]; then
     # SIGCONT first: the stall case leaves a stopped sampler behind if it dies partway, and a
     # stopped process takes SIGTERM only once it is running again.
     kill -CONT "$pid" 2>/dev/null || true
+    # no-wait: the sampler takes TERM at its default, so it writes nothing for the rm -rf to meet.
     kill "$pid" 2>/dev/null || true
   fi
+  # no-wait: the fall case's sampler takes TERM at its default too, and a case that went on to
+  # its end has had `report` stop it already.
+  [ -z "$fall_pid" ] || kill "$fall_pid" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -154,18 +163,84 @@ check "start seeded all three worst readings itself, each with its time" \
 echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
-echo "case: the least value falls when the watched file system fills"
-dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
-least=$before
+echo "case: the least value falls when free space falls"
+# The sampler itself, disk_watch.sample, handed a reader of free kB that returns the number the file
+# set_free writes: the fall is written, since the file system's own free space moves under other
+# writers (see the top of this file). Its state is seeded here as `start` seeds it, since `start`
+# runs the sampler as a process of its own with the kernel's reader.
+fall_state="$work/fall.json"
+free_file="$work/free-kb"
+# set_free KB makes KB what every reading returns, replacing the file whole, so a reading never
+# meets it half written.
+set_free() {
+  printf '%s\n' "$1" >"$free_file.new"
+  mv -f "$free_file.new" "$free_file"
+}
+set_free 5000000
+env -i PATH="$work/bin" HOME="$work" python3 -B -I -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import disk_watch
+path, state_path, free_file = sys.argv[2:5]
+def read_free(_path):
+    with open(free_file, encoding="utf-8") as numbers:
+        return int(numbers.read().strip())
+before = read_free(path)
+state = {"path": path, "before_kb": before, "sampler_pid": os.getpid()}
+disk_watch.keep_worst(state, "least_kb", before, disk_watch.now_utc(), greater=False)
+disk_watch.write_state(state_path, state)
+disk_watch.sample(path, state_path, read_free=read_free)
+' "$script_dir" "$watched" "$fall_state" "$free_file" &
+fall_pid=$!
+for _ in $(seq 40); do
+  [ -s "$fall_state" ] && break
+  sleep 0.25
+done
+check "before_kb is the free kB the reader returns" "$(is "$(field "$fall_state" before_kb)" 5000000)"
+set_free 4934464
+least=5000000
 for _ in $(seq 20); do
   sleep 0.5
-  least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
+  least=$(field "$fall_state" least_kb)
+  [ "$least" -lt 5000000 ] && break
 done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
-check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
-rm -f "$watched/filler"
+check "least_kb fell below before_kb when free fell by 64 MiB" "$([ "$least" -lt 5000000 ] && echo true || echo false)"
+check "to the free kB the fall left" "$(is "$least" 4934464)"
+set_free 5100000
+ticks=$(wc -l <"$fall_state.series")
+for _ in $(seq 20); do
+  sleep 0.5
+  [ "$(wc -l <"$fall_state.series")" -ge $((ticks + 2)) ] && break
+done
+check "a rise after it, two ticks on, leaves least_kb at the fall" "$(is "$(field "$fall_state" least_kb)" 4934464)"
+check "before_kb is unchanged" "$(is "$(field "$fall_state" before_kb)" 5000000)"
+run_watch report --state "$fall_state"
+check "report stopped that sampler" "$(is "$status" 0)"
+# Gone, or a zombie of this shell's that holds nothing (it has no thread of its own to outlive it).
+fall_state_of_pid=$(awk '{ print $3 }' "/proc/$fall_pid/stat" 2>/dev/null || true)
+check "and it is gone" "$([ -z "$fall_state_of_pid" ] || [ "$fall_state_of_pid" = Z ] && echo true || echo false)"
+if [ -z "$fall_state_of_pid" ] || [ "$fall_state_of_pid" = Z ]; then
+  wait "$fall_pid" 2>/dev/null || true
+  fall_pid=""
+fi
+
+echo "case: the free kB it reads of a path is df's available kB of that path, within 0.5 per cent"
+# The reading the written fall stands in for, measured: disk_watch.py's own free_kb of the watched
+# directory, between two reads of `df -k --output=avail` of it. Other writers move free space
+# between the reads, by gigabytes in seconds on a shared file system, so the reading is held to the
+# df read after it within how far df itself moved between its two reads and 0.5 per cent of it. A
+# reader of another number is further off than that: the total, kB of 1000 bytes (2.4 per cent),
+# or the blocks root may still use on a file system that keeps a reserve (5 per cent by default).
+df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
+  'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
+  "$script_dir" "$watched")
+df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+moved=$((df_after > df_before ? df_after - df_before : df_before - df_after))
+off=$((reading > df_after ? reading - df_after : df_after - reading))
+allowed=$((moved + df_after / 200))
+check "disk_watch.py read $reading kB, $off kB from df's $df_after kB, within the $allowed kB allowed (df moved $moved kB between its two reads)" \
+  "$([ "$off" -le "$allowed" ] && echo true || echo false)"
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"

@@ -227,6 +227,7 @@ ${rigFn("until_true")}
 ${fn("remove_negative_config")}
 ${fn("remove_run_container")}
 ${appsFn("app_key_left")}
+${fn("stop_daemon_ports")}
 ${fn("cleanup")}
 trap cleanup EXIT
 ${tail}

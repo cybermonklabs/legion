@@ -332,6 +332,7 @@ if [ -n "$agent_secrets_account" ]; then
   }
   mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"
   (
+    # no-wait: its own sleep, which it ends as it exits; nothing reads the sleep.
     trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
     while :; do
       sleep 1800 &

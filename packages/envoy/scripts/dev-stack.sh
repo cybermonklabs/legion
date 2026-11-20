@@ -1088,7 +1088,7 @@ EOF
 # stop_process PID stops one process of the stack by its pid and reaps it. The wait is repeated
 # because a restart signal arriving meanwhile ends a wait early, with the process still there.
 stop_process() {
-  kill "$1" 2>/dev/null || true
+  kill "$1" 2>/dev/null || true # no-wait: the loop below waits for it until kill -0 finds it gone
   while kill -0 "$1" 2>/dev/null; do
     wait "$1" 2>/dev/null || true
   done

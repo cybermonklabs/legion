@@ -232,10 +232,16 @@ if [[ "${*: -1}" == */.env ]]; then
   source=${*: -2:1}
   printf 'mv-source %s %s\n' "$source" "$(stat -c %a "$source")" >>"$AUTODEPLOY_TEST_ARGV"
   if [[ "${AUTODEPLOY_TEST_KILL_AT_ENV_MV:-}" == 1 ]]; then
+    # no-wait: the SIGKILL is the case's stimulus, and the deployer is the case's foreground
+    # command (deploy_once), whose own wait returns only once it has exited, before the case reads
+    # what it left; nothing here reads it.
     kill -9 "$PPID"
     exit 137
   fi
   if [[ "${AUTODEPLOY_TEST_TERM_AT_ENV_MV:-}" == 1 ]]; then
+    # no-wait: the deployer runs its TERM, and so its EXIT trap, only once its foreground command,
+    # this mv, has exited, so a wait here for it to be gone could never end; deploy_once, the
+    # case's foreground command, waits for its exit.
     kill -TERM "$PPID"
     exit 1
   fi

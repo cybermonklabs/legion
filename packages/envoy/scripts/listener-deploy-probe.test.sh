@@ -31,7 +31,10 @@ dispatch_pid=""
 probe_pid=""
 cleanup() {
   stop_servers
+  # no-wait: the fake Dispatch takes TERM at its default and answers no request at exit.
   [[ -z "$dispatch_pid" ]] || kill "$dispatch_pid" 2>/dev/null || true
+  # no-wait: the probe's group writes nothing once SIGKILL has reached it, so the rm -rf below meets
+  # no new file, and nothing after binds a port or reads the process table.
   [[ -z "$probe_pid" ]] || kill -s KILL -- "-${probe_pid}" 2>/dev/null || true
   rm -rf "$temporary_dir"
 }

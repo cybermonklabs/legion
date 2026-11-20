@@ -956,6 +956,7 @@ check_k10() {
 	local lost_id="$ASK_ID" lost_record="$ASK_RECORD"
 	K10[lost_listed0]="$(listed "$lost_record")"
 	sleep 2
+	# no-wait: what the stop does to the request is the property read below; stop_stack waits.
 	kill "${BROKER_PIDS[1]}" 2>/dev/null || true
 	start_extra_broker restarted BROKER_JUDGE_MODEL_URL= BROKER_JUDGE_MODEL= BROKER_JUDGE_MODEL_AUDIENCE= \
 		BROKER_JUDGE_DISPATCH_URL= BROKER_JUDGE_DISPATCH_TOKEN_FILE= BROKER_JUDGE_MODEL_PROTOCOL=

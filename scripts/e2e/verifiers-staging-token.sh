@@ -29,10 +29,13 @@ work=/tmp/verifiers-e2e
 dispatch_pid=
 listener_pid=
 
-# cleanup never returns non-zero: a trap that fails under set -e would mask the real status.
+# cleanup never returns non-zero: a trap that fails under set -e would mask the real status. The
+# run works in the fixed $work, which the next run removes first, and Dispatch and the listener
+# drain on SIGTERM and go on writing there until they exit, so each gets up to 30 s, and then
+# SIGKILL and up to 10 s more (stop_gone, lib/wait-gone.sh), named when it stays. The cleanup goes
+# on even then: the next run's `rm -rf "$work"` fails on a directory such a process still writes.
 cleanup() {
-  if [ -n "${dispatch_pid:-}" ]; then kill -TERM "$dispatch_pid" 2>/dev/null || true; fi
-  if [ -n "${listener_pid:-}" ]; then kill -TERM "$listener_pid" 2>/dev/null || true; fi
+  stop_gone 30 "$((EPOCHSECONDS + 40))" "${dispatch_pid:-}" "${listener_pid:-}" || true
   docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || true
   return 0
 }
@@ -112,6 +115,8 @@ for tool in go docker kubectl jq curl python3 base64; do
 done
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# shellcheck source-path=SCRIPTDIR source=lib/wait-gone.sh
+. "$root/scripts/e2e/lib/wait-gone.sh"
 rm -rf "$work"
 mkdir -p "$work/home"
 body="$work/body.json"

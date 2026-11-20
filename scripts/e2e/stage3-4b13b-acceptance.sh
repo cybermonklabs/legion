@@ -306,7 +306,7 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
-stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=; }
+stop_daemon() { stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its port"; daemon_pid=; }
 
 claim_session_file() {
   local issue=$1 role=$2
@@ -1205,17 +1205,19 @@ pass
 begin services-stopped
 daemon_state >"$evidence/final-state.json"
 "$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" >"$evidence/final-claims.json"
-stop_pid "$watcher_pid"; watcher_pid=
-stop_pid "$daemon_pid"; daemon_pid=
-stop_pid "$daemon_keeper_pid"; daemon_keeper_pid=
-stop_dispatch() { stop_pid "$dispatch_pid"; dispatch_pid=; }
+stop_pid "$watcher_pid" || fail "the watcher did not stop (named above)"; watcher_pid=
+stop_pid "$daemon_pid" || fail "the daemon did not stop (named above)"; daemon_pid=
+stop_pid "$daemon_keeper_pid" || fail "the daemon's keeper did not stop (named above)"; daemon_keeper_pid=
+stop_dispatch() { stop_pid "$dispatch_pid" || fail "Dispatch did not stop (named above)"; dispatch_pid=; }
 stop_dispatch
-stop_pid "$listener_pid"; listener_pid=
-stop_pid "$bridge_pid"; bridge_pid=
-stop_pid "${instructor_pid:-}"; instructor_pid=
+stop_pid "$listener_pid" || fail "the listener did not stop (named above)"; listener_pid=
+stop_pid "$bridge_pid" || fail "the bridge did not stop (named above)"; bridge_pid=
+stop_pid "${instructor_pid:-}" || fail "the instructor did not stop (named above)"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-stop_pid "$nats_pid"; nats_pid=
-stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
+stop_pid "$nats_pid" || fail "NATS did not stop (named above)"; nats_pid=
+# Waited for: the read of the process table on the next line would otherwise meet a process SIGKILL
+# has not finished ending.
+stop_marked_processes "$work" || fail "a process of the run is still there 10 s after its SIGKILL, or the run's processes could not be read (named above)"
 # An unread /proc is no empty run (run_processes exits 2 for it).
 remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
 [ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"

@@ -147,22 +147,25 @@ cleanup() {
   # key command, which bakes in --key-file's resolved path, must never survive this script on any
   # exit, so it is never conditioned on how the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
-  stop_pid "$daemon_pid"
-  stop_pid "$deadline_pid"
-  stop_pid "$daemon_keeper_pid"
-  stop_pid "$deadline_keeper_pid"
+  # The teardown goes on whatever a stop finds, which names a process still there: a failed
+  # cleanup must never obscure the check that failed.
+  stop_pid "$daemon_pid" || true
+  stop_pid "$deadline_pid" || true
+  stop_pid "$daemon_keeper_pid" || true
+  stop_pid "$deadline_keeper_pid" || true
   # Under box-login the panes share the operator's login database: each gets SIGTERM and up to
   # box_login_stop_grace seconds to finish a token refresh before anything is killed, and the
-  # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
-  # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
+  # profile's link to that database goes (the link alone) once they are all gone, so a kept
+  # workspace holds no live path to the login; a run that could not stop one keeps the link and its
+  # lock, named (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_marked_processes "$work" "$box_login_stop_grace" || true
-    unlink_box_login_db "$profile_agent"
+    stop_box_login_run "$work" "$profile_agent" || true
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
-  stop_pid "$listener_pid"
+  stop_pid "$listener_pid" || true
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
   stop_marked_processes "$work" || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
@@ -259,7 +262,7 @@ stop_daemon() {
   for i in $(seq 1 100); do
     kill -0 "$pid" 2>/dev/null || break
     [ "$i" = 100 ] && {
-      kill -KILL "$pid" 2>/dev/null || true
+      kill_gone KILL "$((EPOCHSECONDS + 10))" "$pid" || true
       fail "the daemon ignored $2 for 20s (SIGKILLed)"
     }
     sleep 0.2
@@ -769,7 +772,7 @@ before1=$(claim_json "$c1")
 before2=$(claim_json "$c2")
 panes_before=$(panes)
 boots_before=$(legion state --json --port "$port" | jq -r .daemon.boots)
-kill -TERM "$daemon_pid"
+kill -TERM "$daemon_pid" # no-wait: stop_daemon, next, polls it and then waits for it to exit
 stop_daemon "$daemon_pid" SIGTERM
 [ "$(panes)" = "$panes_before" ] || fail "the panes changed while the daemon was down"
 start_daemon

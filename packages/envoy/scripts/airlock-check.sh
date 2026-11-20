@@ -62,6 +62,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# scripts/e2e/lib/wait-gone.sh holds kill_gone, the wait for a process this check signals.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
+. "$SCRIPT_DIR/../../../scripts/e2e/lib/wait-gone.sh"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/broker/airlock/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
@@ -1287,6 +1290,7 @@ EOF
 			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
+	# no-wait: it only approves the CLI's pending requests, and the runs it served have ended.
 	kill "$watcher" 2>/dev/null || true
 	K6_AZ_RUNS="$(grep -c '^exit ' "$d/runs.log")"
 	K6_AZ_FAILED="$(grep -c '^exit [^0]' "$d/runs.log" || true)"
@@ -1860,10 +1864,12 @@ k9_cpu() { # <pid>
 
 # k9_sample_rss appends one line per broker process every two seconds, which is how this check
 # reads a peak resident set on a kernel whose /proc/<pid>/status has no VmHWM (see the block
-# above). It runs until it is killed.
+# above). It runs until it is sent TERM, which it takes once the awk or the sleep under way has
+# ended, so the file holds only whole lines once the sampler is gone.
 k9_sample_rss() { # <file> <pid>...
 	local file="$1" pid
 	shift
+	trap 'exit 0' TERM
 	while :; do
 		for pid in "$@"; do
 			awk -v p="$pid" '/^VmRSS:/ { print p, $2 }' "/proc/$pid/status" 2>/dev/null >>"$file"
@@ -1934,7 +1940,12 @@ check_k9() {
 		>/dev/null 2>"$WORK_DIR/k9/load.err"
 	wall_after="$(date +%s.%N)"
 	for pid in "${pids[@]}"; do after+=("$(k9_cpu "$pid")"); done
-	kill "$sampler" 2>/dev/null || true
+	# Gone before its file is read: an awk of the sampler still running would append to it. A
+	# sampler still there at its deadline leaves the file unread, and the memory limit fails,
+	# naming it.
+	local rss_left=
+	kill_gone TERM "$((EPOCHSECONDS + 10))" "$sampler" ||
+		rss_left="the RSS sampler (pid $sampler) was still there 10 s after its SIGTERM, so its file was not read"
 
 	local calls failed p50 base_p50 added
 	calls="$(jq -r '.calls' "$WORK_DIR/k9/load.json")"
@@ -1954,16 +1965,21 @@ check_k9() {
 	wall="$(awk -v a="$wall_before" -v b="$wall_after" 'BEGIN { printf "%.1f", b - a }')"
 	for i in "${!pids[@]}"; do
 		cpu="$(awk -v a="${before[$i]}" -v b="${after[$i]}" 'BEGIN { printf "%.1f", b - a }')"
+		awk -v c="$cpu" -v w="$wall" 'BEGIN { exit !(c <= w / 2) }' || over=$((over + 1))
+		worst_cpu="$cpu"
+		if [ -n "$rss_left" ]; then
+			limits="$limits; pid ${pids[$i]}: $cpu s of CPU over $wall s of wall, peak memory not read"
+			over=$((over + 1))
+			continue
+		fi
 		peak="$(k9_peak_kb "$rss" "${pids[$i]}")"
 		limits="$limits; pid ${pids[$i]}: $cpu s of CPU over $wall s of wall (a share of $(awk -v c="$cpu" -v w="$wall" 'BEGIN { printf "%.2f", c / w }')), peak memory $(awk -v k="$peak" 'BEGIN { printf "%.0f", k / 1024 }') MiB"
-		awk -v c="$cpu" -v w="$wall" 'BEGIN { exit !(c <= w / 2) }' || over=$((over + 1))
 		[ "${peak:-0}" -le 1048576 ] || over=$((over + 1))
-		worst_cpu="$cpu"
 	done
-	observe "each broker process over the ten minutes${limits}"
+	observe "each broker process over the ten minutes${limits}${rss_left:+; $rss_left}"
 	judge "$([ "$over" = 0 ] && echo 0 || echo 1)" \
 		"each process's CPU time is at most half its wall time and its peak memory at most 1 GiB" \
-		"${limits#; } (the last CPU figure read $worst_cpu s)"
+		"${limits#; } (the last CPU figure read $worst_cpu s)${rss_left:+; $rss_left}"
 
 	# The upload, the answer with a gap in it, the upgrade and the clone.
 	echo "airlock-check: k9 is uploading 50 MiB, waiting out a 90-second gap and cloning..." >&2
@@ -2016,6 +2032,7 @@ check_k9() {
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
+	# no-wait: the drain this starts is what the case observes; stop_stack waits for the stack.
 	kill "$stopped" 2>/dev/null || true
 	wait "$gap_pid" 2>/dev/null || true
 	# Four calls, not one: the stack's proxy front is a round-robin over both brokers' ports

@@ -345,6 +345,10 @@ deploy_once >/dev/null 2>&1 || true
 # exactly that name (packages/envoy/.gitignore), and the next start removes it after a minute, and
 # nothing else in the directory. A TERM exits the deployer and its EXIT trap removes the file.
 repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+# scripts/e2e/lib/wait-gone.sh holds wait_gone, the wait for each process the poll row below
+# signals, which counts a zombie as gone and holds a pid to the process it first read.
+# shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/wait-gone.sh
+. "$repo_root/scripts/e2e/lib/wait-gone.sh"
 fresh_env
 AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 read -r _ staged staged_mode < <(grep '^mv-source ' "$argv" | head -n 1) ||
@@ -376,8 +380,9 @@ left=$(find "$compose" -maxdepth 1 -name '.env.stage.*' | head -n 1)
 # The deployer sets no INT or TERM trap, so one stopped by TERM while it waits out its poll stops at
 # once, where a TERM trap made bash wait for the running `sleep` to end first. The poll is an hour,
 # so a deployer that waits out its sleep stops after an hour and one that does not stops at once;
-# the row's bound, 120 s of the clock (SECONDS), guards only against never, so the load of the box
-# cannot move a run across it. Every process the row starts is stopped by its own process ID.
+# the row's bound, 120 s, guards only against never, so the load of the box cannot move a run
+# across it. Every process the row starts is stopped by its own process ID and waited for until it
+# is gone (wait_gone), so the rows after it meet none of them.
 # The deploy before it lands new-image, so the poll's pass finds nothing to deploy and sleeps.
 fresh_env
 output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_once) || true
@@ -385,12 +390,35 @@ output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_
   fail 'UNKNOWN: the deploy before the poll did not land, so the stop was not judged'
 POLL=3600 AUTODEPLOY_TEST_SLEEP_REAL=1 run_deployer >"$root/poll.out" 2>&1 &
 job=$!
-poll_sleep=
+# children_of PID prints PID's children, read from the children file of each of its threads, which
+# the kernel keeps for PID's own children (CONFIG_PROC_CHILDREN): a read of PID's entries alone, where
+# pgrep -P reads every process of the machine, which a loaded box takes seconds over and which no
+# bound of this row could cut short. The file ends with no newline, so read's status is 1 at its
+# end even when it read every child: the status is no error here (as in proc_children,
+# scripts/e2e/lib/process-tree.sh), and a thread whose file cannot be opened adds no child.
+children_of() {
+  local list
+  local -a kids
+  for list in /proc/"$1"/task/*/children; do
+    kids=()
+    { read -r -a kids <"$list"; } 2>/dev/null || :
+    ((${#kids[@]} == 0)) || printf '%s\n' "${kids[@]}"
+  done
+}
+[[ -e /proc/$job/task/$job/children ]] ||
+  fail "UNKNOWN: /proc/$job/task/$job/children is not there (a kernel without CONFIG_PROC_CHILDREN), so the deployer's poll cannot be found"
+poll_sleep= deployer=
 deadline=$((SECONDS + 30))
 while ((SECONDS < deadline)); do
   # The deployer is the background job itself or its one child, and its poll is its `sleep` child.
-  for pid in "$job" $(pgrep -P "$job" || true); do
-    poll_sleep=$(pgrep -P "$pid" -x sleep) && break 2
+  for pid in "$job" $(children_of "$job"); do
+    for child in $(children_of "$pid"); do
+      comm=
+      { read -r comm <"/proc/$child/comm"; } 2>/dev/null || true
+      [[ "$comm" == sleep ]] || continue
+      poll_sleep=$child deployer=$pid
+      break 3
+    done
   done
   sleep 0.1
 done
@@ -400,45 +428,35 @@ if [[ -z "$poll_sleep" ]]; then
   tree=()
   descendants() {
     local pid=$1 child
-    for child in $(pgrep -P "$pid" || true); do
+    for child in $(children_of "$pid"); do
       descendants "$child"
       tree+=("$child")
     done
   }
   descendants "$job"
-  for pid in "${tree[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
+  # TERM to the descendants, deepest first (kill signals its pids in the order given), then the
+  # wrapper, which this shell reaps.
+  ((${#tree[@]} == 0)) || kill -- "${tree[@]}" 2>/dev/null || true
   kill "$job" 2>/dev/null || true
   wait "$job" || true
-  # A process sent TERM can still be running for a moment, and it is no child of this shell, so
-  # each one gets 5 s of the clock to be gone or a zombie before it counts as one the give-up left.
+  # A process sent TERM can still be running for a moment, and it is no child of this shell, so the
+  # descendants get 5 s to be gone (or zombies) before each one still there counts as one the
+  # give-up left.
   alive=()
-  for pid in "${tree[@]}"; do
-    gone=$((SECONDS + 5))
-    while state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]] && ((SECONDS < gone)); do
-      sleep 0.1
-    done
-    if state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]]; then
-      alive+=("$pid")
-    fi
-  done
+  ((${#tree[@]} == 0)) || wait_gone "$((EPOCHSECONDS + 5))" "${tree[@]}" || alive=("${wait_gone_left[@]}")
   left=
   ((${#alive[@]} == 0)) || left=" (and the give-up left process(es) ${alive[*]} running)"
   fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged$left; its output: $(<"$root/poll.out")"
 fi
-deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')
 kill -TERM "$deployer"
-stopped=false
 termed=$SECONDS
-deadline=$((SECONDS + 120))
-while ((SECONDS <= deadline)); do
-  state=$(ps -o stat= -p "$deployer") || { stopped=true; break; }
-  [[ ${state// /} != Z* ]] || { stopped=true; break; }
-  sleep 0.1
-done
+stopped=false
+wait_gone "$((EPOCHSECONDS + 120))" "$deployer" && stopped=true
+# A deployer still there is killed, and the poll's sleep it started, which outlives it, is stopped;
+# both are waited for before the wrapper is reaped and the rows after this one run.
 $stopped || kill -KILL "$deployer" 2>/dev/null || true
 kill "$poll_sleep" 2>/dev/null || true
+wait_gone "$((EPOCHSECONDS + 10))" "$deployer" "$poll_sleep" || true
 wait "$job" || true
 $stopped || fail "a deployer stopped by TERM while it waited out its hour's poll was still running $((SECONDS - termed)) s later"
 

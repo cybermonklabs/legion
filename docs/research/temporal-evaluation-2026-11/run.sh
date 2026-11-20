@@ -151,32 +151,91 @@ say 'LEGION_TEST_PG_DSN is set'
 
 # --- the trap -----------------------------------------------------------------------
 
-server_pid=''
+# scripts/e2e/lib/wait-gone.sh holds stop_gone and process_start, the stop of what this
+# run started and the read that tells a recorded pid from one the kernel handed on.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
+. "$repo_root/scripts/e2e/lib/wait-gone.sh"
 
+server_pid=''
+# Each experiment runs in a session of its own (run_experiment), and every process it
+# starts stays in that session, a worker in a process group of its own included. Each
+# entry is a session's id, which is its leader's pid, and that leader's start time.
+sessions=()
+
+# stop_dev_server stops the dev server: up to 10 s to close its database, then SIGKILL, and
+# gone before anything after reads what it held. It is this shell's child, so it is reaped
+# (wait) once it is gone, and only then: a wait on one SIGKILL has not ended (a process in
+# uninterruptible sleep) would block past every bound. One still there at the deadline is
+# named, and it returns 1.
 stop_dev_server() {
+	local status=0
 	[[ -n "$server_pid" ]] || return 0
-	if kill -0 "$server_pid" 2>/dev/null; then
-		kill -TERM "$server_pid" 2>/dev/null || true
-		# Give it a moment to close its database, then insist.
-		local waited=0
-		while kill -0 "$server_pid" 2>/dev/null && ((waited < 50)); do
-			sleep 0.2
-			waited=$((waited + 1))
-		done
-		kill -KILL "$server_pid" 2>/dev/null || true
+	if stop_gone 10 "$((EPOCHSECONDS + 20))" "$server_pid"; then
+		wait "$server_pid" 2>/dev/null || true
+	else
+		status=1
 	fi
-	wait "$server_pid" 2>/dev/null || true
 	server_pid=''
+	return "$status"
+}
+
+# run_experiment BOUND ARGUMENT...: the experiments binary under timeout BOUND, in a
+# session of its own, recorded in sessions; returns its status.
+run_experiment() {
+	local bound=$1 pid start=''
+	shift
+	setsid timeout "$bound" "$bin_dir/experiments" "$@" &
+	pid=$!
+	process_start "$pid" start || true
+	sessions+=("$pid:$start")
+	wait "$pid"
+}
+
+# stop_sessions [DEADLINE] ends every process of every session sessions records and waits
+# for each (stop_gone): what an experiment, a worker or a restate-server left. A session
+# whose leader's pid now names a process with another start time is another's, and a
+# leader that is gone is no other process's while its session has a member: the kernel
+# hands that pid to no new process meanwhile. The walk of every process's stat and the
+# stop share one bound, DEADLINE (an absolute time, 15 s from the call unless the caller
+# names its own), so a stat that never answers its reader ends the walk there (read_until):
+# that is named, nothing is signalled, and it returns 1, as it does for a member still
+# there at the bound. It reads wait_gone_proc, the host's /proc unless a test points it at
+# a tree of its own.
+stop_sessions() {
+	local began=$EPOCHSECONDS deadline=${1:-$((EPOCHSECONDS + 15))} entry sid start now found record path walk=0
+	local -a stats=() fields=() members=()
+	local -A sids=()
+	for entry in ${sessions[@]+"${sessions[@]}"}; do
+		sid=${entry%%:*} start=${entry#*:} now='' found=0
+		process_start "$sid" now || found=$?
+		((found != 2)) || continue
+		((found != 0)) || [[ "$now" == "$start" ]] || continue
+		sids[$sid]=1
+	done
+	((${#sids[@]} > 0)) || return 0
+	read_until "$deadline" stats '' "$wait_gone_proc"/[0-9]*/stat || walk=$?
+	if ((walk == 124)); then
+		echo "stop_sessions: the walk of every $wait_gone_proc/<pid>/stat had not ended at the stop's bound, $((deadline - began)) s after the stop began, so no session was stopped" >&2
+		return 1
+	elif ((walk != 0)); then
+		echo "stop_sessions: the walk of every $wait_gone_proc/<pid>/stat failed ($walk), so no session was stopped" >&2
+		return 1
+	fi
+	for record in ${stats[@]+"${stats[@]}"}; do
+		path=${record%%/stat:*}
+		read -r -a fields <<<"${record##*) }"
+		[[ -z "${sids[${fields[3]:-x}]:-}" ]] || members+=("${path##*/}")
+	done
+	stop_gone 5 "$deadline" ${members[@]+"${members[@]}"}
 }
 
 cleanup() {
 	local status=$?
 	trap - EXIT INT TERM
-	stop_dev_server
-	# Any experiment, worker or restate-server still running was started from this
-	# run's directory, whose path is in its command line and in no other process's.
-	pkill -KILL -f -- "$bin_dir/" 2>/dev/null || true
-	pkill -KILL -f -- "$run_dir/" 2>/dev/null || true
+	stop_dev_server || true
+	# The cleanup's last act before it exits; one still there is named, and a later run
+	# probes its ports free.
+	stop_sessions || true
 	exit "$status"
 }
 trap cleanup EXIT
@@ -481,7 +540,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 
 	printf '\n=== experiment %d%s ===\n' "$n" "$label"
 	status=0
-	timeout "$bound" "$bin_dir/experiments" \
+	run_experiment "$bound" \
 		-experiment "$n" -work-dir "$work_dir" "${flags[@]}" || status=$?
 	if ((status != 0)); then
 		failed+=("$n")
@@ -509,7 +568,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 			fi
 			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
 			control_status=0
-			timeout "$bound" "$bin_dir/experiments" \
+			run_experiment "$bound" \
 				-experiment "$n" -work-dir "$control_dir" "${control_flags[@]}" -no-kill ||
 				control_status=$?
 			if ((control_status == 0)); then
@@ -525,7 +584,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 	# The Temporal dev server is only for experiments 1 to 6, 19, 20 and 21, which
 	# run one after another; nothing after them needs a server this script runs.
 	if ((n == 21)); then
-		stop_dev_server
+		stop_dev_server || die "the dev server (named above) is still there 20 s after its stop, so experiments 7 to 18 would run beside it"
 		say 'the dev server is stopped: experiments 1 to 6 and 19 to 21 are done, and 7 to 18 measure libraries and a server of their own'
 	fi
 done

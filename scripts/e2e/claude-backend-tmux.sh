@@ -176,6 +176,7 @@ cleanup() {
   stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
+  # Waited for, so the next run's refuse_leftovers meets nothing of this one.
   stop_marked_processes "$work" || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts

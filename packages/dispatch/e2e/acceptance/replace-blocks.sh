@@ -104,7 +104,8 @@ script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly repo_root="$script_dir/../../../.."
 # On a host with /proc, proc_group reads one process's group from its own /proc entry, where `ps -p`
-# reads every process on the host for that answer; elsewhere it asks ps.
+# reads every process on the host for that answer; elsewhere it asks ps. process-tree.sh sources
+# scripts/e2e/lib/wait-gone.sh, which holds stop_gone, the stop stop_instance runs.
 # shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/process-tree.sh
 . "$repo_root/scripts/e2e/lib/process-tree.sh"
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
@@ -288,24 +289,15 @@ issue_key=""
 # stop_instance stops the Dispatch this run started, and is best effort: a cleanup that fails must
 # never hide the check that failed. The instance leads a session of its own, so the whole group
 # gets the signal: `bun run dispatch:local` is reached through two `bun run` parents, and the
-# harness stops its own processes when its signal fires.
+# harness stops its own processes when its signal fires. stop_gone (scripts/e2e/lib/wait-gone.sh):
+# SIGTERM, up to 30 s, then SIGKILL and up to 10 s more, so nothing of it writes into $work when the
+# cleanup removes it; one still there is named, and the cleanup goes on.
 stop_instance() {
-  local waited=0
   [[ -n "$instance_pid" ]] || return 0
   if [[ -n "$instance_group" ]]; then
-    kill -TERM -"$instance_group" 2>/dev/null || return 0
+    stop_gone 30 "$((EPOCHSECONDS + 40))" "-$instance_group" || true
   else
-    kill -TERM "$instance_pid" 2>/dev/null || return 0
-  fi
-  while ((waited < 60)); do
-    instance_running || return 0
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-  if [[ -n "$instance_group" ]]; then
-    kill -KILL -"$instance_group" 2>/dev/null || true
-  else
-    kill -KILL "$instance_pid" 2>/dev/null || true
+    stop_gone 30 "$((EPOCHSECONDS + 40))" "$instance_pid" || true
   fi
 }
 

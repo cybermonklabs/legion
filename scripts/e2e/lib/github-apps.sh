@@ -619,6 +619,7 @@ start_app_token_refresher() {
   [ -n "$app_token_implement" ] || return 0
   (
     sleeper=
+    # no-wait: its own sleep, which it ends as it exits; stop_app_token_refresher waits for it.
     trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM
     while :; do
       sleep "$app_token_refresh_seconds" &

@@ -54,7 +54,7 @@ cleanup() {
   # A stub that outlived its run would hold a port and a process slot for the next one.
   if [[ -f "${temporary_dir}/pids" ]]; then
     while read -r pid; do
-      kill -KILL "$pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true # no-wait: stubs on ports the system picks; no writes
     done <"${temporary_dir}/pids"
   fi
   rm -rf "$temporary_dir"

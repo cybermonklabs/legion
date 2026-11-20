@@ -171,3 +171,57 @@ test.skipIf(skip)(
     expect(unreadable).toEqual({ out: "status 0\n", err: "" });
   }
 );
+
+// leftover_started reads a start as every reader of one does (process_start, lib/wait-gone.sh): a
+// zombie with no thread but its main one is gone, and a zombie main thread whose other thread still
+// runs is a process still there, which keeps its port and its descriptors.
+test.skipIf(skip)(
+  "leftover_started gives a zombie with no other thread no start, and a live process and a zombie main thread whose other thread runs their own",
+  () => {
+    const run = mkdtempSync(join(dir, "started-"));
+    const ran = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `set -u
+. ${JSON.stringify(leftovers)}
+state() { local s; { read -r s <"/proc/$1/stat"; } 2>/dev/null || return 0; s=\${s##*) }; echo "\${s%% *}"; }
+# until_state PID STATE: polls PID's state for up to 30 s.
+until_state() { local i; for ((i = 0; i < 600; i++)); do [ "$(state "$1")" = "$2" ] && return 0; sleep 0.05; done; return 1; }
+# A zombie: a child ended under a parent stopped before it could reap it.
+bash -c 'sleep 60 & echo "$!" >"$1"; wait' parent "$RUN/child" & parent=$!
+# A zombie main thread whose other thread runs on.
+python3 -c 'import ctypes, os, sys, threading, time
+threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
+with open(sys.argv[1] + ".new", "w") as f: f.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".new", sys.argv[1])
+ctypes.CDLL(None).pthread_exit(None)' "$RUN/threads" &
+for ((i = 0; i < 600; i++)); do [ -s "$RUN/child" ] && [ -s "$RUN/threads" ] && break; sleep 0.05; done
+z=$(<"$RUN/child") t=$(<"$RUN/threads")
+kill -STOP "$parent"
+until_state "$parent" T
+kill -KILL "$z"
+until_state "$z" Z
+until_state "$t" Z
+s=$(leftover_started "$z"); rc=$?; echo "zombie $(state "$z") [$s] $rc"
+s=$(leftover_started "$t"); rc=$?; echo "threads $(state "$t") [$s] $rc"
+s=$(leftover_started "$parent"); rc=$?; read -r stat <"/proc/$parent/stat"; read -r -a f <<<"\${stat##*) }"
+echo "live [$s] $rc [\${f[19]}]"
+{ kill -KILL "$parent" "$t"; wait; } 2>/dev/null`,
+      ],
+      { env: { PATH: process.env.PATH ?? "", RUN: run }, stdout: "pipe", stderr: "pipe" }
+    );
+    const out = ran.stdout.toString();
+    expect(ran.stderr.toString()).toBe("");
+    expect(out).toMatch(/^zombie Z \[\] 1$/m);
+    expect(out).toMatch(/^threads Z \[[0-9]+\] 0$/m);
+    // A live read that failed or gave nothing matches no line: the row fails here by name, where a
+    // comparison of two captures that are both missing would pass.
+    const live = /^live \[([0-9]+)\] 0 \[([0-9]+)\]$/m.exec(out);
+    expect(live).not.toBeNull();
+    expect(live?.[1]).toBe(live?.[2]);
+  },
+  // Its waits are real processes' (a python start, a SIGKILL's delivery), which a loaded devbox
+  // takes seconds over; each poll above is bounded at 30 s.
+  120_000
+);

@@ -330,7 +330,8 @@ stop_agent() {
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   signal_group "$1" TERM
-  stop_pid "$1"
+  # The cleanup's: it goes on whatever the stop finds (stop_pid names one still there).
+  stop_pid "$1" || true
 }
 
 cleanup() {
@@ -614,6 +615,7 @@ kill_the_agent() {
   agent=$(agent_descendant "$pane" "$name") || return 1
   start=$(proc_start "$agent") && [ -n "$start" ] || return 1
   shimmed "$agent" || return 1
+  # No wait: the kill starts what is measured, the listener's view of the agent's end.
   freeze_if "$agent" "$start" KILL shimmed || return 1
   date +%s%3N
 }
@@ -961,6 +963,7 @@ check_unseen_kill_waits_out_the_horizon() {
     refuse "no last_seen for the control session while it is live" || return 1
   exec {control_fd}>&-
   control_fd=
+  # no-wait: the kill starts what is measured; what follows reads the listener's state of it.
   kill -KILL "$control_pid" || refuse "could not kill the control session" || return 1
   killed_ms=$(date +%s%3N)
   killed_at=$((killed_ms / 1000))

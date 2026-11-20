@@ -218,7 +218,7 @@ begin drained
 # is waited out rather than signalled and left: a process still running holds the block-index
 # lease for the length of its own pass (a session advisory lock, which Postgres drops with the
 # session), and a process still writing would add to what this build owes an index.
-stop_pid "$base_pid"
+stop_pid "$base_pid" || fail "the base build (pid $base_pid) is still running after it was stopped (named above)"
 kill -0 "$base_pid" 2>/dev/null && fail "the base build is still running after it was stopped"
 base_pid=''
 target_url=$head_url

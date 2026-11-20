@@ -29,5 +29,5 @@ Extends docs/solutions/infra/the-postgres-18-image-mounts-its-data-one-level-up-
   `grep -rn 7b822b0a .github/workflows`. Both were clean, so no CI job runs PostgreSQL 16.
 - The same tag grep over the tree finds `postgres:16` in sites the digest grep cannot see. Among
   them are `packages/daemon/internal/testpg/testpg.go:24`, the skip message a developer copies,
-  and `scripts/e2e/stage1-skeleton.sh:152` (`test.json` `observations`). Following that skip
+  and `scripts/e2e/stage1-skeleton.sh:196-198` (`test.json` `observations`). Following that skip
   message tests the daemon against 16, while CI and production run 18.

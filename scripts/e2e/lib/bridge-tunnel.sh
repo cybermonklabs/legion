@@ -102,7 +102,7 @@ bridge_down() {
   echo "   BRIDGE TUNNEL DOWN: $1; ending the run" >&2
   bridge_events 2>/dev/null | sed "s|^|   [operator] bridge pod $bridge_name event: |" >&2 || true
   kill_harness || true
-  kill -TERM "$$" 2>/dev/null || true
+  kill -TERM "$$" 2>/dev/null || true # no-wait: the run's own shell, whose EXIT trap tears down
 }
 # bridge_portforward_start (re)starts kubectl port-forward to the bridge pod's control port, on a
 # local port the kernel chooses (`:<control port>`): kubectl binds it, so no port picked free a
@@ -130,6 +130,7 @@ bridge_portforward_start() {
     waited=$((waited + 1))
     if [ "$waited" -gt 30 ]; then
       echo "   [harness] kubectl port-forward attempt $bridge_portforward_attempt never reported the local port it forwards from within 30s: $(cat "$log")" >&2
+      # no-wait: its own log and a kernel-chosen port; bridge_stop waits for it when start fails.
       kill "$bridge_portforward_pid" 2>/dev/null || true
       return 1
     fi
@@ -320,6 +321,8 @@ YAML
     # `pf_pid=$bridge_portforward_pid` runs below, would otherwise orphan it. `|| true` and
     # `${pf_pid:-}`: one of them may already be gone, or pf_pid not yet set, and under the caller's
     # errexit and nounset a failing kill or an unset name would change the watchdog's exit status.
+    # no-wait: pf_pid, bridge_portforward_pid, bridge_client_pid: no later step reads what they hold;
+    # the run's own sweep ends and waits for what names its work directory.
     trap 'kill "${pf_pid:-}" "$bridge_portforward_pid" "$bridge_client_pid" 2>/dev/null || true' EXIT
     trap 'exit 0' TERM
     pf_pid=$bridge_portforward_pid
@@ -335,6 +338,7 @@ YAML
         fi
         if bridge_portforward_start; then
           pf_pid=$bridge_portforward_pid
+          # no-wait: its link ran through the port-forward that died; the new one holds nothing of it.
           kill "$bridge_client_pid" 2>/dev/null || true
           bridge_client_start "$chisel_bin" "$auth_user:$auth_token" "$@"
           echo "   [harness] kubectl port-forward to $bridge_name recovered after $(($(date +%s) - down_since))s on local port $bridge_local_control_port; chisel client restarted against it (pid $bridge_client_pid)" >&2

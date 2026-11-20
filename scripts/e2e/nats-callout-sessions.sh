@@ -851,7 +851,7 @@ restart() {
   before=$(grep -c "^dev-stack: $what restarted " "$stack_log" || true)
   reconnects=$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)
   # shellcheck disable=SC2153 # DEV_STACK_PID is the banner's, read above by name
-  kill "-$signal" "$DEV_STACK_PID"
+  kill "-$signal" "$DEV_STACK_PID" # no-wait: $signal to $DEV_STACK_PID restarts; wait_for waits below
   restarted() { [ "$(grep -c "^dev-stack: $what restarted " "$stack_log" || true)" -gt "$before" ]; }
   wait_for 60 restarted || refuse "dev-stack.sh did not restart $what on SIG$signal; see $stack_log"
   echo "   $(grep "^dev-stack: $what restarted " "$stack_log" | tail -n 1)"

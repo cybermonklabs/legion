@@ -61,7 +61,7 @@ subject, the check is the second container, and the Job never completes.
 - sjawhar/legion#2498 moved five devbox `docker run` sites and the daemon's
   four test skip messages to a digest-pinned PostgreSQL 18. No CI lane runs any of those lines:
   `.github/workflows/pr-and-main.yaml:291` sets `LEGION_E2E_PG_DSN` for the `test` job, and
-  `scripts/e2e/stage1-skeleton.sh:148` guards the edited `docker run` with
+  `scripts/e2e/stage1-skeleton.sh:192` guards the edited `docker run` with
   `if [ -z "${LEGION_E2E_PG_DSN:-}" ]`, while `LEGION_TEST_PG_DSN` at `:289` keeps every skip
   message unprinted. Deleting the `testpg` import from
   `packages/daemon/internal/store/store_test.go` made `go vet ./internal/store/` exit 1 with

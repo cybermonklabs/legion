@@ -135,13 +135,13 @@ cleanup() {
   # too: run-server.sh's `flock … go build`, before it execs the server, is one. A group is
   # signalled only while its leader is still the process recorded (signal_group). A setsid in front
   # of a service would fork, since the job already leads its group, and leave the recorded pid a
-  # setsid that exits at once.
-  stop_pid "$helper_pid"
+  # setsid that exits at once. The cleanup goes on past any stop (stop_pid names one still there).
+  stop_pid "$helper_pid" || true
   for pid in "$dispatch_pid" "$fake_github_pid" "$fake_envoy_pid" "$broker_pid" "$issuer_pid"; do
     [ -z "$pid" ] || signal_group "$pid" TERM
-    stop_pid "$pid"
+    stop_pid "$pid" || true
   done
-  stop_pid "$dispatch_keeper_pid"
+  stop_pid "$dispatch_keeper_pid" || true
   if [ -n "$broker_database" ]; then
     PGOPTIONS="-c client_min_messages=warning" psql "$admin_url" -q \
       -c "drop database if exists ${broker_database} with (force)" >/dev/null 2>&1 || true

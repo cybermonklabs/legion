@@ -40,12 +40,16 @@ mkdir -p "$work/logs"
 # cleanup never returns non-zero: a trap that fails under set -e would mask the real status. The
 # work directory survives a failure — its state documents, refusal log and the logs of the
 # daemons, the proxy and the keepers are the evidence, and each log that holds anything is
-# printed — and goes when the run passed.
+# printed — and goes when the run passed. A daemon or the proxy still running is stopped and
+# waited for first (lib/rig.sh's stop_pid, which names one still there), so each log printed holds
+# every line its shutdown writes; pid and proxy_pid are set only once lib/rig.sh is sourced.
 cleanup() {
   local log
-  if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
-  if [ -n "${proxy_pid:-}" ]; then kill -TERM "$proxy_pid" 2>/dev/null || true; fi
+  if [ -n "${pid:-}" ]; then stop_pid "$pid" || true; fi
+  if [ -n "${proxy_pid:-}" ]; then stop_pid "$proxy_pid" || true; fi
+  # no-wait: a keeper's TERM handler only unlinks its socket, and its port is the run's own.
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
+  # no-wait: the same holds for the retry daemon's keeper.
   if [ -n "${retry_keeper_pid:-}" ]; then kill -TERM "$retry_keeper_pid" 2>/dev/null || true; fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
   if [ -n "${ok:-}" ]; then
@@ -401,7 +405,7 @@ waits=$(jq -Rnr '[inputs | fromjson? | objects
   | "\(.attempt) \(.retryIn)"] | join(", ")' "$work/logs/retry_daemon.log")
 [ "$waits" = "1/10 1s, 2/10 2s" ] ||
   fail "the daemon behind the proxy logged the waits to open its store as '$waits', want '1/10 1s, 2/10 2s', one after each reset"
-kill -TERM "$pid"
+kill -TERM "$pid" # no-wait: stop_daemon, next, polls the daemon and then waits for it
 stop_daemon SIGTERM
 kill -TERM "$proxy_pid"
 wait "$proxy_pid"
@@ -474,7 +478,7 @@ jq -e '.settings.review_round_cap == 5
   echo "the legions registry does not carry exactly one entry for $project on $port"
   exit 1
 }
-kill -TERM "$pid"
+kill -TERM "$pid" # no-wait: stop_daemon, next, polls the daemon and then waits for it
 stop_daemon SIGTERM
 
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"

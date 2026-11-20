@@ -49,6 +49,38 @@ run_report() {
   set -e
 }
 
+# await_tick <pid>: waits until the sampler <pid> has written a whole tick, that is until the
+# command it runs is its `sleep 5`, which it starts only once both files hold that tick, or until
+# it is gone; sets `child` to that sleep's pid, or to nothing when the sampler is gone. A tick
+# reads every process of the machine (`ps -eo`), which takes seconds on a devbox that runs 15,000
+# of them and longer under load, so the wait is for the tick itself, not for a time a tick is
+# assumed to take, and the case that calls it checks `child` by name. Its one bound, 300 s, is for
+# a sampler that hangs before its sleep. It reads /proc with builtins alone.
+await_tick() {
+  local pid=$1 c comm stat state i
+  local -a kids
+  child=
+  for ((i = 0; i < 3000; i++)); do
+    stat=
+    { IFS= read -r stat <"/proc/$pid/stat"; } 2>/dev/null || true
+    state=${stat##*) }
+    state=${state%% *}
+    # Gone, or a zombie its parent has not reaped yet: it writes nothing more.
+    { [ -n "$stat" ] && [ "$state" != Z ]; } || return 0
+    kids=()
+    { read -r -a kids <"/proc/$pid/task/$pid/children"; } 2>/dev/null || true
+    for c in ${kids[@]+"${kids[@]}"}; do
+      comm=
+      { read -r comm <"/proc/$c/comm"; } 2>/dev/null || true
+      if [ "$comm" = sleep ]; then
+        child=$c
+        return 0
+      fi
+    done
+    sleep 0.1
+  done
+}
+
 echo "case: the lowest MemAvailable, over the samples that are numbers"
 dir=$(fixture memory-low)
 # A tick writes one number per line. The blank line is the short write of a sampler killed
@@ -143,8 +175,8 @@ check "CPU" "$(contains "$out" 'took no CPU sample$')"
 
 echo "case: the sampler writes both files, over this machine's own /proc"
 # The one case that runs the sampler itself: the fixtures above stand in for what it writes, so
-# the shape it writes is worth holding. It is started as the browser steps start it, left to
-# take at least one tick, and killed as their trap kills it.
+# the shape it writes is worth holding. It is started as the browser steps start it, left until it
+# has written a whole tick (await_tick), and killed as their trap kills it.
 dir=$(fixture sampler-runs)
 # What a previous run left behind. The sampler truncates both files, so neither line survives
 # into the reading.
@@ -152,7 +184,8 @@ printf 'stale\n' > "$dir/memory-samples.txt"
 printf 'machine 999999999\n' > "$dir/cpu-samples.txt"
 "$samples_script" sample "$dir" &
 sampler=$!
-sleep 2
+await_tick "$sampler"
+check "it wrote a whole tick and reached its sleep" "$(is "${child:+yes}" yes)"
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
 check "the memory samples are numbers of kB" \
@@ -173,6 +206,97 @@ check "and prints the memory reading" \
   "$(contains "$out" '^::notice title=shard 1 MemAvailable::the lowest MemAvailable during the browser step was [0-9][0-9]* kB, over [0-9][0-9]* samples$')"
 check "and the CPU reading, with its groups" \
   "$(contains "$out" '^::notice title=shard 1 CPU::the browser step used [0-9][0-9]* CPU-seconds over [0-9][0-9]* samples: browser .*everything else .*$')"
+
+echo "case: each browser step's own sampler lines, run under the step script's shell options, end on the suite's status"
+# The trap and the stop of the two browser steps' scripts (dispatch-browser-shard-suite.sh and
+# dispatch-browser-alone-suite.sh, which dispatch-browser.yaml's shard and alone steps run), cut
+# from those scripts, run around a real sampler under `set -euo pipefail`, the scripts' own
+# options. A trap command that fails there (a kill of the sampler the stop has already reaped,
+# with no `|| true`) ends the step with 1 after a passing suite, which is how run 44622560351
+# failed every browser leg.
+suites=("$script_dir/dispatch-browser-shard-suite.sh" "$script_dir/dispatch-browser-alone-suite.sh")
+traps=() stops=()
+for suite in "${suites[@]}"; do
+  mapfile -t found < <(awk '/^ *trap .kill "\$sampler"/ { sub(/^ */, ""); print }' "$suite")
+  traps+=("${found[@]}")
+  mapfile -t found < <(awk '/^ *kill "\$sampler" / { sub(/^ */, ""); print }' "$suite")
+  stops+=("${found[@]}")
+done
+check "the two browser steps' scripts each have one trap and one stop" "$(is "${#traps[@]}:${#stops[@]}" 2:2)"
+for i in 0 1; do
+  for want in 0 3; do
+    dir=$(fixture "step-$i-$want")
+    set +e
+    bash -c "set -euo pipefail
+\"\$1\" sample \"\$2\" & sampler=\$!
+${traps[$i]}
+sleep 0.3
+${stops[$i]}
+exit $want" step "$samples_script" "$dir" >/dev/null 2>&1
+    status=$?
+    set -e
+    check "step $((i + 1)) with a suite status of $want exits $want" "$(is "$status" "$want")"
+  done
+done
+
+echo "case: each browser step's stop leaves neither the sampler nor a command it started running"
+# The reading after the stop reads the two files the sampler writes, so the stop waits for the
+# sampler (`wait "$sampler"`), and the sampler's SIGTERM trap ends the command under way (its 5 s
+# sleep, or its tick's ps and awk) and waits for it before the sampler exits: one left running would
+# go on writing after the step's wait has returned. Each step's stop line, cut from its script as
+# above, runs against a real sampler caught in its sleep.
+for i in 0 1; do
+  dir=$(fixture "stop-$i")
+  "$samples_script" sample "$dir" &
+  sampler=$!
+  await_tick "$sampler"
+  check "step $((i + 1))'s sampler reached its sleep" "$(is "${child:+yes}" yes)"
+  eval "${stops[$i]}"
+  check "step $((i + 1))'s stop leaves no sampler" "$(is "$(kill -0 "$sampler" 2>/dev/null && echo alive || echo gone)" gone)"
+  # A zombie runs nothing and writes nothing: gone.
+  state=$(awk '{ print $3 }' "/proc/$child/stat" 2>/dev/null || true)
+  [ "$state" != Z ] || state=
+  check "and no sleep the sampler had started" "$(is "${state:-gone}" gone)"
+done
+
+echo "case: a tick whose process walk never ends is cut at its 20 s, and holds neither the sampler nor its stop"
+# The CPU reading walks every process of the machine (ps -eo), which a loaded machine can hold for
+# long. A ps that does not end for 120 s stands in for one here, first on PATH, writing its own pid
+# before it sleeps. The sampler must go on to its next tick, write no CPU line for the tick it cut,
+# name the cut, and end within moments of the stop's SIGTERM, the stand-in gone.
+dir=$(fixture slow-walk)
+mkdir -p "$dir/bin"
+printf '#!/bin/sh\necho "$$" >>"%s/ps-pids"\nexec sleep 120\n' "$dir" >"$dir/bin/ps"
+chmod +x "$dir/bin/ps"
+# Both files exist before the sampler starts, so no read below fails before it truncates its own.
+: >"$dir/memory-samples.txt"
+: >"$dir/ps-pids"
+PATH="$dir/bin:$PATH" "$samples_script" sample "$dir" 2>"$dir/stderr" &
+sampler=$!
+# The second memory sample is written only once the first tick's CPU reading has ended: at its cut
+# after 20 s, or after the stand-in's 120 s with no cut. Read with builtins, for up to 60 s.
+lines=()
+for ((i = 0; i < 600; i++)); do
+  mapfile -t lines <"$dir/memory-samples.txt"
+  [ "${#lines[@]}" -lt 2 ] || break
+  sleep 0.1
+done
+check "the sampler went on to its next tick within 60 s" "$(is "$((${#lines[@]} >= 2))" 1)"
+check "the cut tick wrote no CPU line" "$(is "$(wc -l <"$dir/cpu-samples.txt")" 0)"
+check "and the cut is named" "$(contains "$(<"$dir/stderr")" "had not ended within its 20 s")"
+# The stop lands in the second tick's reading, the stand-in again: the trap ends it at once.
+began=$EPOCHREALTIME
+kill "$sampler" 2>/dev/null || true
+wait "$sampler" 2>/dev/null || true
+took=$(awk -v a="$began" -v b="$EPOCHREALTIME" 'BEGIN { printf "%d", b - a }')
+check "the stop ends within 5 s, not at the reading's end (it took ${took} s)" "$(is "$((took <= 5))" 1)"
+left=
+while read -r pid; do
+  # A zombie runs nothing: gone.
+  state=$(awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$pid/stat" 2>/dev/null || true)
+  [ -z "$state" ] || [ "$state" = Z ] || left="$left $pid"
+done <"$dir/ps-pids"
+check "and no ps stand-in is left running" "$(is "${left:-none}" none)"
 
 echo "case: a call the script cannot read"
 set +e

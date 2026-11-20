@@ -31,8 +31,9 @@
 # a variable the check needs refuses with exit 2, naming it; (g) a hub that never drops the killed
 # broker's connection FAILs line 6; (h) a connection list that cannot be read after the kill reads
 # UNKNOWN on line 6; (i) a hub listing one auth service connection before the kill reads UNKNOWN on
-# line 6 and kills nothing; and (j) a hub whose list is read once after the kill, still naming both
-# connections, and then cannot be read FAILs line 6 with the count it last read.
+# line 6 and kills nothing; (j) a hub whose list is read once after the kill, still naming both
+# connections, and then cannot be read FAILs line 6 with the count it last read; and (l) a broker
+# still in the process table 10 s after its SIGKILL reads UNKNOWN on line 6, naming it.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -46,7 +47,7 @@ mkdir -p "$fake_bin_dir" "$control_dir"
 broker_stand_in=""
 cleanup() {
   if [ -n "$broker_stand_in" ] && kill -0 "$broker_stand_in" 2>/dev/null; then
-    kill "$broker_stand_in" 2>/dev/null || true
+    kill "$broker_stand_in" 2>/dev/null || true # no-wait: a sleep, holding nothing the rm -rf meets
   fi
   rm -rf "$temporary_dir"
 }
@@ -196,6 +197,8 @@ fail() {
 # leave it running); it sets output and status.
 output=""
 status=0
+# check_env is what a case adds to the check's environment, beside what every run is given.
+check_env=()
 run_check() {
   local name
   for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker; do
@@ -209,14 +212,14 @@ run_check() {
   done
   printf '1700000000000' >"${control_dir}/clock"
   if [ -n "$broker_stand_in" ] && kill -0 "$broker_stand_in" 2>/dev/null; then
-    kill "$broker_stand_in" 2>/dev/null || true
+    kill "$broker_stand_in" 2>/dev/null || true # no-wait: the next run is handed a new stand-in
   fi
   sleep 600 &
   broker_stand_in=$!
   disown "$broker_stand_in"
   printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
   status=0
-  output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+  output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" ${check_env[@]+"${check_env[@]}"} \
     DEV_STACK_CALLOUT=1 \
     AGENT_SECRETS_URL="$stack_broker" \
     NATS_URLS="nats://127.0.0.1:7002" \
@@ -324,3 +327,19 @@ run_check other-words
   fail "a probe not admitted in other words: line 4 is '$(line 4)'"
 [ "$status" -eq 1 ] || fail "a probe not admitted in other words: exit $status"
 echo "PASS: a probe not admitted in words that are not the server's FAILs lines 3 and 4"
+
+# (l) A broker the SIGKILL does not take out of the process table, as one in uninterruptible sleep
+# stays: the check's own `kill` (a bash function it is handed in its environment, which bash runs
+# in place of the builtin) drops the -KILL for the second broker alone and passes every other call
+# on, so the stand-in, a live sleep, stays. The check waits 10 s for it and reads UNKNOWN, naming
+# it, rather than timing a hub that cannot have dropped it. A broker that leaves, as the disowned
+# sleep of (a) does once its SIGKILL lands and this shell has reaped it, passes.
+# shellcheck disable=SC2016 # the function's text, expanded by the check's bash, not here
+check_env=('BASH_FUNC_kill%%=() { if [ "${1:-}" = -KILL ] && [ "${2:-}" = "${DEV_STACK_BROKER_PIDS#* }" ]; then return 0; fi; builtin kill "$@"; }')
+run_check
+check_env=()
+[ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the killed broker (pid ${broker_stand_in}) was still in the process table 10 s after its SIGKILL" ] ||
+  fail "a broker still there 10 s after its SIGKILL: line 6 is '$(line 6)'"
+[ "$status" -eq 1 ] || fail "a broker still there 10 s after its SIGKILL: exit $status"
+kill -0 "$broker_stand_in" 2>/dev/null || fail "the stand-in the SIGKILL was dropped for is gone: the case faked nothing"
+echo "PASS: a broker still in the process table 10 s after its SIGKILL reads UNKNOWN on line 6, naming it"
