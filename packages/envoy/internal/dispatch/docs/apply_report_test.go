@@ -201,7 +201,7 @@ func weighOneUpdate(t *testing.T, room *typedResidentRoom, update []byte) crdt.A
 // the structs the room reports holding and each parked struct again, for the queue that holds it
 // (ceilingWithQueue). Nothing the room parks is stored (leaveParkedOut), so the second count bounds
 // the room's pending queue in memory, out of the same headroom as what it integrates. This drives
-// that counting at the sizes it is for.
+// that counting at sizes far past the pending cap a production room parks under.
 //
 // Frames of 200,000 GC structs, each parked behind a gap of its own client. The first is
 // admitted and leaves the room's ceiling at 400,010, so the second, 200,000 against a structs'
@@ -209,9 +209,12 @@ func weighOneUpdate(t *testing.T, room *typedResidentRoom, update []byte) crdt.A
 // Counted once, as the report counts them, the parked structs would leave the room weighed at
 // 200,010, and the second frame, against a share of 212,141, would be admitted too.
 //
-// So the backlog a browser can park its way into is bounded by the decode cap, which is what
-// review 6's finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds the same rule
-// at the cap itself).
+// So the decode cap bounds the backlog a browser parks its way into even where no pending cap does,
+// which is what review 6's finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds
+// the same rule at the cap itself). The room here is a stand-in with no pending cap of its own
+// (peerUpdateRoom, newDocumentCopy): a production room refuses an update that would park past
+// 4,096 structs (maxParkedStructs), far short of these frames, so the test proves the counting
+// beneath that cap and is no backlog a production room can reach.
 func TestAParkedBacklogTheHookAdmitsLeavesTheRoomsStateDecodable(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)

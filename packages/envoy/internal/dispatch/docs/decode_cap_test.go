@@ -108,14 +108,16 @@ func pushToTheCap(t *testing.T, service *Service, artifactID string) *crdt.Doc {
 
 // parkToTheCap carries artifactID's live document to the decode cap exactly with structs it parks.
 // A browser's first edit never reaches the room, and every keystroke after it then waits in the
-// room for that one (crdt.Doc.PendingStats): each is encoded into the room's state and can split
-// two structs once what it waits for arrives (countRoomStructs), but none of them is in the
-// room's state vector. So the room's struct total reaches the cap while its clocks sum to a few
-// hundred: the clock sum alone, the filter the three writes answered on before, would have let
-// each of them write. A few keystrokes the room does take, typed and deleted (typeAndDelete), top
-// the total up to the cap exactly; they come from a browser that copied the room before anything
-// parked, since a copy taken after parks the same keystrokes and sends them again with its own.
-// It returns the room's document.
+// room for that one (crdt.Doc.PendingStats): the room parks maxParkedStructs of them, the most it
+// parks (Server.MaxPendingItems), and its ceiling counts each of them twice, once for the struct
+// the store will hold once it lands and once for the queue that holds it until then
+// (structCeiling, ceilingWithQueue), but none of them is in the room's state vector. Keystrokes
+// the room does take, typed and deleted (typeAndDelete), top the ceiling up to the cap exactly;
+// they come from a browser that copied the room before anything parked, since a copy taken after
+// parks the same keystrokes and sends them again with its own. Each of those takes a clock, so
+// the room's clocks sum to about twice what it parks short of the cap: the clock sum alone, the
+// filter the three writes answered on before, would have let each of them write. It returns the
+// room's document.
 func parkToTheCap(t *testing.T, service *Service, artifactID string) *crdt.Doc {
 	t.Helper()
 	room := roomDocument(t, service, artifactID)
@@ -123,25 +125,24 @@ func parkToTheCap(t *testing.T, service *Service, artifactID string) *crdt.Doc {
 	parker, text := peerDocument(t, room)
 	parker.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "lost", nil) })
 	synced := parker.StateVector()
-	// Each parked struct counts twice in the room's ceiling: the struct itself and the skip over
-	// the gap it waits behind (structCeiling).
-	parked := int(maxUpdateItems-structCeiling(room))/2 - 8
+	parked := maxParkedStructs
 	parker.Transact(func(txn *crdt.Transaction) {
 		for range parked {
 			text.Insert(txn, 0, "x", nil)
 		}
 	})
 	deliver(t, room, parker, synced)
-	if stats := room.PendingStats(); stats.Items != parked {
-		t.Fatalf("the room parks %d structs, want the %d keystrokes whose first edit never arrived", stats.Items, parked)
+	if stats, most := room.PendingStats(), service.srv.MaxPendingItems; stats.Items != parked || stats.Items > most {
+		t.Fatalf("the room parks %d structs, want the %d keystrokes whose first edit never arrived, within the %d a room parks", stats.Items, parked, most)
 	}
 	for structs := structCeiling(room); structs < maxUpdateItems; structs = structCeiling(room) {
 		typeAndDelete(t, room, browser, browserText, int(maxUpdateItems-structs))
 	}
-	if structs, clocks := structCeiling(room), clockSum(room); structs != maxUpdateItems || clocks > maxUpdateItems/64 {
-		t.Fatalf("the room's struct total is %d and its clocks sum to %d, want the %d cap and a sum far short of it", structs, clocks, maxUpdateItems)
+	if structs, clocks := structCeiling(room), clockSum(room); structs != maxUpdateItems || clocks+uint64(parked) > maxUpdateItems {
+		t.Fatalf("the room's struct total is %d and its clocks sum to %d, want the %d cap and a sum short of it by more than the %d structs it parks", structs, clocks, maxUpdateItems, parked)
 	}
-	t.Logf("the room's ceiling is the %d cap, with %d structs parked, and its clocks sum to %d", maxUpdateItems, room.PendingStats().Items, clockSum(room))
+	t.Logf("the room's ceiling is the %d cap, with %d structs parked of the %d a room parks at most, and its clocks sum to %d",
+		maxUpdateItems, room.PendingStats().Items, service.srv.MaxPendingItems, clockSum(room))
 	return room
 }
 
@@ -699,9 +700,13 @@ func TestServerWritesWellShortOfTheDecodeCapAreNeverCounted(t *testing.T) {
 	})
 }
 
-// parkedFork is a document as a write's fork can hold it: parked structs of a browser's
-// keystrokes, every one waiting for a first edit that never arrived, and a delete range of another
-// browser's, waiting for the insert it deletes, none of which is in its state vector.
+// parkedFork is a stand-in for a write's fork, decoded with no pending cap of a room's
+// (newDocumentCopy): parked structs of a browser's keystrokes, every one waiting for a first edit
+// that never arrived, and a delete range of another browser's, waiting for the insert it deletes,
+// none of which is in its state vector. A production fork parks no more than a room does, 4,096
+// structs (maxParkedStructs): a cold fork whose history parks past that is refused unloadable
+// before it is weighed (coldFork, parkedPastRoomCaps), and a warm one is read from a room that
+// refuses an update parking past it.
 func parkedFork(t *testing.T, parked int) *crdt.Doc {
 	t.Helper()
 	writer := crdt.New(crdt.WithClientID(7))
@@ -744,7 +749,9 @@ func parkedFork(t *testing.T, parked int) *crdt.Doc {
 // before, let such a fork through. The ceiling it answers on now (structCeiling) counts what the
 // fork parks beside what it has integrated, and one fork short of the cap is still let through.
 // The forks here have no room behind them, as a cold write's has not (coldFork), so the fork's
-// own ceiling is what answers for the room its publish will load.
+// own ceiling is what answers for the room its publish will load. The fork past the cap parks far
+// more than the 4,096 structs a production fork can (parkedFork), so the test proves the ceiling
+// beneath that cap and is no fork a production write holds.
 func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	service := calibratedService()
