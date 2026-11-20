@@ -500,7 +500,9 @@ else
   if [ -z "$ready" ]; then
     row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s" UNKNOWN
   elif [ -z "$session_id" ]; then
-    row P4 "$want4" "the Oh My Pi session is not on $listener's session list (GET /v1/sessions by its directory)" UNKNOWN
+    shown=$(pane | tr -s ' \n' '  ')
+    [ "${#shown}" -le 300 ] || shown=${shown:$((${#shown} - 300))}
+    row P4 "$want4" "the Oh My Pi session is not on $listener's session list (GET /v1/sessions by its directory); its pane ends: $shown" UNKNOWN
   elif [ "$served" = false ]; then
     row P4 "$want4" "session $session_id: the relay socket refused a session its own relay subject" FAIL
   elif [ "$served" != true ]; then
