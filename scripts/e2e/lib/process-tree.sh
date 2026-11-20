@@ -453,16 +453,34 @@ stop_tree() {
 
 # proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
 # entry this user may not read, another user's process's, nor one whose process ended during the
-# walk, and fails when every line is one of those two: what a walk of every process meets on a
-# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
-# there, or one too old to read -files0-from) leaves a line of its own or the shell's, which is a
-# complaint. listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their
-# find's stderr with it.
+# walk, and fails when every line is one of those: what a walk of every process meets on a busy
+# machine and no error of its own. It reads find's lines (`find: 'PROC/<pid>…': <error>`) and
+# grep's (`grep: PROC/<pid>/environ: <error>`); grep, which opens a process's environment, can also
+# meet one whose process ended between the lookup of its entry and the open ("No such process"). A
+# walk that could not start (E2BIG, a find that is not there, or one too old to read
+# -files0-from) leaves a line of its own or the shell's, which is a complaint, and so does an entry
+# that could not be read for any other reason. listening_holders (lib/rig.sh) and refuse_leftovers
+# (lib/leftovers.sh) read their find's stderr with it, and procs_naming its grep's.
 proc_walk_complaint() {
-  local line rest
+  local line rest pid
   while IFS= read -r line; do
     rest=${line#*find: \'"$2"/}
     [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
+    # grep's lines are judged by glob, not by a regular expression, which bash compiles again for
+    # each line: a walk of a host's /proc meets one line for each other user's process, 17,000 on a
+    # shared devbox, which took 0.7 s by expression and 0.2 s by glob.
+    rest=${line#*grep: "$2"/}
+    if [ "$rest" != "$line" ]; then
+      pid=${rest%%/environ: *}
+      case $pid in
+        '' | *[!0-9]*) ;;
+        *)
+          case ${rest#"$pid"/environ: } in
+            'Permission denied' | 'No such file or directory' | 'No such process') continue ;;
+          esac
+          ;;
+      esac
+    fi
     printf '%s\n' "$line"
     return 0
   done <"$1"
@@ -480,14 +498,19 @@ proc_walk_complaint() {
 # variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
 # that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
 # start is read before and after the environment, and a process that ended or whose start moved
-# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
-# environment this user may not read, another user's, or whose process ended during the walk),
-# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
-# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
-# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
-# fail with 2, so no caller reads an unread machine as one with nothing left.
+# between is left out. Each entry grep could not read is judged by grep's own line for it
+# (proc_walk_complaint), in the C locale, so the line is the same on every host: an entry this user
+# may not read, another user's, and one whose process ended after the glob listed it are none of the
+# answer. Any other line, an entry whose environment could not be read for another reason, makes
+# procs_naming print that line and fail with 2: read as no match, it would leave a process of the
+# run unnamed, and the run's sweep would leave it running without a word. So does any status of
+# xargs's own (a batch it could not start, or a grep a signal ended, 125), printed with what xargs
+# said, or that it printed no complaint; xargs exits 123 when a batch's grep exits 1 or 2, no match
+# in it or an entry it could not read, which its lines decide. A proc root that lists no process at
+# all (an empty tmpfs where /proc should be, or one whose pid entries this user cannot see) fails
+# with 2 as well, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name err complaint
   local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
@@ -500,17 +523,25 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
+  err=$(mktemp "${TMPDIR:-/tmp}/procs-naming.XXXXXX") || {
+    echo "procs_naming: no file to keep grep's complaints in, so the processes naming $dir were not read" >&2
+    return 2
+  }
   # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
   # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | LC_ALL=C xargs -0 grep -lzF "${naming_patterns[@]}" 2>"$err" || exit)
   wait "$!" || status=$?
+  complaint=
+  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
   case $status in
     0 | 123) ;;
-    *)
-      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
-      return 2
-      ;;
+    *) complaint=${complaint:-"xargs ended with status $status and printed no complaint"} ;;
   esac
+  rm -f -- "$err"
+  if [ -n "$complaint" ]; then
+    echo "procs_naming: xargs exited $status reading $proc/<pid>/environ: $complaint, so the processes naming $dir were not read" >&2
+    return 2
+  fi
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
     pid=${p%/environ}
     pid=${pid##*/}
