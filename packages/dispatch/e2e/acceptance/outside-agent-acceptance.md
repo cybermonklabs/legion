@@ -35,10 +35,12 @@ On a developer box, from a checkout of this repository with `bun install` done:
 ```bash
 OUTSIDE_PINS=pins.txt \
 OUTSIDE_ENROLL_REFUSAL_COMMIT=<the merge commit of the enrollment refusal> \
+OUTSIDE_DISPATCH_COMMITS='<the merge commit of no broker token approves> <the merge commit of no restricted member names an issue repository>' \
 OUTSIDE_TAILNET_BROKER_URL=https://secrets.internal.example \
 OUTSIDE_TAILNET_DISPATCH_URL=https://dispatch.internal.example \
 OUTSIDE_LISTENER_URL=https://envoy.edge.example \
 OUTSIDE_INTERNAL_LISTENER_URL=https://envoy.internal.example \
+OUTSIDE_FULL_COOKIE_FILE=full-member-cookie.txt \
 OUTSIDE_PERSON=outside-e2e@example.com \
 OUTSIDE_CANARY=<the canary secret's name> \
 OUTSIDE_REPOSITORY=example-owner/example-repo \
@@ -55,12 +57,21 @@ deployment's image. The leg reads the commit each image was built from with `cra
 
 Each leg's header lists every input it reads. The tailnet leg's optional inputs are
 `OUTSIDE_PEER_SESSION`, `OUTSIDE_IMAGE_REVISION_COMMAND`, `OUTSIDE_TAILNET_TSV`,
-`OUTSIDE_RESULT_ISSUE` (an issue that gets the result as one comment) and `OUTSIDE_ALLOW_HTTP`.
+`OUTSIDE_RESULT_ISSUE` (an issue that gets the result as one comment), `OUTSIDE_LEGION_CHECKOUT`
+and `OUTSIDE_ALLOW_HTTP`.
+
+`OUTSIDE_FULL_COOKIE_FILE` holds a full member's browser session at Dispatch's private origin,
+`<name>=<value>` as the Cookie header carries it. The leg gives it to curl in a header file of mode
+0600 alone. No broker token approves, and Dispatch's GitHub proxy reads as the browser's person and
+never as a token, so the two positive controls below read with it.
 
 The tailnet leg does these steps, in this order:
 
 1. It reads the pins and prints them. It does not start unless the broker's build holds the
-   enrollment refusal (`git merge-base --is-ancestor`).
+   enrollment refusal and Dispatch's build holds each commit of `OUTSIDE_DISPATCH_COMMITS`: no
+   broker token gets the approve scope, which P7's refusal and its control rest on, and no
+   restricted member names an issue's repository, which decides the repositories P5 and the
+   sweep's GitHub proxy rows read (`git merge-base --is-ancestor`).
 2. It finds or makes the scratch project's issue that names `OUTSIDE_REPOSITORY`, with the box's
    own `dispatch` command. Row P5's admitted interest reads that repository.
 3. It starts a scratch `agent-secrets-helper serve` in a `mktemp -d` directory, with its own HOME,
@@ -77,18 +88,25 @@ The tailnet leg does these steps, in this order:
 5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file) in
    its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
-   `SWEEP_MEMBER`), and starts its writer, which comments on the scratch issue
-   `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the public leg ends. No full member's credential
-   goes to the runner: the fills file holds none, and is at most 40 KiB so that it fits one input.
+   `SWEEP_MEMBER`, and the full member's cookie, with which it reads the GitHub proxy), and starts
+   its writer, which comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the
+   public leg ends. No full member's credential goes to the runner: the fills file holds none, and
+   is at most 40 KiB so that it fits one input. Then the sweep's proxy control: the full member's
+   browser reads, through the GitHub proxy, the workflow runs of one commit of the repository the
+   fills name (the one only the sweep's project's issues resolve to, which the runner's proxy rows
+   read), and must get 200 with a list of workflow runs.
 6. It starts the public leg, within the code's 15 minutes: `gh workflow run` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, with
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`,
    `sweep_fills` (the fills file, base64, when fills mode made one) and
    `OUTSIDE_WORKFLOW_INPUTS`. With `OUTSIDE_PUBLIC_COMMAND` set, it runs that command here
    instead, for a local stack.
-7. It waits for the scratch login to be approved, and runs rows T1-T3.
-8. It waits for the public run to end, downloads its artifacts `outside-agent-public` and
-   `outside-edge-revocations`, and runs row T4.
+7. It waits for the scratch login to be approved, and runs rows T1-T3. Then P7's control: the full
+   member's browser mints a personal agent token, which must answer 201 and is revoked at once,
+   and approves the machine login of a second scratch helper whose operator is that member, which
+   must answer 200 and is revoked at once.
+8. It waits for the public run to end, downloads its artifacts `outside-agent-public`,
+   `outside-edge-revocations` and `restricted-sweep`, and runs row T4.
 9. During the public run's T5 window it runs T5's removal. Once the peer is shown
    `outside-e2e t5-open <nonce>`, it reads the test person on the access list (the control), asks the
    owner on this terminal to remove them and waits for Enter; with `OUTSIDE_OWNER_REMOVE_COMMAND`
@@ -158,22 +176,25 @@ shim finds its program through the caller's HOME.
 
 | Row | It passes when |
 | --- | --- |
-| pins | The broker's image was built from a commit that holds `OUTSIDE_ENROLL_REFUSAL_COMMIT`. |
+| pins | The broker's image was built from a commit that holds `OUTSIDE_ENROLL_REFUSAL_COMMIT`, and Dispatch's from one that holds each commit of `OUTSIDE_DISPATCH_COMMITS`. A pin that lacks one reads FAIL, and no leg starts. |
 | issue | An issue of the project names `OUTSIDE_REPOSITORY`. |
 | T1 | The scratch helper's machine login completes. Its machine file holds a credential, and `agent-secrets machine list` names the test person as its approver. `agent-secrets whoami` cannot show this: it reads an enrolled session, and T2 shows that the test person's login enrolls none. |
-| T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value. |
+| T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value, its session refused by that same code. A canary that gets no value for another reason, such as a requesters list on the secret that names someone else, reads FAIL: it says nothing of the member kind. |
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
 | T5 | The owner's removal, made during the public run's T5 window; before it, the test person is on the project's access list (the control, read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows: the cookie got 401 within 30 s of the removal, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it, none before it. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something. With no such comment it reads UNKNOWN. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control was answered, so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either it reads UNKNOWN; a FAIL of the sweep stands. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
 The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
 start. A PASS of P4 also needs the peer's own side: the peer was shown the ping and the reply within
 10 s of their stamps, read from its pane (or the scripted peer's log); not seen there, it reads
 UNKNOWN. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads UNKNOWN when
-the peer did not start or the private listener did not list `<peer>-foreign`. A FAIL of P5 or P6
-stands, because a missing refusal or a listed foreign session is evidence by itself.
+the peer did not start or the private listener did not list `<peer>-foreign`. A PASS of P7 reads
+UNKNOWN when P7's control was not answered 201 and 200: no broker token approves, so the 403 the
+agent's token gets says something about that token only where a browser session is answered on the
+same routes. A FAIL of P5, P6 or P7 stands, because a missing refusal or a listed foreign session is
+evidence by itself.
 
 ## The controls, run first and recorded
 
@@ -183,13 +204,20 @@ and listener on one machine, with `OUTSIDE_ALLOW_HTTP=1` and `OUTSIDE_PUBLIC_COM
 - With the listener's edge mode off, rows P5-P8 do not pass: the listener admits every interest
   and lists every session.
 - With edge mode on and a repository answer of `[]`, P5's admitted interest is refused.
-- P7 with a full member's own token answers 201 and 200.
+- With Dispatch built to admit a broker token on the approve route, P7 reads FAIL: the approve the
+  agent's token then reaches answers 404 for the record it names, never 403. P7's positive control
+  is the tailnet leg's own and runs in every run: the full member's browser is answered 201 by the
+  mint and 200 by the approve.
 - With the broker built without the enrollment refusal, T2 fails and T3 still passes.
 
 `bun test e2e/__tests__/outside-agent-acceptance.test.ts`, from `packages/dispatch`, runs each leg
 with no input, and with every input set and nothing behind them, and wants UNKNOWN for every row
 and exit 2. Its control runs a copy of each leg in which every `UNKNOWN` reads `PASS`, and the
-same check must fail on that copy.
+same check must fail on that copy. It also runs the tailnet leg against stand-ins of the broker's
+helper, Dispatch, the sweep and the public leg: with the full member's browser answered, T2, P7
+and the sweep pass; with it refused, P7 and the sweep read UNKNOWN, and a canary refused for a
+reason other than the member kind makes T2 FAIL; and a Dispatch pin that lacks a commit of
+`OUTSIDE_DISPATCH_COMMITS` makes the pins row FAIL before any leg starts.
 
 ## What the two legs do not prove
 

@@ -835,7 +835,8 @@ list. The tailnet leg is the one command and runs on a developer box; it starts 
 on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
 them, what each row reads, and the controls. `cd packages/dispatch && bun test
 e2e/__tests__/outside-agent-acceptance.test.ts` checks that each leg prints `UNKNOWN`, never
-`PASS`, for a row whose target is absent.
+`PASS`, for a row whose target is absent, and that the tailnet leg holds T2, P7, the sweep and the
+pins to their controls, against stand-ins of what it drives.
 
 ## Acceptance run against the deployed image
 
