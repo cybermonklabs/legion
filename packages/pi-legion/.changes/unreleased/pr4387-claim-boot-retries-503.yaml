@@ -11,8 +11,9 @@ body: |-
     start, and after a session change) claim again the same way; that controller runs as
     `omp --mode rpc`, where its widget is shown nowhere, so each wait shows in the Oh My Pi log of
     the controller's session, and the daemon retires and relaunches a controller that never reports
-    ready after its registration deadline (120 seconds times 3 by default), logging the claim, the
-    reason and the launch it counts. A command a person types (`/legion-controller-start`,
+    ready after its registration deadline (120 seconds times 3 by default), at start and after a
+    session change alike, logging the claim, the reason and the launch it counts. A command a person
+    types (`/legion-controller-start`,
     `/legion-claim-controller`), wherever it runs, and any claim of a controller the daemon did not
     launch, also shows each wait as a notice and fails on screen with the listener's answer after
     five tries. In the daemon-launched controller, the process stays up only when such a command's

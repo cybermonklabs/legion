@@ -970,7 +970,10 @@ func fillTable(t *builder) {
 
 	t.row(onDeadline, "the registration deadline: the agent never registered, or never said it was ready", registrationDeadline,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateLaunching, StateShimConnected, StateRegistered)
-	t.ignore(onDeadline, "the agent is ready, so the boot watch is over", StateReady, StateWorking, StateIdle)
+	// A ready agent that registered again (reregister, a session change) has the registration
+	// deadline again until it says it is ready; one that does not is retired as a booting one is.
+	t.row(onDeadline, "the registration deadline: the agent registered again and never said it was ready", registrationDeadline,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateWorking, StateIdle)
 	t.ignore(onDeadline, "no boot is being watched", processless...)
 
 	t.row(onTurnTimer, "an acknowledged prompt started no turn", noTurn, []ClaimState{StateLaunching, StateFailed, StateSuspended}, prompted...)
@@ -2292,8 +2295,11 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		return m.suspendHeld(ctx)
 	}
 	never := "never registered"
-	if m.claim.State == StateRegistered {
+	switch m.claim.State {
+	case StateRegistered:
 		never = "registered and never said it was ready"
+	case StateReady, StateWorking, StateIdle:
+		never = "registered again and never said it was ready"
 	}
 	return m.probe(ctx, func(ctx context.Context) error {
 		if err := m.checkLaunch(ctx); err != nil {
@@ -2366,13 +2372,17 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	return m.ensureEnrolled(ctx)
 }
 
-// reregister is the recorded session registering again: it is issued a new secret, and the
-// deadline stays where the first registration set it, so an agent that keeps registering and never
-// says it is ready is still relaunched. The session is held as register holds it, by every name of
-// it: one the claim recorded before the daemon held sessions is the claim's, unless another claim
-// recorded it too, when it is held for neither (the claim_sessions migration). A registration
-// whose plugin still differs from the daemon's is relaunched at once and refused the same way
-// register's is (staleRegistration).
+// reregister is the recorded session registering again: it is issued a new secret. A claim still
+// booting keeps the deadline where the first registration set it, so an agent that keeps
+// registering and never says it is ready is still relaunched. A claim whose agent was ready - an
+// agent that changed session, such as a controller whose session changed and that claims its role
+// again - gets the registration deadline again (armRegistration), which only its next ready ends
+// (reready): an agent that registered again and never says it is ready is retired and relaunched at
+// that deadline, as one at its first boot is, with the same line in the daemon's log. The session
+// is held as register holds it, by every name of it: one the claim recorded before the daemon held
+// sessions is the claim's, unless another claim recorded it too, when it is held for neither (the
+// claim_sessions migration). A registration whose plugin still differs from the daemon's is
+// relaunched at once and refused the same way register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2386,6 +2396,10 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
 		m.claim.PluginRelaunchFor = 0
+	}
+	switch m.claim.State {
+	case StateReady, StateWorking, StateIdle:
+		m.armRegistration()
 	}
 	if err := m.persist(ctx); err != nil {
 		return err
@@ -2432,10 +2446,12 @@ func finishReady(m *Machine, ctx context.Context) error {
 }
 
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
-// claim write may have failed after the machine made the transition. A retained launch-time
-// suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping.
+// claim write may have failed after the machine made the transition. It also ends the registration
+// deadline a reregister of a ready agent armed. A retained launch-time suspension still wins: the
+// retry completes that suspension instead of publishing ready and releasing notices to a claim the
+// operator or workflow is stopping.
 func reready(m *Machine, ctx context.Context, _ Event) error {
+	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}

@@ -37,7 +37,7 @@ if ((status != 0)); then
   if ((${#missing[@]})); then
     reason="a required variable is missing a value: ${missing[*]}"
   else
-    reason="docker compose config exited $status; its message is not printed, as it can quote a value from compose/.env; run \`docker compose -f compose/dispatch.compose.yml config\` in $PWD to read it"
+    reason="docker compose config exited $status; its message is not printed, as it can quote a setting's value; run \`docker compose -f compose/dispatch.compose.yml config\` in $PWD to read it"
   fi
   echo "up-dispatch.sh: Compose refused compose/dispatch.compose.yml: $reason" >&2
   exit 1
@@ -50,7 +50,7 @@ while IFS= read -r line; do
   esac
 done <<<"$answer"
 if [[ -z "$identity" ]]; then
-  echo "up-dispatch.sh: Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE, and Dispatch refuses to start without its identity at the Envoy listener; set one in compose/.env (see deploy/README.md, \"Dispatch's identity at the Envoy listener\")" >&2
+  echo "up-dispatch.sh: Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE, and Dispatch refuses to start without its identity at the Envoy listener; set one in the env file beside compose/dispatch.compose.yml (see deploy/README.md, \"Dispatch's identity at the Envoy listener\")" >&2
   exit 1
 fi
 docker compose -f compose/dispatch.compose.yml up -d --build

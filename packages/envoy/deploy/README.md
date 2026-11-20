@@ -101,6 +101,13 @@ refuses is refused with no text of Compose's, which can quote a setting's value:
 required variable missing a value, or else gives Compose's exit status and the `docker compose
 config` command that shows its message.
 
+`compose/.env` owns `ENVOY_IMAGE_TAG` for the deployer: it writes the tag it deployed there and reads
+the deployed tag back from it, so an `ENVOY_IMAGE_TAG` in the deployer's own environment (the
+`export` of the "Image" steps above, say) is ignored by design. It writes `compose/.env` (the tag, and
+its schema record `ENVOY_IMAGE_SCHEMA`) by staging the new file in an owner-only directory under
+`BACKUPS` and renaming it over the old one, so `BACKUPS` must be on `compose/.env`'s filesystem: on
+another, the deployer writes nothing and does not deploy, naming both.
+
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the
 new one, which boots and migrates. That order is this deployer's own, not a rule every deployment

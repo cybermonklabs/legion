@@ -1191,7 +1191,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
   defaults), often because the registration's answer never reached it. The daemon resumes the same
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
+  this retirement counts and the limit it counts toward.
+  **`supervise: the agent registered again and never said it was ready; retired its process`** is
+  the same deadline for an agent that was ready and registered again, such as a controller whose
+  Oh My Pi session changed and that claims its role again: until it says ready again, it is
+  watched as a booting agent is. A controller whose Envoy role claim the listener keeps answering
+  `503` lands here, and its waits are in the Oh My Pi log of its session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at

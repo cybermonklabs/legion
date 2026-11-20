@@ -9,7 +9,6 @@ COMPOSE_DIR="${COMPOSE_DIR:-$REPO/packages/envoy/deploy/compose}"
 BACKUPS="${BACKUPS:-/home/ubuntu/tmp/dispatch-backups}"
 IMAGE="${IMAGE:-ghcr.io/cybermonklabs/legion/envoy}"
 COMPOSE_FILE="$COMPOSE_DIR/dispatch.compose.yml"
-COMPOSE_ENV="$COMPOSE_DIR/.env"
 # pg_dump N dumps servers <= N; the production database is Aurora PostgreSQL 16.
 PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
 # SCHEMA_READ_DEADLINE is how long schema_applied polls the migration advisory key before it
@@ -36,6 +35,11 @@ esac
 
 mkdir -p "$BACKUPS"
 
+# The env file owns the deployed tag: the deployer writes it there (set_env_value) and reads it back
+# through Compose (deployed_tag), where a value in its own environment would win over the file's and
+# never change, so every poll would deploy the same image again. One it inherits is ignored.
+unset ENVOY_IMAGE_TAG
+
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
 }
@@ -53,10 +57,11 @@ compose_with_tag() {
   env ENVOY_IMAGE_TAG="$tag" timeout "$duration" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
 }
 
-# The deployer reads compose/.env only through Compose's own resolution: compose_variable below for
-# the variables Compose interpolates with (ENVOY_IMAGE_TAG, and ENVOY_IMAGE_SCHEMA, the deployer's
-# own record), resolved_settings for the dispatch service's environment. It writes the file only
-# through set_env_value. autodeploy_test.sh holds the script to both (its static check).
+# The deployer reads the compose env file only through Compose's own resolution: compose_variable
+# below for the variables Compose interpolates with (ENVOY_IMAGE_TAG, and ENVOY_IMAGE_SCHEMA, the
+# deployer's own record), resolved_settings for the dispatch service's environment. It writes the
+# file only through set_env_value, the one function that names its path. autodeploy_test.sh holds
+# the script to that (its static check).
 
 # compose_variable NAME prints NAME's value in Compose's own interpolation environment (`docker
 # compose config --environment`): compose/.env as Compose reads it (quotes, `${...}`, an `export`
@@ -79,20 +84,31 @@ deployed_tag() {
   compose_variable ENVOY_IMAGE_TAG
 }
 
-# set_env_value NAME VALUE makes VALUE the value Compose reads for NAME from compose/.env: every line
-# that sets NAME, in any spelling Compose reads (blanks before it or around `=`, an `export` prefix),
-# is removed and `NAME=VALUE` appended, so no earlier spelling is left to win or to be missed. VALUE is
-# one of the deployer's own, a tag or a schema record, which needs no quoting. The file is replaced
-# whole, with its mode kept, so a reader never sees half of it.
+# set_env_value NAME VALUE makes VALUE the value Compose reads for NAME from the compose env file:
+# every `NAME=` line, with blanks before it or around `=` or an `export` prefix, is removed and
+# `NAME=VALUE` appended (a `NAME: value` line, which Compose also reads, is kept, and loses to the
+# appended line, which Compose reads last). VALUE is one of the deployer's own, a tag or a schema
+# record, which needs no quoting. The new file is written in an owner-only directory of its own
+# under BACKUPS, outside the checkout, so a deployer killed mid-write leaves the file's secrets
+# nowhere in the repository, and is moved onto the env file by a rename, which needs BACKUPS on the
+# env file's filesystem: on another, nothing is written and the write fails, naming both.
 set_env_value() {
-  local tmp status=0
-  tmp=$(mktemp "$COMPOSE_ENV.XXXXXX") || return 1
-  grep -vE "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$COMPOSE_ENV" >"$tmp" || status=$?
-  if ((status > 1)) || ! printf '%s=%s\n' "$1" "$2" >>"$tmp" ||
-    ! chmod --reference="$COMPOSE_ENV" "$tmp" || ! mv -f "$tmp" "$COMPOSE_ENV"; then
-    rm -f "$tmp"
+  local env_file="$COMPOSE_DIR/.env" staging tmp status=0
+  staging=$(mktemp -d "$BACKUPS/env-write.XXXXXX") || return 1
+  if [[ "$(stat -c %d "$staging")" != "$(stat -c %d "$COMPOSE_DIR")" ]]; then
+    log "BACKUPS ($BACKUPS) is on another filesystem than $COMPOSE_DIR, so $env_file cannot be replaced by a rename from it; not writing $1"
+    rmdir "$staging"
     return 1
   fi
+  tmp="$staging/env"
+  (umask 077 && grep -vE "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$env_file" >"$tmp") || status=$?
+  if ((status > 1)) || ! printf '%s=%s\n' "$1" "$2" >>"$tmp" ||
+    ! chmod --reference="$env_file" "$tmp" || ! mv -f "$tmp" "$env_file"; then
+    rm -f "$tmp"
+    rmdir "$staging"
+    return 1
+  fi
+  rmdir "$staging"
 }
 
 # compose_refusal ERRFILE STATUS COMMAND prints why Compose refused the configuration with no text
@@ -146,7 +162,7 @@ resolved_settings() {
     if ((status == 124)); then
       log "docker compose config did not answer within 60 s; run \`$command\` to see why; not deploying $sha"
     else
-      log "Compose refused $COMPOSE_FILE with $COMPOSE_ENV: $(compose_refusal "$err" "$status" "$command"); not deploying $sha"
+      log "Compose refused $COMPOSE_FILE with the env file in $COMPOSE_DIR: $(compose_refusal "$err" "$status" "$command"); not deploying $sha"
     fi
     rm -f "$err"
     return 1
@@ -432,7 +448,7 @@ rollback() {
   local previous="$1"
   local dispatchPort="$2"
   set_env_value ENVOY_IMAGE_TAG "$previous" ||
-    log "could not write ENVOY_IMAGE_TAG=$previous to $COMPOSE_ENV; rolling back with the tag Compose resolves there"
+    log "could not write ENVOY_IMAGE_TAG=$previous to the env file in $COMPOSE_DIR; rolling back with the tag Compose resolves there"
   if ! compose 300 up -d --no-deps dispatch; then
     log "rollback compose failed for $previous"
     return 1
@@ -512,7 +528,7 @@ deploy() {
   resolved_settings "$sha" || return 1
   origin=${resolved[DISPATCH_SERVER_URL]}
   if [[ -z "$origin" ]]; then
-    log "Compose resolves DISPATCH_SERVER_URL empty from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DISPATCH_SERVER_URL empty from the env file in $COMPOSE_DIR; not deploying $sha"
     return 1
   fi
   # Dispatch starts only with its identity at the Envoy listener (dispatch.compose.yml's entrypoint),
@@ -520,16 +536,16 @@ deploy() {
   # image's rollback under the same file would: a .env Compose reads neither setting from is refused
   # here, before the backup, and the image that serves keeps serving.
   if [[ -z "${resolved[ENVOY_ACCOUNT_GOOGLE_AUDIENCE]}${resolved[ENVOY_ACCOUNT_TOKEN_FILE]}" ]]; then
-    log "Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE from $COMPOSE_ENV, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
+    log "Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE from the env file in $COMPOSE_DIR, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
     return 1
   fi
   databaseUrl=${resolved[DATABASE_URL]}
   if [[ -z "$databaseUrl" ]]; then
-    log "Compose resolves DATABASE_URL empty from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DATABASE_URL empty from the env file in $COMPOSE_DIR; not deploying $sha"
     return 1
   fi
   if ! database_url_split "$databaseUrl"; then
-    log "DATABASE_URL in $COMPOSE_ENV is not in the one form the deployer accepts, the only one in which it can keep the password off its database clients' process arguments; see packages/envoy/deploy/README.md, \"Auto-deployer\", for the form; not deploying $sha"
+    log "DATABASE_URL in the env file in $COMPOSE_DIR is not in the one form the deployer accepts, the only one in which it can keep the password off its database clients' process arguments; see packages/envoy/deploy/README.md, \"Auto-deployer\", for the form; not deploying $sha"
     return 1
   fi
   # The port the health and login checks dial, as Compose resolves it for the container (its default
@@ -537,11 +553,11 @@ deploy() {
   # listens on and a good deploy is not rolled back.
   dispatchPort=${resolved[DISPATCH_PORT]}
   if [[ ! "$dispatchPort" =~ ^[0-9]{1,5}$ ]]; then
-    log "Compose resolves DISPATCH_PORT to '$dispatchPort' from $COMPOSE_ENV, which is no port; not deploying $sha"
+    log "Compose resolves DISPATCH_PORT to '$dispatchPort' from the env file in $COMPOSE_DIR, which is no port; not deploying $sha"
     return 1
   fi
   if [[ -z "$previous" ]]; then
-    log "Compose resolves no ENVOY_IMAGE_TAG from $COMPOSE_ENV, the image that serves now and the one a failed deploy rolls back to; not deploying $sha"
+    log "Compose resolves no ENVOY_IMAGE_TAG from the env file in $COMPOSE_DIR, the image that serves now and the one a failed deploy rolls back to; not deploying $sha"
     return 1
   fi
   before=$(schema_applied) || {
@@ -555,13 +571,13 @@ deploy() {
   # failed deploy that migrated starts from the moved schema. A value the deployer before this one
   # wrote is a bare max(version), which roll_back_or_stop compares the old way.
   recorded=$(compose_variable ENVOY_IMAGE_SCHEMA) || {
-    log "could not read ENVOY_IMAGE_SCHEMA through Compose's resolution of $COMPOSE_ENV; not deploying $sha"
+    log "could not read ENVOY_IMAGE_SCHEMA through Compose's resolution of the env file in $COMPOSE_DIR; not deploying $sha"
     return 1
   }
   if [[ -n "$recorded" && "${recorded%:*}" == "$previous" ]]; then
     baseline="${recorded##*:}"
     if [[ ! "$baseline" =~ ^[0-9]+-[0-9]+-[0-9a-f]{64}$ && ! "$baseline" =~ ^[0-9]+$ ]]; then
-      log "ENVOY_IMAGE_SCHEMA in $COMPOSE_ENV is '$recorded', not <tag>:<max>-<count>-<digest>; not deploying $sha"
+      log "ENVOY_IMAGE_SCHEMA in the env file in $COMPOSE_DIR is '$recorded', not <tag>:<max>-<count>-<digest>; not deploying $sha"
       return 1
     fi
   else

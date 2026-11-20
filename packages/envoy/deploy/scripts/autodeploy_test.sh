@@ -204,8 +204,10 @@ fi
 exec "${@:2}"
 EOF
 # python3 is the real one, but for a run with AUTODEPLOY_TEST_PYTHON_FAIL=1, where it exits 3 having
-# read its input and printed nothing, as an interpreter that cannot run does.
-real_python3=$(command -v python3)
+# read its input and printed nothing, as an interpreter that cannot run does. The real one is named
+# by the interpreter's own path (sys.executable), not looked up on PATH again, where a shim (mise's)
+# would find this fake and recurse.
+real_python3=$(python3 -c 'import sys; print(sys.executable)')
 cat >"$bin/python3" <<EOF
 #!/usr/bin/env bash
 if [[ "\${AUTODEPLOY_TEST_PYTHON_FAIL:-}" == 1 ]]; then
@@ -213,6 +215,21 @@ if [[ "\${AUTODEPLOY_TEST_PYTHON_FAIL:-}" == 1 ]]; then
   exit 3
 fi
 exec "$real_python3" "\$@"
+EOF
+# mv is the real one, but a move onto the env file records where its source was staged, with the
+# staging directory's mode, and, for a run with AUTODEPLOY_TEST_KILL_AT_ENV_MV=1, kills the
+# deployer there, as a deployer killed between its write and its rename is.
+cat >"$bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${*: -1}" == */.env ]]; then
+  source=${*: -2:1}
+  printf 'mv-source %s %s\n' "$source" "$(stat -c %a "$(dirname "$source")")" >>"$AUTODEPLOY_TEST_ARGV"
+  if [[ "${AUTODEPLOY_TEST_KILL_AT_ENV_MV:-}" == 1 ]]; then
+    kill -9 "$PPID"
+    exit 137
+  fi
+fi
+exec /bin/mv "$@"
 EOF
 # The fake libpq, which splits a URL as libpq does rather than as the deployer does: the
 # credentials run to the first @ before the first /, a raw ? included, and a query key or value is
@@ -372,13 +389,16 @@ source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$bin/python3" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$bin/python3" "$bin/mv" "$tools/psql" "$tools/pg_dump"
+# The python3 fake runs the real interpreter, on any PATH this box has (a mise shim included).
+PATH="$bin:$PATH" python3 -c 'import sys' ||
+  { printf 'autodeploy_test: the python3 stand-in cannot run the real python3 (%s)\n' "$real_python3" >&2; exit 1; }
 
 deploy_once() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
     AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$real_docker}" \
-    BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
+    BACKUPS="${test_backups-$backups}" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
     "$(dirname "$0")/autodeploy.sh" --once 2>&1
 }
 fail() {
@@ -598,57 +618,100 @@ if [[ "$output" != *"DISPATCH_PORT to 'not-a-port'"*"not deploying new-image"* |
   fail 'deployer did not refuse DISPATCH_PORT=not-a-port before its backup'
 fi
 
-# The static check: autodeploy.sh and up-dispatch.sh read compose/.env through Compose's resolution
-# alone. No line uses a reader of the file's text (env_value, `source`/`.` of it, `set -a`, a
-# redirection from it, a sed/grep/awk/cat/read over it); a line naming $COMPOSE_ENV or compose/.env
-# is its definition, a message (log or echo, the name inside the string, never inside `$(...)`), or
-# within set_env_value, the one writer. Its own control is a copy of autodeploy.sh with one text read
-# planted, which it must refuse; and it fails when it finds nothing to judge.
+# The static check: in autodeploy.sh and up-dispatch.sh, no line outside set_env_value, the one
+# writer, refers to the env file's path - `COMPOSE_ENV`, `compose/.env`, or any `.env` path - so the
+# only reads of it are Compose's own, and an alias, a backtick, an eval or a direct path, each of
+# which has to name the path somewhere, is refused wherever it sits. Comment lines are not code. It
+# fails, as UNKNOWN, when it finds the writer naming no path, which would mean it read nothing. Its
+# controls are copies of autodeploy.sh with each of those four reads planted, each refused.
 env_reads() {
   python3 - "$@" <<'PY'
 import re, sys
-problems, judged, writer_seen = [], 0, False
+writer = "set_env_value"
+reference = re.compile(r"COMPOSE_ENV|compose/\.env|(^|[^A-Za-z0-9_.])\.env\b")
+problems, writer_refs = [], 0
 for path in sys.argv[1:]:
-    in_writer = False
+    function = None
     for n, line in enumerate(open(path).read().splitlines(), 1):
-        body = line.strip()
-        if body.startswith("#") or not body:
+        start = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
+        if start:
+            function = start.group(1)
             continue
-        if re.match(r"set_env_value\(\)\s*\{", body):
-            in_writer, writer_seen = True, True
+        if line == "}":
+            function = None
             continue
-        if in_writer:
-            if body == "}":
-                in_writer = False
+        if line.strip().startswith("#") or not reference.search(line):
             continue
-        names_env = "COMPOSE_ENV" in line or "compose/.env" in line or re.search(r"[\s\"'/]\.env\b", line)
-        if re.search(r"\benv_value\b|\bset -a\b|^\s*(source|\.)\s+\S*(env|ENV)", line):
-            problems.append(f"{path}:{n}: reads .env by its text: {body}")
+        if function == writer:
+            writer_refs += 1
             continue
-        if not names_env:
-            continue
-        judged += 1
-        if re.match(r"(readonly\s+)?COMPOSE_ENV=", body):
-            continue
-        message = re.match(r"(\|\|\s*)?(log|echo)\s+\"|[a-z_]+=\"", body)
-        if message and not re.search(r"\$\([^)]*(COMPOSE_ENV|\.env)", line):
-            continue
-        problems.append(f"{path}:{n}: names .env outside a message and set_env_value: {body}")
-if judged == 0 or not writer_seen:
-    problems.append(f"UNKNOWN: judged {judged} lines naming .env and found set_env_value: {writer_seen}")
+        problems.append(f"{path}:{n}: refers to the env file's path outside {writer}: {line.strip()}")
+if writer_refs == 0:
+    problems.append(f"UNKNOWN: {writer} names the env file's path nowhere in {sys.argv[1:]}, so nothing was judged")
 print("\n".join(problems))
 sys.exit(1 if problems else 0)
 PY
 }
 here=$(dirname "$0")
 env_reads "$here/autodeploy.sh" "$here/up-dispatch.sh" >"$root/env-reads.txt" ||
-  fail "a script reads compose/.env by a path other than Compose's resolution: $(<"$root/env-reads.txt")"
-# The planted line is written as the script would hold it, so its $(...) and $COMPOSE_ENV stay unexpanded.
+  fail "a script refers to the env file's path outside its one writer: $(<"$root/env-reads.txt")"
+# The plants are written as the script would hold them, `$(...)` and `$COMPOSE_DIR` unexpanded.
 # shellcheck disable=SC2016
-sed 's/^deployed_tag() {$/&\n  x=$(sed -n "s\/^DISPATCH_PORT=\/\/p" "$COMPOSE_ENV")/' "$here/autodeploy.sh" >"$root/planted.sh"
-grep -q 'DISPATCH_PORT=//p' "$root/planted.sh" || fail 'the static check'"'"'s control was not planted'
-if env_reads "$root/planted.sh" >/dev/null; then
-  fail 'the static check passed a copy of autodeploy.sh with a text read of compose/.env planted in it'
+for plant in \
+  'f="$COMPOSE_DIR/.env"
+  x=$(sed -n "s/^DISPATCH_PORT=//p" "$f")' \
+  'x=`sed -n s/^DISPATCH_PORT=//p $COMPOSE_DIR/.env`' \
+  'eval '"'"'x=$(sed -n "s/^DISPATCH_PORT=//p" "$COMPOSE_DIR/.env")'"'"'' \
+  'x=$(sed -n "s/^DISPATCH_PORT=//p" compose/.env)'; do
+  PLANT=$plant python3 -c '
+import os, sys
+text = open(sys.argv[1]).read()
+anchor = "deployed_tag() {\n"
+assert text.count(anchor) == 1
+sys.stdout.write(text.replace(anchor, anchor + "  " + os.environ["PLANT"] + "\n"))
+' "$here/autodeploy.sh" >"$root/planted.sh"
+  if env_reads "$root/planted.sh" >/dev/null; then
+    fail "the static check passed a copy of autodeploy.sh with this read of the env file planted: $plant"
+  fi
+done
+
+# The env file owns the deployed tag: a deployer started with ENVOY_IMAGE_TAG in its environment
+# deploys once, reads the tag it wrote back, and the next pass deploys nothing, where one that let
+# the inherited value win over the file would deploy the same image again on every pass.
+fresh_env
+good_deploy 'a deployer started with ENVOY_IMAGE_TAG=old-image exported' ENVOY_IMAGE_TAG=old-image
+: >"$log"
+: >"$argv"
+output=$(export ENVOY_IMAGE_TAG=old-image; deploy_once) || true
+if [[ "$output" == *"main has a newer published image"* || -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
+  fail 'a deployer started with ENVOY_IMAGE_TAG exported deployed the same image again on its next pass'
+fi
+
+# The env file is written through a file staged in an owner-only directory under BACKUPS, outside
+# the checkout, and moved onto it: a deployer killed between the write and the move leaves nothing
+# of the file's secrets in the repository. With BACKUPS on another filesystem than the env file,
+# which a rename cannot cross, nothing is written and the deploy stops before its backup.
+fresh_env
+AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
+read -r _ staged staged_dir_mode < <(grep '^mv-source ' "$argv" | head -n 1) ||
+  fail 'UNKNOWN: the deployer reached no move onto the env file, so nothing of its write was judged'
+case "$staged" in
+  "$repo"/*) fail "the deployer staged the env file's new contents inside the checkout: $staged" ;;
+  "$backups"/*) ;;
+  *) fail "the deployer staged the env file's new contents outside BACKUPS: $staged" ;;
+esac
+[[ "$staged_dir_mode" == 700 ]] || fail "the deployer staged the env file in a directory of mode $staged_dir_mode, want 700"
+leftover=$(find "$repo" -newer "$schema" -type f | head -n 1)
+[[ -z "$leftover" ]] || fail "a deployer killed mid-write left a file in the checkout: $leftover"
+other_fs=$(mktemp -d /dev/shm/autodeploy-test.XXXXXX) || fail 'UNKNOWN: no /dev/shm to put BACKUPS on another filesystem'
+[[ "$(stat -c %d "$other_fs")" != "$(stat -c %d "$compose")" ]] ||
+  fail 'UNKNOWN: /dev/shm is on the compose directory'"'"'s filesystem here, so the refusal was not judged'
+fresh_env
+output=$(test_backups=$other_fs deploy_once) || true
+rm -rf "$other_fs"
+if [[ "$output" != *"BACKUPS ($other_fs) is on another filesystem than $compose"*"not writing ENVOY_IMAGE_SCHEMA"*"not deploying new-image"* ]] ||
+  [[ -s "$log" ]] || [[ $(<"$compose/.env") == *ENVOY_IMAGE_SCHEMA* ]]; then
+  fail 'the deployer did not refuse to write the env file from BACKUPS on another filesystem, before its deploy'
 fi
 
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
