@@ -20,19 +20,27 @@ afterEach(() => {
   for (const box of drawn.splice(0)) box.remove();
 });
 
-/** Draws `html` on the page, and returns the one button it holds. */
-function drawButton(html: string): HTMLButtonElement {
+/** A link of another namespace than HTML's, which no control of the page is. */
+const SVG_LINK = '<svg><a href="#save"><text>Save</text></a></svg>';
+
+/** Draws `html` on the page, and returns the one element of it `selector` finds. */
+function drawControl(html: string, selector: string): Element {
   const box = document.createElement("div");
   box.innerHTML = html;
   document.body.append(box);
   drawn.push(box);
-  const button = box.querySelector("button");
-  if (button === null) throw new Error(`the case drew no button: ${html}`);
-  return button;
+  const control = box.querySelector(selector);
+  if (control === null) throw new Error(`the case drew no ${selector}: ${html}`);
+  return control;
+}
+
+/** Draws `html` on the page, and returns the one button it holds. */
+function drawButton(html: string): Element {
+  return drawControl(html, "button");
 }
 
 /** Draws `html` on the page, and takes it off again with its one button. */
-function removedButton(html: string): HTMLButtonElement {
+function removedButton(html: string): Element {
   const button = drawButton(html);
   drawn.pop()?.remove();
   return button;
@@ -77,13 +85,8 @@ test.each([
 
 // `canHoldFocus` takes only an HTML element, so an element of another namespace, which no
 // control of the page is, takes no press either.
-test("an SVG element can hold no focus and takes no press", () => {
-  const box = document.createElement("div");
-  box.innerHTML = '<svg><a href="#save"><text>Save</text></a></svg>';
-  document.body.append(box);
-  drawn.push(box);
-  const link = box.querySelector("svg a");
-  expect(link, "the case drew no SVG link").not.toBeNull();
+test("an SVG link can hold no focus and takes no press", () => {
+  const link = drawControl(SVG_LINK, "svg a");
   expect(canHoldFocus(link), "the SVG link can hold the focus").toBe(false);
   expect(usableControl(link), "the SVG link takes a press").toBe(false);
 });
@@ -114,9 +117,9 @@ test("a button in the closed Details drawer can hold no focus and takes a press"
   expect(usableControl(button), "the button takes no press").toBe(true);
 });
 
-// Inside the closed drawer the press rule reads the control and the elements between it and the
-// `aside` itself, since `canHoldFocus` refuses everything there: each refusal it reads elsewhere
-// still holds there.
+// Inside the closed drawer the press rule makes the focus rule's own tests, reading the control
+// and the elements between it and the `aside` itself, since `canHoldFocus` refuses everything
+// there: each of them still refuses there, and only whether the control is drawn is not asked.
 test.each([
   ["a button removed with the closed Details drawer", () => removedButton(closedDetails(SAVE))],
   [
@@ -139,6 +142,7 @@ test.each([
     "a button under an aria-hidden element in the closed Details drawer",
     () => drawButton(closedDetails(`<div aria-hidden="true">${SAVE}</div>`)),
   ],
+  ["an SVG link in the closed Details drawer", () => drawControl(closedDetails(SVG_LINK), "svg a")],
 ] as const)("%s takes no press", (_element, draw) => {
-  expect(usableControl(draw()), "the button takes a press").toBe(false);
+  expect(usableControl(draw()), "the element takes a press").toBe(false);
 });

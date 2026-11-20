@@ -91,7 +91,7 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
   // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh by the outline's own rule (`useIssueTree.ts`'s `EVENT_FRESH`):
+  // belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`):
   // events refresh them, never their age (decision 180). Staleness is per observer, so each read
   // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does

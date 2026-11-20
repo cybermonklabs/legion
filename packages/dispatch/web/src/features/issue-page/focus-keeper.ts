@@ -46,9 +46,13 @@ export function canHoldFocus(element: Element | null | undefined): element is HT
   );
 }
 
+/** The attributes whose change can change what `canHoldFocus` answers: `LOSSES` watches them,
+ *  and so does a watch of `usableControl`'s answer (`usable-control.ts`), among its own. */
+export const FOCUS_ATTRIBUTES = ["disabled", "hidden", "inert"] as const;
+
 /** The changes that can take the focus away: a removal, and a disable, a hide or an inert. */
 const LOSSES: MutationObserverInit = {
-  attributeFilter: ["disabled", "hidden", "inert"],
+  attributeFilter: [...FOCUS_ATTRIBUTES],
   attributes: true,
   childList: true,
   subtree: true,

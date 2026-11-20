@@ -160,12 +160,14 @@ export function IssueAddMenu({
   // hidden by another component's own commit draws the menu no further time: a refused save of
   // the priorities gives their control back in a commit of `IssuePriorityLine` alone. Every
   // control an entry reaches is under the panel or the header (the assignee's), so those two are
-  // watched, for each attribute `usableControl` reads. `usableControl` also reads every element
-  // from a control of Details up to Details' own `aside`, and the `aside` itself, which is hidden
-  // while Details is closed; an element between them can be hidden too, as the phone's sheet hides
-  // the box that holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`).
-  // So where an `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's
-  // place.
+  // watched, for each attribute `usableControl` reads. `usableControl` reads `hidden` and `inert`
+  // on every element around a control (`canHoldFocus`), and `aria-hidden` from a control of
+  // Details up to Details' own `aside`, and the `aside` itself, which is hidden while Details is
+  // closed; an element between them can be hidden too, as the phone's sheet hides the box that
+  // holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`). So where an
+  // `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's place. An
+  // element above the watched box is not watched: a hide or an inert set there is read at Add's
+  // next commit.
   useLayoutEffect(() => {
     committed.current = fields;
     read();

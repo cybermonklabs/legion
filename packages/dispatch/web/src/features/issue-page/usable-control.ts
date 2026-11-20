@@ -1,4 +1,4 @@
-import { canHoldFocus, OUT_OF_REACH } from "./focus-keeper";
+import { canHoldFocus, FOCUS_ATTRIBUTES, OUT_OF_REACH } from "./focus-keeper";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** A control that keeps the focus but refuses a press: the page's controls while they save. */
@@ -12,15 +12,13 @@ const ARIA_HIDDEN = '[aria-hidden="true"]';
  *  and `aria-hidden`. */
 const SHUT = `${OUT_OF_REACH}, ${ARIA_HIDDEN}`;
 
-/** Every attribute whose change can change what `usableControl` answers: the ones its rule
- *  reads, those `canHoldFocus` reads among them, and `class` and `style`, which
+/** Every attribute whose change can change what `usableControl` answers: the ones `canHoldFocus`
+ *  reads (`FOCUS_ATTRIBUTES`), the ones this rule adds, and `class` and `style`, which
  *  `checkVisibility()` reads. A watch that must see each such change (Add's, `IssueAddMenu.tsx`)
- *  watches these, so a condition added to the rule is watched with it. */
+ *  watches these, so a condition added to either rule is watched with it. */
 export const USABLE_CONTROL_ATTRIBUTES = [
-  "disabled",
+  ...FOCUS_ATTRIBUTES,
   "aria-disabled",
-  "hidden",
-  "inert",
   "aria-hidden",
   "class",
   "style",
@@ -46,16 +44,15 @@ function shutBelow(control: Element, bound: Element | null, selector: string): b
  * (`IssueMargin.tsx`, `BlockedByControl.tsx`), as does the opener of a row (`details-rows.ts`,
  * through `firstUsableIn`) for the control it focuses or presses.
  *
- * It builds on `canHoldFocus` (`focus-keeper.ts`), whether an element can take the focus: it is
- * on the page, not `disabled`, and neither it nor an element around it is `hidden` or `inert`.
- * A control that can take the focus can still refuse a press, and an entry or a key that offered
+ * It builds on `canHoldFocus` (`focus-keeper.ts`), whether an element can take the focus. A
+ * control that can take the focus can still refuse a press, and an entry or a key that offered
  * it would then open nothing, so this rule refuses three more. A busy control:
  * `aria-disabled="true"`, which the page's controls carry while they save so that they keep the
- * focus (the `refused:` variant of `styles.css` reads the same pair). A control under an element,
- * itself included, that is `aria-hidden="true"`, which a screen reader passes over; for a control
- * of Details these are read up to the Details drawer's `aside`. And a control that is not drawn
- * (`checkVisibility()`, with `visibility: hidden` read too), which catches a box the stylesheet
- * hides, since `canHoldFocus` reads no layout.
+ * focus (the `refused:` variant of `styles.css` reads it beside `:disabled`, which `canHoldFocus`
+ * refuses). A control under an element, itself included, that is `aria-hidden="true"`, which a
+ * screen reader passes over; for a control of Details these are read up to the Details drawer's
+ * `aside`. And a control that is not drawn (`checkVisibility()`, with `visibility: hidden` read
+ * too), which catches a box the stylesheet hides, since `canHoldFocus` reads no layout.
  *
  * The two rules answer differently in one place, on purpose: a control inside a closed Details.
  * Details' drawer is an `aside` that is `hidden` while Details is closed
@@ -75,7 +72,10 @@ export function usableControl(control: Element | null): boolean {
   const details = control.closest(`aside[${DETAILS_ATTRIBUTE}]`);
   if (details?.hasAttribute("hidden") === true) {
     return (
-      control.isConnected && !control.matches(":disabled") && !shutBelow(control, details, SHUT)
+      control instanceof HTMLElement &&
+      control.isConnected &&
+      !control.matches(":disabled") &&
+      !shutBelow(control, details, SHUT)
     );
   }
   if (!canHoldFocus(control) || shutBelow(control, details, ARIA_HIDDEN)) return false;
