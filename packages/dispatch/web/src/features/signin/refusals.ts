@@ -40,6 +40,11 @@ const refusals: Record<Ceremony, Partial<Record<PasskeyRefusal, CeremonyRefusal>
         "This link is for an address of the company's Google Workspace, whose people sign in with Google and never with a passkey.",
       retry: false,
     },
+    FULL_MEMBER: {
+      message:
+        "This address belongs to a member of the company's Google Workspace, who signs in with Google and never with a passkey.",
+      retry: false,
+    },
     PASSKEY_REFUSED: {
       message: "Dispatch could not verify the new passkey. Try again.",
       retry: true,
@@ -73,8 +78,10 @@ const eitherCeremony: Partial<Record<PasskeyRefusal, CeremonyRefusal>> = {
     message: "Dispatch could not read the access lists just now and changed nothing. Try again.",
     retry: true,
   },
+  // Each begin's challenge is single-use: a finish meets this past five minutes, on a replay, or
+  // after another enrollment of the same address finished first. A press begins anew.
   CEREMONY_EXPIRED: {
-    message: "The request took too long. Press the button to try again.",
+    message: "This request ran out, or another one finished first. Press the button to try again.",
     retry: true,
   },
 };

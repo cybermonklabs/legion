@@ -148,6 +148,7 @@ export interface PasskeySignedIn {
  * - `INVITATION_NOT_LISTED` (403): the project's access list no longer names the address directly.
  * - `WORKSPACE_ADDRESS` (403): the address is on a domain of the Google Workspace Dispatch signs
  *   people in for, whose people sign in with Google and never with a passkey.
+ * - `FULL_MEMBER` (409): the address's people row is a full member's, who signs in with Google.
  * - `NOT_LISTED` (403): no access list names the person any more; that finish also ended their
  *   sign-in and deleted their passkeys.
  * - `MEMBERSHIP_UNREADABLE` (503): the access lists could not be read; nothing changed.
@@ -155,8 +156,14 @@ export interface PasskeySignedIn {
  *   deleted it).
  * - `PASSKEY_SIGN_COUNT` (401): the passkey's counter is not past the one Dispatch stored, as a
  *   copy's would be.
- * - `CEREMONY_EXPIRED` (400): the begin this finish follows is gone or older than five minutes.
+ * - `CEREMONY_EXPIRED` (400): the begin this finish follows is gone, older than five minutes, or
+ *   used already: each begin's challenge is single-use, so a replayed finish, and an enrollment of
+ *   the same address that another one finished first, meet it too. The page begins anew.
  * - `PASSKEY_REFUSED` (400): the credential did not verify for any other reason.
+ *
+ * A step sent from a page of another origin (an `Origin` that is not the outside origin, or none
+ * with a `Sec-Fetch-Site` other than `same-origin`) is refused 403 `{"error":"invalid request
+ * origin"}` with no code, as a cross-origin cookie write is.
  */
 export const PASSKEY_REFUSALS = [
   "INVITATION_UNKNOWN",
@@ -164,6 +171,7 @@ export const PASSKEY_REFUSALS = [
   "INVITATION_EXPIRED",
   "INVITATION_NOT_LISTED",
   "WORKSPACE_ADDRESS",
+  "FULL_MEMBER",
   "NOT_LISTED",
   "MEMBERSHIP_UNREADABLE",
   "PASSKEY_UNKNOWN",
