@@ -4,7 +4,7 @@
 #
 # The NATS auth service's half of scripts/dev-stack.sh, in one place: the listener's machine id
 # and every broker's database URL, which every run uses, and what --callout adds. With the option
-# the hub runs behind the NATS auth service (internal/broker/natscallout), as the deployment's hub
+# the hub runs behind the NATS auth service (internal/cipher/natscallout), as the deployment's hub
 # does once its static users are gone: natsd runs with -callout-keys, so every client but the
 # service's own user is sent to the service, and the service runs in two brokers on the one
 # database, in one queue group, as two replicas do. The brokers admit a session by its broker
@@ -28,7 +28,7 @@
 # BROKER_NATS_SERVICES lists the listener under it too.
 LISTENER_MACHINE_ID="dev-stack-$RUN_SUFFIX"
 
-# Every broker's own URL caps its pool as production caps it: theorem-labs/agent-infra's
+# Every broker's own URL caps its pool as production caps it: example-org/deployment's
 # broker/main.go sets brokerPoolMaxConns = 10, which broker/deployment.go puts on the deployment's
 # BROKER_DATABASE_URL as pool_max_conns, a parameter the broker's pgxpool.ParseConfig honours.
 # Without it pgx sizes each pool by the machine's CPUs, and on a box with many of them a flood of

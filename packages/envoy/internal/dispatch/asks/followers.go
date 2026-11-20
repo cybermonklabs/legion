@@ -60,6 +60,22 @@ func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor) {
 	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, author.ID), followAsk, askID, author.ID)
 }
 
+// Follows reports whether sessionID already follows askID: the read a route that queues its follow
+// (QueueFollowAuthor) makes in its read phase, since no statement's result is read before the
+// write phase sends the next.
+func Follows(ctx context.Context, db Queryer, askID, sessionID string) (bool, error) {
+	rows, err := db.Query(ctx, `select 1 from ask_followers where ask_id = $1 and session_id = $2`, askID, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+	}
+	defer rows.Close()
+	follows := rows.Next()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+	}
+	return follows, nil
+}
+
 // Unfollow removes sessionID from askID's followers and reports whether a row went.
 func Unfollow(ctx context.Context, db Execer, askID, sessionID string) (bool, error) {
 	tag, err := db.Exec(ctx, `

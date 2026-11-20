@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -102,10 +102,14 @@ func (enrollsEveryPod) Enroll(_ context.Context, e supervise.PodEnrollment) (str
 
 func (enrollsEveryPod) Revoke(context.Context, string) error { return nil }
 
+func (enrollsEveryPod) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return []supervise.CarriedEnrollment{}, nil
+}
+
 // TestRegistrationsAreRenewedBeforeTheyLapse runs a role of an issue pod under the daemon's own
 // registrar (newRegistrar, with exchange_audience set) for 25 hours on the test's clock, against a
 // broker that holds each registration to the day past its last write. The daemon writes the
-// registration when the agent registers and again every agentsecrets.RegistrationRenewal, each
+// registration when the agent registers and again every cipher.RegistrationRenewal, each
 // time under its own ServiceAccount token, bound to the thumbprint the role's hello named and
 // presenting the token the pod's shim reads then, so at 25 hours — past the first write's day —
 // the broker still admits the pod's exchange under its session. Once the claim ends, nothing more
@@ -125,7 +129,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
+	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
 	if registrar == nil {
 		t.Fatal("newRegistrar answered no registrar with exchange_audience set")
 	}
@@ -184,8 +188,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		if write.pod != pod || write.session != session || write.thumbprint != thumbprint || write.bearer != "Bearer the-daemon's-token" {
 			t.Errorf("write %d registered pod %s for session %s bound to %q under %q, want pod %s for %s bound to the hello's thumbprint %q under the daemon's own token", i, write.pod, write.session, write.thumbprint, write.bearer, pod, session, thumbprint)
 		}
-		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > agentsecrets.RegistrationRenewal {
-			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), agentsecrets.RegistrationRenewal)
+		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > cipher.RegistrationRenewal {
+			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), cipher.RegistrationRenewal)
 		}
 	}
 
@@ -251,7 +255,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	}
 	var logged syncBuffer
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
 
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-840", claim.RoleTester)
@@ -295,9 +299,9 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	broker.mu.Lock()
 	broker.answer = 9
 	broker.mu.Unlock()
-	clock.advance(agentsecrets.RegistrationRenewal)
+	clock.advance(cipher.RegistrationRenewal)
 	for range 3 {
-		clock.advance(agentsecrets.RegistrationRenewal)
+		clock.advance(cipher.RegistrationRenewal)
 	}
 
 	const foreign = "at generation 9, above this claim's generation 1 (this write's was generation 1): a registration this daemon never made"

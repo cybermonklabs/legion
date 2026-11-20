@@ -119,6 +119,13 @@ type Kubernetes struct {
 	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
 	// settings at all (sandbox.Options.MemoryGuard nil).
 	MemoryGuard MemoryGuardConfig
+	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
+	// issue pod's launcher process runs by, deleting the oldest entries of the four cache roots
+	// when the volume reaches a size mark. Every default applies when the file sets no block, so
+	// the trimmer is on for every Kubernetes deployment, as idle release is; `enabled: false`
+	// turns it off, and the pod's launcher is then handed no settings at all
+	// (sandbox.Options.VolumeTrim nil), on which its trimmer reads and deletes nothing.
+	VolumeTrim VolumeTrimConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -220,6 +227,31 @@ func DefaultMemoryGuard() MemoryGuardConfig {
 	}}
 }
 
+// VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
+// pod's launcher process runs by. The trimmer reads the pod's volume every IntervalSeconds,
+// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only entries in
+// which nothing was modified for MinAgeMinutes, and stops deleting at the first reading at or
+// below LowPercent, if nothing stops it sooner (shimwire.LauncherVolumeTrim, which the launcher
+// is handed on the answer to its hello). Enabled false hands the launcher no settings, on which
+// its trimmer reads and deletes nothing, and an issue volume then fills as it did before this
+// work.
+type VolumeTrimConfig struct {
+	Enabled         bool
+	HighPercent     int
+	LowPercent      int
+	MinAgeMinutes   int
+	IntervalSeconds int
+}
+
+// defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
+// volume down to 70%, deleting nothing modified inside the last quarter hour, looking every
+// minute. Every deployment's issue volume is a fixed size whose caches grow with the issue's
+// work, so the defaults are on, as idle release's are (defaultIdleRelease).
+var defaultVolumeTrim = VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}
+
+// DefaultVolumeTrim is the cache trimmer's settled configuration when the file sets none.
+func DefaultVolumeTrim() VolumeTrimConfig { return defaultVolumeTrim }
+
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
 // http(s) URL the pod can read — never an npm dist-tag or a range, since the pair must be one
@@ -271,6 +303,11 @@ type MicroVMConfig struct {
 	// StorageClass is the class of a microVM pod's workspace volume: the file's
 	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
 	StorageClass string
+	// KeepVolume is `microvm.keep_volume`: when true, each microVM issue pod's workspace volume is
+	// a claim that the issue's Sandbox owns. The claim stays through the pod's ends and the
+	// issue's idle releases, and Kubernetes deletes it with the Sandbox. False when the file sets
+	// none. It applies to a microVM issue pod alone: a gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
 	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
 	// when the file names none.
 	Metadata *MetadataConfig
@@ -690,6 +727,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
 		return nil, err
 	}
+	if block.VolumeTrim, err = readVolumeTrim(fields["volume_trim"]); err != nil {
+		return nil, err
+	}
 	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
 		return nil, err
 	}
@@ -923,7 +963,8 @@ func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 
 // readMicroVM reads `runtime.kubernetes.sandbox.microvm`: its compute_class, which readSandbox
 // requires while an issue pod runs in a microVM; its storage_class, storageClass when the block
-// names none; and its metadata block, nil when absent.
+// names none; its keep_volume, false when absent and otherwise only true or false, as
+// readTestPostgres reads test_postgres; and its metadata block, nil when absent.
 func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", microVMKey)
@@ -940,6 +981,11 @@ func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) 
 		return nil, err
 	}
 	block.StorageClass = cmp.Or(block.StorageClass, storageClass)
+	if keep := fields["keep_volume"]; keep != nil {
+		if keep.Tag != "!!bool" || keep.Decode(&block.KeepVolume) != nil {
+			return nil, fmt.Errorf("%s.keep_volume must be true or false", microVMKey)
+		}
+	}
 	if block.Metadata, err = readMetadata(fields["metadata"]); err != nil {
 		return nil, err
 	}
@@ -1102,6 +1148,80 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 			return MemoryGuardPodConfig{}, fmt.Errorf("%s.%s must be between %d and %d", key, number.field, number.min, number.max)
 		}
 		*number.into = *read
+	}
+	return settled, nil
+}
+
+// readVolumeTrim reads `runtime.kubernetes.volume_trim`, settled: each member the file sets and
+// the default (DefaultVolumeTrim) for each it leaves out, so the trimmer runs wherever the file
+// says nothing. `enabled` is read from the settled default rather than from the key's presence,
+// as every number of the block is and unlike `test_postgres` (readTestPostgres), because this
+// block's default is on: an operator writing `enabled: true` back must get the trimmer, and a
+// value that is no YAML boolean — `off` and `yes` among them, which this loader's reader tags
+// as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
+// read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
+// shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
+// both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
+// at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
+// may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
+// period. An interval of 0 that reached the launcher would be refused there too, before any clock
+// is armed, logged, and the pod's trimmer would stay off with no fault counted (launcher's
+// refusedTrimSettings); armed with it, the trimmer would fault each time its interval loop
+// started, and three of those in a row would switch it off for the life of its launcher process
+// (launcher's trimmer.run).
+//
+// The maximum of a mark, of the age and of the interval are the wire's own
+// (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
+// launcher's trimmer checks the settings against a second time on its side of the connection: a
+// maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
+// which then sweeps nothing until a daemon sends settings inside the launcher's ranges.
+func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
+	const key = kubernetesKey + ".volume_trim"
+	settled := defaultVolumeTrim
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return VolumeTrimConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := describedMembers(value, key, kubernetesKey+".volume_trim")
+	if err != nil {
+		return VolumeTrimConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return VolumeTrimConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field string
+		max   int
+		into  *int
+	}{
+		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
+		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
+		// The age is bounded because an unbounded one is not the trimmer switched off but the
+		// trimmer deleting everything: the sweep's cutoff is its start less min_age_minutes of
+		// time.Duration, which is int64 nanoseconds, so a large age wraps the cutoff past the
+		// sweep's own start and every entry of every root is then eligible however recently it
+		// was written (launcher's sweep, shimwire.VolumeMinAgeMax). `enabled: false` is how an
+		// operator switches the trimmer off.
+		{"min_age_minutes", shimwire.VolumeMinAgeMax, &settled.MinAgeMinutes},
+		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
+	} {
+		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)
+		if err != nil {
+			return VolumeTrimConfig{}, err
+		}
+		if read != nil {
+			*number.into = *read
+		}
+	}
+	if settled.LowPercent >= settled.HighPercent {
+		return VolumeTrimConfig{}, fmt.Errorf("%s.low_percent (%d) is not below %s.high_percent (%d): the sweep stops at the low mark, so marks that meet leave it nothing to stop at",
+			key, settled.LowPercent, key, settled.HighPercent)
 	}
 	return settled, nil
 }

@@ -297,6 +297,10 @@ func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject
 func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
 func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
+func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -370,8 +374,8 @@ func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: "CAPTURE", Status: status, Blockers: blocked, Seq: seq})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(blocked)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}

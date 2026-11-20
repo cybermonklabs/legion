@@ -38,9 +38,20 @@ import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provid
 /** The slice of the host's session context this runner reads; a `SessionContext`
  * (`@legion/pi-shared/pi-types`) is one, and a unit test builds one by hand. */
 export interface ModelFallbackContext {
-  readonly sessionManager: { readonly getBranch?: () => readonly unknown[] };
+  readonly sessionManager: {
+    readonly getBranch?: () => readonly unknown[];
+    /** The session the context is on now: read on each side of a switch of the model, so a pane
+     * that moved to another session in between is named. */
+    readonly getSessionId?: () => string;
+  };
   readonly models?: SessionContext["models"];
   readonly modelRegistry?: SessionContext["modelRegistry"];
+  /** The host's `ctx.isIdle()`: false while a turn runs. The timer's return waits for it. */
+  readonly isIdle?: () => boolean;
+  /** The host's `ctx.hasPendingMessages()`: true while the host holds a message to steer or follow
+   * the turn, which a continuation then reads its model for. The timer counts a pane that holds
+   * one as busy even when it runs no turn, so it makes no return while the message is held. */
+  readonly hasPendingMessages?: () => boolean;
 }
 
 export interface ModelFallbackDeps {
@@ -60,6 +71,15 @@ export interface ModelFallbackDeps {
     model: HostModel
   ) => Promise<HostModel | undefined>;
   readonly log: FallbackChainLog;
+  /** The host's own timer for the pane (`SessionContext.setTimeout`): runs `callback` once,
+   * `delayMs` from now, and answers whether it set the timer. This repository's `SessionContext`
+   * slice keeps no handle to clear it by, so a callback that is no longer the current arming's
+   * finds that out itself. */
+  readonly armTimer: (callback: () => Promise<void>, delayMs: number) => boolean;
+  /** The context of the pane a timer's return goes into, read when the timer fires: the
+   * session the pane is on, or undefined when it is on none, or on one that is no Legion role's.
+   * The runner itself checks that it is the session whose fallback state it holds. */
+  readonly paneContext: () => Promise<ModelFallbackContext | undefined>;
 }
 
 export interface ModelFallback {
@@ -72,10 +92,35 @@ export interface ModelFallback {
    * says whether a content filter is what it walked for. */
   readonly armFromEvent: (event: RetryFallbackAppliedEvent, ctx: ModelFallbackContext) => void;
   /** The host's `agent_end`: a turn that has settled, which the provider ended cleanly, with a
-   * content filter, or with some other failure. */
+   * content filter, or with some other failure. It makes no return: a return the timer found the
+   * pane too busy for is made at the timer's first firing on an idle pane (`maybeRestore`). */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
-  /** The host's `context`, which runs before every provider request: the arming's model goes back
-   * on as soon as its wait is over, inside a long tool loop as well as at a new prompt. */
+  /**
+   * The return to the model the session fell back from, which this runner makes in one place:
+   * one check of whether the arming is due, with these triggers.
+   *
+   * - The host's `before_agent_start`, for any arming: it runs before the first request of a run
+   *   a prompt starts.
+   * - The host's `context`, for any arming: it runs before every request, but after the host has
+   *   read that request's model, so a return made there is the model of the next request.
+   * - A timer at the due time (`armTimer`), for a refusal's arming only: it is what puts back a
+   *   run no prompt starts, an Envoy card's or a background job's result's, which neither hook
+   *   reaches before that run's first request. The timer switches the model only on an idle
+   *   pane: one that runs no turn and holds no queued message. A switch in the middle of a
+   *   stream drops an OpenAI or Codex response, and a queued message is a steered continuation
+   *   about to read its model. A timer that finds the pane busy fires again `BUSY_RECHECK_MS`
+   *   later, and so on until a firing finds it idle, or until a hook has made the return; a busy
+   *   turn's next `context` hook makes it one request on the fallback model later. A run that an
+   *   agent-initiated wake starts before the first idle firing begins on the fallback model and
+   *   comes back at its second request. A message the host holds on a pane that runs no turn
+   *   keeps the timer firing four times a second and making no return until a hook runs: the
+   *   run that message starts comes back as on main, at its `before_agent_start` when it is a
+   *   prompt and at its second request otherwise.
+   *
+   * An arming of any other cause waits for the host to stop suppressing its model, which no time
+   * says, so it sets no timer: only the two hooks end it, and a run no prompt starts can begin on
+   * the fallback model and come back at its second request.
+   */
   readonly maybeRestore: (ctx: ModelFallbackContext) => Promise<void>;
 }
 
@@ -161,11 +206,37 @@ function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | 
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
  * host stamps every entry with an ISO time (`SessionEntryBase`,
- * `session/session-entries.ts:93-111` at the pinned tag). */
+ * `session/session-entries.ts:98-116` at the pinned tag). */
 function changedAt(entry: ModelChangeEntry): number | undefined {
   const at = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
   return Number.isFinite(at) ? at : undefined;
 }
+
+/** The longest delay a timer of the host's runtime holds: Bun, like Node, runs a timer whose delay
+ * is longer than 2^31 - 1 ms after 1 ms. A wait past it is set in pieces (`armReturn`), and the
+ * cooldown settings put no upper bound on a wait. */
+const LONGEST_TIMER_MS = 2_147_483_647;
+
+/**
+ * How long a timer that found the pane busy waits before it looks again. A run that a wake starts
+ * before the first firing on the idle pane begins on the fallback model (and comes back at its
+ * second request), so the interval is the longest idle gap after a turn's end that the return can
+ * still miss. Measured on 2026-11-20 over the 2,844 Oh My Pi transcripts this dev box wrote in a
+ * day, as the time from a run's last assistant message to the next run's first message:
+ *
+ * - a background job's result: 9.4% of 6,227 come within 5 ms (a job that ended during the turn,
+ *   whose result continues it with no idle firing possible at any interval), 11.1% within 250 ms,
+ *   11.9% within 1 s, 15.5% within 5 s;
+ * - an Envoy card: 0.1% of 9,161 within 250 ms, 0.8% within 1 s, 6.1% within 5 s;
+ * - an IRC message: 0.2% of 6,451 within 250 ms, 0.8% within 1 s, 5.6% within 5 s.
+ *
+ * At 250 ms the return misses 0.1-0.2% of cards and IRC wakes and 1.7% of job results beyond the
+ * 9.4% no interval catches; at 5 s it would miss about 6% of cards and IRC wakes. A firing reads
+ * the pane's context, the session's claim and two host flags, and the timer fires four times a
+ * second for as long as the pane is busy: while a turn runs, and while the host holds a message on
+ * a pane that runs no turn, until a hook runs. That is a small cost against a turn's own requests.
+ */
+const BUSY_RECHECK_MS = 250;
 
 export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   let state: FallbackCooldownState = { levels: {} };
@@ -183,6 +254,59 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     if (next === state) return;
     state = next;
     deps.saveState(next);
+    armReturn();
+  };
+
+  /** The due time the host's timer is set for, so a save that leaves the arming's due time
+   * where it was sets no second timer. */
+  let timerFor: number | undefined;
+
+  /** The session whose fallback state this runner holds: the one `restore` last read. A session
+   * change moves the pane before `restore` reads the new session's state (a controller's re-claim
+   * runs in between), and a timer that fires then has no session to make its return into. */
+  let session: string | undefined;
+
+  /**
+   * The timer trigger of the return (`ModelFallback.maybeRestore` states the rule): the host's
+   * timer for the due time of a refusal's arming, in pieces no longer than a timer can hold, and
+   * `BUSY_RECHECK_MS` apart while it finds the pane busy. It reads the arming from the state each
+   * time it sets a timer, so a re-arm stops by itself once the arming is gone (put back by a hook,
+   * superseded, or another session's state now): it sets no timer for an arming the state does not
+   * hold.
+   */
+  const armReturn = (delayMs?: number): void => {
+    const arming = state.arming;
+    if (arming === undefined || arming.cause !== "refusal" || arming.dueAt === timerFor) return;
+    const set = deps.armTimer(
+      async () => {
+        // A newer arming set a timer of its own; this one belongs to none.
+        if (timerFor !== arming.dueAt) return;
+        timerFor = undefined;
+        // A timer that ran before the due time by this runner's clock (the host's clock ahead of
+        // it, or a wait longer than one timer can hold) is set again for what is left.
+        if (deps.now() < arming.dueAt) {
+          armReturn();
+          return;
+        }
+        let busy = false;
+        try {
+          const ctx = await deps.paneContext();
+          if (ctx === undefined || ctx.sessionManager.getSessionId?.() !== session) return;
+          busy = ctx.isIdle?.() === false || ctx.hasPendingMessages?.() === true;
+          if (!busy) await restoreIfDue(ctx);
+        } catch (error) {
+          contained(
+            "put the session back on the model it fell back from when its wait ended",
+            error
+          );
+        }
+        // A busy pane is looked at again. A timer that found it idle and could not set the model
+        // leaves the return to the next request's hook, rather than trying again at once.
+        if (busy) armReturn(BUSY_RECHECK_MS);
+      },
+      delayMs ?? Math.min(LONGEST_TIMER_MS, Math.max(0, arming.dueAt - deps.now()))
+    );
+    if (set) timerFor = arming.dueAt;
   };
 
   /** One step of the cooldown machine against the state this runner holds. */
@@ -278,12 +402,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1625-1653` and `:2693-2703` at tag
-   * `v18.16.0-sami.20261104-021732`).
+   * (`turn-recovery.ts:1782-1816` and `:3153-3163` at tag
+   * `v18.18.6-sami.20261119-162325`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
-   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:249-252` at the
+   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:322-325` at the
    * pinned tag), so nothing on the branch would carry the host's claim at all.
    */
   const walkChain = async (ctx: ModelFallbackContext, current: HostModel): Promise<void> => {
@@ -333,7 +457,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5666-5674` at the pinned tag).
+    // the session down twice (`session/agent-session.ts:5902-5910` at the pinned tag).
     if (event.willContinue === true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
@@ -409,12 +533,28 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       save(step({ kind: "restored" }));
       return;
     }
-    if (!(await deps.setModel(target))) {
+    const sessionBefore = ctx.sessionManager.getSessionId?.();
+    const switched = await deps.setModel(target);
+    const sessionAfter = ctx.sessionManager.getSessionId?.();
+    if (sessionAfter !== sessionBefore) {
+      // The record goes into the session the pane is on now, which is not this arming's: the
+      // arming stays recorded in its own session, whose newest model change is still the
+      // fallback, so its next return switches it.
+      deps.log.warn(
+        "legion: the pane moved to another session while the model it fell back from was set again",
+        { model: arming.restoreTo, from: sessionBefore, to: sessionAfter }
+      );
+      return;
+    }
+    if (!switched) {
       deps.log.warn("legion: the model this session fell back from could not be set again", {
         model: arming.restoreTo,
       });
       return;
     }
+    // `restore` can replace the state while the switch is awaited: this arming's return is not
+    // that state's to record.
+    if (state.arming !== arming) return;
     save(step({ kind: "restored" }));
   };
 
@@ -429,10 +569,16 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     restore: (restored, ctx) => {
       try {
         state = restored ?? { levels: {} };
+        session = ctx.sessionManager.getSessionId?.();
         // A fallback applied in a turn of the session this pane has just left is no fallback of
         // this one.
         appliedThisTurn = undefined;
-        if (state.arming !== undefined) return;
+        if (state.arming !== undefined) {
+          // A relaunched worker's arming: its return is due when the record says, whatever the
+          // relaunch's boot cost, and the timer is set for that moment, or now when it is past.
+          armReturn();
+          return;
+        }
         // No record of an arming, and the session is sitting on a fallback: one written before
         // this build ran, or a host walk `ownFallback` did not claim. Nothing else will ever arm
         // it, so it is armed here from the entry's own time (dispatch://INFRA-956 R1, answer 5)
@@ -482,7 +628,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.16.0-sami.20261104-021732`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261119-162325`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -491,7 +637,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3229` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:3736` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and

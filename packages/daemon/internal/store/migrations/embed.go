@@ -50,12 +50,20 @@ func All() ([]Migration, error) {
 const StepRecordsRollForward = 20261117064152
 
 // WayBack is the way back the header of migration version carries, as an operator runs it with
-// the daemon stopped: the run of "-- " comment lines that closes with the line deleting that
-// version's schema_version row, without the markers. A blank "--" line, or any line that is no
-// such comment, ends the run before it, so the prose above the block is none of it. The header of
-// StepRecordsRollForward carries one; docs/kubernetes.md carries the same block, and
-// internal/textcheck holds the two to one text. A header with no such run, and a version not
-// embedded, are errors, so no caller runs an empty block against a store.
+// the daemon stopped: the header's last paragraph, which is its "-- " comment lines after the last
+// blank "--" line and before the first line that is no comment, the migration's first statement,
+// each without its marker. So the prose paragraphs above it are none of it, and neither is a
+// comment among the migration's statements. The paragraph is a block when its last line ends with
+// ";"; a header whose last paragraph is prose, and a version not embedded, are errors, so no caller
+// runs an empty block, or prose, against a store. That test is all this reads: what the block
+// does is held by the test of the migration that runs it, and its text by internal/textcheck,
+// which holds it to the block docs/kubernetes.md gives under the migration's rollback. The
+// headers of 20261117023932_outbox_kinds_with_the_plan_record.up.sql and of
+// StepRecordsRollForward carry one. The header of
+// 20261120055717_dispatch_issue_value_sequences.up.sql carries a third, one statement that
+// docs/kubernetes.md gives too: internal/store's
+// TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
+// text to the guide's.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {
@@ -66,24 +74,27 @@ func WayBack(version int) (string, error) {
 
 // wayBack is WayBack over the set all, which a test crafts.
 func wayBack(all []Migration, version int) (string, error) {
-	mark := fmt.Sprintf("delete from schema_version where version = %d;", version)
 	for _, migration := range all {
 		if migration.Version != version {
 			continue
 		}
-		var block []string
+		var paragraph []string
 		for _, line := range strings.Split(migration.SQL, "\n") {
-			statement, comment := strings.CutPrefix(line, "-- ")
-			if !comment {
-				block = block[:0]
+			comment, isComment := strings.CutPrefix(line, "--")
+			if !isComment {
+				break
+			}
+			if strings.TrimSpace(comment) == "" {
+				paragraph = paragraph[:0]
 				continue
 			}
-			block = append(block, statement)
-			if statement == mark {
-				return strings.Join(block, "\n"), nil
-			}
+			paragraph = append(paragraph, strings.TrimPrefix(comment, " "))
 		}
-		return "", fmt.Errorf("%s carries no way back closing with %q", migration.Name, mark)
+		if len(paragraph) == 0 || !strings.HasSuffix(strings.TrimSpace(paragraph[len(paragraph)-1]), ";") {
+			return "", fmt.Errorf("the last paragraph of the header of %s is no way back: its last line ends with no %q",
+				migration.Name, ";")
+		}
+		return strings.Join(paragraph, "\n"), nil
 	}
 	return "", fmt.Errorf("no migration has version %d", version)
 }

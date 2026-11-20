@@ -10,8 +10,9 @@ name: Dispatch browser nightly
 # head, below, says what it guards and why it is here rather than in a file of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
-# blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
-# last committer that a scheduled workflow failed. Nothing else is told: this call passes no
+# blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
+# workflows" page says: "Notifications for scheduled workflows are sent to the user who last
+# modified the cron syntax in the workflow file." Nothing else is told: this call passes no
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22
@@ -82,8 +83,9 @@ jobs:
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
-  # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
-  # branch can be dispatched by nobody and proved before its merge by nothing
+  # from the default branch alone and offers a `workflow_dispatch` only for a file the default
+  # branch holds, so a workflow that exists only on a branch can be dispatched by nobody and
+  # proved before its merge by nothing
   # (dispatch://INFRA-1621/comment/36392fee-60e8-4dbd-9068-bd8524088d08 records that refusal).
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
@@ -94,7 +96,7 @@ jobs:
   # same eight runners for the same ten minutes, and `concurrency` keeps it from overlapping the
   # 02:17 run.
   #
-  # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
+  # The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,
   # and a job's is the sum of its steps' budgets plus the measured maximum of every step with
   # none. The recording step runs every stubbed row once against one harness stack, measured at
@@ -108,7 +110,8 @@ jobs:
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the
-    # harness, which a `container:` job may not (that job's head says why).
+    # harness, which a `container:` job may not
+    # (.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget says why).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,8 +133,9 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
-      # reason it gives: Playwright's Node runner reads `@legion/contracts` out of a build this
+      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
+      # gives: Playwright's Node runner reads `@legion/contracts` out of a build this
       # checkout has to make before the config loads, of the entries Dispatch imports alone.
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch

@@ -465,7 +465,7 @@ func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && recipient != held.Session
+	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or
@@ -519,8 +519,8 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
 // before the name — the session claims its role at its first turn — so a notice this releases, and
 // the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
-// backoff (retryBackoff, one second doubling to a cap of 64) until the name is taken. What the
-// release ends is the wait for the architect, not the wait for the role. That covers a copy
+// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
+// the release ends is the wait for the architect, not the wait for the role. That covers a copy
 // waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
 // claim's session file, so the relaunched agent registers the very session id the stopped one
 // had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting

@@ -44,9 +44,11 @@ var subjectProjectCensus = map[string][]string{
 	// A failed delivery's report on an agent subject and on a team topic.
 	"notifications.envoy.exceptions.notifications.agent.>": {"notifications.envoy.exceptions.notifications.agent.>"},
 	"notifications.envoy.exceptions.notifications.team.>":  {"notifications.envoy.exceptions.notifications.team.>"},
-	// The listener's own lanes: kept role messages and their cursors, and resume floors.
+	// The listener's own lanes: kept role messages and their cursors, resume floors, and the roles
+	// a session took from another.
 	KeptTopicPrefix + ">":            {KeptRoleSubjectPrefix + ">", KeptTopicPrefix + "cursor.>"},
 	SessionResumeSubjectPrefix + ">": {SessionResumeSubjectPrefix + ">"},
+	TakeoverSubjectPrefix + ">":      {TakeoverSubjectPrefix + ">"},
 	// The role lanes and their exception twin, which travel over core NATS (roleLaneSubjects).
 	contracts.RoleTopicPrefix + ">":                        {contracts.RoleTopicPrefix + ">"},
 	ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">": {ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">"},

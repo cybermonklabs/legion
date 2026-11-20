@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -15,10 +15,13 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
   AskRead,
@@ -36,6 +39,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import {
   FIXTURE_PROJECT_DEFAULT,
@@ -44,6 +48,7 @@ import {
   mockAskReads,
   withWaitingOnPerson,
 } from "./inbox-fixture";
+import { SnoozeControl } from "./SnoozeControl";
 
 const mocks = installInboxApiMocks();
 
@@ -1194,7 +1199,8 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
     expect(within(kept).getByText("bob")).toBeTruthy();
-    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     // The answer form is gone; the row keeps keyboard focus so j/k/Escape still start here.
     expect(row).toHaveFocus();
 
@@ -1575,7 +1581,8 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
 
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
-    expect(within(kept).getByText("YAML.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("YAML.")).toBeTruthy();
   } finally {
     view.unmount();
     answerAsk.mockRestore();
@@ -2517,6 +2524,124 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
   }
 });
 
+// A snooze is a `PUT` of the row's moment. One the reader stopped may have been saved, so the row
+// neither says it failed nor shows the stopped write's own words, which are a composer's and
+// speak of a message: it says what its Retry does with the snooze.
+test("a snooze the reader stopped says what Retry does, not a message's words", async () => {
+  const row = issueAsk({ id: "ask-b", question: "Which format?" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([row]);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-b/snooze", new TypeError("Failed to fetch"))
+  );
+  const getAsk = mockAskReads([row]);
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which format?");
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(
+      screen.getByLabelText("Snooze CORE-1: Which format?"),
+      "tomorrow"
+    );
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the snooze", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A press carries every value its Retry sends, the ask it is of among them: a Retry of a snooze
+// the reader stopped is of that press's ask under that press's key, whichever ask the control is
+// drawn for by then. The case draws one control for one ask and then for another, which is where
+// the two differ.
+test("a snooze's Retry is of the ask its press was of, whichever ask the control draws by then", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const onLive = () => {};
+  const drawn = (askId: string) => (
+    <QueryClientProvider client={queryClient}>
+      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+    </QueryClientProvider>
+  );
+  const view = render(drawn("ask-a"));
+  try {
+    await user.selectOptions(screen.getByLabelText("Snooze ask-a"), "tomorrow");
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = snoozeAsk.mock.calls[0]?.[2]?.key;
+    const stopped = snoozeAsk.mock.calls.length;
+
+    view.rerender(drawn("ask-b"));
+    snoozeAsk.mockImplementation(async (_id, { snoozed_until }) => ({ snoozed_until }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(1_000);
+
+    expect(snoozeAsk).toHaveBeenCalledTimes(stopped + 1);
+    const again = snoozeAsk.mock.calls.at(-1);
+    expect(again?.[0]).toBe("ask-a");
+    expect(again?.[2]?.key).toBe(stoppedKey);
+  } finally {
+    realClock();
+    view.unmount();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The row a live snooze asks the Inbox to hold is its press's ask too: drawn for another ask
+// while the snooze of the first is out, the control keeps the first ask's row held, holds no row
+// for the ask it shows, and lets the first go once Dispatch answers.
+test("a snooze out when the control is drawn for another ask holds the row of the ask it was pressed on", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<{ snoozed_until: string }>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => landing.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const liveness: [string, boolean][] = [];
+  const onLive = (askId: string, live: boolean) => {
+    liveness.push([askId, live]);
+  };
+  const drawn = (askId: string) => (
+    <QueryClientProvider client={queryClient}>
+      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+    </QueryClientProvider>
+  );
+  const view = render(drawn("ask-a"));
+  try {
+    await user.selectOptions(screen.getByLabelText("Snooze ask-a"), "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    expect(liveness).toEqual([["ask-a", true]]);
+
+    view.rerender(drawn("ask-b"));
+    expect(liveness).toEqual([["ask-a", true]]);
+
+    landing.resolve({ snoozed_until: "2026-11-17T09:00:00Z" });
+    await waitFor(() => expect(liveness.length).toBe(2));
+    expect(liveness).toEqual([
+      ["ask-a", true],
+      ["ask-a", false],
+    ]);
+  } finally {
+    view.unmount();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // ----------------------------------------------------------------------------------------
 // The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
 // where the Inbox is the list of cards it has always been - the Inbox below 1280 px, which the
@@ -2934,7 +3059,8 @@ test("the reader's own answer takes its row off the list and selects the next on
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
@@ -2973,7 +3099,8 @@ test("an answer the server refuses keeps its question in the column, and a retry
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     // The optimistic removal takes the row at once; the column keeps the question, because the
@@ -3964,7 +4091,8 @@ test("an answer given from the column drops the record: Escape lands on the ques
     // The reader answers the question in front of them from inside the column. Their clicks move
     // no focus, so no blur fires: what ends the record is the column showing another question.
     const pane = screen.getByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);
@@ -4260,7 +4388,8 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
     // A control inside the card, holding the focus the card gave it: Enter is that control's,
     // and the Inbox's own binding - which would move the focus to the answer box and swallow
     // the key with `preventDefault` - stands down.
-    const option = within(pane).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const option = await within(pane).findByRole("radio", { name: "Ship" });
     option.focus();
     await user.keyboard("{Enter}");
     expect(option).toHaveFocus();
@@ -4938,6 +5067,93 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
       within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Retry" })
     ).toBeTruthy();
     expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The column's head is its question's own: the head's Snooze holds the write it made, so the
+// question the reader moves to is drawn under a head of its own, never under one still saying
+// `Snoozing…` of the question before.
+test("the question the reader moves to shows no snooze still saving on the one before", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const landing = Promise.withResolvers<never>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => landing.promise);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(screen.getByTestId("inbox-pane")).getByText("Snoozing…")).toBeTruthy()
+    );
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    const head = within(screen.getByTestId("inbox-pane"));
+    expect(head.getByLabelText("Snooze CORE-2: Which format?")).toBeTruthy();
+    expect(head.queryByText("Snoozing…")).toBeNull();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same of a snooze Dispatch refused: its reason and its Retry are the question's it was
+// pressed on, so the question the reader moves to is drawn without them.
+test("the question the reader moves to shows no refusal of a snooze on the one before", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    await waitFor(() =>
+      expect(within(screen.getByTestId("inbox-pane")).getByRole("alert")).toHaveTextContent(
+        "snoozed_until must be in the future"
+      )
+    );
+
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    const head = within(screen.getByTestId("inbox-pane"));
+    expect(head.getByLabelText("Snooze CORE-2: Which format?")).toBeTruthy();
+    expect(head.queryByRole("alert")).toBeNull();
+    expect(head.queryByRole("button", { name: "Retry" })).toBeNull();
   } finally {
     unmount();
     narrow();

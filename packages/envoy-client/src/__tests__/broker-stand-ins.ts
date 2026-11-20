@@ -14,7 +14,7 @@
 import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -166,7 +166,7 @@ export function natsBrokerStandIns(prefix: string) {
    * every trade it was sent, answered or not. While `down` is set the exchange answers 503, as a
    * broker that is away; while `unregistered` is set it refuses each trade as the broker refuses a
    * pod session no registration names yet (`registeredPodSession`,
-   * packages/envoy/internal/broker/oauth/exchange.go), in its own words. `state.seconds`, at first
+   * packages/envoy/internal/cipher/oauth/exchange.go), in its own words. `state.seconds`, at first
    * `lifeSeconds`, is how long the next token lives: a row may change it, as a broker that is back mints tokens of their
    * usual life. A token in `revoked` introspects as not active, as one a revoke ended before it
    * lapsed. A trade whose DPoP proof is missing or whose header is no JSON is answered as the

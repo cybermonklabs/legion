@@ -137,7 +137,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{
@@ -255,6 +255,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
 		},
 		{
+			Name: leakCheckKey, Default: "`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment; with neither, the deployment runs no shared leak check", RequiredBy: "no",
+			Description: "The deployment's shared public leak check: the repository it is published from by tag, which the daemon reads at the worker image's pin and pushes to every pod, and the check's manifest digest, one sha256 over every file it runs from; with no check named, role pods start without one and no write is refused for its absence.",
+			Read:        reads(readLeakCheck, func(f *fileConfig, v *fileLeakCheck) { f.LeakCheck = v }),
+		},
+		{
 			Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
 			Description: "The deployment's own prompts, each naming the event it stands on, the moves back it counts, how many of them fire it, the roles its words are put in front of and those words; `hooks: []` runs none, and a file that names the key runs what it names and no default.",
 			Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
@@ -328,7 +333,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered, and an answer from every role with no turn running ends it sooner; decimals allowed.",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -338,7 +343,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
 		},
 		{
@@ -467,6 +472,12 @@ var nestedKeys = []memberGroup{
 			Description: "The repository as it was, which every record Legion already holds names; compared without case."},
 		{Name: "to", Default: "none: a pair that names no `to` is refused", RequiredBy: "yes",
 			Description: "The repository it moved to, which GitHub's events name and which the daemon calls GitHub under; compared without case."},
+	}},
+	{Path: leakCheckKey, Members: []member{
+		{Name: "repository", Default: "`LEGION_LEAK_CHECK_REPOSITORY` in the daemon's environment", RequiredBy: "when `manifest_sha256` is set: the two are set together or not at all",
+			Description: "The repository the shared public leak check is published from, as `owner/name`: its `leak-check` directory at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`) is what the daemon reads, with a read-only token of its implement App, and pushes to every pod."},
+		{Name: "manifest_sha256", Default: "`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment", RequiredBy: "when `repository` is set: the two are set together or not at all",
+			Description: "The check's manifest digest at that tag, 64 lowercase hex digits: the sha256 of the `sha256sum` lines of `public-leak-check.sh`, `public_leak_check.py`, `README.md` and `must-pass-lines.txt`, in that order, which `(cd leak-check && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt) | sha256sum` prints. Every role is told it, a role pod starts no agent unless its install's manifest digest is it, and a role refuses every write for want of a check or under a check whose manifest digest is anything else, so a launcher script edited beside an unchanged program is refused. It does not decide which `legion gh` calls the check alone reads: a call that writes nothing is read so only where the check's program hashes to the digest the release's read rule was proven against, which the release compiles in."},
 	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",
@@ -607,6 +618,8 @@ var nestedKeys = []memberGroup{
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
 		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod at the defaults of `memory_guard.issue_pods`", RequiredBy: "no",
 			Description: "The memory guard in each gVisor issue pod's launcher, which near the container's memory limit ends with SIGKILL the largest process that is neither Legion's own nor an agent's own, and tells that process's role, so the pod's other roles keep their turns; a microVM issue pod's launcher runs the guest memory watch instead, whatever this block says."},
+		{Name: "volume_trim", Default: "every issue pod's launcher sweeps its cache roots at 85% of the volume, toward 70%, deleting nothing modified in the last 15 minutes, and reads the volume every 60 seconds", RequiredBy: "no",
+			Description: "The cache trimmer in each issue pod's launcher process: when it reads the volume, at which used fraction it sweeps the pod's four cache roots, of which `$TMPDIR` gives up only Go's own build trees, toward which fraction, and how old an entry must be to be deleted."},
 		{Name: "sandbox", Default: "every issue pod runs in gVisor", RequiredBy: "no",
 			Description: "The sandbox the project's issue pods run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod, the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
@@ -790,13 +803,25 @@ var nestedKeys = []memberGroup{
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},
 		{Name: "exchange_audience", Default: "no pod carries an identity the broker's exchange trades", RequiredBy: "no",
-			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until t-e-54 holds each session id to the claim that first recorded it and t-e-53 makes a role trade with its own key, both in the daemon and its pods (dispatch://INFRA-840), because until then a role's own trade is refused."},
+			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report. The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds."},
 	}},
 	{Path: pluginsKey, Members: []member{
 		{Name: "pi_legion", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_envoy` is set: a relaunch installs the pair together or not at all",
 			Description: "The exact `@sjawhar/pi-legion` a stale-plugin relaunch installs into a kept pod, as an exact version, an absolute tarball path or an http(s) URL the pod can read, never a dist-tag or a range."},
 		{Name: "pi_envoy", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_legion` is set: a relaunch installs the pair together or not at all",
 			Description: "The exact `@sjawhar/pi-envoy` that relaunch installs beside it, in the same three forms."},
+	}},
+	{Path: kubernetesKey + ".volume_trim", Members: []member{
+		{Name: "enabled", Default: "`true`", RequiredBy: "no",
+			Description: "Whether the daemon hands each issue pod's launcher the trimmer's settings; `false` hands it none, and its trimmer then reads and deletes nothing."},
+		{Name: "high_percent", Default: "`85`", RequiredBy: "no",
+			Description: "The used fraction of the issue volume, as `df` computes it, at or above which the trimmer sweeps, a whole percentage from 1 to 99."},
+		{Name: "low_percent", Default: "`70`", RequiredBy: "no",
+			Description: "The used fraction the sweep stops deleting at, if nothing stops it sooner, a whole percentage that must be below `high_percent`, which the loader refuses otherwise."},
+		{Name: "min_age_minutes", Default: "`15`", RequiredBy: "no",
+			Description: "How long nothing in an entry may have been modified before the sweep may delete it, an hour more in the Go build cache, as Go's own trim judges it; at most a week."},
+		{Name: "interval_seconds", Default: "`60`", RequiredBy: "no",
+			Description: "How often the trimmer reads the volume, at most an hour; `0` is refused."},
 	}},
 	{Path: kubernetesKey + ".idle_release", Members: []member{
 		{Name: "idle_minutes", Default: "`10`", RequiredBy: "no",
@@ -833,6 +858,8 @@ var nestedKeys = []memberGroup{
 			Description: "The GKE ComputeClass whose nodes run the microVM pods, which a microVM pod selects by `cloud.google.com/compute-class` in place of any class `scheduling.node_selector` names, and whose taint it tolerates."},
 		{Name: "storage_class", Default: "`runtime.kubernetes.storage_class`", RequiredBy: "no",
 			Description: "The StorageClass a microVM pod's own workspace volume is provisioned from."},
+		{Name: "keep_volume", Default: "`false`", RequiredBy: "no",
+			Description: "Whether each microVM issue pod's workspace volume is a claim that its issue's Sandbox owns, which stays through the pod's ends and the issue's idle releases and is deleted with the Sandbox; a gVisor issue pod's volume ends with its pod whatever this says."},
 		{Name: "metadata", Default: "a microVM pod's launcher serves no metadata endpoint", RequiredBy: "no",
 			Description: "Has each microVM pod's launcher serve the metadata server's paths for the pod's own account at `127.0.0.1:8169`, exchanging the pod's projected token at Google's Security Token Service, for a microVM pod that does not reach the node's metadata server."},
 	}},

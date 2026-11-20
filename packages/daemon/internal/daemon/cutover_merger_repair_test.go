@@ -41,18 +41,20 @@ import (
 // cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release the
 // deployments ran when the cutover began: migrations.txt, the name of every migration the tag
 // embeds (jj file list -r legion-v19.57.3 packages/daemon/internal/store/migrations), and the
-// tag's own text of the four migrations of that list whose text main has changed since
+// tag's own text of the five migrations of that list whose text main has changed since
 // (cutoverReleaseText).
 const cutoverRelease = "testdata/legion-v19.57.3"
 
-// cutoverReleaseText names the four migrations legion-v19.57.3 shares with this head whose text
+// cutoverReleaseText names the five migrations legion-v19.57.3 shares with this head whose text
 // this head has changed, which the record is built from at the tag's own text (jj file show -r
-// legion-v19.57.3 <path>). Two of them changed only in their comments (0067_phase_assignment and
-// 20261109191929_outbox_write_mark), and they are kept at the tag's text all the same, so the
-// record is built from the tag's own text of every migration it embeds. Every other migration of
-// the tag is applied from the embedded set, whose text for those versions is the tag's.
-var cutoverReleaseText = []string{"0067_phase_assignment", "20261109191929_outbox_write_mark",
-	"20261110225246_backward_moves_and_cap_told", "20261110235320_design_gates_publish"}
+// legion-v19.57.3 <path>). Three of them changed only in their comments (0052_dispatch_issues,
+// 0067_phase_assignment and 20261109191929_outbox_write_mark), and they are kept at the tag's text
+// all the same, so the record is built from the tag's own text of every migration it embeds.
+// Every other migration of the tag is applied from the embedded set, whose text for those versions
+// is the tag's.
+var cutoverReleaseText = []string{"0052_dispatch_issues", "0067_phase_assignment",
+	"20261109191929_outbox_write_mark", "20261110225246_backward_moves_and_cap_told",
+	"20261110235320_design_gates_publish"}
 
 // The daemon's own lines this test reads: the repair's one record per boot (workflow's
 // cutoverMergerRepair, and the daemon's repairCutoverMergers for a boot that finds the repair
@@ -82,11 +84,11 @@ const cutoverStoredSeq = 5
 // that a closed design gate held: once the gate opens the test makes the row due at once, and the
 // outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
 // row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
-// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
-// machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
-// over its API or of its database.
+// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
+// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
+// reported at, so a slow machine is no failure, and a start that never comes fails here rather
+// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
+// of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -107,7 +109,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //
 // The record is built as legion-v19.57.3 leaves it, not as this head would write it. The test
 // applies by hand exactly the migrations the tag embeds (cutoverRelease's migrations.txt), in
-// version order: the four whose text main has changed since at the tag's own text, and the rest
+// version order: the five whose text main has changed since at the tag's own text, and the rest
 // from the embedded set. A cut of the embedded set at the tag's newest version would be wrong:
 // this head embeds migrations below that version which the tag does not, because a version is the
 // moment its migration was written and not the moment it merged. The list internal/store's
@@ -309,8 +311,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	approved := 2
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	// The held start waits on its row's backoff, up to the outbox's 64 seconds (retryBackoff):
-	// made due now, it runs at the outbox's next sweep.
+	// The held start waits on its row's backoff, up to the outbox's 64 seconds
+	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
@@ -540,7 +542,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 }
 
 // cutoverReleaseStore is a database of this test's own carrying exactly the migrations
-// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the four of
+// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the five of
 // cutoverReleaseText at the tag's own text, and every other one from the embedded set. Each name
 // the list holds must be the embedded migration of its version, so a migration renamed or
 // renumbered since the tag is named here rather than applied as something else.

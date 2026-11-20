@@ -17,7 +17,10 @@
 // and the two wrappers read them from there and from nowhere else; a pod launched before that
 // ruling may still hold an `<owner>/<repo>` directory of its own, which no token is read out of,
 // and the Sandbox drift check reports both that and a root with no pairs file. The helper answers
-// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. In a pod the
+// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. Where
+// the bundle holds no directory for the owner git's request names, the helper reads that
+// repository from GitHub, and a fork takes the directory its parent, or else its source, routes
+// to (cmd/legion's forkUpstreamDir). In a pod the
 // root is a read-only Secret volume, which gh never needs to write: it writes under
 // GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its
@@ -37,6 +40,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // HostsFile is the name of gh's per-host credential file under GH_CONFIG_DIR.
@@ -228,7 +233,10 @@ func readRegular(path string, follow int) ([]byte, error) {
 // keeps a bundle's writer from touching the files a lease's turn did not change (WriteBundle,
 // Write). What is at path is read only through ReadRegular: anything that is no regular file is
 // removed first, since a rename replaces a link or a pipe but not a directory, and one too large
-// to read is simply replaced.
+// to read is simply replaced. The pane's own user can write every path handed here, so what is
+// removed may be a directory it filled, and it is removed as every tree a pane writes is: without
+// following a link in it (rolefile.RemoveTree), under path's directory resolved once, since that
+// directory may be reached through a link and RemoveTree refuses a parent that is one.
 func replaceFile(path, content string) (changed bool, err error) {
 	current, err := ReadRegular(path)
 	switch {
@@ -238,7 +246,11 @@ func replaceFile(path, content string) (changed bool, err error) {
 		}
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, ErrTooLarge):
 	case errors.Is(err, ErrNotRegular):
-		if err := os.RemoveAll(path); err != nil {
+		parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+		if err != nil {
+			return false, err
+		}
+		if err := rolefile.RemoveTree(filepath.Join(parent, filepath.Base(path))); err != nil {
 			return false, err
 		}
 	default:

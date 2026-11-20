@@ -1,4 +1,4 @@
-import { TradeRetryingError } from "@legion/broker-client/token-errors";
+import { TradeRetryingError } from "@legion/cipher-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,
@@ -15,6 +15,7 @@ import type {
   ArtifactVersionText,
   AskRead,
   AskWithTrees,
+  CheckResultDryRun,
   CheckResultRecorded,
   CheckResultRetraction,
   CheckResultRetractionInput,
@@ -65,6 +66,7 @@ import type {
   OpenAsksResponse,
   Priorities,
   Project,
+  ProjectPlans,
   RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
@@ -361,6 +363,22 @@ function reviewNoRouteRefusal(
       `would record the review at a version that build chooses, which may not be version ${version}. ` +
       `The no-route answer does not name the build; GET ${health} names the commit of the ` +
       "build that answers it, when that build was stamped with one."
+  );
+}
+
+/**
+ * What `dryRunResult` throws once the Dispatch at `baseUrl` answered no route for `route` each time
+ * it was sent: a build older than a result's dry run. The code and status are that answer's. The
+ * record's own route is never asked in its place, since a build that drops a field or a query it
+ * does not know would record the result, so the message says that nothing was recorded.
+ */
+function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the dry run was sent: this build is older than a result's dry run, so it cannot show " +
+      "the pull-request body line before the record. Nothing was recorded."
   );
 }
 
@@ -1598,6 +1616,24 @@ export class DispatchClient {
     );
   }
 
+  /**
+   * The dry run of `recordResult`: Dispatch refuses the body as the record refuses it before it
+   * writes, and answers the pull-request body line the record would answer, recording nothing.
+   */
+  async dryRunResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultDryRun> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "results", "dry-run"];
+    try {
+      const { payload } = await this.#jsonAnswer<CheckResultDryRun>("POST", path, input, {
+        writes: false,
+      });
+      return payload;
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+    }
+  }
+
   /** Each check of an issue's Verification document with every result recorded against it, and
    *  for a check CI proves the one result Dispatch derives from its check run.
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
@@ -1995,6 +2031,16 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }
 
+  /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
+   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
+   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+  async listProjectPlans(
+    project: string,
+    window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
+  ): Promise<ProjectPlans> {
+    return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
+  }
+
   async getIssueReferences(issue: string): Promise<IssueReferences> {
     return this.#json(
       "GET",
@@ -2113,7 +2159,9 @@ export class DispatchClient {
   }
 
   /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
-   *  inline content, and a name alone, which makes an empty document. */
+   *  inline content, and a name alone, which makes an empty document. A base the upload names
+   *  travels in the JSON body as `precondition`, and in a multipart form as the field
+   *  `precondition` holding that same JSON object's text, which is how the route reads it. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
     if (input.file === undefined) {
       return this.#json("POST", path, input, undefined, undefined, key);
@@ -2121,6 +2169,8 @@ export class DispatchClient {
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
+    if (input.precondition !== undefined)
+      form.set("precondition", JSON.stringify(input.precondition));
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);

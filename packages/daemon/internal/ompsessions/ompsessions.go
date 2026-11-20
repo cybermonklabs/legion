@@ -3,10 +3,12 @@
 // DSNFileVariable points at, libpq's own name for a unix socket, and the two URL spellings of one
 // unix-socket endpoint). The table is Oh My Pi's own (sql-session-storage.ts at
 // the release .omp-pin names): it creates and migrates omp_session_files and
-// omp_session_files_parts when it starts, keys a session by the path its file would have had (the
+// omp_session_files_parts, and from that release on the lease table omp_session_leases, when it
+// starts, keys a session by the path its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
-// launcher's check), seeds it once from the files sessions were kept in before (Import,
+// launcher's check) and to find the file of a session named by its id alone (FindByID, the same
+// launcher's lookup), seeds it once from the files sessions were kept in before (Import,
 // `legion sessions import`), and keeps a Claude Code session's files in it as Oh My Pi's own writes
 // would (Append and Replace, the role launcher's, which no Oh My Pi runs beside).
 package ompsessions
@@ -21,6 +23,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -37,9 +40,15 @@ const (
 	SQLStorage      = "sql"
 )
 
-// createTables are Oh My Pi's own Postgres statements for its two tables at the pinned release
-// (buildQueries' createTable and createPartsTable). Each is IF NOT EXISTS, so they change nothing
-// Oh My Pi already made, which it migrates itself when it starts.
+// createTables are Oh My Pi's own Postgres statements for its two session tables at the pinned
+// release (buildQueries' createTable and createPartsTable), except that they name each table bare,
+// as every other statement of this package does, so the connecting login's search_path picks its
+// schema, where Oh My Pi names each table public.<table> and runs its statements under SET LOCAL
+// search_path = pg_catalog, pg_temp (PG_SCHEMA and PG_SEARCH_PATH, sql-session-storage.ts at the
+// pinned tag). Each is IF NOT EXISTS, so they change nothing Oh My Pi already made, which it
+// migrates itself when it starts. The pinned release makes a third table, its lease table
+// omp_session_leases, which Legion writes nothing to and leaves to Oh My Pi and the database's
+// owner.
 var createTables = []string{
 	"CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
 		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
@@ -47,7 +56,7 @@ var createTables = []string{
 		"PRIMARY KEY (path, start_offset))",
 }
 
-// CreateTables makes Oh My Pi's two tables where the database has none (createTables), so a
+// CreateTables makes Oh My Pi's two session tables where the database has none (createTables), so a
 // database no Oh My Pi has opened yet takes a session. Import runs it before its write, and a
 // writer of Append and Replace once per connection before its first.
 func CreateTables(ctx context.Context, conn *pgx.Conn) error {
@@ -112,6 +121,31 @@ func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok
 		return time.Time{}, false, fmt.Errorf("look up session %s: %w", path, err)
 	}
 	return time.UnixMilli(mtime), true, nil
+}
+
+// FindByID is the path of the newest session the table holds under the session id id, for a start
+// of the role launcher that names a session by its id alone (shimwire.LauncherStart.ResumeSession):
+// the path of the row whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then
+// the least path. It compares the path's last characters with that suffix as text (right(path, n),
+// n the suffix's length in characters), never with LIKE, so a `_` or a `%` in the id matches only
+// itself. found is false when the table holds no such session; a database no Oh My Pi has opened
+// has no table yet, and so holds none, as Written answers. It refuses an id that is not a single
+// path element (empty, or holding `/` or NUL) before any query.
+func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, found bool, err error) {
+	if id == "" || strings.ContainsAny(id, "/\x00") {
+		return "", false, fmt.Errorf("look up session %q by its id: the id is not a single path element", id)
+	}
+	suffix := "_" + id + ".jsonl"
+	err = conn.QueryRow(ctx,
+		"SELECT path FROM omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
+		utf8.RuneCountInString(suffix), suffix).Scan(&path)
+	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("look up session %s by its id: %w", id, err)
+	}
+	return path, true, nil
 }
 
 // Read is the session the table holds at path as Oh My Pi reads it (readFull): the row's content,
