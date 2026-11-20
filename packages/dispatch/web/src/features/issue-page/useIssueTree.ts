@@ -48,7 +48,9 @@ export interface IssueTreeView {
    *  gave - so a view keeps every row's words and every chip's name beside that line. A first
    *  read that fails holds none; a read under a new set of addresses that fails stands failed
    *  while the tree keeps the last names. A read that runs again after it failed goes on
-   *  standing failed until it answers. */
+   *  standing failed until it answers, and so does one while another read the tree is built
+   *  from runs again after it failed, which holds the batched read back: it keeps the set it
+   *  was last given meanwhile (`useIssueTree`). */
   readonly namesFailure: NamesFailure | undefined;
   /** Whether the names the tree is built from are held: the batched names read has answered
    *  (`useIssueTree`). That read is always made: the root's words write the issue's own key
@@ -347,8 +349,18 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // moved is a stale word until a read under the new key succeeds, where a dropped one is the
   // whole page's words at once; while that read stands failed - until its Retry, window focus or
   // an event reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailure`).
+  //
+  // The gate shuts again while a read that holds no answer runs again - a failed read's Retry,
+  // window focus or an event's refresh of it, which TanStack puts back in `pending` - and the
+  // names read keeps the set it was last given until the gate opens, by the same `useLastAnswer`,
+  // which holds the last value given other than undefined: moved to the set of none, which is no
+  // read, a names read that stands failed would stand failed no more, and its line would leave
+  // the page with the focus its Retry held and say its failure again on coming back. Kept, the
+  // line says that read's own state while another read runs: its failures, whether it runs
+  // again, and a Retry that asks it again. Until the gate first opens the set is none.
+  const askedFor = useLastAnswer(treeRead ? refs : undefined) ?? [];
   const targets = useQuery({
-    ...referenceTargetsQuery(treeRead ? refs : []),
+    ...referenceTargetsQuery(askedFor),
     ...EVENT_FRESH,
   });
   const firstAnswer = useLastAnswer(targets.data);

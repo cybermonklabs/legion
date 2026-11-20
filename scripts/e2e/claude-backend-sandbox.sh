@@ -257,9 +257,11 @@ session_dsn_key=SESSION_DSN
 daemon_log=$evidence/logs/daemon.log
 # The daemon's container under bridge (daemon_run_args): its name, whose prefix and trailing pid
 # refuse_leftovers reads as it reads the other containers', and its image, busybox pinned by digest
-# and pulled through the mirror (AGENTS.md). The daemon is a static binary and needs nothing of an
-# image; the image is there for the `sh`, `tr` and `cat` the Apps' credential commands run under
-# bridge (lib/github-apps.sh's write_github_apps --token-dir, after mint_app_tokens).
+# and pulled through the mirror (no CI job runs this script, the ground on which
+# .github/scripts/check-ci-images.sh's exception list admits it). The daemon is a static binary
+# and needs nothing of an image; the image is there for the `sh`, `tr` and `cat` the Apps'
+# credential commands run under bridge (lib/github-apps.sh's write_github_apps --token-dir, after
+# mint_app_tokens).
 daemon_container="legion-e2eccs-daemon-$$"
 daemon_image=mirror.gcr.io/library/busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # app_tokens_dir is the directory under XDG_RUNTIME_DIR that prerequisites mints the implement
@@ -309,6 +311,8 @@ pass() { printf 'ok %s\n' "$check"; }
 fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/namespace-rig.sh
@@ -574,7 +578,8 @@ transcript_since() {
 start_listener() {
   ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$port_listener" ENVOY_LISTEN_HOST="$bind_host" \
     ENVOY_MACHINE_ID="legion-e2eccs-$$" NATS_URLS="nats://$bind_host:$port_nats" \
-    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions on its port $port_listener" \
     curl -fsS -H "@$work/envoy-auth-header" "http://$bind_host:$port_listener/v1/sessions"
 }
@@ -590,7 +595,8 @@ start_dispatch() {
     DISPATCH_LISTEN_HOST="$bind_host" DISPATCH_PORT="$port_dispatch" \
     DISPATCH_SERVER_URL="$pod_dispatch_url" NATS_URLS="nats://$bind_host:$port_nats" \
     ENVOY_URL="http://$bind_host:$port_listener" \
-    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-dispatch"
+    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_dispatch_env[@]}" "$work/envoy-dispatch"
   dispatch_base="http://$bind_host:$port_dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server on its port $port_dispatch" \
     curl -fsS "$dispatch_base/api/v1"
@@ -1123,6 +1129,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
@@ -1377,6 +1384,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 # container (session_psql), so the devbox needs no URL of it.
 session_db_start "$bind_host" --cpus 1
 note "container $session_db_container: database sessions on $bind_host:$port_session_db ($session_db_image), which every pod reads at $host:$port_session_db through the providers Secret's $session_dsn_key (the URL is in an owner-only file, not printed)"
+dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend sandbox proof $project" '{key:$key,name:$name}')" >/dev/null

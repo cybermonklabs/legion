@@ -210,12 +210,13 @@ func (r *fleetRig) recordAsServed(rounds api.PodUpdateRounds) string {
 }
 
 // The cap on open rounds is a cap on how much of the fleet is held waiting at once: an issue in a
-// round has every worker of it told to push and start nothing new, so a fleet-wide drift with no
-// cap stops every worker of every issue at the first sweep. Under the cap the issues that fit go
-// first — in the order of their keys, which is the order the sweep walks them in, and which is a
-// fleet's keys as strings rather than as numbers — and an issue waits until one of them has
-// finished and freed its slot. Nothing is lost by waiting: every pod of the fleet is replaced in
-// the end, each after its own workers have pushed.
+// round has every worker of it told to do the steps of its update message (supervise.UpdateTask)
+// and start nothing new, so a fleet-wide drift with no cap stops every worker of every issue at
+// the first sweep. Under the cap the issues that fit go first — in the order of their keys, which
+// is the order the sweep walks them in, and which is a fleet's keys as strings rather than as
+// numbers — and an issue waits until one of them has finished and freed its slot. Nothing is lost
+// by waiting: every pod of the fleet is replaced in the end, each after its own workers have
+// pushed.
 func TestPodUpdateMaxOpenRounds(t *testing.T) {
 	keys := []string{"LEGION-2", "LEGION-10", "LEGION-1000", "LEGION-30", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
@@ -256,8 +257,8 @@ func TestPodUpdateMaxOpenRounds(t *testing.T) {
 // counts the rounds it finds rather than the ones it opened itself. Counted from its own memory
 // — which a boot empties — it would read the whole project as idle and open the cap again over
 // a fleet that is already at it, which is the one thing the cap is there to stop. And a round it
-// did not open is still none of its business to end: a worker told to push is waited for, boot or
-// no boot.
+// did not open is still none of its business to end: a worker told to do the steps of its update
+// message (supervise.UpdateTask) is waited for, boot or no boot.
 func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
 	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
@@ -786,7 +787,8 @@ func (r *fleetRig) askRowsOf(issue string, role claim.Role) []int64 {
 // workers of the fleet are asked a few at a minute, so a change lands as a sequence of small
 // interruptions rather than one that stops everyone at once. It paces openings and nothing else
 // — a round already open is neither ended nor paused nor asked again by it, since a worker told
-// to push and wait must be waited for — and every pod of the fleet is replaced in the end.
+// to do the steps of its update message (supervise.UpdateTask) and wait must be waited for — and
+// every pod of the fleet is replaced in the end.
 func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"}
 	rig := newLimitRig(t, keys...)

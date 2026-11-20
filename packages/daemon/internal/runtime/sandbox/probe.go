@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -1093,7 +1094,10 @@ func (r *Runtime) unstarted(ctx context.Context, name string, uid types.UID, bud
 }
 
 // probeLog is the probe container's last log lines, kept to probeLogBytes from the tail's end
-// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length.
+// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length. The read stops at
+// probeLogReadBytes, and one byte more read past it tells a read its bound stopped from one that
+// reached the log's end: such a read can stop inside a URL, before its "@", and redact.Read drops
+// the run it stopped inside, when that run holds "://", before the URL rule reads the rest.
 func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -1103,26 +1107,49 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	defer stream.Close()
+	// The read keeps its own form rather than redact.ReadBounded's, which holds the head of the
+	// read, probeLogReadBytes of it, in memory: a refusal quotes the log's end, and tailBytes holds
+	// only that end (three times probeLogBytes at most), however long the log is.
 	text, err := lastBytes(io.LimitReader(stream, probeLogReadBytes), probeLogBytes)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(text), nil
+	// Anything but the log's end after the bound is a read the bound stopped, an error included:
+	// what it stopped inside is then unknown.
+	var past [1]byte
+	_, err = io.ReadFull(stream, past[:])
+	return strings.TrimSpace(redact.Read(text, err != io.EOF)), nil
 }
 
 // lastBytes reads r to its end, keeping only the last keep bytes (tailBytes), and answers that
-// tail: with a leading … line (everything up to and including the first \n dropped, so what
-// remains starts on its own line) when anything of r was cut, unchanged when r was keep bytes or
-// shorter.
+// tail: with a leading … line when anything of r was cut, unchanged when r was keep bytes or
+// shorter. What the cut left of the line it fell inside is dropped (dropCutHead), so what remains
+// starts on its own line, or, in a tail that holds no \n, after a byte that ends a URL.
 func lastBytes(r io.Reader, keep int) (string, error) {
 	buf, dropped, err := tailBytes(r, keep)
 	if err != nil || !dropped {
 		return string(buf), err
 	}
-	if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-		buf = buf[i+1:]
+	rest, _ := dropCutHead(buf)
+	return "…\n" + string(rest), nil
+}
+
+// dropCutHead is kept, the newest bytes of a read that dropped older ones (tailBytes), with the
+// head its cut fell inside dropped, and whether what is left starts on a whole line. The head is
+// everything up to and including kept's first \n where it holds one, and what is left then starts
+// on a whole line; otherwise everything up to and including its first byte that ends a URL
+// (redact.EndsURLByte), and what is left starts inside a line; and where no byte ends a URL,
+// nothing is left. The cut can fall inside a URL, after its "://" or its "?", where the URL rule
+// no longer finds the userinfo or the query the cut left part of; a \n ends a URL too, so either
+// drop reaches the end of the URL the cut fell inside.
+func dropCutHead(kept []byte) (rest []byte, atLine bool) {
+	if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
+		return kept[newline+1:], true
 	}
-	return "…\n" + string(buf), nil
+	if end := slices.IndexFunc(kept, redact.EndsURLByte); end >= 0 {
+		return kept[end+1:], false
+	}
+	return nil, false
 }
 
 // tailBytes reads r to its end and answers its last keep bytes, and whether it dropped any before

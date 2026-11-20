@@ -219,7 +219,7 @@ test("approving again after a stopped approval and a change request goes under i
     const stopped = createArtifactReview.mock.calls.length;
 
     // The change request lands. Its answer is held, as the next Approve's is, and given inside
-    // `act` after its press, as packages/dispatch/AGENTS.md's act rule says.
+    // `act` after its press, as docs/testing.md ("The act rule of a Dispatch unit test") says.
     const review: ArtifactReview = {
       actor: { id: "alice", kind: "user" },
       artifact_id: "artifact-1",

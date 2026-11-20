@@ -181,7 +181,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
  */
 function useReaderActs(following: string): ReaderActs {
   const acts = useRef<AbortController | undefined>(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each following is watched anew, though no value of it is read.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new following is the reason this runs - each one starts its own watch of the reader's acts - and the watch reads nothing of it, so no value it reads carries the change.
   useLayoutEffect(() => {
     const watched = abortOnReaderAct();
     acts.current = watched;

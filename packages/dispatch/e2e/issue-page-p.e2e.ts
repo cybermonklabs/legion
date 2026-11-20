@@ -1846,6 +1846,104 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
   );
 });
 
+// R3 at 1440 px on a project that gates two or three steps, where the header draws one approval
+// entry for each step (R6): at most 4 lines and 130 px, with no request waiting and with one on
+// every gated document, so each entry carries Approve and Request changes (decision 213). The
+// root has the large root's shape above - the measured title, 20 labels, 24 children with 3 done
+// and the 16-character login as its assignee - so the properties line is as long as R3's cases.
+// SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
+// roots written with 24 children and their gated documents each, a second context signed in as
+// the long login, and four loads, the header's limit measured after each.
+test("the header holds its 1440 px limit on a root whose project gates two or three steps", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const projects = [
+    { key: "TWO", steps: ["criteria", "spec"] },
+    { key: "THREE", steps: ["decisions", "criteria", "spec"] },
+  ] as const;
+  await phase(
+    browser,
+    async () => {
+      const roots: { key: string; documents: string[]; steps: readonly string[] }[] = [];
+      for (const { key, steps } of projects) {
+        await createProject({ key, name: `Gates ${steps.length} steps` });
+        await setGatedSteps(key, [...steps]);
+        const root = await createIssue({
+          force: true,
+          project: key,
+          spec: "The plan.",
+          title: MEASURED_TITLE,
+        });
+        // The spec is the root's own document; each other gated step gets the document it gates.
+        const documents = [root.primary_artifact_id ?? ""];
+        for (const step of steps) {
+          if (step === "spec") continue;
+          const name = step === "criteria" ? "verification.md" : "decisions.md";
+          const made = await createIssueArtifact(root.key, { content: `# ${name}\n`, name });
+          documents.push(made.artifact.id);
+        }
+        for (let at = 0; at < 24; at += 1) {
+          const child = await createIssue({
+            force: true,
+            parent: root.key,
+            project: key,
+            title: `Part ${at + 1} of the root`,
+          });
+          if (at < 3) await patchIssue(child.key, { status: "done" });
+        }
+        roots.push({ documents, key: root.key, steps });
+      }
+      return roots;
+    },
+    async (_alice, roots) => {
+      const context = await asUser(browser, LONG_LOGIN);
+      try {
+        await withIssuePage(context, LONG_LOGIN);
+        const page = await context.newPage();
+        await page.setViewportSize(viewportAt(DESKTOP.width));
+        for (const root of roots) {
+          await patchIssue(root.key, {
+            assignee: LONG_LOGIN,
+            labels: [...TWENTY_LABELS],
+            priority: 1,
+            status: "in_progress",
+          });
+          for (const waiting of [false, true]) {
+            if (waiting) {
+              for (const document of root.documents) {
+                await requestApproval(document, { summary: "Read it." });
+              }
+            }
+            await gotoIssue(page, `/issues/${root.key}`);
+            await expectHeaderDrawn(page);
+            for (const step of root.steps) {
+              await expect(
+                approvalEntry(page, step),
+                `the header draws no entry for the ${step} step of ${root.key}`
+              ).toBeVisible();
+            }
+            if (waiting) {
+              await expect(waitingCount(page)).toHaveText(
+                `Waiting on you (${root.documents.length})`
+              );
+            }
+            await expectHeaderWithinItsLimit(
+              page,
+              DESKTOP.width,
+              waiting,
+              TYPEFACE,
+              root.steps.length
+            );
+          }
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  );
+});
+
 /** Waits for the frames in which the header's labels read the line again after its width
  *  changed: the observer's notification, the frame it waits for, and the commits after it. */
 function framesDrawn(page: Page, frames: number): Promise<void> {
@@ -2004,6 +2102,9 @@ test("the labels' count names every label the line does not draw whole after the
 // `onFocus` put back, the editor that focus opened was closed again by that second focus, and
 // row (8) passed. Here the page gives the heading its focus back once, as a return to the window
 // does, and nothing focuses it again.
+// SLOW(>=2s): 1,477 to 1,896 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load, an edit opened by e and ended by Enter, the focus taken and
+// given back with two frames waited, a key typed, and the title read back from the server.
 test("a focus given back to the title's heading opens no editor", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -2408,6 +2509,9 @@ async function expectFocusInSight(page: Page, menuId: string, message: string): 
 // the two the open menu covers at 390 px, and reads the focus in sight at every control it stops
 // on. It sets 390 px for every project before it reads anything, so the phone project would only
 // repeat it.
+// SLOW(>=2s): 1,333 to 1,941 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load at 390 px, the menu opened by Enter, a Tab to each of its
+// actions with the menu's state read at each, and one Tab more with the focus read in sight.
 test("the header's menu closes once Tab takes the focus out of it, leaving the focus in sight", async ({
   browser,
 }) => {
@@ -2531,6 +2635,11 @@ test("Details closed after a write removed the labels' count leaves the focus in
 // focus went into the palette, so the count's removal and Details' close then left the focus on
 // the page's body. A focus in another layer now keeps the watch going, since that layer gives the
 // focus back, and the focus ends on "Issue actions" as in the row above.
+// SLOW(>=2s): 1,644 to 2,040 ms in nine one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319,
+// e2e-rows-9whgn at 4d06932a and e2e-rows-tnxt6 at 214ed1ee: one load with twenty labels, Details
+// opened from the labels' count by Enter, the search palette opened by Control+K and its focus
+// polled, a write of one label waited on until the count goes, and the palette and Details each
+// closed by Escape before the focus is read.
 test("Details closed after a write removed the labels' count while the palette was open leaves the focus in the header", async ({
   browser,
 }) => {
@@ -2597,6 +2706,10 @@ test("Details closed after a write removed the parent link leaves the focus in t
 // action, and the box that keeps the two together goes with them. The keeper reads the elements
 // around Approve as the focus leaves it, so it still finds that document's chip and gives it the
 // focus, as after an approval made from the header, rather than going on to "Issue actions".
+// SLOW(>=2s): 1,670 to 1,999 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, Details opened by Shift+M,
+// another reader's approval written and polled until the header draws no action, and Details closed
+// by Escape before the focus is read.
 test("Details closed after an answer elsewhere removed Approve leaves the focus on the document's chip", async ({
   browser,
 }) => {
@@ -2651,6 +2764,10 @@ function reviewsSent(page: Page): string[] {
 // focus on another of the header's controls, the title's heading, `a` is not the approval's: it
 // sends no review and the request still waits. Nor is it on the chip once the document is
 // approved, which draws no Approve.
+// SLOW(>=2s): 1,510 to 1,960 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, a pressed on the title's heading
+// and two frames waited, then a pressed on the chip and polled until Dispatch records the approval,
+// and a pressed again on the approved chip with two frames waited.
 test("the approval chip's a approves the document whose request waits, and a elsewhere approves nothing", async ({
   browser,
 }) => {
@@ -2705,6 +2822,10 @@ test("the approval chip's a approves the document whose request waits, and a els
 // With the focus on the chip whose request waits, or on its Approve, Shift+R presses its Request
 // changes, which opens the Request changes dialog, and Escape closes the dialog and gives the
 // focus back. With the focus on the title's heading it opens nothing.
+// SLOW(>=2s): 1,473 to 1,875 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, Shift+R on the title's heading
+// with two frames waited, then the Request changes dialog opened by Shift+R and closed by Escape
+// twice, from the chip and from its Approve.
 test("the approval chip's Shift+R opens Request changes, from the chip and from its Approve", async ({
   browser,
 }) => {
@@ -3041,6 +3162,11 @@ test("a change request sent from the header leaves the focus in the header", asy
 // the chip of the document the reader approved, not to another control of the header. The
 // review's write is held open with a route so the row can read the focus while Approve refuses
 // a press.
+// SLOW(>=2s): 2,093 ms in one of three one-worker runs (Job e2e-rows-9whgn at 4d06932a), and 1,548
+// to 1,657 ms in three (Job e2e-rows-2chx9 at 2e3f0319): one load after an approval request, the
+// review's post held by a route while Approve is pressed by Enter and the focus is read after two
+// frames, then the post let go and polled until Dispatch records the approval, and two frames
+// before the focus is read again.
 test("Approve by Enter on the header's chip leaves the focus on the approved chip", async ({
   browser,
 }) => {
@@ -3201,6 +3327,11 @@ test("a change request sent after the header's actions went leaves the focus on 
 // the focus on Approve while its write is out: the row reads that it is there, so the press
 // reaches Approve's own guard and not another control. The focus is read in the header in the
 // gap, and again once the reads go on and the header draws neither action.
+// SLOW(>=2s): 2,000 ms in one of three one-worker runs (Job e2e-rows-9whgn at 4d06932a), and 1,403
+// to 1,983 ms in three (Job e2e-rows-2chx9 at 2e3f0319): one load after an approval request, the
+// issue's and the document's reads held by a route while the review is posted and answered, the
+// reads polled until the page makes one, two presses by Enter each followed by two frames, and the
+// reads let go and the redraw waited on.
 test("Approve pressed again by Enter before its approval is drawn sends no second review", async ({
   browser,
 }) => {

@@ -382,11 +382,11 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first asks every role in it to push its work and answer, and not by the launch that
-// finds it; so the launch starts its role as that pod was built, and the role runs degraded —
-// without the secrets broker, without an overlay added since — until the round replaces the pod.
-// It can still push its work and answer the round, which a process that refused to start could
-// not.
+// which first asks every role in it to do the steps of its update message (supervise.UpdateTask)
+// and answer, and not by the launch that finds it; so the launch starts its role as that pod was
+// built, and the role runs degraded — without the secrets broker, without an overlay added
+// since — until the round replaces the pod. It can still do those steps and answer the round,
+// which a process that refused to start could not.
 type keptPod struct {
 	// enrolled is the enrollment decision (Runtime.enrollsIn) read of this pod when the launch
 	// began: the runtime enrols its pods and the pod carries that enrollment for the role, both
@@ -433,7 +433,8 @@ type keptPod struct {
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
 // repoints that role mid-turn: the update round replaces its pod once every worker has answered,
-// or at the round's bound.
+// no turn runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or
+// at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
@@ -771,23 +772,30 @@ func (l launch) claudeArgv() []string {
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).
 func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.project, l) }
 
-// diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
-// StorageClass at the operator's size (runtime.kubernetes.issue_volume). The class is the microVM
-// block's for a microVM pod (MicroVM.StorageClass) and the operator's
-// runtime.kubernetes.storage_class for every other, the controller's included, so whatever
-// declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, an issue pod as the template of its own ephemeral volume, so the two
-// disks are provisioned alike and differ only in who deletes them.
+// diskSpec is the claim of l's pod's disk, wherever it is declared: claimSpec of the runtime's
+// storage class and volume size, for the launch's microVM block (nil for a gVisor pod). The
+// controller's Sandbox declares it as the claim template it owns, and so does the Sandbox of an
+// issue whose pod keeps its volume (keptVolume). Every other issue pod declares it as the template
+// of its own ephemeral volume. So the disks are provisioned alike and differ only in who deletes
+// them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
-	storageClass := r.storageClass
-	if l.microVM != nil {
-		storageClass = l.microVM.StorageClass
+	return claimSpec(r.storageClass, r.volumeSize, l.microVM)
+}
+
+// claimSpec is the claim of a pod's disk: ReadWriteOnce at size (runtime.kubernetes.issue_volume),
+// on the microVM block's StorageClass for a microVM pod (MicroVM.StorageClass, microVM not nil)
+// and on storageClass (runtime.kubernetes.storage_class) for every other, the controller's
+// included. Whatever declares an issue's disk takes its class from here: a launch (diskSpec) and
+// the boot census, which runs before any runtime is built (IssueDisks.templates).
+func claimSpec(storageClass string, size resource.Quantity, microVM *MicroVM) corev1.PersistentVolumeClaimSpec {
+	if microVM != nil {
+		storageClass = microVM.StorageClass
 	}
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 		StorageClassName: &storageClass,
 		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
+			Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 		},
 	}
 }
@@ -796,12 +804,14 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 // before the claim's Secret is written, with whatever volume its kind has the Sandbox own
 // (podKind.disk). An issue's Sandbox owns none: its pod's disk is a generic ephemeral
 // volume the pod itself owns, created with the pod and deleted with it (INFRA-80), so nothing of
-// an issue survives the pod that did it. The controller's Sandbox still owns its one `issue`
-// template, so the working root its launcher runs in outlives the pod that left it. Its pod
-// template never runs: the relaunch's Running patch replaces it with the template the launch
-// computes before the controller creates a pod. Its metadata is a name, a namespace and the
-// launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
-// migrating launch displaced — is set on the object by that launch (replaceSupersededSandbox).
+// an issue survives the pod that did it. The one exception is an issue whose microVM pod keeps its
+// volume (keptVolume): its Sandbox owns the one `issue` template, labelled kept, and the claim
+// made from it outlives the issue's pods until the Sandbox goes. The controller's Sandbox still
+// owns its one `issue` template, so the working root its launcher runs in outlives the pod that
+// left it. Its pod template never runs: the relaunch's Running patch replaces it with the template
+// the launch computes before the controller creates a pod. Its metadata is a name, a namespace and
+// the launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
+// replacing launch displaced — is set on the object by that launch (replaceSupersededSandbox).
 func (r *Runtime) sandboxManifest(l launch) sandbox {
 	templates, _ := l.kind.disk(r, l)
 	return sandbox{
@@ -815,19 +825,21 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 }
 
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
-// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue
-// pod's is its own ephemeral claim, made with the pod and deleted with it, the controller's the
-// claim its Sandbox owns and that outlives every pod it makes. The pod runs as the operator's
-// ServiceAccount (the namespace's default when the operator names none), and its launcher
-// containers mount the providers Secret's configured keys and the operator's mounts, are told the
-// operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
+// its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
+// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
+// the operator's ServiceAccount (the namespace's default when the operator names none), and its
+// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
+// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
 // (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: every pod owns a disk of its own and shares
-// nothing with another pod, so the scheduler puts it wherever the pool has room. The controller
-// applies a template only to the next pod it creates, so the template is rebuilt for every
-// relaunch. Its metadata carries, beside the two stop-eviction annotations, the configuration the
-// pod is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
+// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
+// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
+// its pods binds each later pod to the zones of its volume. The controller applies a template only
+// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// carries, beside the two stop-eviction annotations, the configuration the pod is built from
+// (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
 // without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
 // labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry
@@ -1444,9 +1456,11 @@ func fetchEnvironment(l launch) []corev1.EnvVar {
 // put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
 // It carries no role's session path either: a missing transcript must not prevent sibling
 // launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
-// of the disk: a pod's disk is created with the pod and empty, so every provision is the first.
-// Nothing here sizes a wait on another pod: each issue pod provisions its own clone on its own
-// disk, so no two provisions share a repository.
+// of the disk. A pod's own ephemeral disk is created with the pod and empty, so its provision is
+// the first. A kept volume (keptVolume) holds the clone and the workspace that the issue's
+// earlier pods left, and its provision reuses what the volume holds (workspace.Provision). Nothing
+// here sizes a wait on another pod: each issue pod provisions its own clone on the issue's own
+// disk, which no other pod mounts at the same time, so no two provisions share a repository.
 func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
 }
@@ -1480,8 +1494,10 @@ func (r *Runtime) ProvisionBound() time.Duration {
 // LaunchBound satisfies runtime.Runtime: the longest one launch try may run once it holds its
 // pod's launch turn (relaunch), the sum of a replacing try's waits and of its bounded calls at
 // their full budgets (launchBound): the boot timeout three times — ensureSandbox's wait for a
-// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, twice the
-// boot timeout plus ProvisionBound and two recheck intervals (launcherBackstop), then the
+// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, the
+// longest start bound a pod of the runtime gets (startBound: the kept-volume bound where the
+// microvm block keeps an issue pod's volume and that bound is longer, the boot timeout otherwise)
+// plus the boot timeout, ProvisionBound and two recheck intervals (launcherBackstop), then the
 // termination grace the start frame has past the launcher deadline, then relaunchCalls times
 // apiTimeout for every client call, mint, store read and launcher frame between those waits. The
 // wait for the launch turn itself (lockPod) is outside it: that is another launch's time, bounded
@@ -1688,8 +1704,10 @@ func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 // clones for itself. The reset drops every helper a configuration file names for github.com, the
 // image's or a repository's, and the helper it sets is the one the issue's clone already names, so
 // git in the clone asks what it asked before. Any other host is left to the configuration files.
-// `legion git-credential` answers only an owner of the project, from that owner's directory of
-// LEGION_GH_OWNERS_DIR (ghAgentEnv), and `legion gh` adds its own entry after these
+// `legion git-credential` answers an owner of the project from that owner's directory of
+// LEGION_GH_OWNERS_DIR (ghAgentEnv), and a fork of a repository of such an owner, whose own owner
+// has no directory, from the directory of the fork's parent or else its source, which it reads
+// from GitHub with GH_CONFIG_DIR's token; `legion gh` adds its own entry after these
 // (withGitHubUseHTTPPath, cmd/legion/gh.go).
 func gitConfigEnv() []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "GIT_CONFIG_COUNT", Value: strconv.Itoa(len(gitConfigPairs))}}

@@ -277,7 +277,11 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 }
 
 // fakeOmp is an `omp` that answers the load probe by a plan, one step per attempt (the last step
-// repeats), and records each attempt's argv, environment, and the probe file it was handed.
+// repeats), and records each attempt's argv, environment, and the probe file it was handed. Every
+// yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
+// missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
+// compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
+// release.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -999,7 +1003,7 @@ esac
 func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
 	// The live deployment's shape, with a placeholder person, as an operator writes it: the
 	// project, the lane, the credential the gateway bills and the person who owns the spend.
-	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
+	const operator = "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"
 	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
 	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
 	if err != nil {

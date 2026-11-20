@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
  *  on a picture or a link starts instead, which sends no mouseup; a pointer the browser
  *  cancelled; and a key, since a press released outside the window sends no mouseup, and a
  *  key's move must never wait on a press that is over. */
-export const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
+const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** A press as `trackPress` follows it. */
 export interface Press {

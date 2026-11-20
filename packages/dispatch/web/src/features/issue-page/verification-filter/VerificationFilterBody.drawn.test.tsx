@@ -140,7 +140,7 @@ function bodyOf(
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        {staged ? <ViewStage view="verification">{slot}</ViewStage> : slot}
+        {staged ? <ViewStage>{slot}</ViewStage> : slot}
       </MemoryRouter>
     </QueryClientProvider>
   );

@@ -668,9 +668,6 @@ export const ANSWER_LINES = freeze({
   /** What the Verification view says when its Verification document's blocks could not be
    *  read, so it cannot say which statement each check serves. */
   checks_unreadable: "Could not load the checks.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the Spec view says when the spec's blocks or their coverage could not be read. */
   statements_unreadable: "Could not load the statements.",
   /** What the Spec view says when the results could not be read, so it marks no statement. */

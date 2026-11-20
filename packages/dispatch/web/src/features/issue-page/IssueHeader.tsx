@@ -213,8 +213,9 @@ export function IssueHeader({
           </span>
         ) : null}
         {/* A write the reader stopped is said as stopped, as today's header says it
-            (`stoppedNote`, `stoppedWriteNote`): it may have been saved, and its Retry is a press
-            of its own. Any other refusal keeps its plain line. */}
+            (`stoppedNote`, `stoppedWriteNote`): it may have been saved. The pin's Retry makes the
+            same press again; the issue's line's Retry is a press of its own, of what the field
+            holds now (`drafts.retry`). Any other refusal keeps its plain line. */}
         <RefusalLine
           failed={writes.pin.isError}
           message={

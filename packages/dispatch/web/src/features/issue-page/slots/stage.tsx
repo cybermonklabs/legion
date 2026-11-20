@@ -58,7 +58,7 @@ export function StageSlot({
           <BodySlot {...props} />
         </StageBox>
       ) : (
-        <ViewStage view={preset}>
+        <ViewStage key={preset}>
           <View {...props} />
         </ViewStage>
       )}
@@ -121,11 +121,11 @@ const SLOT_TREE = '[role="tree"]';
  * rows focuses the tree and moves no row's focus.
  *
  * A failed read's line that leaves the page with the focus in it gives the focus back as every
- * stage's box does (`StageBox`), and the view draws its own measure.
+ * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
+ * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  */
-export function ViewStage({ children, view }: { children: ReactNode; view: Preset }): ReactNode {
+export function ViewStage({ children }: { children: ReactNode }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each view takes the focus once, so a new view is what starts this again.
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -203,7 +203,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
       stage.removeEventListener("focusin", treeFocused);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
-  }, [view]);
+  }, []);
   return <StageBox box={box}>{children}</StageBox>;
 }
 

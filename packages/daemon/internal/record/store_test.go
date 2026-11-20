@@ -505,6 +505,63 @@ func TestARowFromBeforeRepeatsReadsAsMovesNotPushed(t *testing.T) {
 	})
 }
 
+// A run the settlement's skipped group named is kept skipped with the word GitHub gave it, skipped,
+// beside a run that succeeded with its word, success: the pull request reads back whole, both in
+// its fence (check_runs) and in its head run's settlement step, which holds the settlement's runs
+// as the decoder gave them. A row written before either was kept holds each run as its name, id,
+// head and conclusion alone, a skipped run written as succeeded, and a step's runs as their name
+// and id: it reads back with no word and no run skipped, as it did.
+func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-208")
+	pr := PullRequest{Issue: issue.Key, Repo: "sjawhar/legion", Number: 1243, Branch: "legion/LEGION-208", HeadSHA: "b1", CheckedHead: "b1",
+		State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}, Generation: 2, Snapshot: "snapshot-2",
+		Statuses: []CommitStatus{}, Pushes: []ClassifiedPush{}, Moves: []Move{},
+		CheckRuns: []AttemptRun{
+			{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSkipped, GitHubConclusion: "skipped"},
+			{Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded, GitHubConclusion: "success"},
+		},
+		Run: &HeadRun{Anchor: Judgement{HeadSHA: "a0"}, Steps: []RunStep{{Head: "b1", Before: "a0"},
+			{Settlement: &Settlement{Head: "b1", Generation: 2, Snapshot: "snapshot-2", Failing: []string{}, Cancelled: []string{},
+				CheckRuns: []AttemptRun{
+					{Name: "docs", ID: 117, Conclusion: RunSkipped, GitHubConclusion: "skipped"},
+					{Name: "lint", ID: 110, GitHubConclusion: "success"},
+				}}}}}}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPullRequest(ctx, tx, pr))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.PullRequest(ctx, tx, issue.Key)
+		must(t, err)
+		if got == nil || !samePullRequest(*got, pr) {
+			t.Fatalf("pull request = %#v, want %#v: the skipped run and each word read back whole", got, pr)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := tx.Exec(ctx, `update pull_requests set
+			check_runs = '[{"name":"docs","id":117,"head":"b1","conclusion":"succeeded"},{"name":"lint","id":110,"head":"b1","conclusion":"succeeded"}]'::jsonb,
+			head_run = '{"anchor":{"headSha":"a0","failing":null,"cancelled":null,"checkRuns":null},"pushes":null,"steps":[{"head":"b1","before":"a0"},{"settlement":{"head":"b1","checkRuns":[{"name":"docs","id":117},{"name":"lint","id":110}],"generation":2,"snapshot":"snapshot-2","failing":[],"cancelled":[]}}]}'::jsonb
+			where issue = $1`, issue.Key)
+		must(t, err)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.PullRequest(ctx, tx, issue.Key)
+		must(t, err)
+		want := pr
+		want.CheckRuns = []AttemptRun{{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSucceeded}, {Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded}}
+		want.Run = &HeadRun{Anchor: Judgement{HeadSHA: "a0"}, Steps: []RunStep{{Head: "b1", Before: "a0"},
+			{Settlement: &Settlement{Head: "b1", Generation: 2, Snapshot: "snapshot-2", Failing: []string{}, Cancelled: []string{},
+				CheckRuns: []AttemptRun{{Name: "docs", ID: 117}, {Name: "lint", ID: 110}}}}}}
+		if got == nil || !samePullRequest(*got, want) {
+			t.Fatalf("pull request written before the word = %#v, want %#v: no word and no run skipped", got, want)
+		}
+	})
+}
+
 // The mark that an issue has stood in a phase of its own is what promotion reads when a tree that
 // ran comes up again on a later pass, long after its run, so it has to survive the write: PutIssue
 // stores it and Issue, like every read behind issueColumns, gives it back. The store keeps
@@ -2285,11 +2342,13 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
-		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent"},
-		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
-		"slots":             {"issue", "index", "admitted_at"},
-		"processed_events":  {"source", "event_id", "processed_at"},
-		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
+			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
+		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
+		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
+		"slots":                  {"issue", "index", "admitted_at"},
+		"processed_events":       {"source", "event_id", "processed_at"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
