@@ -310,7 +310,7 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 	t.Run("not while the project's pause keeps the pod for a member it stopped", func(t *testing.T) {
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
 			rig.wantPodKept(fmt.Sprintf("the held start of the %s", pauseStoppedRole))
-			rig.parkPauseHeldLaunch()
+			rig.parkPauseHeldLaunch(pauseStoppedRole, pauseLetOut)
 			rig.wantPodKept(fmt.Sprintf("the let-out of the %s's held launch", pauseStoppedRole))
 			rig.clockAt(pauseLetOut.Add(-time.Minute))
 			rig.wantPodKept(fmt.Sprintf("the let-out of the %s's held launch", pauseStoppedRole))
@@ -401,68 +401,79 @@ const pauseStoppedRole = claim.RoleImplementer
 
 var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 
+// pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
+// not paced (supervise's exemptWake).
+func pacedUntil(letOut time.Time) supervise.WakePace {
+	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(time.Time) time.Time { return letOut }}
+}
+
 // pauseKeepsThePod runs check once for each end of a project pause's hold of the pod after which
 // the pause still keeps the pod for a role it stopped: the end at the resume
 // (store.PausePodHoldResumed) and the end at a role's ready (store.PausePodHoldReady). Each run
 // has a rig of its own. The rig opens its round at its start, and no process runs in the round's
 // pod. The round's members are pauseStoppedRole, which the pause stopped, suspended released,
 // before the round's ask could reach it (releasedUnasked), and the tester, which answered and
-// which the daemon then suspended (answeredThenSuspended).
-//
-// The pause is recorded as the daemon records it. It held the pod and pauseStoppedRole's launch
-// from twenty minutes before the round opened: the hold of the pod (holdLegionPod) and the open
-// resume of the held wake (recordPodWake, pods.WakePause). The project's resume came a minute
-// before the round opened (store.Store.Resume). It ended the pause and started the stuck clock of
-// the held launch at its own moment. The hold of the pod ended at that moment too, for the reason
-// end. So no hold stands, and the held start of pauseStoppedRole has not run yet
-// (parkPauseHeldLaunch runs it). The wake pacing lets every paced launch out at pauseLetOut. An
-// operator's resume is not paced (supervise's exemptWake).
+// which the daemon then suspended (answeredThenSuspended). The pause is recorded as the daemon
+// records it (recordPause), and the wake pacing lets every paced launch out at pauseLetOut
+// (pacedUntil).
 func pauseKeepsThePod(t *testing.T, check func(t *testing.T, rig *podUpdateRig)) {
 	t.Helper()
-	pace := supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(time.Time) time.Time { return pauseLetOut }}
-	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
 	for _, end := range []store.PausePodHoldEnd{store.PausePodHoldResumed, store.PausePodHoldReady} {
 		t.Run(string(end), func(t *testing.T) {
-			rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pace},
+			rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(pauseLetOut)},
 				releasedUnasked(pauseStoppedRole), answeredThenSuspended(claim.RoleTester))
 			rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
-			pause := openLegionPause(t, rig.pool, heldAt)
-			holdLegionPod(t, rig.st, pause, podUpdateIssue, heldAt)
-			recordPodWake(t, rig.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(pauseStoppedRole),
-				Kind: pods.WakePause, At: heldAt, Pause: pause})
-			if _, err := rig.st.Resume(rig.ctx, store.ResumeRequest{Project: "LEGION",
-				By: store.PauseActor{Kind: store.PauseByOperator}, At: resumedAt}); err != nil {
-				t.Fatalf("resume LEGION: %v", err)
-			}
-			if ended, err := rig.st.EndPausePodHold(rig.ctx, "LEGION", podUpdateIssue, end, resumedAt); err != nil || !ended {
-				t.Fatalf("end the pod's hold for the reason %s = %t, %v; want the hold ended", end, ended, err)
-			}
+			rig.recordPause(pauseStoppedRole, end)
 			check(t, rig)
 		})
 	}
 }
 
-// parkPauseHeldLaunch runs the held start of pauseStoppedRole, as the outbox runs the start row of
-// the pause's held wake once the resume lets it out: a resume by rule of the suspended claim
-// (outbox's start). The wake pacing of pauseKeepsThePod parks the launch until pauseLetOut. The
-// claim is then launching with no process recorded, and its machine is in no decision (supervise's
-// waitOnMachine). The daemon writes the let-out of each reservation as the stuck clock of the
-// role's open resume (projectPause.wakeLetOut, store.Store.SetResumeClock). The rig wires no such
-// write (supervise.Deps.WakeLetOut), so this makes it, with the let-out of the parked wake.
-func (r *podUpdateRig) parkPauseHeldLaunch() {
+// recordPause records a project pause of the issue's pod as the daemon records it, for stopped, a
+// role the pause stopped. The pause held the pod and stopped's launch from twenty minutes before
+// podUpdateStart: the hold of the pod (holdLegionPod) and the open resume of the held wake
+// (recordPodWake, pods.WakePause). The project's resume came a minute before podUpdateStart
+// (store.Store.Resume). It ended the pause and started the stuck clock of the held launch at its
+// own moment. The hold of the pod ended at that moment too, for the reason end. So no hold stands,
+// and the held start of stopped has not run yet (parkPauseHeldLaunch runs it).
+func (r *podUpdateRig) recordPause(stopped claim.Role, end store.PausePodHoldEnd) {
 	r.t.Helper()
-	token := r.tokens[pauseStoppedRole]
-	r.handle(pauseStoppedRole, supervise.RequestRuleResume{Claim: token, Reason: "a wake for the launch the project's pause held"})
+	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
+	pause := openLegionPause(r.t, r.pool, heldAt)
+	holdLegionPod(r.t, r.st, pause, podUpdateIssue, heldAt)
+	recordPodWake(r.t, r.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(stopped),
+		Kind: pods.WakePause, At: heldAt, Pause: pause})
+	if _, err := r.st.Resume(r.ctx, store.ResumeRequest{Project: "LEGION",
+		By: store.PauseActor{Kind: store.PauseByOperator}, At: resumedAt}); err != nil {
+		r.t.Fatalf("resume LEGION: %v", err)
+	}
+	if ended, err := r.st.EndPausePodHold(r.ctx, "LEGION", podUpdateIssue, end, resumedAt); err != nil || !ended {
+		r.t.Fatalf("end the pod's hold for the reason %s = %t, %v; want the hold ended", end, ended, err)
+	}
+}
+
+// parkPauseHeldLaunch runs the held start of role, a role a project's pause stopped (recordPause),
+// as the outbox runs the start row of the pause's held wake once the resume lets it out: a resume
+// by rule of the suspended claim (outbox's start). The rig's wake pacing parks the launch until
+// letOut (pacedUntil). The claim is then launching with no process recorded, and its machine is
+// in no decision (supervise's waitOnMachine). The daemon writes the let-out of each reservation
+// as the stuck clock of the role's open resume (projectPause.wakeLetOut,
+// store.Store.SetResumeClock). The rig wires no such write (supervise.Deps.WakeLetOut), so this
+// makes it, with the let-out of the parked wake.
+func (r *podUpdateRig) parkPauseHeldLaunch(role claim.Role, letOut time.Time) {
+	r.t.Helper()
+	token := r.tokens[role]
+	r.handle(role, supervise.RequestRuleResume{Claim: token, Reason: "a wake for the launch the project's pause held"})
 	m, _ := r.sup.Machine(token)
 	view := m.View()
 	parked := view.WakeWaiting
-	if parked == nil || parked.Kind != supervise.WakeLaunch || !parked.At.Equal(pauseLetOut) ||
-		view.State != supervise.StateLaunching || view.Locator != nil || len(r.launchesOf(pauseStoppedRole)) != 0 {
+	if parked == nil || parked.Kind != supervise.WakeLaunch || !parked.At.Equal(letOut) ||
+		view.State != supervise.StateLaunching || view.Locator != nil || len(r.launchesOf(role)) != 0 {
 		r.t.Fatalf("the %s is %s recording %+v with wake %+v after %d launches, want it launching with no process under the launch the pacing parked until %s",
-			pauseStoppedRole, view.State, view.Locator, parked, len(r.launchesOf(pauseStoppedRole)), pauseLetOut)
+			role, view.State, view.Locator, parked, len(r.launchesOf(role)), letOut)
 	}
-	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, pauseStoppedRole, parked.At); err != nil || !moved {
-		r.t.Fatalf("write the let-out of the %s's held launch = %t, %v; want the clock moved", pauseStoppedRole, moved, err)
+	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, role, parked.At); err != nil || !moved {
+		r.t.Fatalf("write the let-out of the %s's held launch = %t, %v; want the clock moved", role, moved, err)
 	}
 }
 
@@ -1025,7 +1036,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	t.Run("the project's pause keeps the pod for a member it stopped", func(t *testing.T) {
 		const launching = claim.RoleTester
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
-			rig.parkPauseHeldLaunch()
+			rig.parkPauseHeldLaunch(pauseStoppedRole, pauseLetOut)
 			rig.intoRoundPod(launching)
 			rig.handle(launching, supervise.RequestResume{Claim: rig.tokens[launching]})
 			rig.launchedIntoRoundPod(launching)
@@ -1044,7 +1055,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	// the round then waits for the implementer's answer.
 	t.Run("the launch a project's pause held keeps the pod the pause kept", func(t *testing.T) {
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
-			rig.parkPauseHeldLaunch()
+			rig.parkPauseHeldLaunch(pauseStoppedRole, pauseLetOut)
 			rig.wantPodKept(fmt.Sprintf("the let-out of the %s's held launch", pauseStoppedRole))
 			rig.clockAt(pauseLetOut.Add(-time.Minute))
 			rig.wantPodKept(fmt.Sprintf("the let-out of the %s's held launch", pauseStoppedRole))

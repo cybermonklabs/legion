@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -284,37 +285,36 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 
 // dispatch://INFRA-4109 R1 and R2 with the project pause carried (task t11 of its plan): a role a
 // project's pause stopped is the pause's, not R1's, while the pause keeps its pod. The pause
-// stopped the tester, suspended released, and held the pod. The resume ended the hold a minute
-// before the round opened, because the implementer was live, and the wake pacing lets the
-// tester's owed launch out ten minutes past the round's own bound. The round asks the implementer,
-// which answers, and waits for the tester. The pod is not replaced at the opening, or a minute
-// past the bound the grace alone sets: the hold moved that bound on to the let-out. Nothing asks
-// the tester while it is suspended. Once the let-out has passed with the tester still suspended,
-// the round passes over it as R1 says. The pod is replaced before the moved bound, and the line
-// names the tester as a claim the round did not wait for.
+// stopped the tester, suspended released, held the pod, and held the tester's launch. Its resume
+// ended the hold a minute before the round opened, because the implementer was live
+// (recordPause). The tester's held start then ran, and the wake pacing parked its launch until ten
+// minutes past the round's own bound (parkPauseHeldLaunch): the tester is launching, and it
+// records no process.
 //
-// Before the fix the round passed over the tester from its opening, and replaced the pod as soon
-// as the implementer answered.
+// The round asks the implementer, which answers, and the round waits for the tester while its
+// launch is parked. The pod is not replaced at the opening, or a minute past the bound the grace
+// alone sets: the hold moved that bound on to the let-out (heldUntil, roundClock.roundBound).
+// Nothing asks the tester while its launch is parked, so the round writes no update-ask row for
+// it: a publish to a role with no holder wakes it. At the let-out the wake pacing runs the launch.
+// The tester comes up in the round's pod, which the implementer's process keeps live
+// (roundPodEndsAtLaunch). The round asks the tester once it is ready, and the tester answers. The
+// pod is then replaced once, before the moved bound, and the replacement's line names no claim
+// the round did not wait for.
+//
+// A bound that the hold does not move replaces the pod a minute past the bound the grace alone
+// sets, while the tester's launch is still parked, and the test fails there.
 func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RoleTester, supervise.SuspendedByReleased))
-	rig.drifts(podUpdateDrift)
-	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
+	const stopped = claim.RoleTester
 	letOut := podUpdateBound.Add(10 * time.Minute)
-	pause := openLegionPause(t, rig.pool, heldAt)
-	holdLegionPod(t, rig.st, pause, podUpdateIssue, heldAt)
-	recordPodWake(t, rig.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(claim.RoleTester),
-		Kind: pods.WakePause, At: heldAt, Pause: pause})
-	endLegionPause(t, rig.pool, pause, resumedAt)
-	if ended, err := rig.st.EndPausePodHold(rig.ctx, "LEGION", podUpdateIssue, store.PausePodHoldResumed, resumedAt); err != nil || !ended {
-		t.Fatalf("the resume's end of the pod's hold = %t, %v; want the hold ended", ended, err)
-	}
-	if moved, err := rig.st.SetResumeClock(rig.ctx, podUpdateProject, podUpdateIssue, claim.RoleTester, letOut); err != nil || !moved {
-		t.Fatalf("move the tester's held launch to its let-out = %t, %v; want the clock moved", moved, err)
-	}
+	rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(letOut)},
+		readyWorker(claim.RoleImplementer), suspendedRole(stopped, supervise.SuspendedByReleased))
+	rig.drifts(podUpdateDrift)
+	rig.recordPause(stopped, store.PausePodHoldResumed)
+	rig.parkPauseHeldLaunch(stopped, letOut)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
-	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.awaitRound(stopped, podUpdateRound)
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
 	rig.settleAll()
 	for _, at := range []time.Time{podUpdateStart, podUpdateBound.Add(time.Minute)} {
@@ -322,31 +322,42 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 		rig.tick()
 		rig.tick()
 		if calls := rig.replacements(); len(calls) != 0 {
-			t.Fatalf("at %s, before the let-out %s, the pod was replaced %d times while the tester the pause stopped had not answered",
-				at, letOut, len(calls))
+			t.Fatalf("at %s, before the let-out %s, the pod was replaced %d times while the %s the pause stopped had not answered",
+				at, letOut, len(calls), stopped)
 		}
 		if notices := rig.notices(); len(notices) != 0 {
 			t.Fatalf("at %s, before the moved bound, the controller was told %+v", at, notices)
 		}
+		if c := rig.claimOf(stopped); c.State != supervise.StateLaunching || c.Locator != nil {
+			t.Fatalf("at %s the %s is %s recording %+v, want its launch still parked with no process", at, stopped, c.State, c.Locator)
+		}
 	}
-	if n := rig.askedOf(claim.RoleTester); n != 0 {
-		t.Fatalf("the round wrote %d update-ask rows for the tester while it was suspended, want none: a publish to a role with no holder wakes it", n)
+	if n := rig.askedOf(stopped); n != 0 {
+		t.Fatalf("the round wrote %d update-ask rows for the %s while its launch was parked, want none: a publish to a role with no holder wakes it", n, stopped)
 	}
 
-	rig.clockAt(letOut.Add(time.Minute))
-	rig.awaitReplacement(1, "once the let-out passed with the tester still suspended")
-	if c := rig.claimOf(claim.RoleTester); !c.Released() {
-		t.Fatalf("the tester is %s by %q once the pod was replaced, want it still released", c.State, c.SuspendedBy)
+	rig.clockAt(letOut)
+	rig.intoRoundPod(stopped)
+	if fired := rig.clock.fire(letOut.Sub(podUpdateStart)); fired != 1 {
+		t.Fatalf("the wake pacing ran %d launches at its turn, want the %s's one", fired, stopped)
 	}
+	rig.launchedIntoRoundPod(stopped)
+	rig.registerInto(stopped, podUpdatePod)
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s answered", len(calls), stopped)
+	}
+	rig.awaitAsked(stopped, podUpdateRound)
+	rig.signal(stopped, "e4f5a6b")
+	rig.awaitReplacement(1, fmt.Sprintf("once the %s answered", stopped))
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
 	}
 	if lines[0]["atTheBound"] != false {
-		t.Errorf("the replacement's line says atTheBound=%v, want false: the let-out passed before the moved bound", lines[0]["atTheBound"])
+		t.Errorf("the replacement's line says atTheBound=%v, want false: the %s answered before the moved bound", lines[0]["atTheBound"], stopped)
 	}
-	wantField(t, lines[0], "notWaitedFor", claim.RoleTester)
-	if n := rig.askedOf(claim.RoleTester); n != 0 {
-		t.Fatalf("the round wrote %d update-ask rows for the tester, want none", n)
+	wantField(t, lines[0], "notWaitedFor")
+	if n := rig.askedOf(stopped); n != 1 {
+		t.Fatalf("the round wrote %d update-ask rows for the %s, want the one once it was ready", n, stopped)
 	}
 }
