@@ -153,8 +153,11 @@ func (s awsStore) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreS
 // the store's address writes what it likes in, and which can repeat a value the call sent (a
 // ValidationException quotes the field it refused); a call its context ended by that end alone; a
 // request that did not complete by its class beside the address settings that are set
-// (awsAddressesSet); and anything else in fixed words. It unwraps to err, so isAccessDenied,
-// awsDefiniteRefusal and every errors.As and errors.Is still read the SDK's own error.
+// (awsAddressesSet); a file the call's sign-in could not read again, such as the web identity token
+// file a credential refresh reads (webIdentityToken), by the setting that names it and the system's
+// reason, as the sign-in's own failure prints it (awsSDKWords); and anything else in fixed words.
+// It unwraps to err, so isAccessDenied, awsDefiniteRefusal and every errors.As and errors.Is still
+// read the SDK's own error.
 func awsStoreFailure(operation string, err error) error {
 	if err == nil {
 		return nil
@@ -167,6 +170,7 @@ func awsStoreFailure(operation string, err error) error {
 		return redact.Masked(err, call+": "+words)
 	}
 	var request *url.Error
+	var path *fs.PathError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return redact.Masked(err, call+" failed: context deadline exceeded")
@@ -174,6 +178,8 @@ func awsStoreFailure(operation string, err error) error {
 		return redact.Masked(err, call+" failed: context canceled")
 	case errors.As(err, &request):
 		return redact.Masked(err, call+" failed: "+redact.Class(err).Error()+awsAddressesSet())
+	case errors.As(err, &path):
+		return redact.Masked(err, call+" failed: read "+awsFileName(path.Path)+": "+redact.File(err).Error())
 	}
 	return redact.Masked(err, call+" failed (the AWS SDK's message is not printed: it can quote an AWS setting's value)")
 }

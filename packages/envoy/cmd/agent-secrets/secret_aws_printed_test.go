@@ -531,8 +531,9 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 
 // TestTheWebIdentityTokenFileIsNamedByItsVariable: the web identity token file holds a token, so
 // the using line and a store's refusal name it by AWS_WEB_IDENTITY_TOKEN_FILE, never by its path,
-// which here carries a made-up credential, and so does a later failed read of it (awsFileName).
-// Control: the command a person pastes to run again still names the file, which signed in.
+// which here carries a made-up credential, and so does a later failed read of it (awsFileName),
+// in a store call whose credential refresh reads it again as well as in the sign-in. Control: the
+// command a person pastes to run again still names the file, which signed in.
 func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
 	planted := "hunter2pw-" + "webidpath-" + "31d0"
 	file := filepath.Join(t.TempDir(), planted, "token")
@@ -547,4 +548,15 @@ func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
 	if !strings.Contains(source.prefix, file) {
 		t.Errorf("the command to paste %q does not name the file that signed in", source.prefix)
 	}
+	t.Run("a store call whose credential refresh cannot read the file again", func(t *testing.T) {
+		_, read := webIdentityToken(file).GetIdentityToken()
+		if read == nil {
+			t.Fatal("control: the token file was read, so the row is blind")
+		}
+		// The SDK's chain for a store call whose credential refresh failed to read the token.
+		failed := &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: "ListSecrets",
+			Err: fmt.Errorf("failed to refresh cached credentials, %w", fmt.Errorf("failed to retrieve jwt from provide source, %w", read))}
+		wantNamedNotPrinted(t, "the store call's words", awsStoreFailure("ListSecrets", failed).Error(),
+			[]string{"Secrets Manager ListSecrets failed: read the file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"}, planted)
+	})
 }
