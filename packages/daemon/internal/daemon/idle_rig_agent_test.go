@@ -427,16 +427,6 @@ type idleRigRoleProcess struct {
 	client         *http.Client
 	unregisterOnce sync.Once
 
-	// recorded is every stream sequence this process has already recorded with the rig. The
-	// relay is at-least-once — a frame whose reply it did not see within relayReceiptWait comes
-	// again after it restarts at the ack floor — so a session keeps a ledger of what it has
-	// written, as a plugin's does, and writes each stored message once. It is keyed on the
-	// stream sequence and not on the event id, so a second stored copy of one event is still
-	// recorded twice: that would be a delivery the pipeline made twice, which is what the test
-	// counts.
-	recordedMu sync.Mutex
-	recorded   map[uint64]bool
-
 	// reportMu orders this process's activity reports, which a turn's end and the watch between
 	// turns both send. reported is the background work the last report sent named, and taken
 	// whether the daemon took it: a report it did not take is sent again at the watch's next
@@ -454,7 +444,7 @@ type idleRigRoleProcess struct {
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")
@@ -652,7 +642,8 @@ func (p *idleRigRoleProcess) dial(bootToken string) error {
 // current_registration_test.go's captureLaneForwards, neither of which answers anything on the
 // agent subject either): its relay subject, notifications.envoy.deliver.<session id>, where the
 // listener that owns the session publishes each message of the session's durable consumer. Every
-// message the session is given arrives there, and that is where the rig records it. A role-lane
+// message the session is given arrives there, and that is where the rig records it (idleRigRelay,
+// whose record posts each message to the rig). A role-lane
 // forward and an ad-hoc topic's forward are published into the stream on the session's agent
 // subject, so each comes back as a frame of that consumer; the session does not subscribe to that
 // subject at all and answers nothing on it.
@@ -665,7 +656,14 @@ func (p *idleRigRoleProcess) openDelivery() error {
 		return fmt.Errorf("connect %s: %w", p.natsURLs, err)
 	}
 	p.bus = bus
-	if _, err := bus.Subscribe(idleRigDeliverSubjectPrefix+p.session, p.relayed); err != nil {
+	relay := newIdleRigRelay(p.session, bus, func(item idleRigEnvelope) error {
+		return p.post(p.rig+"/agent/record", map[string]any{
+			"pod": p.pod, "role": p.role, "kind": "message", "id": item.EventID, "text": item.text(),
+		}, nil)
+	}, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "idle rig role process: "+format+"\n", args...)
+	})
+	if _, err := bus.Subscribe(idleRigDeliverSubjectPrefix+p.session, relay.relayed); err != nil {
 		return fmt.Errorf("subscribe to the relay subject of %s: %w", p.session, err)
 	}
 	if err := bus.Flush(); err != nil {
@@ -674,79 +672,103 @@ func (p *idleRigRoleProcess) openDelivery() error {
 	return nil
 }
 
-// relayed takes one frame of the session's own consumer: it answers `received` as soon as the
-// frame decodes, records the message with the rig, and only then answers `done`, which is what
-// acknowledges the message to the consumer. A frame whose stream sequence this process has
-// already recorded — the relay sends again what it saw no reply to — is acknowledged and not
-// recorded twice. The listener's connection probe is no frame: it is answered `done`, as a
-// plugin answers it before it decodes anything, and recorded nowhere.
-func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
+// idleRigRelay is a session's side of the listener's session relay, as a plugin in consumer mode
+// answers each frame (packages/envoy's "Session consumers", envoy-client's decodeRelayFrame): the
+// one protocol both stand-in sessions of the daemon's rigs speak, the role process here and the
+// controller's stand-in (provider_errors_controller_start_test.go), each recording what it is
+// delivered its own way (record). It answers `received` as soon as a frame decodes, records the
+// message, and only then answers `done`, which is what acknowledges the message to the consumer. A
+// frame whose stream sequence it has already recorded — the relay sends again what it saw no reply
+// to — is acknowledged and not recorded twice. A record that fails is not acknowledged either: the
+// sequence is given back, the frame's ack wait runs out, and the consumer delivers it again. The
+// listener's connection probe is no frame: it is answered `done`, as a plugin answers it before it
+// decodes anything, and recorded nowhere. A frame it cannot take and a reply it could not send are
+// each reported through complain.
+type idleRigRelay struct {
+	session  string
+	bus      *nats.Conn
+	record   func(idleRigEnvelope) error
+	complain func(format string, args ...any)
+
+	// recorded is every stream sequence this session has already recorded. The relay is
+	// at-least-once — a frame whose reply it did not see within relayReceiptWait comes again after
+	// it restarts at the ack floor — so a session keeps a ledger of what it has written, as a
+	// plugin's does, and writes each stored message once. It is keyed on the stream sequence and
+	// not on the event id, so a second stored copy of one event is still recorded twice: that would
+	// be a delivery the pipeline made twice, which is what the rigs count.
+	recordedMu sync.Mutex
+	recorded   map[uint64]bool
+}
+
+func newIdleRigRelay(session string, bus *nats.Conn, record func(idleRigEnvelope) error, complain func(format string, args ...any)) *idleRigRelay {
+	return &idleRigRelay{session: session, bus: bus, record: record, complain: complain, recorded: map[uint64]bool{}}
+}
+
+// relayed takes one frame of the session's own consumer.
+func (r *idleRigRelay) relayed(msg *nats.Msg) {
 	if msg.Header.Get(idleRigProbeHeader) == "1" {
 		if msg.Reply != "" {
-			p.reply(msg, idleRigRelayDone)
+			r.reply(msg, idleRigRelayDone)
 		}
 		return
 	}
 	var item idleRigEnvelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: decode a frame for %s: %v\n", p.session, err)
+		r.complain("decode a frame for %s: %v", r.session, err)
 		return
 	}
 	sequence, err := strconv.ParseUint(msg.Header.Get(idleRigStreamSeqHeader), 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: a frame for %s carries stream sequence %q: %v\n",
-			p.session, msg.Header.Get(idleRigStreamSeqHeader), err)
+		r.complain("a frame for %s carries stream sequence %q: %v", r.session, msg.Header.Get(idleRigStreamSeqHeader), err)
 		return
 	}
 	if msg.Reply == "" {
 		// There is nothing to answer it on, so the consumer could never be told the session has
 		// it: the frame is malformed, as a plugin reads one with no reply (envoy-client's
 		// decodeRelayFrame).
-		fmt.Fprintf(os.Stderr, "idle rig role process: a frame for %s carries no reply subject\n", p.session)
+		r.complain("a frame for %s carries no reply subject", r.session)
 		return
 	}
-	p.reply(msg, idleRigRelayReceived)
-	if p.firstSighting(sequence) {
-		if err := p.post(p.rig+"/agent/record", map[string]any{
-			"pod": p.pod, "role": p.role, "kind": "message", "id": item.EventID, "text": item.text(),
-		}, nil); err != nil {
+	r.reply(msg, idleRigRelayReceived)
+	if r.firstSighting(sequence) {
+		if err := r.record(item); err != nil {
 			// The message is not recorded, so it is not acknowledged either: the frame's ack
 			// wait runs out and the consumer delivers it again.
-			p.forget(sequence)
-			fmt.Fprintf(os.Stderr, "idle rig role process: record a message for %s: %v\n", p.session, err)
+			r.forget(sequence)
+			r.complain("record a message for %s: %v", r.session, err)
 			return
 		}
 	}
-	p.reply(msg, idleRigRelayDone)
+	r.reply(msg, idleRigRelayDone)
 }
 
-// firstSighting reports whether this process has not recorded the stream sequence yet, taking it
+// firstSighting reports whether this session has not recorded the stream sequence yet, taking it
 // for recorded when it has not.
-func (p *idleRigRoleProcess) firstSighting(sequence uint64) bool {
-	p.recordedMu.Lock()
-	defer p.recordedMu.Unlock()
-	if p.recorded[sequence] {
+func (r *idleRigRelay) firstSighting(sequence uint64) bool {
+	r.recordedMu.Lock()
+	defer r.recordedMu.Unlock()
+	if r.recorded[sequence] {
 		return false
 	}
-	p.recorded[sequence] = true
+	r.recorded[sequence] = true
 	return true
 }
 
-// forget gives a sequence back to the ledger, so a frame whose record did not reach the rig is
-// recorded when the consumer delivers it again.
-func (p *idleRigRoleProcess) forget(sequence uint64) {
-	p.recordedMu.Lock()
-	defer p.recordedMu.Unlock()
-	delete(p.recorded, sequence)
+// forget gives a sequence back to the ledger, so a frame whose record did not take is recorded
+// when the consumer delivers it again.
+func (r *idleRigRelay) forget(sequence uint64) {
+	r.recordedMu.Lock()
+	defer r.recordedMu.Unlock()
+	delete(r.recorded, sequence)
 }
 
-func (p *idleRigRoleProcess) reply(msg *nats.Msg, word string) {
-	if err := p.bus.Publish(msg.Reply, []byte(word)); err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: reply %s to a frame for %s: %v\n", word, p.session, err)
+func (r *idleRigRelay) reply(msg *nats.Msg, word string) {
+	if err := r.bus.Publish(msg.Reply, []byte(word)); err != nil {
+		r.complain("reply %s to a frame for %s: %v", word, r.session, err)
 		return
 	}
-	if err := p.bus.Flush(); err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: flush the reply %s for %s: %v\n", word, p.session, err)
+	if err := r.bus.Flush(); err != nil {
+		r.complain("flush the reply %s for %s: %v", word, r.session, err)
 	}
 }
 

@@ -2670,12 +2670,22 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 
 // outboxPublisher is the listener as a publish that it answers with err meets it: every publish
 // is recorded, kept or not, and a kept publish (PublishKept) is answered as a live holder's 200
-// when err is nil, never as kept.
+// when err is nil, never as kept. It holds no role record (noRoleHolders).
 type outboxPublisher struct {
+	noRoleHolders
 	mu      sync.Mutex
 	publish []outboxPublish
 	err     error
 }
+
+// noRoleHolders is the role read of a test publisher that holds no role record
+// (outboxNotices.RoleHolder): every role reads as one no session claims, so a provider-errors
+// notice the outbox runs through it waits for a controller to hold its role, as it does against
+// a listener where no controller has claimed the role yet. The publishers that embed it say so in
+// their type.
+type noRoleHolders struct{}
+
+func (noRoleHolders) RoleHolder(context.Context, string) (string, string, error) { return "", "", nil }
 
 // outboxPublish is one publish a fake publisher recorded. keep is that the publish asked the
 // listener to keep the message for the role's next holder (notify.Publisher.PublishKept).

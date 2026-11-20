@@ -413,7 +413,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
 		// on before supervision restores a claim, so no claim write of this boot is left out.
 		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
-		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		plan.providerErrorsOwed = workflow.providerErrorsOwed
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
 		// stop transaction and its let-out stamp (openSupervision), and the boot loads its flag
@@ -822,9 +822,9 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
-	// in a provider error; nil without a workflow, where nobody is told.
-	providerErrorRunReached func(c supervise.Claim, reason string)
+	// providerErrorsOwed writes the notice a claim's run of provider-error turns owes the
+	// project's controller; nil without a workflow, where nobody is told.
+	providerErrorsOwed func(c supervise.Claim)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -1643,23 +1643,23 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
-		Identity:                adoptIdentity(p.identity, p.repository),
-		IssueInTurn:             sup.claimInTurn,
-		Secrets:                 p.secretsEnroller,
-		Registrar:               p.secretsRegistrar,
-		PhaseHolds:              p.phaseHolds,
-		RootHears:               p.rootHears,
-		RootTask:                p.rootTask,
-		TreeClosable:            p.treeClosable,
-		ClaimActivity:           st.ClaimActivity,
-		TaskConfirmed:           p.taskConfirmed,
-		SessionLost:             p.sessionLost,
-		SessionStoreFault:       p.sessionStoreFault,
-		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
-		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
-		Clock:                   p.clock,
-		Log:                     log,
+		Identity:           adoptIdentity(p.identity, p.repository),
+		IssueInTurn:        sup.claimInTurn,
+		Secrets:            p.secretsEnroller,
+		Registrar:          p.secretsRegistrar,
+		PhaseHolds:         p.phaseHolds,
+		RootHears:          p.rootHears,
+		RootTask:           p.rootTask,
+		TreeClosable:       p.treeClosable,
+		ClaimActivity:      st.ClaimActivity,
+		TaskConfirmed:      p.taskConfirmed,
+		SessionLost:        p.sessionLost,
+		SessionStoreFault:  p.sessionStoreFault,
+		ProviderErrorsOwed: p.providerErrorsOwed,
+		SessionGone:        cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		RoleHolder:         roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		Clock:              p.clock,
+		Log:                log,
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
@@ -2622,6 +2622,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
+	var controllerRegistered func()
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string) bool
@@ -2637,6 +2638,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
 		roleHoldersChanged = workflow.roleHoldersChanged
+		controllerRegistered = workflow.controllerRegistered
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
@@ -2720,9 +2722,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
 		RoleHoldersChanged: roleHoldersChanged,
-		ReleaseRecords:     st,
-		ClaimActivity:      st,
-		Pause:              pauses,
+		// The notices of a run of provider-error turns that a claim owes the controller are
+		// written once a controller's registration is recorded (workflowRuntime.controllerRegistered).
+		ControllerRegistered: controllerRegistered,
+		ReleaseRecords:       st,
+		ClaimActivity:        st,
+		Pause:                pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

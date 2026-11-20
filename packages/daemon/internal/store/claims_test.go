@@ -340,13 +340,16 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
-// what the controller's notice is counted from, and neither a restart nor a re-put of the
-// delivery under a new id may lose either.
+// what the controller's notice is counted from, and so are the run's number and the notice a run
+// of six owes, because a run is owed its notice whatever comes after it, a restart among them.
+// Neither a restart nor a re-put of the delivery under a new id may lose any of them.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-212-implementer")
 	c.ProviderErrorRun = 4
+	c.ProviderErrorRunID = 3
+	c.ProviderErrorsOwed = supervise.OwedNotice{Run: 2, Reason: "6 turns in a row on claude-opus-5 ended in a provider error (HTTP 529)"}
 	if err := store.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put claim: %v", err)
 	}
@@ -358,8 +361,9 @@ func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	}
 
 	read := onlyClaim(t, store)
-	if read.ProviderErrorRun != 4 {
-		t.Errorf("the claim's run of provider errors read back as %d, want 4", read.ProviderErrorRun)
+	if read.ProviderErrorRun != 4 || read.ProviderErrorRunID != 3 || read.ProviderErrorsOwed != c.ProviderErrorsOwed {
+		t.Errorf("the claim's run of provider errors read back as %d, numbered %d, owing %+v; want 4, 3 and %+v",
+			read.ProviderErrorRun, read.ProviderErrorRunID, read.ProviderErrorsOwed, c.ProviderErrorsOwed)
 	}
 	if p := read.Pending; p == nil || p.ProviderErrorRetries != 3 || p.ProviderErrorNote != note {
 		t.Fatalf("delivery read back = %+v, want three sends counted and the sentence %q", p, note)

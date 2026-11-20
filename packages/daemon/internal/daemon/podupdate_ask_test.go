@@ -33,7 +33,7 @@ const (
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
 // rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
 // no claim this daemon supervises.
-func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
+func askRunner(t *testing.T, publisher outboxNotices, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {

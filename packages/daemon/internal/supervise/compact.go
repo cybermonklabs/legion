@@ -410,7 +410,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	m.compacting = nil
 	m.disarm(TimerPromptRetry)
 	if ended.Compacted {
-		m.claim.ProviderErrorRun = 0
+		m.endProviderErrorRun()
 	}
 	m.log.Info("supervise: the compaction of the claim's session is over", "compacted", ended.Compacted,
 		"providerErrorRun", m.claim.ProviderErrorRun, "inTurn", run.inTurn)

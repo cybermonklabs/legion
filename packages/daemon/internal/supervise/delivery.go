@@ -1225,6 +1225,13 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
 // copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
 // hold in sendPending was decided against.
+//
+// A prompt the agent took is logged where the send happens, once the agent's side has answered
+// that it took it (promptTakenLine), with the delivery and how many sends of it a provider error
+// has counted (Delivery.ProviderErrorRetries): it is the one record of each actual send, which the
+// live proof of the provider-error ladder measures the ladder's gaps between
+// (internal/daemon's provider_error_retry_live_test.go). A send the agent refused, or whose
+// adoption failed, writes none: the line says a send reached the agent, and nothing less.
 func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
@@ -1251,6 +1258,9 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 			sending, cancel := context.WithTimeout(working, m.deps.Timeouts.RPC)
 			err = conn.Prompt(sending, d.ID, prompt)
 			cancel()
+		}
+		if err == nil {
+			m.log.Info(promptTakenLine, "delivery", d.ID, "providerErrorRetries", d.ProviderErrorRetries)
 		}
 		var ev Event = PromptAcked{Claim: token, Generation: generation, DeliveryID: d.ID}
 		if err != nil {

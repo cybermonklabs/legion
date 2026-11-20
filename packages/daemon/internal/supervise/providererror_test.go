@@ -75,11 +75,39 @@ func (h *harness) climbs(sentSoFar int, wait time.Duration) string {
 	return sent[sentSoFar].Message
 }
 
+// promptTakenRecord is the record of each send the agent took, as the live proof of the ladder
+// reads it: whole, and not as the constant that carries it, so a reword fails here before it
+// leaves that proof waiting for a line no daemon writes.
+const promptTakenRecord = "supervise: the agent took a prompt"
+
+// wantSendRecords fails the case unless the daemon kept one record of each send the agent took,
+// sends in all, the last of them naming the delivery pending now and the sends of it a provider
+// error has counted, retries.
+func (h *harness) wantSendRecords(sends, retries int) {
+	h.t.Helper()
+	taken := h.records.of(promptTakenRecord)
+	if len(taken) != sends {
+		h.t.Fatalf("%q was written %d times, want once for each of the %d sends the agent took", promptTakenRecord, len(taken), sends)
+	}
+	last := taken[len(taken)-1]
+	if claim, ok := last.attr("claim"); !ok || claim.String() != string(h.token) {
+		h.t.Fatalf("the last send's record names claim %v (present %v), want %s", claim, ok, h.token)
+	}
+	if delivery, ok := last.attr("delivery"); !ok || delivery.String() != h.pending().ID {
+		h.t.Fatalf("the last send's record names delivery %v (present %v), want %s", delivery, ok, h.pending().ID)
+	}
+	if got, ok := last.attr("providerErrorRetries"); !ok || got.Int64() != int64(retries) {
+		h.t.Fatalf("the last send's record counts %v sends a provider error took back (present %v), want %d", got, ok, retries)
+	}
+}
+
 // The ladder is exact and has no top step that ends it: 30 s, 60 s, 120 s, doubling to 10 minutes
-// and never further apart than that, for as many turns as the provider keeps failing.
+// and never further apart than that, for as many turns as the provider keeps failing. Each send
+// the agent takes is recorded once, where it happens (promptTakenRecord).
 func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testing.T) {
 	h := workingClaim(t)
 	sent := 1
+	h.wantSendRecords(sent, 0)
 	for attempt, wait := range []time.Duration{
 		30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute,
 		8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute,
@@ -93,9 +121,26 @@ func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testin
 			t.Fatalf("attempt %d sent %q, want the task again", attempt+1, message)
 		}
 		sent++
+		h.wantSendRecords(sent, attempt+1)
 	}
 	if state := h.state(); state != StateWorking {
 		t.Fatalf("the claim is %s after eight provider errors, want it still working its task", state)
+	}
+}
+
+// A send the agent did not take writes no record of a send: the wait is over and the daemon tries
+// the task, but the transport loses the prompt, so a record that a send reached the agent would be
+// false. The ladder's test above is the control: every send the agent takes is recorded.
+func TestASendTheAgentDidNotTakeWritesNoRecordOfASend(t *testing.T) {
+	h := workingClaim(t)
+	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.conn.FailPrompt(errors.New("the transport lost the prompt"))
+	h.advance(promptRetryDelay(1))
+	if prompts := h.prompts(); len(prompts) < 2 {
+		t.Fatalf("the ladder's wait tried %d prompts in all, want the first send and at least the one the transport lost", len(prompts))
+	}
+	if taken := h.records.of(promptTakenRecord); len(taken) != 1 {
+		t.Fatalf("%q was written %d times, want once: only the first send reached the agent", promptTakenRecord, len(taken))
 	}
 }
 
@@ -539,47 +584,104 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	}
 }
 
-// The one exit from a run of provider errors is the project's controller, told once. There is no
-// hold and no attempt limit behind it.
-func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
-	type told struct {
-		claim  Claim
-		reason string
-	}
-	var notices []told
-	h := workingClaim(t, func(d *Deps) {
-		d.ProviderErrorRunReached = func(c Claim, reason string) { notices = append(notices, told{c, reason}) }
+// The one exit from a run of provider errors is the project's controller, told once a run. From
+// the sixth turn of a run on, each turn writes the notice the run owes onto the claim
+// (Claim.ProviderErrorsOwed), naming the run by its number and the turns it stands at, and offers
+// it once the claim is written; the daemon tells the controller once for each run
+// (internal/admit's TellOfProviderErrors). There is no hold and no attempt limit behind it.
+func TestEveryProviderErrorTurnFromTheSixthInARowOffersTheControllerItsNotice(t *testing.T) {
+	var offers []Claim
+	var h *harness
+	h = workingClaim(t, func(d *Deps) {
+		d.ProviderErrorsOwed = func(c Claim) {
+			// The offer comes after the decision's write: what the store holds is what is owed.
+			if stored := h.store.load(c.Token).ProviderErrorsOwed; stored != c.ProviderErrorsOwed {
+				t.Errorf("the offer names %+v while the store holds %+v, want the offer after the write", c.ProviderErrorsOwed, stored)
+			}
+			offers = append(offers, c)
+		}
 	})
 
 	sent := 1
 	for turn := range 7 {
 		h.errorTurn(StreamPromptResult{Error: "Refusal (reasoning_extraction): no.", Model: "claude-opus-4-8"})
-		if turn == 5 && len(notices) != 1 {
-			t.Fatalf("the controller was told %d times at the sixth turn, want once", len(notices))
+		if want := max(turn-4, 0); len(offers) != want {
+			t.Fatalf("the controller was offered its notice %d times by turn %d, want %d: from the sixth turn on, once a turn",
+				len(offers), turn+1, want)
+		}
+		if turn < 5 && h.claim().ProviderErrorsOwed != (OwedNotice{}) {
+			t.Fatalf("turn %d owes the notice %+v, want none before the sixth", turn+1, h.claim().ProviderErrorsOwed)
 		}
 		h.climbs(sent, promptRetryDelay(turn+1))
 		sent++
 	}
 
-	if len(notices) != 1 {
-		t.Fatalf("the controller was told %d times over seven turns, want once", len(notices))
+	notice := offers[0]
+	if notice.Issue != "LEGION-209" || notice.Role != claim.RoleImplementer {
+		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.Role, notice.Issue)
 	}
-	notice := notices[0]
-	if notice.claim.Issue != "LEGION-209" || notice.claim.Role != claim.RoleImplementer {
-		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.claim.Role, notice.claim.Issue)
+	if notice.ProviderErrorRunID != 1 || notice.ProviderErrorsOwed.Run != 1 {
+		t.Errorf("the first run is numbered %d and its owed notice names run %d, want 1 and 1", notice.ProviderErrorRunID, notice.ProviderErrorsOwed.Run)
 	}
 	// The cause is what the error's own fields give, and a content filter's refusal carries no
 	// status at all, so the notice names neither a status nor the filter's own words.
 	for _, want := range []string{"6 turns in a row", "claude-opus-4-8", "ended in a provider error"} {
-		if !strings.Contains(notice.reason, want) {
-			t.Errorf("the reason is %q, want it to name %q", notice.reason, want)
+		if !strings.Contains(notice.ProviderErrorsOwed.Reason, want) {
+			t.Errorf("the reason is %q, want it to name %q", notice.ProviderErrorsOwed.Reason, want)
 		}
 	}
-	if strings.Contains(notice.reason, "reasoning_extraction") {
-		t.Errorf("the reason is %q, want none of the provider's own words", notice.reason)
+	if strings.Contains(notice.ProviderErrorsOwed.Reason, "reasoning_extraction") {
+		t.Errorf("the reason is %q, want none of the provider's own words", notice.ProviderErrorsOwed.Reason)
 	}
 	if got := h.claim().ProviderErrorRun; got != 7 {
 		t.Errorf("the run of provider errors is %d, want 7: the notice bounds nothing", got)
+	}
+	if offered := offers[1]; offered.ProviderErrorsOwed.Run != 1 || !strings.Contains(offered.ProviderErrorsOwed.Reason, "7 turns in a row") {
+		t.Errorf("the seventh turn's offer owes %+v, want the first run at the 7 turns it stands at", offered.ProviderErrorsOwed)
+	}
+}
+
+// A run that reached six is owed its notice whatever ends it: the turn with no error that ends it
+// puts the run back to zero and leaves the owed notice on the claim, in memory and in the store,
+// and offers it once more, since a notice no offer of the run wrote is still owed. The next run
+// takes the next number and owes nothing of its own before its sixth turn, so a run that never
+// reaches six leaves the first run's notice the one owed, and its end offers nothing.
+func TestARunOfSixOwesItsNoticeAfterItEnds(t *testing.T) {
+	var offers []Claim
+	h := workingClaim(t, func(d *Deps) {
+		d.ProviderErrorsOwed = func(c Claim) { offers = append(offers, c) }
+	})
+	for turn := range providerErrorRunTold {
+		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.climbs(turn+1, promptRetryDelay(turn+1))
+	}
+	first := h.claim().ProviderErrorsOwed
+	if first.Run != 1 || len(offers) != 1 {
+		t.Fatalf("after six turns the claim owes %+v after %d offers, want run 1 owed and offered once", first, len(offers))
+	}
+
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: true})
+	if c, stored := h.claim(), h.store.load(testToken); c.ProviderErrorRun != 0 || c.ProviderErrorsOwed != first || stored.ProviderErrorsOwed != first {
+		t.Fatalf("after the clean turn the run is %d and the claim owes %+v (stored %+v), want 0 and the first run's notice still owed",
+			c.ProviderErrorRun, c.ProviderErrorsOwed, stored.ProviderErrorsOwed)
+	}
+	if len(offers) != 2 || offers[1].ProviderErrorsOwed != first {
+		t.Fatalf("the clean turn made %d offers in all, want the end of the run to offer its notice once more", len(offers))
+	}
+
+	h.must(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Entry: 2})
+	sent := len(h.wantPrompts(providerErrorRunTold + 2))
+	h.must(StreamTurnStart{Claim: testToken})
+	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	if c := h.claim(); c.ProviderErrorRunID != 2 || c.ProviderErrorsOwed != first {
+		t.Fatalf("the second run's first turn numbers the run %d and owes %+v, want run 2, with the first run's notice still the one owed", c.ProviderErrorRunID, c.ProviderErrorsOwed)
+	}
+	h.climbs(sent, promptRetryDelay(1))
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: true})
+	if len(offers) != 2 {
+		t.Fatalf("a run of one turn made %d offers in all, want none of its own: it owes nothing", len(offers))
 	}
 }
 

@@ -137,7 +137,10 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
-		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
+		Reason: "the run of provider-error turns, which bounds nothing and of which the controller is told once a run reaches six, written while a controller is registered and marked told once, so without it the number behind that telling stands on no surface its reader can reach"},
+	{Field: "ProviderErrorRunID", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ProviderErrorsOwed", Column: ColumnWithheld,
+		Reason: "the notice a run of six provider-error turns owes the controller, which reaches the controller as that notice itself (the `provider-errors` wake) and which a reader of these surfaces decides nothing more on"},
 	{Field: "Step", Column: ColumnAgents, Keys: []string{"step"},
 		Reason: "what the daemon last saw the claim's agent do, which says whether a worker mid-turn is still moving"},
 	// The session's own report of what it is doing, which the daemon's minute sweep reads off

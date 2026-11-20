@@ -132,7 +132,9 @@ type localRuntime struct {
 // newLocalRuntime builds the runtime and registers the cleanup that kills every process group it
 // ever started: a proof that fails part way leaves no Oh My Pi running. Each worker's own output
 // is written beside the daemon's log, in the directory the run's script keeps as its evidence
-// (liveDaemonLogEnv), since the state directory goes with the test.
+// (liveDaemonLogEnv), since the state directory goes with the test. Every proof writes its
+// profile before it builds the runtime, and the runtime opens that profile once, alone, before it
+// starts any pane (openProofProfile).
 func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) *localRuntime {
 	t.Helper()
 	logs := filepath.Join(stateDir, "panes")
@@ -142,6 +144,7 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		t.Fatalf("make the pane log directory %s: %v", logs, err)
 	}
+	openProofProfile(t, omp, home, profile)
 	r := &localRuntime{
 		t: t, stateDir: stateDir, legion: legion, omp: omp, home: home, profile: profile,
 		overlays: func(claim.Token) []string { return nil },
@@ -150,6 +153,30 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 	}
 	t.Cleanup(r.killEverything)
 	return r
+}
+
+// openProofProfile opens the run's Oh My Pi profile once, alone, before any pane starts. The
+// first Oh My Pi to open a fresh profile creates the profile's agent database (agent/agent.db)
+// and the settings table in it, and two that open it first at once both create that table, so
+// one of them stops with SQLite's "table settings already exists". A proof's panes start
+// together, and a proof reads a pane's settings beside them (claim_compaction_live_test.go's
+// paneSetting), which is how one run of that proof saw `omp config get` exit 1. Opened once
+// here, every later open finds the table. The open reads one setting through the profile, as a
+// pane's own Oh My Pi reads it, and a failure names Oh My Pi's own error output.
+func openProofProfile(t *testing.T, omp, home, profile string) {
+	t.Helper()
+	cmd := exec.Command(omp, "config", "get", "startup.setupWizard", "--json")
+	cmd.Dir = t.TempDir()
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OMP_PROFILE=" + profile, "TMPDIR=" + os.Getenv("TMPDIR")}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if out, err := cmd.Output(); err != nil {
+		t.Fatalf("open the Oh My Pi profile %s under %s before any pane starts: %v\n%s%s", profile, home, err, out, stderr.String())
+	}
+	database := filepath.Join(home, ".omp", "profiles", profile, "agent", "agent.db")
+	if _, err := os.Stat(database); err != nil {
+		t.Fatalf("the first open of the Oh My Pi profile %s made no agent database: %v", profile, err)
+	}
 }
 
 // localHoldDetail is what this runtime answers a read of a claim a step holds: a detail of its

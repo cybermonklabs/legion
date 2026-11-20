@@ -48,13 +48,16 @@ var ErrHolderUnresponsive = errors.New("the role's holder is unresponsive")
 // ReasonHolderLapsed is the listener's 404 reason for a role whose holder is past its live window,
 // and StateUnresponsive the `holder_state` it carries while that holder is inside the gone horizon
 // (writeRoleHolderError, packages/envoy/cmd/listener/api.go). A 404 that names no `holder_state` is
-// an older listener's, whose lapsed holder is no holder at all. ReasonHolderLapsed is the shared
-// reason itself (roleholder.HolderLapsed), so the daemon's reading of the wire word and the
-// listener's writing of it cannot drift; StateUnresponsive is declared here, with the rest of the
-// listener's wire words this daemon reads, so the publisher and the controller's liveness probe
-// read one copy of them.
+// an older listener's, whose lapsed holder is no holder at all. StateLive is the `holder_state` of
+// the 200 a live holder gets (listenerwire.RoleHolder), which RoleHolder also answers for a 200 of
+// an older listener that names no state. ReasonHolderLapsed is the shared reason itself
+// (roleholder.HolderLapsed), so the daemon's reading of the wire word and the listener's writing of
+// it cannot drift; the states are declared here, with the rest of the listener's wire words this
+// daemon reads, so the publisher, the outbox's provider-errors notice and the controller's liveness
+// probe read one copy of them.
 const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
+	StateLive          = "live"
 	StateUnresponsive  = "unresponsive"
 )
 
@@ -138,11 +141,10 @@ const RoleTopicPrefix = "notifications.role."
 // the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
 // releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
 // outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
-// tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
-// stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and
+// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a tree of the project that
+// has stopped (`tree-stalled`, admit's tellStalledTrees, once for each stall), a root whose own
+// architect is not taking the work the daemon states it is owed (`architect-stalled`, admit's
+// wakeStalledArchitects, once for each arm and run of its tree), and
 // the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
@@ -160,7 +162,12 @@ const RoleTopicPrefix = "notifications.role."
 // while that session was away is delivered when it registers again, its consumer keeping the
 // place it acknowledged. A session new to the lane is given a consumer at the stream's end, so a
 // freshly started controller is handed none of what came before it and learns that from `legion
-// state` and Dispatch.
+// state` and Dispatch. The one controller notice that does not go here is a claim whose turns keep
+// ending in a provider error (`provider-errors`, admit's TellOfProviderErrors, once for each run):
+// it goes to the controller's role topic (RoleTopicPrefix and the project's controller token),
+// which the listener delivers to the role's live holder alone, so it is stored for no session that
+// is no longer live; while no session holds the role live, its outbox row keeps it (the daemon's
+// outbox, providerErrorsNotice).
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
@@ -449,7 +456,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
 			return "", "", refused("the listener's answer names no holder: " + excerpt(body, cut))
 		}
-		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
+		return answer.Holder, cmp.Or(string(answer.HolderState), StateLive), nil
 	}
 	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	switch response.StatusCode {

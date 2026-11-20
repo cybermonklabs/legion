@@ -2181,30 +2181,48 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 	}()
 }
 
-// providerErrorRunReached tells the project's controller that a role's turns keep ending in a
-// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
-// decides when to tell, and this names the notice kind, since supervise records nothing of
-// internal/record. Admission's own check stops a second notice while one still waits in the
-// outbox (TellController). The machine calls it inside its own decision, so the notice is
-// queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
-// not the daemon's end, since the run goes on and the task is sent again either way.
-func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
+// providerErrorsOwed writes the notice of a run of provider-error turns that a role's claim owes
+// the project's controller (supervise's Deps.ProviderErrorsOwed): the machine writes the notice a
+// run of six or more owes with the claim and offers it, at every such turn from the sixth on and
+// at the run's end, and admission writes it once a controller is registered and marks the run told
+// (TellOfProviderErrors). The machine calls it inside its own lock, so the notice is written on a
+// goroutine of its own (tellProviderErrors); a failure is logged and is not the daemon's end,
+// since the notice stays owed on the claim's row, and the next offer, the controller's next
+// registration or admission's next pass writes it.
+func (w *workflowRuntime) providerErrorsOwed(c supervise.Claim) {
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	w.tellProviderErrors("claim", c.Token, func(ctx context.Context, tx pgx.Tx) error {
+		return w.admission.TellOfProviderErrors(ctx, tx, c.Token)
+	})
+}
+
+// controllerRegistered writes every notice of a run of provider-error turns that a claim of the
+// project owes its controller, once a controller's registration is recorded (api's
+// Options.ControllerRegistered, under either `controller` mode): a run that reached six while no
+// controller was registered — an operator launches it by default — is told at once, whatever its
+// claim's turns did since (TellOwedProviderErrors). It writes on a goroutine of its own
+// (tellProviderErrors); a failure is logged, and admission's next pass writes the notices.
+func (w *workflowRuntime) controllerRegistered() {
+	if w.admission == nil {
+		return
+	}
+	w.tellProviderErrors("project", w.dispatchProject, w.admission.TellOwedProviderErrors)
+}
+
+// tellProviderErrors runs tell in a transaction of its own, on a goroutine of its own, bounded by
+// readyReleaseTimeout. The goroutine runs beside the machine that started it and every other, so
+// it takes a hold mark of its own (store.ForConcurrentWorker). The transaction is outside any
+// fact, so it owns the commit hooks its writes register (projectRecords, intake.OnCommit), as
+// ApplyFact does for a fact's rows: the controller's lane is woken once the notice commits.
+func (w *workflowRuntime) tellProviderErrors(name string, value any, tell func(context.Context, pgx.Tx) error) {
 	go func() {
-		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
-		// it owns the commit hook its write registers (projectRecords, intake.OnCommit), as
-		// ApplyFact does for a fact's rows: the controller's lane is woken once the notice commits.
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		scoped, committed := intake.WithCommitHooks(ctx)
-		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-			return w.admission.TellController(scoped, tx, notice, c.Issue)
-		}); err != nil {
-			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
+		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error { return tell(scoped, tx) }); err != nil {
+			w.log.Warn("tell the controller of a run of provider errors", name, value, "error", err)
 			return
 		}
 		committed()

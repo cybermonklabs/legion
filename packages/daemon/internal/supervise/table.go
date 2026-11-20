@@ -2275,7 +2275,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.ProviderErrorRun != 0 {
 		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
 			"delivery", r.DeliveryID, "providerErrorRun", m.claim.ProviderErrorRun)
-		m.claim.ProviderErrorRun = 0
+		m.endProviderErrorRun()
 		if err := m.persist(ctx); err != nil {
 			return err
 		}

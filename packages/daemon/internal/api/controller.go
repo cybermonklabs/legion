@@ -330,6 +330,7 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	token := claim.ControllerToken(s.project)
 	s.log.Info("api: controller registered", "claim", token, "generation", stored.Generation,
 		"session", req.SessionID, "agent", req.AgentID)
+	s.tellControllerRegistered()
 	writeJSON(w, http.StatusOK, ControllerRegisterResponse{
 		ClaimToken: token,
 		Role:       claim.RoleController,
@@ -377,12 +378,23 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 	}
 	s.log.Info("api: launched controller registered", "claim", launch.Claim, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
+	s.tellControllerRegistered()
 	writeJSON(w, http.StatusOK, ControllerRegisterResponse{
 		ClaimToken: launch.Claim,
 		Role:       claim.RoleController,
 		Generation: launch.Generation,
 		Secret:     secret,
 	})
+}
+
+// tellControllerRegistered tells the daemon that a controller's registration is recorded
+// (Options.ControllerRegistered), so it writes every notice of a run of provider-error turns a
+// claim of the project owes the controller: a run can reach six while no controller is registered,
+// and its notice is owed until one is.
+func (s *server) tellControllerRegistered() {
+	if s.controllerRegistered != nil {
+		s.controllerRegistered()
+	}
 }
 
 // controllerSessionGrant is the grants route's controller-session form: the session registered

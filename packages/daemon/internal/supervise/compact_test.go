@@ -14,16 +14,25 @@ import (
 const testCompactInstructions = "Write the summary as text."
 
 // ladderStuck is the claim the provider-errors notice names, idle between the ladder's sends:
-// six turns of it in a row ended in a provider error, so the project's controller has been told
-// once, the task it owes is unconfirmed on the claim, and the ladder's next step is ten minutes
-// away. ladderSends is how many prompts the connection has seen by then. set, when it is given,
-// changes the dependencies before the machine is built, as workingClaim's own does.
+// six turns of it in a row ended in a provider error, so the claim owes the project's controller
+// the notice of that run, the task it owes is unconfirmed on the claim, and the ladder's next
+// step is ten minutes away. ladderSends is how many prompts the connection has seen by then.
+// notices counts the runs the machine has offered a notice of (Deps.ProviderErrorsOwed), each run
+// once, by the run's number the offer's owed notice names: the daemon tells the controller once
+// for each such run (internal/admit's TellOfProviderErrors). set, when it is given, changes the
+// dependencies before the machine is built, as workingClaim's own does.
 const ladderSends = providerErrorRunTold
 
 func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 	t.Helper()
+	var offered uint64
 	h := workingClaim(t, append([]func(*Deps){func(d *Deps) {
-		d.ProviderErrorRunReached = func(Claim, string) { *notices++ }
+		d.ProviderErrorsOwed = func(c Claim) {
+			if run := c.ProviderErrorsOwed.Run; run != offered {
+				offered = run
+				*notices++
+			}
+		}
 	}}, set...)...)
 	for turn := range providerErrorRunTold {
 		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

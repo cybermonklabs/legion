@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -149,10 +150,16 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every
 // publish, but for the first refusals on a topic, which it answers 500 as a stream outage does
-// (packages/envoy/cmd/listener/api.go publishHandler).
+// (packages/envoy/cmd/listener/api.go publishHandler). It answers the role route too (GET
+// /v1/roles/<role>, roleGetHandler) for each role a case says a session holds (hold), live, as
+// the listener's 200 names a live holder (listenerwire.RoleHolder): the outbox publishes a
+// provider-errors notice only once the session holding the controller registration is the live
+// holder of the controller's role (outbox.controllerHolds). Every other role reads as one the
+// listener has no route for, 404, as it read before the route was answered here.
 type noticeListener struct {
 	mu       sync.Mutex
 	refuse   map[string]int
+	holders  map[string]string
 	accepted []listenerPublish
 	refused  []listenerPublish
 }
@@ -165,13 +172,19 @@ type listenerPublish struct {
 }
 
 func newNoticeListener() *noticeListener {
-	return &noticeListener{refuse: map[string]int{}}
+	return &noticeListener{refuse: map[string]int{}, holders: map[string]string{}}
 }
 
 func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if role, ok := strings.CutPrefix(r.URL.Path, "/v1/roles/"); ok && r.Method == http.MethodGet {
+		if session, held := l.holders[role]; held {
+			_ = json.NewEncoder(w).Encode(listenerwire.RoleHolder{Role: role, Holder: session, HolderState: "live", Capabilities: []string{}})
+			return
+		}
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
@@ -191,6 +204,13 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	l.accepted = append(l.accepted, published)
 	_ = json.NewEncoder(w).Encode(map[string]string{})
+}
+
+// hold makes the role route answer session as role's live holder.
+func (l *noticeListener) hold(role claim.Token, session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.holders[string(role)] = session
 }
 
 // refuseFirst makes the listener refuse the next n publishes to topic.

@@ -255,13 +255,13 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		// A durable consumer this daemon has just created starts at the next message
 		// (intake's createConsumer), so the report the listener published at its own start is
-		// behind it. The listener is started again on the same port, which publishes a fresh
-		// one that the consumer does see and leaves every URL already handed out valid.
+		// behind it. The listener is started again on the socket the case holds, which publishes
+		// a fresh one that the consumer does see and leaves every URL already handed out valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
-			port := r.listener.port
+			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
 		}
 		return false
 	})

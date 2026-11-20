@@ -41,6 +41,7 @@ func (h *harness) serve(controllerLaunched bool) {
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
+		ControllerRegistered: func() { *h.registrations++ },
 	}).Handler
 }
 
@@ -112,6 +113,38 @@ func (h *harness) registeredController(capability, session string) ControllerReg
 	var response ControllerRegisterResponse
 	decodeInto(h.t, recorder, &response)
 	return response
+}
+
+// A recorded registration of the project's controller tells the daemon, under either `controller`
+// mode, so it writes every notice a claim's run of six provider-error turns owes the controller
+// (the daemon's controllerRegistered): a run can reach six while no controller is registered,
+// which is the default, and the registration is the first moment a notice can reach one. A
+// registration the route refuses records nothing and tells nothing.
+func TestEachRecordedControllerRegistrationTellsTheDaemon(t *testing.T) {
+	t.Run("an operator's controller", func(t *testing.T) {
+		h := newControllerHarness(t, false)
+		capability := h.mintedSecret()
+		wantRefusal(t, h.register("never-minted", "ses_unknown"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
+		h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+			BootToken: capability, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
+			AgentID: "agent-ses_controller", PluginContract: DaemonAPIVersion + 1,
+		}, nil)
+		if *h.registrations != 0 {
+			t.Fatalf("the daemon was told of %d registrations after two refused ones, want none", *h.registrations)
+		}
+		h.registeredController(capability, "ses_controller")
+		if *h.registrations != 1 {
+			t.Fatalf("the daemon was told of %d registrations after the operator's controller registered, want one", *h.registrations)
+		}
+	})
+	t.Run("a controller the daemon launched", func(t *testing.T) {
+		h := newControllerHarness(t, true)
+		_, boot := h.launchController()
+		h.registeredController(boot, "ses_launched")
+		if *h.registrations != 1 {
+			t.Fatalf("the daemon was told of %d registrations after its own controller registered, want one", *h.registrations)
+		}
+	})
 }
 
 func (h *harness) controllerSessionGrant(session, secret string) *httptest.ResponseRecorder {

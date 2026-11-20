@@ -412,8 +412,8 @@ func populatedState(t *testing.T) State {
 							ServingGeneration: 3,
 							// Two turns of this claim ended in a provider error in a row, and the
 							// task went out again behind the daemon's own sentence. It bounds
-							// nothing: the controller is told once at six, and nothing fails a
-							// claim for it.
+							// nothing: the controller is told once a run reaches six, and nothing
+							// fails a claim for it.
 							ProviderErrorRun: 2,
 							// The task this worker holds, as every agent surface reads it: that one
 							// is held, the phase it was queued for and when, and nothing of its

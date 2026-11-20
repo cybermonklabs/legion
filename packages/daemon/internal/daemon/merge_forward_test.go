@@ -29,13 +29,13 @@ const (
 // (runnerIn), its pull request #86 open at head sha-1 on main with asked as the merge forward the
 // record holds, and a supervisor with no claim on it yet. It drains on the caller's goroutine
 // (RunOnce), as hookRunner's does, and logs to the buffer it answers.
-func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunner(t *testing.T, publisher outboxNotices, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	return mergeForwardRunnerIn(t, publisher, record.PullRequestOpen, asked)
 }
 
 // mergeForwardRunnerIn is mergeForwardRunner with the pull request recorded in state.
-func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunnerIn(t *testing.T, publisher outboxNotices, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	ctx := context.Background()
 	logs := &syncBuffer{}

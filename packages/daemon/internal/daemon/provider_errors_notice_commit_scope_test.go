@@ -20,7 +20,7 @@ import (
 
 // A run of provider errors tells the controller through an outbox row, and the row's lane is woken
 // only once that row has committed. The notice is written on a goroutine of its own, outside any
-// fact (providerErrorRunReached), so its transaction has to open the commit scope itself. Without
+// fact (providerErrorsOwed), so its transaction has to open the commit scope itself. Without
 // that scope the records' wake runs at the write, inside the transaction
 // (projectRecords.wakeOnCommit): the lane looks before the row is there, finds nothing, and the
 // notice waits for the outbox's sweep, which runs every outboxLease.
@@ -72,8 +72,14 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.providerErrorRunReached(supervise.Claim{Token: implementer, Project: token, Tree: "CAPTURE-7", Issue: "CAPTURE-7",
-		Role: claim.RoleImplementer, Generation: 1}, "three provider errors in a row")
+	// The claim owes the notice of its first run, as its machine writes it at the sixth turn.
+	owing := supervise.Claim{Token: implementer, Project: token, Tree: "CAPTURE-7", Issue: "CAPTURE-7",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle, ProviderErrorRun: 6, ProviderErrorRunID: 1,
+		ProviderErrorsOwed: supervise.OwedNotice{Run: 1, Reason: "six provider errors in a row"}}
+	if err := st.PutClaim(ctx, owing); err != nil {
+		t.Fatalf("record the claim that owes the notice: %v", err)
+	}
+	w.providerErrorsOwed(owing)
 
 	testwait.Eventually(t, "the provider-errors notice to commit and wake its lane", func() bool {
 		mu.Lock()

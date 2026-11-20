@@ -280,7 +280,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
 // the phase a move back to implementing leaves it in, with the admission slot its work holds. It
 // drains on the caller's goroutine (RunOnce).
-func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
+func hookRunner(t *testing.T, publisher outboxNotices) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	runner, sup, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
 	holdSlot(t, pool, "LEGION-208")
@@ -290,7 +290,7 @@ func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor,
 // runnerIn is an outbox runner over an isolated database holding LEGION-208 in phase at with
 // Dispatch status status, its tree admitted, and a supervisor with no claim on it yet. It
 // publishes to publisher, logs to log, and drains on the caller's goroutine (RunOnce).
-func runnerIn(t *testing.T, at phase.Phase, status string, publisher notify.Publisher, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
+func runnerIn(t *testing.T, at phase.Phase, status string, publisher outboxNotices, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

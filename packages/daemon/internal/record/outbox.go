@@ -893,12 +893,23 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
 // claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
 // is told once per round (the daemon's reconcilePodUpdates). A
-// provider-errors notice names an issue whose role has ended six turns in a row in a provider
-// error: its Role is that role, and its Reason the model and the HTTP status the provider
-// answered, where it answered one, in words built from structured fields alone (supervise's
-// tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts
-// that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
-// refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
+// provider-errors notice names an issue whose role has ended six turns or more in a row in a
+// provider error: its Role is that role, and its Reason the run, the model and the HTTP status the
+// provider answered, where it answered one, in words built from structured fields alone
+// (supervise's oweProviderErrorsNotice). It is told once for each run that reached six turns,
+// whatever came after that run, a later run of the same claim that reached six among it: the
+// store keeps one owed notice for each such run until it is told (provider_errors_owed), and
+// admission writes the claim's owed runs while a controller is registered, in one notice that
+// names each of them, and marks each run told in the same transaction
+// (admit.Admission.TellOfProviderErrors, TellOwedProviderErrors). A later run's notice is written
+// while an earlier run's still waits unsent. Its row is published to the controller's role topic,
+// which the listener delivers to the role's live holder alone, and only once the session that
+// holds the controller registration holds that role live at the Envoy listener; it waits on the
+// outbox's backoff until then and while the listener finds no live holder (the daemon's
+// outbox.providerErrorsNotice), since the row is the run's only keeper once its run is marked
+// told. Nothing is held and nothing is bounded, because a
+// chain's bottom refusing deterministically costs one request every ten minutes. A tree-stalled
+// notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
 // `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
 // tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
@@ -907,7 +918,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells
 // again only once the tree moves past that mark. When admission sends each is its rule
 // (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
-// admit.Admission.TellController).
+// admit.Admission.TellOfProviderErrors).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -1014,31 +1025,25 @@ type ArchitectStall struct {
 	At         time.Time
 }
 
-// NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
-// issue and the role that names it — rather than one per project
-// (admit.Admission.wakeController reads it before it queues a wake).
+// NoticePerIssue is whether one unpublished controller notice of kind stands per issue rather
+// than one per project (admit.Admission.wakeController reads it before it queues a wake).
 //
-// Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
-// provider error, and in an outage every claim of the project has a notice of its own to send.
-// It is told at exactly the sixth turn in a row and never again until a turn with no error puts
-// that run back to zero, so a second claim's notice dropped behind the first claim's would
-// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
-// its worker fail their turns in the same outage — so the issue alone is not the key; the role
-// is the rest of it.
+// One kind answers true. A tree-stalled notice names one root whose tree has stopped: the stall
+// is the whole tree's and not one agent's, so its key is the issue, the tree's root. It is keyed
+// that way because a project can have two trees stopped at once, which is the very shape its
+// controller most needs to read: keyed per project, the second tree's notice would be dropped for
+// as long as the first tree's waited in the outbox, and no pass could tell the controller of it
+// until that first notice was published.
 //
-// A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
-// is the whole tree's and not one agent's. So its key is the issue alone, which is what an
-// empty role gives it — the role is a term the pending read leaves out when the caller names
-// none (Store.ControllerNoticePending) — and the issue is the tree's root. It is keyed that way
-// because a project can have two trees stopped at once, which is the very shape its controller
-// most needs to read: keyed per project, the second tree's notice would be dropped for as long
-// as the first tree's waited in the outbox, and no pass could tell the controller of it until
-// that first notice was published.
-//
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
-func NoticePerClaim(kind NoticeKind) bool {
-	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
+// A provider-errors notice passes no wake's pending check at all: it is told once for each run of
+// a claim's provider-error turns by the mark its write leaves on the claim's row and the owed run
+// its write deletes, so an earlier notice still unsent, of the same claim or of another, holds
+// back no later run's notice (admit.Admission.TellOfProviderErrors). Every other kind says
+// something about the project — a
+// free slot, a todo issue, the day's tick — which one wake carries however many facts find it
+// pending.
+func NoticePerIssue(kind NoticeKind) bool {
+	return kind == TreeStalledNotice
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's

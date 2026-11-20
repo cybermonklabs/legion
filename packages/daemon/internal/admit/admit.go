@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -463,36 +464,33 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // its slot back, every issue nothing starts at all, and every issue whose phase worker nothing
 // will prompt (silentWorkers). So a tick that wakes nobody has judged them all the same, and
 // nothing here judges anything a second time. Every other kind is queued as the caller built it,
-// so a kind that says something of its own — the role and the reason of TellController's —
-// carries it here.
+// so a kind that says something of its own — the reason of a tree-stalled notice — carries it
+// here.
 //
-// Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
+// Which notices count as the same one is the kind's own rule (record.NoticePerIssue): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
-// want, and a kind that speaks for one claim is one wake per claim — its issue and its role. The
-// second is the provider-errors notice: in an outage every claim's turns fail, each claim owes a
-// notice of its own, and the machine tells at exactly the sixth turn in a row, so a notice
-// dropped because another claim's still waited would never be sent. Two claims of one issue, an
-// architect and its worker, are two such claims, which is why the role is part of the key. The
-// tree-stalled notice is keyed the same way with no role at all, which keys it by its issue
-// alone: a role that is empty is a term the pending read leaves out.
+// want, and a kind that speaks for one issue is one wake per issue. The tree-stalled notice is
+// the second, so a second tree that stops while the first tree's notice waits is told at once.
+// The provider-errors notice comes through no wake at all: it is told once for each run by the
+// mark on its claim's row, not by what the outbox still holds (TellOfProviderErrors).
 //
 // It answers whether it queued a row. Two of its own rules queue nothing and are no error: no
 // controller is registered, so nothing would read the wake, and an older notice of the same
-// kind, issue and role still waits unsent. A caller that records something of its own about
-// the wake must know which happened, and one does: the stalled-tree rule marks a root only for
-// a notice that went into the outbox, in this same transaction, so a tree that stopped while
-// no controller ran is told at a later pass instead of being marked told and lost
-// (tellStalledTrees). Every other caller has nothing to record and drops the answer.
+// kind and issue still waits unsent. A caller that records something of its own about the wake
+// must know which happened, and one does: the stalled-tree rule marks a root only for a notice
+// that went into the outbox, in this same transaction, so a tree that stopped while no
+// controller ran is told later instead of being marked told and lost (tellStalledTrees). Every
+// other caller has nothing to record and drops the answer.
 func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string, dueAt time.Time) (bool, error) {
 	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
 	if err != nil || !registered {
 		return false, err
 	}
-	of, from := "", claim.Role("")
-	if record.NoticePerClaim(notice.Kind) {
-		of, from = issue, notice.Role
+	of := ""
+	if record.NoticePerIssue(notice.Kind) {
+		of = issue
 	}
-	pending, err := a.store.ControllerNoticePending(ctx, tx, a.project, notice.Kind, of, from)
+	pending, err := a.store.ControllerNoticePending(ctx, tx, a.project, notice.Kind, of)
 	if err != nil || pending {
 		return false, err
 	}
@@ -505,15 +503,101 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	return true, nil
 }
 
-// TellController queues notice on issue in the caller's transaction, for a caller outside any
-// fact: the supervisor, whose machine decides inside its own lock (supervise's
-// Deps.ProviderErrorRunReached, wired in internal/daemon, which opens the transaction). It is
-// wakeController and nothing else: a controller that is not registered is told nothing, and a
-// notice the same wake already waits to send stops this one, so a run of the same cause on the
-// same claim is one wake and another claim's run is a wake of its own (record.NoticePerClaim).
-func (a *Admission) TellController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string) error {
-	_, err := a.wakeController(ctx, tx, notice, issue, a.now())
-	return err
+// TellOfProviderErrors writes, in the caller's transaction, the notice of the runs of
+// provider-error turns that the claim of token owes the project's controller and that have not
+// been told, when a controller is registered, and marks each of those runs told in the same
+// transaction. It is the claim's own offer: its machine offers it once a decision has written the
+// notice its run owes (supervise's Deps.ProviderErrorsOwed, at each turn of the run from the sixth
+// on and at the run's end, wired in internal/daemon, which opens the transaction). The caller is
+// outside any fact.
+//
+// What is owed is the store's, not the offer's (record.Store.ProviderErrorsOwed): the machine's
+// claim write adds a row for each run that reaches six, and nothing but this write of the notice
+// marks a run told. So a run whose notice found no controller registered — an operator launches
+// the controller by default — or whose write failed, or whose offer the daemon's stop cut off, is
+// owed still, whatever came after the run, a later run of the same claim that reached six among
+// them. It is told at the next offer, at the controller's registration, or at the admission pass
+// of the next fact, tick or boot (TellOwedProviderErrors). The read locks the claim's row, so two
+// offers cannot both write one run: the second waits for the first to commit, and then reads the
+// run told.
+//
+// A token no claim row holds is refused (record.ErrNoClaim): no row can hold a told mark, so such
+// an offer, which only a hand-made request makes, would be written at every offer.
+func (a *Admission) TellOfProviderErrors(ctx context.Context, tx pgx.Tx, token claim.Token) error {
+	owed, err := a.store.ProviderErrorsOwed(ctx, tx, token)
+	if err != nil || owed == nil {
+		return err
+	}
+	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
+	if err != nil || !registered {
+		return err
+	}
+	return a.tellProviderErrors(ctx, tx, []record.OwedProviderErrors{*owed})
+}
+
+// TellOwedProviderErrors writes every notice of runs of provider-error turns that a claim of the
+// project owes its controller and that have not been told, when a controller is registered, as
+// TellOfProviderErrors writes one claim's: the notices a controller that registered late is owed,
+// and those whose offer wrote nothing. It runs at the controller's registration (internal/daemon's
+// controllerRegistered) and in the admission pass of every fact, every tick and every boot
+// (promoteHolds), as the stalled-tree rule does, so no owed notice waits on a turn of its claim.
+// A pass with no controller registered reads one row and locks nothing; one with a controller
+// reads the claims that owe a notice, which are almost always none.
+func (a *Admission) TellOwedProviderErrors(ctx context.Context, tx pgx.Tx) error {
+	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
+	if err != nil || !registered {
+		return err
+	}
+	owed, err := a.store.ProjectProviderErrorsOwed(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	return a.tellProviderErrors(ctx, tx, owed)
+}
+
+// tellProviderErrors queues one notice for each claim that owes the controller, which names each
+// of the claim's untold runs (toldRunsReason), and marks those runs told, in the caller's
+// transaction, so a notice and its mark commit together or neither does. One notice per claim is
+// what the controller acts on: the issue and the role are the claim's, and every run it names
+// says the same thing of them. No pending notice holds one back: the mark already tells each run
+// once, so an earlier notice still unsent, of the same claim or of another, waits beside it
+// rather than in front of it, and a run that ends while that notice waits is not lost behind it.
+func (a *Admission) tellProviderErrors(ctx context.Context, tx pgx.Tx, owed []record.OwedProviderErrors) error {
+	for _, notice := range owed {
+		reason := toldRunsReason(notice.Runs)
+		if err := a.enqueue(ctx, tx, notice.Issue, record.ControllerNotice{Kind: record.ProviderErrorsNotice,
+			Role: notice.Role, Reason: reason}, a.now()); err != nil {
+			return err
+		}
+		if err := a.store.MarkProviderErrorsTold(ctx, tx, notice.Token, notice.Newest()); err != nil {
+			return err
+		}
+		runs := make([]uint64, len(notice.Runs))
+		for i, run := range notice.Runs {
+			runs[i] = run.Run
+		}
+		intake.OnCommit(ctx, func() {
+			a.log.Warn("admission: told the controller of a run of provider errors", "claim", notice.Token,
+				"issue", notice.Issue, "role", notice.Role, "runs", runs, "reason", reason)
+		})
+	}
+	return nil
+}
+
+// toldRunsReason is what one notice tells the controller of a claim's untold runs, oldest
+// first: one run's own words, or, for two runs or more, how many there are and each run's words
+// after its number (supervise.Claim.ProviderErrorRunID), so each run is told and none hides
+// another.
+func toldRunsReason(runs []supervise.OwedNotice) string {
+	if len(runs) == 1 {
+		return runs[0].Reason
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "This notice tells %d runs, oldest first.", len(runs))
+	for _, run := range runs {
+		fmt.Fprintf(&b, " Run %d: %s.", run.Run, run.Reason)
+	}
+	return b.String()
 }
 
 // queuePersonHandover queues the todo write of a person's handover of key: a root a person handed
@@ -1788,6 +1872,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
 	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor); err != nil {
+		return 0, released, err
+	}
+	// Every notice of a run of provider-error turns a claim owes the controller is written here
+	// too, on every fact, tick and boot, while a controller is registered: a run that reached six
+	// is owed its notice whatever came after it, and no turn of its claim may be what tells it
+	// (TellOwedProviderErrors). It runs before the cap check for the reason the stalled-tree rule
+	// does.
+	if err := a.TellOwedProviderErrors(ctx, tx); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {

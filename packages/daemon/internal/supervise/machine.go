@@ -473,11 +473,29 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
-	// project's controller is told once, and not again until a turn with no error puts it back to
+	// for a claim whose last turn ended with none (promptResulted). A run that reaches
+	// providerErrorRunTold turns owes the project's controller one notice (ProviderErrorsOwed).
+	// A clean turn, a compaction or a new session puts the run back to
 	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
 	// limit would fail every claim of a project at once in a provider outage.
 	ProviderErrorRun int
+	// ProviderErrorRunID is the number of the run of provider-error turns the claim stands in, or
+	// stood in last. It moves to the next number as each run's first turn ends in a provider error
+	// (providerErrored), and it is 0 before the claim's first run. The notice a run owes and the
+	// daemon's mark that it told that notice both name the run by this number, so the mark of one
+	// run never reads as the mark of another, whatever reset or restart comes between them.
+	ProviderErrorRunID uint64
+	// ProviderErrorsOwed is the notice the project's controller is owed of the newest run of this
+	// claim that reached providerErrorRunTold turns. The machine writes it at each turn of such a
+	// run from that one on (oweProviderErrorsNotice), and the claim's write keeps it in the store
+	// as that run's own owed notice, beside the notice of every earlier run still untold, so a run
+	// that reaches six never replaces an earlier run's notice: each run that reached six is owed
+	// its notice whatever comes after it, a clean turn, a compaction, a new session, a restart or
+	// a later run. The daemon writes the owed notices while a controller is registered and marks
+	// each run told, once (internal/admit's TellOfProviderErrors and TellOwedProviderErrors). The
+	// zero value owes nothing, and a claim read back from the store holds the zero value once that
+	// run is told.
+	ProviderErrorsOwed OwedNotice
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
 	// no write a machine makes carries it or erases it, a launch's included: the store's putClaim
@@ -1029,13 +1047,15 @@ type Deps struct {
 	// tells no one — a daemon with no workflow has no owner to tell. It is called inside the
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
-	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
-	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
-	// is given: the model, and the HTTP status the provider answered where it answered one, in
-	// words built from structured fields alone. The claim carries the issue and the role. nil
-	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
-	// decision, so it returns at once.
-	ProviderErrorRunReached func(c Claim, reason string)
+	// ProviderErrorsOwed is told of a claim whose decision recorded the notice its run of
+	// provider-error turns owes the project's controller (Claim.ProviderErrorsOwed): at each turn
+	// of the run from the providerErrorRunTold-th on, and at the end of such a run. It is told once
+	// the decision has written the claim, at the decision's end (unlock). It is an offer: the
+	// daemon writes whatever notice the store records as owed and not yet told, and marks it told
+	// (internal/admit's TellOfProviderErrors), so an offer whose decision's write failed writes
+	// nothing, and a later offer or admission's pass writes the notice. nil tells nobody, as it does
+	// for TaskConfirmed above. It is called inside the machine's lock, so it returns at once.
+	ProviderErrorsOwed func(c Claim)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1258,6 +1278,11 @@ type Machine struct {
 	// failed write left unchanged — which is the same claim a crash between a decision and its
 	// write has always left behind.
 	owedWrite *owedClaimWrite
+	// offerOwed says that this decision recorded the notice of a run of provider-error turns the
+	// project's controller is owed: a turn of the run from the providerErrorRunTold-th on, or the
+	// end of such a run (oweProviderErrorsNotice, endProviderErrorRun). The decision's end offers it
+	// once (unlock, Deps.ProviderErrorsOwed) and clears the mark.
+	offerOwed bool
 	// sentThrough is the registration sequence of the newest connection a prompt was sent through
 	// (takesBackConfirmed). A send always goes through the connection registered last, so it only
 	// rises, and a relaunch leaves it: the new process's connections are registered later still.
@@ -1792,7 +1817,47 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskBehindTask is an ask of a round whose claim holds a task (OwesUpdateAsk): nothing
+	// is published and nothing is marked. The round's question waits behind the task, and the
+	// sweep asks the claim again once it holds none.
+	UpdateAskBehindTask
 )
+
+// OwesUpdateAsk is whether this claim's own record still owes it an ask of round, and, when it
+// owes none, the outcome that says why: the claim is not in round, an ask of round already
+// reached a session of its role, or the claim holds a task the round's question waits behind.
+// The round publishes once per claim, so an ask an earlier one reached is needless, and an ask
+// behind a task is owed again once the claim holds none.
+//
+// It is the one statement of whom a round asks now. The sweep reads it where it enqueues an ask
+// (internal/daemon's unaskedClaims), and the outbox's row reads it again under this claim's lock
+// where it publishes that ask (PublishUpdateAsk), because the row runs after the enqueue and the
+// claim can take a task in between. Two statements of the rule would drift apart, and the one at
+// the publish is the one that decides what reaches the role.
+//
+// The task case is last, so each case before it says why no ask is owed at all, and the task's
+// outcome is left for a claim the round would ask but for its task. That task is the one the
+// claim holds (Claim.Pending): one in flight — queued, sent, or in its turn — or one a provider
+// error took back, which waits on the ladder for its next send. The provider-error design says
+// so: the question waits behind the owed task, as it waits behind any task in flight. In a
+// provider outage the question's own turn would fail as the task's do, so letting it go first
+// gains nothing; once the task retires, or a newer task replaces the owed one and that retires,
+// the claim holds none and the question goes. A delivery that is the round's own question, which
+// an earlier daemon queued as a task, is no task to wait behind. The cost is the spec's own: the
+// round, and a newer task for a pod-mate that has answered it, wait until the task's turn ends
+// without a provider error, or until the round's bound; the notice to the controller after six
+// such turns and the round's own stalled notice tell a person.
+func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
+	switch {
+	case c.UpdateRound != round:
+		return false, UpdateAskOutOfRound
+	case c.UpdateTaskedAt != nil:
+		return false, UpdateAskAlreadyDelivered
+	case c.Pending != nil && !updatesRound(c.Pending, round):
+		return false, UpdateAskBehindTask
+	}
+	return true, 0
+}
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
 // claim asked (UpdateTaskedAt) when, and only when, that publish reached a session. publish
@@ -1813,10 +1878,16 @@ const (
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
 //     the first publish.
-//  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
-//     is one an earlier ask of round already reached. Two rows of one round — a row left by an
-//     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//  2. An owed mark is answered first: an ask of round already reached a session, and the write of
+//     its mark is one the store has not taken (owedWrite). That answers UpdateAskAlreadyDelivered
+//     with an error, so the row stays until the write lands, before the rule below is read at
+//     all, since every case of the rule ends the row. Then the claim is read under the lock
+//     (OwesUpdateAsk): a claim no longer in round is published nothing, and so is one an earlier
+//     ask of round already reached. Two rows of one round — a row left by an older daemon beside
+//     the sweep's own — therefore deliver one ask between them, whichever order they run in and
+//     whichever of them finds a holder. A claim that holds a task is published nothing either,
+//     and nothing is marked: the question waits behind the task, and the sweep asks the claim
+//     again once it holds none.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1850,13 +1921,11 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	defer m.unlock()
 	m.repair(ctx)
-	switch {
-	case m.claim.UpdateRound != round:
-		return UpdateAskOutOfRound, nil
-	case m.claim.UpdateTaskedAt != nil && m.owedWrite != nil:
+	if m.owedWrite != nil && m.claim.UpdateRound == round && m.claim.UpdateTaskedAt != nil {
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
-	case m.claim.UpdateTaskedAt != nil:
-		return UpdateAskAlreadyDelivered, nil
+	}
+	if owed, why := m.claim.OwesUpdateAsk(round); !owed {
+		return why, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {
@@ -2234,18 +2303,28 @@ func (m *Machine) stoppingProcess() func() {
 // unlock ends a locked section that may have changed the claim: it holds the stale-plugin lane to
 // its invariants — the credit this machine holds goes back unless a refresh wake of its own is
 // waiting, and nothing of a relaunch's intent outlives the decision that raised it
-// (endRefreshLane) — publishes the claim, says the machine decides nothing, then releases mu.
+// (endRefreshLane) — offers the notice of a run of provider-error turns the decision recorded
+// (offerOwed, Deps.ProviderErrorsOwed), publishes the claim, says the machine decides nothing,
+// then releases mu. The offer comes here, after every write the decision made, so the daemon
+// reads the owed notice the decision wrote rather than the row before it.
 //
-// Every decision of a machine ends here, which is what makes it the place those two are kept:
-// every locked section that can change the wake, the credit or the intent ends in unlock, and a
-// section that takes mu without it reads the claim or counts goroutines and changes none of the
-// three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
-// ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
-// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
-// added later has to keep, rather than this list of the sections there are now.
+// Every decision of a machine ends here, which is what makes it the place those are kept:
+// every locked section that can change the wake, the credit, the intent or the owed notice ends
+// in unlock, and a section that takes mu without it reads the claim or counts goroutines and
+// changes none of them. The sections that defer it are Handle, which every event and every timer
+// of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold),
+// PublishUpdateAsk, StartedBy, ReadProcess and Retree; the sections that take mu without it are
+// Claim, OnDurableState, Wait, compaction and the two goroutine tails in delivery.go and
+// secrets.go. It is that rule a section added later has to keep, rather than this list of the
+// sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
+	if m.offerOwed {
+		m.offerOwed = false
+		if m.deps.ProviderErrorsOwed != nil {
+			m.deps.ProviderErrorsOwed(m.current())
+		}
+	}
 	m.publish()
 	m.decide(nil)
 	m.mu.Unlock()
@@ -2292,6 +2371,12 @@ func (m *Machine) durableWrite(ctx context.Context, state ClaimState, write func
 	m.report(copyClaim(m.claim), state)
 	return nil
 }
+
+// promptTakenLine is the record, at Info, of one prompt the agent's side took (startSend): the
+// delivery, and how many sends of it a provider error has counted. It is pinned, as the two turn
+// lines below are, because the live proof of the provider-error ladder reads each send from it,
+// and a reword would leave that proof waiting for a line no daemon writes.
+const promptTakenLine = "supervise: the agent took a prompt"
 
 // turnStartedLine is the message a turn's start is logged under, at Info, on each of the four
 // paths that put a claim in working. It is pinned as a constant because an operator and a
@@ -3293,12 +3378,12 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // let-go records nothing for a claim that records no process (recordEnd), so the next record
 // written is of the fresh session's own process.
 //
-// It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
+// It puts the claim's run of provider-error turns back to zero as well (endProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
 // makes a fresh session a recovery the controller can repeat (api's freshSession). Without it a
 // claim that was told once would never be told again until a turn of it ended with no error at
-// all.
+// all. The notice the ended run owes stays owed (Claim.ProviderErrorsOwed).
 //
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
@@ -3321,7 +3406,7 @@ func (m *Machine) forgetSession(why string) {
 	m.heldNames = nil
 	m.admitted.Store(nil)
 	m.freshRun()
-	m.claim.ProviderErrorRun = 0
+	m.endProviderErrorRun()
 }
 
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the

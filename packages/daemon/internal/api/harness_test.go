@@ -196,6 +196,9 @@ type harness struct {
 	handoffs *statusRecorder
 	// serverLog is every line the server's own logger wrote (Options.Log), as text.
 	serverLog *lockedLog
+	// registrations counts the controller registrations the daemon was told of
+	// (Options.ControllerRegistered), for a server whose harness hands it the hook (serve).
+	registrations *int
 }
 
 // lockedLog is a text log a handler writes while a test reads it.
@@ -285,6 +288,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
 		serverLog:          serverLog,
+		registrations:      new(int),
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),

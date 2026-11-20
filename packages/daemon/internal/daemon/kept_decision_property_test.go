@@ -201,8 +201,9 @@ type keptRace struct {
 // catch-up it takes, the generation that catch-up's own issue stood at then (atPublish): a root's,
 // or an adopted child's own. A kept publish (PublishKept) is answered by the run's mode as any
 // other is and never kept: the mode's no-holder is the 404 a listener before #4079 answers a
-// claim whose holder is gone.
+// claim whose holder is gone. It holds no role record (noRoleHolders).
 type keptPublisher struct {
+	noRoleHolders
 	mu        sync.Mutex
 	mode      keptPublishMode
 	delivered []outboxPublish

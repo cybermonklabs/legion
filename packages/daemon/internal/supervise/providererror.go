@@ -21,9 +21,10 @@ const (
 	// from [step/2, step] and caps at 32 times its base, which this ladder's exactness forbids.
 	promptRetryFirst = 30 * time.Second
 	promptRetryMax   = 10 * time.Minute
-	// providerErrorRunTold is the run of provider-error turns at which the project's controller
-	// is told, once (Deps.ProviderErrorRunReached). There is no hold and no attempt limit behind
-	// it: a chain's bottom refusing deterministically costs one request every promptRetryMax.
+	// providerErrorRunTold is the run of provider-error turns at which the claim owes the project's
+	// controller one notice of the run (Claim.ProviderErrorsOwed), which the daemon writes once.
+	// There is no hold and no attempt limit behind it: a chain's bottom refusing deterministically
+	// costs one request every promptRetryMax.
 	providerErrorRunTold = 6
 )
 
@@ -45,7 +46,9 @@ func promptRetryDelay(attempt int) time.Duration {
 // and the agent read it. No prompt budget is charged — chargePrompt retires and then fails a
 // claim past Limits.PromptFailures, which would fail every claim at once in a provider outage,
 // and R2 forbids an attempt limit — so the claim counts its own run of such turns instead, and a
-// turn that ends with no error puts that run back to zero (promptResulted).
+// turn that ends with no error puts that run back to zero (promptResulted). The first turn of a
+// run gives the run the claim's next number (Claim.ProviderErrorRunID), which the notice the run
+// owes names (oweProviderErrorsNotice).
 //
 // What that turn's confirmation told goes back to untold with it (takeBackPending, moveTelling),
 // so the re-sent task carries the abandoned session's sentence, the record of the last let-go, or
@@ -63,11 +66,14 @@ func promptRetryDelay(attempt int) time.Duration {
 // behind and in the controller's notice.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
+	if m.claim.ProviderErrorRun == 0 {
+		m.claim.ProviderErrorRunID++
+	}
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
 		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(r.Model, cause)
+	m.oweProviderErrorsNotice(r.Model, cause)
 	// The prompt's turn ran and is over, and its result has ended the wait for results
 	// (promptResulted), so nothing of the task is left outstanding.
 	if err := m.takeBackPending(ctx, taskRead); err != nil {
@@ -89,7 +95,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
 //     whose turn hits one is worse than sending the task again, and the notice the project's
 //     controller is given at six such turns in a row is what tells a person
-//     (tellControllerOfProviderErrors);
+//     (oweProviderErrorsNotice);
 //   - no status at all is a turn that ends with nothing but a message, two kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
 //     model chain, so the next prompt goes to another model. A turn whose provider key could not
@@ -159,13 +165,36 @@ func providerErrorTask(cause string) string {
 		"issue's branch. Then continue the task."
 }
 
-// tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
-// provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
-// zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none.
-func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
-	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
+// OwedNotice is the notice the project's controller is owed of one run of a claim's provider-error
+// turns (Claim.ProviderErrorsOwed).
+type OwedNotice struct {
+	// Run is the run's number (Claim.ProviderErrorRunID), and 0 is no run.
+	Run uint64
+	// Reason is what the notice tells the controller: the run, the model, and the HTTP status the
+	// provider answered where it answered one, in words built from structured fields alone.
+	Reason string
+}
+
+// oweProviderErrorsNotice records, at every turn of the claim's run of provider-error turns from
+// the providerErrorRunTold-th on, the notice that run owes the project's controller, and marks
+// the decision to offer it (offerOwed). Each such turn writes the notice again with the run it
+// now stands at, so the notice the daemon writes names the run as it stood at its last turn
+// before the write. It is the one exit from a run of such turns, and it is a notice rather than a
+// hold: R2 forbids an attempt limit.
+//
+// The notice is owed, not offered once: the decision's own write carries it, and the claim store
+// keeps it as the run's own owed notice, beside the notice of every earlier run of the claim that
+// is still untold (internal/store's upsertClaim, provider_errors_owed), and nothing but the
+// daemon's write of the notice ends it. The daemon writes the claim's owed notices once a
+// controller is registered, one notice that names each untold run, and marks each run told in the
+// same transaction (internal/admit's TellOfProviderErrors and TellOwedProviderErrors). So a run
+// that reaches six while no controller is registered — an operator launches it by default — or
+// whose notice's write fails, is told when a controller registers, at the next offer or at
+// admission's next pass, whatever comes after the run: another failed turn, a clean one, a
+// compaction, a new session, a restart, or a later run of the claim that reaches six as well.
+// model is the model the failed request went to, and is empty when the error named none.
+func (m *Machine) oweProviderErrorsNotice(model, cause string) {
+	if m.claim.ProviderErrorRun < providerErrorRunTold {
 		return
 	}
 	on := ""
@@ -174,9 +203,23 @@ func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
 	}
 	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
 		m.claim.ProviderErrorRun, on, cause, promptRetryMax)
-	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
-	m.deps.ProviderErrorRunReached(m.current(), reason)
+	m.claim.ProviderErrorsOwed = OwedNotice{Run: m.claim.ProviderErrorRunID, Reason: reason}
+	m.offerOwed = true
+	m.log.Info("supervise: a run of turns that ended in a provider error; the controller is owed its notice of the run",
+		"providerErrorRun", m.claim.ProviderErrorRun, "providerErrorRunID", m.claim.ProviderErrorRunID, "model", model, "reason", reason)
+}
+
+// endProviderErrorRun puts the claim's run of provider-error turns back to zero: a turn with no
+// error (promptResulted), a compaction that ran (compactEnded) and a new session (forgetSession)
+// each end the run. The notice a run of providerErrorRunTold turns or more owes stays owed, and
+// the end of such a run offers it once more (offerOwed): the end is the claim's last turn of the
+// run, so a notice no offer of the run wrote — its write failed, or the daemon stopped before it —
+// is written at the end rather than at admission's next pass.
+func (m *Machine) endProviderErrorRun() {
+	if m.claim.ProviderErrorRun >= providerErrorRunTold {
+		m.offerOwed = true
+	}
+	m.claim.ProviderErrorRun = 0
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

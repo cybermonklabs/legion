@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
-	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
+	dead := unlistenedAddress(t)
 	download := "http://" + dead + "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + leakCheckTag
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/theorem-labs/agent-infra/tarball/"+leakCheckTag {
@@ -146,4 +147,25 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 	if strings.Contains(logged, leakCheckRedirectToken) {
 		t.Errorf("the log holds the planted token:\n%s", logged)
 	}
+}
+
+// unlistenedAddress is a loopback address whose port the test holds bound and never listens on
+// until it ends: a connection to it is refused, and no other process can take the port while the
+// test runs, as one could take a port chosen and released before use (the idle rig's listener
+// holds its socket for the same reason, heldSocket).
+func unlistenedAddress(t *testing.T) string {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("open a socket to hold a loopback port: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind a loopback port to hold: %v", err)
+	}
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("read the held loopback port: %v", err)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", bound.(*syscall.SockaddrInet4).Port)
 }

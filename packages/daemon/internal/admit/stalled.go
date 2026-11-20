@@ -99,7 +99,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // wakeController gives), so a stall found while no controller was registered, or while an
 // older stalled-tree notice of the same root still waited to be published, is told at a later
 // pass rather than marked told and lost. The notice is keyed per issue
-// (record.NoticePerClaim), so a second tree that stops while the first tree's notice waits is
+// (record.NoticePerIssue), so a second tree that stops while the first tree's notice waits is
 // told in the same pass.
 //
 // What it reads, and in what order. This runs inside promoteHolds, on every fact, every tick
@@ -281,8 +281,8 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	}
 	// Step 5: the refusal that answers for one root, asked of the trees this pass is going to
 	// tell and of no other. A root whose own tree-stalled notice still waits unsent is left for
-	// a later pass; the kind is keyed by its issue and by no role at all (record.NoticePerClaim,
-	// wakeController), which is the pair asked for here. Every root is asked in the one read
+	// a later pass; the kind is keyed by its issue (record.NoticePerIssue, wakeController), which
+	// is what is asked for here. Every root is asked in the one read
 	// (record.Store.ControllerNoticesPending), because this runs on every fact, every tick and
 	// every boot of a deployment whose projects hold hundreds of trees, and a read per root
 	// would put that many round trips on the fact lock.
@@ -290,7 +290,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	for _, root := range stopped {
 		roots = append(roots, root.Key)
 	}
-	pending, err := a.store.ControllerNoticesPending(ctx, tx, a.project, record.TreeStalledNotice, roots, "")
+	pending, err := a.store.ControllerNoticesPending(ctx, tx, a.project, record.TreeStalledNotice, roots)
 	if err != nil {
 		return err
 	}

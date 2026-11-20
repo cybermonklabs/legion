@@ -274,6 +274,12 @@ type Options struct {
 	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
 	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
+	// ControllerRegistered is told once a controller's registration is recorded, under either
+	// `controller` mode (registerController, registerLaunchedController): the daemon writes every
+	// notice of a run of provider-error turns a claim of the project owes the controller, so a run
+	// that reached six while no controller was registered is told at once. It returns at once and
+	// writes elsewhere. Nil tells no one.
+	ControllerRegistered func()
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
 	// 500 and changes nothing else.
@@ -385,8 +391,10 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// roleHoldersChanged is Options.RoleHoldersChanged.
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
-	releaseRecordStore ReleaseRecordStore
-	claimActivity      ClaimActivityStore
+	// controllerRegistered is Options.ControllerRegistered.
+	controllerRegistered func()
+	releaseRecordStore   ReleaseRecordStore
+	claimActivity        ClaimActivityStore
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -415,55 +423,56 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
 	s := &server{
-		state:              opts.State,
-		stateTransactions:  opts.StateTransactions,
-		stateBound:         opts.StateReadBound,
-		consumerLag:        opts.ConsumerLag,
-		callerPod:          opts.CallerPod,
-		supervisor:         opts.Supervisor,
-		awaitStream:        opts.AwaitStream,
-		podUpdateRounds:    opts.PodUpdateRounds,
-		bootTokens:         opts.BootTokens,
-		project:            opts.Project,
-		dispatchProject:    opts.DispatchProject,
-		controller:         opts.Controller,
-		steps:              opts.Steps,
-		controllerLaunched: opts.ControllerLaunched,
-		pluginRelaunchable: opts.PluginRelaunchable,
-		noPluginInstall:    opts.NoPluginInstall,
-		backend:            opts.Backend,
-		tokens:             opts.Tokens,
-		githubRepositories: opts.GitHubRepositories,
-		renames:            opts.RepositoryRenames,
-		serving:            serving,
-		githubAPI:          opts.GitHubAPI,
-		releaser:           opts.Releaser,
-		trees:              opts.Trees,
-		experiments:        opts.Experiments,
-		source:             opts.ExperimentSource,
-		now:                opts.Now,
-		grants:             opts.Grants,
-		pool:               opts.Pool,
-		handlers:           opts.Handlers,
-		prepare:            opts.PrepareRepository,
-		unread:             opts.RepositoryUnread,
-		await:              opts.AwaitRecovery,
-		roleFor:            opts.RoleFor,
-		records:            opts.Record,
-		dispatch:           opts.Dispatch,
-		claimReady:         opts.ClaimReady,
-		handoffCompleted:   opts.HandoffCompleted,
-		promptAgents:       opts.PromptAgents,
-		capabilityReported: opts.CapabilityReported,
-		roleHoldersChanged: opts.RoleHoldersChanged,
-		releaseRecordStore: opts.ReleaseRecords,
-		claimActivity:      opts.ClaimActivity,
-		pause:              opts.Pause,
-		readiness:          opts.Ready,
-		log:                opts.Log,
-		stopping:           opts.Stopping,
-		drained:            opts.Drained,
-		decisions:          opts.Decisions,
+		state:                opts.State,
+		stateTransactions:    opts.StateTransactions,
+		stateBound:           opts.StateReadBound,
+		consumerLag:          opts.ConsumerLag,
+		callerPod:            opts.CallerPod,
+		supervisor:           opts.Supervisor,
+		awaitStream:          opts.AwaitStream,
+		podUpdateRounds:      opts.PodUpdateRounds,
+		bootTokens:           opts.BootTokens,
+		project:              opts.Project,
+		dispatchProject:      opts.DispatchProject,
+		controller:           opts.Controller,
+		steps:                opts.Steps,
+		controllerLaunched:   opts.ControllerLaunched,
+		pluginRelaunchable:   opts.PluginRelaunchable,
+		noPluginInstall:      opts.NoPluginInstall,
+		backend:              opts.Backend,
+		tokens:               opts.Tokens,
+		githubRepositories:   opts.GitHubRepositories,
+		renames:              opts.RepositoryRenames,
+		serving:              serving,
+		githubAPI:            opts.GitHubAPI,
+		releaser:             opts.Releaser,
+		trees:                opts.Trees,
+		experiments:          opts.Experiments,
+		source:               opts.ExperimentSource,
+		now:                  opts.Now,
+		grants:               opts.Grants,
+		pool:                 opts.Pool,
+		handlers:             opts.Handlers,
+		prepare:              opts.PrepareRepository,
+		unread:               opts.RepositoryUnread,
+		await:                opts.AwaitRecovery,
+		roleFor:              opts.RoleFor,
+		records:              opts.Record,
+		dispatch:             opts.Dispatch,
+		claimReady:           opts.ClaimReady,
+		handoffCompleted:     opts.HandoffCompleted,
+		promptAgents:         opts.PromptAgents,
+		capabilityReported:   opts.CapabilityReported,
+		roleHoldersChanged:   opts.RoleHoldersChanged,
+		controllerRegistered: opts.ControllerRegistered,
+		releaseRecordStore:   opts.ReleaseRecords,
+		claimActivity:        opts.ClaimActivity,
+		pause:                opts.Pause,
+		readiness:            opts.Ready,
+		log:                  opts.Log,
+		stopping:             opts.Stopping,
+		drained:              opts.Drained,
+		decisions:            opts.Decisions,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))

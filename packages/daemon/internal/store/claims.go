@@ -38,6 +38,24 @@ var _ supervise.Store = (*Store)(nil)
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
+//
+// The notice the claim's newest run of provider-error turns owes the controller is read from the
+// newest of its rows of provider_errors_owed, while that run is untold
+// (supervise.Claim.ProviderErrorsOwed): the claim's machine names that notice in each write it
+// makes, and the write adds or rewrites that run's row alone (upsertClaim). A run admission has
+// told has no row, and reads as nothing; an older untold run's row is admission's to read
+// (record.Store.ProviderErrorsOwed), and no claim write touches it.
+//
+// Reading the oldest untold row here in place of the newest would change nothing the daemon does,
+// and no test can tell the two apart (mutant G12 of the third review). The value read back has
+// three readers. The machine's next failed turn of a run of six or more replaces it with the
+// notice of the run the claim stands in (supervise's oweProviderErrorsNotice) before any notice
+// is written from it. Every other claim write carries it back unchanged, and upsertClaim writes it
+// only as the row of the run it names, with that row's own words, and only while that run is above
+// the told mark: a row that stands is rewritten with the words it holds, and a told run gets no
+// row, whichever of the claim's rows was read. And the offer (supervise's Deps.ProviderErrorsOwed)
+// passes only the claim's token, since admission reads every owed row from the store. The newest
+// is read because it is the run the claim's next turns name.
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -50,7 +68,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
-	c.update_left_round, c.provider_error_run, c.death_charged,
+	c.update_left_round, c.provider_error_run, c.provider_error_run_id, coalesce(o.run, 0),
+	coalesce(o.reason, ''), c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
@@ -58,7 +77,9 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
-	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
+	from claims c left join pending_task_deliveries d on d.claim_token = c.token
+	left join lateral (select run, reason from provider_errors_owed
+		where claim_token = c.token order by run desc limit 1) o on true`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
@@ -324,6 +345,21 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
 // that can queue no publication.
 //
+// The same statement writes the notice the claim's run of provider-error turns owes the
+// project's controller (supervise.Claim.ProviderErrorsOwed) into provider_errors_owed, as the row
+// of that run alone: it adds the row, or rewrites its words when the run's turns have climbed
+// since, and it does so only while the run stands above the claim's told mark, which admission
+// alone moves (admit's tellProviderErrors). So a claim write never removes an owed row and never
+// names another run's: a second run that reaches six before the first run's notice is written
+// owes a row beside the first's, and neither replaces the other (20261119114140_provider_errors_told).
+// The row is written after the claim's own row in the one statement, so the write holds the
+// claim's row lock when it reads the told mark and writes the owed row, the order in which every
+// reader of the owed rows takes the two (record.Store.ProviderErrorsOwed): a mark that commits
+// first is read, and a run it told gets no row again. A claim with no issue, the project
+// controller's own, owes no row: the notice names a worker's issue, and every reader of the owed
+// rows reads claims with an issue alone (record.Store.ProviderErrorsOwed), so such a row would be
+// read by nothing and deleted by nothing.
+//
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
 // and the state are one write, so no claim is ever read as retired at a moment the store does
@@ -409,7 +445,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err := db.Exec(ctx, `with claim as (insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -421,10 +457,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		provider_error_run_id,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58,
+		$55, $56, $57, $58, $59,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -460,6 +497,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
+		-- The run's number is the machine's, and so is the notice a run owes, which the statement's
+		-- second half writes as that run's own row of provider_errors_owed. The mark that a notice
+		-- was told is admission's alone (admit's tellProviderErrors), and no claim write names it,
+		-- so no turn, reset or restart of the claim can tell a run, or untell one
+		-- (20261119114140_provider_errors_told).
+		provider_error_run_id = excluded.provider_error_run_id,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
 		death_charged = excluded.death_charged,
@@ -497,7 +540,13 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 			then '' else claims.activity_kinds end,
 		activity_next_reminder_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_next_reminder_at end,
-		updated_at = now()`,
+		updated_at = now()
+		returning token, issue, provider_errors_told_run)
+		insert into provider_errors_owed (claim_token, run, reason)
+		select token, $60::bigint, $61::text from claim
+		where issue <> '' and $60::bigint > 0 and $60::bigint > provider_errors_told_run
+		on conflict (claim_token, run) do update set reason = excluded.reason
+		where provider_errors_owed.reason <> excluded.reason`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
@@ -511,6 +560,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		int64(c.ProviderErrorRunID), int64(c.ProviderErrorsOwed.Run), c.ProviderErrorsOwed.Reason,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -670,151 +720,6 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 	return c, true, nil
 }
 
-// PutDelivery writes the claim's pending delivery, replacing the one it had: a claim has at most
-// one. A token no claim carries is refused. It is one transaction, because the write carries what
-// the task names of the decisions a person made while nobody in its root's tree could hear them:
-// queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
-func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
-}
-
-// putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
-// the one that carries the claim the delivery is confirmed against. It takes a transaction
-// because it reads the row it is about to replace and holds that reading until it has written
-// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
-// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
-// this delivery id, taking each from the start row that claimed it and from whatever id the
-// claim's previous delivery held it under; the write that records the confirmation tells them.
-// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
-// not hold, and no confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
-	if d.Generation > math.MaxInt64 {
-		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
-	}
-	kept := keptDecisions(d.Kept)
-	unconfirmed := d.ConfirmedAt.IsZero()
-	if unconfirmed {
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
-			return err
-		}
-	}
-	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
-		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
-		confirmed_at, interrupted, prompted, out_of_memory,
-		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, round_named)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22)
-		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
-		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
-		entry = excluded.entry, check_look = excluded.check_look,
-		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
-		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
-		interrupted = excluded.interrupted, prompted = excluded.prompted,
-		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
-		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
-		kept_decisions = excluded.kept_decisions,
-		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, round_named = excluded.round_named`,
-		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
-		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
-		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
-		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, d.RoundNamed,
-	)
-	if err != nil {
-		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
-	}
-	if unconfirmed {
-		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
-	}
-	return tellKeptDecisions(ctx, tx, token, d.ID)
-}
-
-// PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
-// records both, and a daemon that died between them would leave a claim recorded as working whose
-// delivery nothing retires or re-sends — a task the shim has already answered, so its worker is
-// never prompted again and the phase waits. It is also where a confirmation tells the decisions
-// its delivery holds, in that same transaction and for the same reason.
-func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
-		return err
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
-}
-
-// PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
-// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
-// the claim's write queued the publication of its issue's role sessions, for the caller's
-// CommittedClaim once its transaction has committed.
-func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
-	queued, err := s.putClaim(ctx, tx, c)
-	if err != nil {
-		return false, err
-	}
-	return queued, putDelivery(ctx, tx, c.Token, d)
-}
-
-// RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
-// claim does not hold is refused, and the one it does hold stays. The claim it is given is written
-// in the same transaction, because the run a claim serves is set by the retiring of the task that
-// ran: a delete that committed without it would leave a daemon crashed in between with a claim
-// that has forgotten the run its worker is still working. What the delivery held is left KEPT in
-// that same transaction: a retired task tells nothing, so each row waits for the next start or
-// catch-up of its own issue's tree to name it.
-//
-// A delete that removes no row is refused two ways, because pending_task_deliveries is keyed on
-// the claim: the row holds no delivery at all, or it holds one under another id. The first is
-// the retirement this call already committed and whose answer the caller lost, and it carries
-// supervise.ErrNoSuchDelivery so that the caller can read it as its own write made good rather
-// than as a fresh failure. The second is a different claim altogether — a write that rotated the
-// delivery's id committed after its answer was cut off, so the row holds the new delivery while
-// the caller is retiring the old one — and it carries supervise.ErrOtherDelivery, naming both
-// ids, which is not ErrNoSuchDelivery and must never be read as one: that would drop the
-// delivery memory holds and leave the stored one behind, pending and unretired. Which it is can
-// only be read from the row, so it is read here, in the same transaction as the delete that
-// found nothing.
-func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx,
-			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2",
-			string(c.Token), deliveryID,
-		)
-		if err != nil {
-			return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, err)
-		}
-		if tag.RowsAffected() == 0 {
-			var stored string
-			switch err := tx.QueryRow(ctx,
-				"select delivery_id from pending_task_deliveries where claim_token = $1",
-				string(c.Token),
-			).Scan(&stored); {
-			case errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, supervise.ErrNoSuchDelivery)
-			case err != nil:
-				return fmt.Errorf("read the pending delivery of %s: %w", c.Token, err)
-			default:
-				return fmt.Errorf("retire delivery %s on %s: the row holds delivery %s: %w",
-					deliveryID, c.Token, stored, supervise.ErrOtherDelivery)
-			}
-		}
-		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
-}
-
 func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	var (
 		c                           supervise.Claim
@@ -859,6 +764,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
+		runID, owedRun              int64
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
@@ -873,7 +779,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
-		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
+		&c.UpdateLeftRound, &c.ProviderErrorRun, &runID, &owedRun, &c.ProviderErrorsOwed.Reason, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
@@ -895,6 +801,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.ProviderErrorRunID, c.ProviderErrorsOwed.Run = uint64(runID), uint64(owedRun)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed

@@ -435,6 +435,71 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 	})
 }
 
+// The update round's question waits behind the task the claim holds: the task a provider error
+// took back, which waits on the ladder for its next send, and the task in flight, in its turn.
+// Each ask then publishes nothing and marks nothing (UpdateAskBehindTask), and once the task's
+// turn ends with no error the claim holds no task and the next ask goes. The control is a ready
+// claim that owes no task, which is asked at once.
+func TestPodUpdateAskWaitsBehindTheTaskTheClaimHolds(t *testing.T) {
+	behind := func(h *harness, what string) {
+		h.t.Helper()
+		asked := &askPublisher{delivered: true}
+		outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, asked.publish)
+		if err != nil || outcome != UpdateAskBehindTask || asked.calls != 0 {
+			h.t.Fatalf("the ask %s = %v, %v after %d publishes, want it to wait behind the task, publishing nothing", what, outcome, err, asked.calls)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			h.t.Fatalf("the ask %s marked the claim asked (memory %v, store %v), want no mark", what, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+		}
+	}
+	goesOnce := func(h *harness, what string) {
+		h.t.Helper()
+		asked := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, asked.publish); err != nil || outcome != UpdateAskDelivered || asked.calls != 1 {
+			h.t.Fatalf("the ask %s = %v, %v after %d publishes, want it delivered once", what, outcome, err, asked.calls)
+		}
+	}
+	t.Run("the task a provider error took back", func(t *testing.T) {
+		h := workingClaim(t, func(d *Deps) { d.PluginContract = PodUpdateContract })
+		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.openUpdate(testRound, testReasons)
+		behind(h, "while the ladder keeps the task")
+		h.climbs(1, promptRetryDelay(1))
+		behind(h, "while the task sent again is in its turn")
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.must(StreamPromptResult{Claim: h.token, DeliveryID: h.pending().ID, AgentInvoked: true})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("the clean turn left %+v pending, want the task retired", *p)
+		}
+		goesOnce(h, "once the task retired")
+	})
+	t.Run("a task in flight", func(t *testing.T) {
+		h := workingClaim(t, func(d *Deps) { d.PluginContract = PodUpdateContract })
+		h.openUpdate(testRound, testReasons)
+		behind(h, "while the task is in its turn")
+	})
+	t.Run("the control: a claim that owes no task", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		goesOnce(h, "to a claim holding no task")
+	})
+	// An older daemon queued a round's question as a task (updateTaskPrefix), and a restored claim
+	// can hold one. That delivery is the question itself, not a task it waits behind, so the rule
+	// owes the ask; an ask of another round queued so is a task like any other, and the question
+	// waits behind it.
+	t.Run("the round's own question an older daemon queued as a task", func(t *testing.T) {
+		c := Claim{UpdateRound: testRound, Pending: &Delivery{ID: updateTaskID(testRound), Task: "Update your pod."}}
+		if owed, why := c.OwesUpdateAsk(testRound); !owed {
+			t.Fatalf("a claim whose pending delivery is an ask of its own round = %v, %v, want the ask owed", owed, why)
+		}
+		c.Pending = &Delivery{ID: updateTaskID(testRound + "-later"), Task: "Update your pod."}
+		if owed, why := c.OwesUpdateAsk(testRound); owed || why != UpdateAskBehindTask {
+			t.Fatalf("a claim whose pending delivery is an ask of another round = %v, %v, want it to wait behind that task", owed, why)
+		}
+	})
+}
+
 // The lock is taken without waiting: whatever holds it — a decision in flight, or a section that
 // is no decision, so that Deciding reads nothing — the ask answers ErrMachineBusy at once, having
 // published nothing and marked nothing, and the next ask once the lock is free is the first

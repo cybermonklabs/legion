@@ -502,9 +502,10 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round
-waits for none of this: the daemon publishes the round's message to the role's own topic, and the
-round ends at its bound whether or not a turn of that role succeeds.
+waits for the compaction's end instead, as everything the claim is owed does. An update round's
+message waits behind the task the claim holds, whether it is in its turn or kept for its next
+send: the daemon publishes the round's message to the role's own topic once the claim holds no
+task, and the round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -515,16 +516,46 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 
 **After six turns of one claim in a row have ended in a provider error**, the project's controller
 is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
-(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
-goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
-compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
-Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
-recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
-`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+(`admission: told the controller of a run of provider errors`). The daemon's store keeps the
+notice each run owes until it is written, whatever comes after the run: another failed turn, a
+clean turn, a compaction, a new session, a daemon restart, or a later run of the same claim that
+reaches six too, whose notice is kept beside the first run's and never in its place. The daemon
+writes the notices while a controller is registered, at each failed turn of a run from the sixth
+on, at the end of the run, at the controller's registration, and at every fact, tick and boot. By
+default an operator launches the controller, so a run can reach six with none registered: the
+controller is then told when it registers, and when two runs or more of one claim reached six
+meanwhile, one notice names each of them, oldest first. A notice whose write failed is written at
+the next of those moments. Each run is told once, so a later run is told while an earlier run's
+notice still waits to be published. The notice goes to the controller's role topic,
+`notifications.role.legion-<project>-controller`, and not to the controller topic the other
+controller notices take, and it is published only once the session registered as the controller
+holds that role live at the Envoy listener. The listener checks the role's holder again at the
+publish and delivers the notice to a live holder alone; a role it finds with no live holder, a
+controller whose process died and that the listener reads unresponsive for its gone horizon
+among them, is stored for nobody, and the notice waits for the controller that is started in its
+place or for the same session once it is live again. Until then the notice's outbox row waits on
+its backoff, read again at most 64 s apart, and holds no other row of the issue back; `outbox row
+waits` with `the provider-errors notice for <KEY> waits for controller session <session> to hold
+<role> live`, logged at INFO at the first try, DEBUG at the next six and WARN from the eighth on,
+once seven tries have waited, means a registered controller does not hold its role. One case is
+still lost: a controller whose process died less than the listener's live window ago (five
+minutes after its last registration) still reads live, at the daemon's read and at the
+listener's publish, and is handed the notice into its own session consumer; a controller
+started in its place is not handed it. The cause is that nothing tells the daemon that a
+controller session read a notice: the listener answers a role send once its stream stored the
+forward, and the session's acknowledgement of the frame goes to the stream alone. The backstop
+is the run itself, which `legion state` shows as each agent's `providerErrorRun`: once the
+controller skill says so, the controller's start reads it, and a run at six or more is one it
+may not have been told of. Nothing is held and nothing is stopped by a run of six: the task is
+still kept and still sent again. The run goes back
+to zero three ways: at a turn of that claim that ends with no provider error, at a compaction of
+its session that ran (`legion claims compact`, or the controller's `compact`; one Oh My Pi refused
+or skipped resets nothing, since the session is as it was), and when the claim's recorded session
+is forgotten, by `legion claims retry --fresh-session`, the controller's `fresh_session`, or
+`legion claims forget-session`. Only after one of those can a new run begin and owe a notice of
+its own. The notice is the claim's own — the issue and the role that names it — so two claims of
+one issue each get a notice of their own, and in a provider outage every claim that reaches six is
+told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON

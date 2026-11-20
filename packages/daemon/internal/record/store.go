@@ -2252,40 +2252,51 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
+func (s *Postgres) ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", err
+	}
+	var session string
+	err = tx.QueryRow(ctx, "select session from controllers where project = $1", token).Scan(&session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the session of %s's registered controller: %w", project, err)
+	}
+	return session, nil
+}
+
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
-// issue when the caller named one and to one role of that issue when it named a role as well:
-// the same read every way, with the issue and the role as two more terms that an empty string
-// leaves out, so a project-wide wake's answer is what it always was.
-func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
+// issue when the caller named one: the same read either way, with the issue as one more term that
+// an empty string leaves out, so a project-wide wake's answer is what it always was.
+func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
-		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
-		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
+		and ($4 = '' or issue = $4))`,
+		string(OutboxKindControllerNotice), project, string(kind), issue).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil
 }
 
 // ControllerNoticesPending reads that same row for many issues in one query: the statement above
-// with the issue term taken as a list rather than one key, and with the project and the role
-// terms exactly as they stand there, so each issue's answer is the answer the single read gives
-// it and a caller asking of a hundred roots makes one round trip instead of a hundred. It names
-// the issues a row was found for, which is the set a caller filtering its own roots asks for; an
-// issue with no unpublished notice is simply absent, and no issues at all reads nothing — the
-// query is not made.
-//
-// Distinct, because a kind that stands per claim can have a row per role of one issue
-// (NoticePerClaim) and the caller asks about issues; a project-wide ask names no issue and is
-// ControllerNoticePending's, which this does not serve.
-func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error) {
+// with the issue term taken as a list rather than one key, and with the project term exactly as
+// it stands there, so each issue's answer is the answer the single read gives it and a caller
+// asking of a hundred roots makes one round trip instead of a hundred. It names the issues a row
+// was found for, which is the set a caller filtering its own roots asks for; an issue with no
+// unpublished notice is simply absent, and no issues at all reads nothing — the query is not
+// made. Each issue is named once, however many rows of it the outbox holds.
+func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string) (map[string]struct{}, error) {
 	if len(issues) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select distinct issue from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
-		and issue = any($4) and ($5 = '' or payload->>'role' = $5)`,
-		string(OutboxKindControllerNotice), project, string(kind), issues, string(role))
+		and issue = any($4)`,
+		string(OutboxKindControllerNotice), project, string(kind), issues)
 	if err != nil {
 		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
 	}
@@ -2302,6 +2313,142 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
 	}
 	return pending, nil
+}
+
+// ErrNoClaim is a read or a mark of a claim's notice of a run of provider-error turns for a token
+// no claim row holds (Store.ProviderErrorsOwed, Store.MarkProviderErrorsTold).
+var ErrNoClaim = errors.New("no claim row holds the token")
+
+// OwedProviderErrors is what one claim owes the project's controller of its runs of
+// provider-error turns and has not told (Store.ProviderErrorsOwed): the claim, its issue and its
+// role, and each of its runs that reached six turns and is untold, oldest first, with what that
+// run's notice says (supervise.Claim.ProviderErrorsOwed, provider_errors_owed). Runs holds one
+// run or more.
+type OwedProviderErrors struct {
+	Token claim.Token
+	Issue string
+	Role  claim.Role
+	Runs  []supervise.OwedNotice
+}
+
+// Newest is the number of the newest run o owes, the told mark its notice moves the claim to
+// (Store.MarkProviderErrorsTold).
+func (o OwedProviderErrors) Newest() uint64 {
+	return o.Runs[len(o.Runs)-1].Run
+}
+
+func (s *Postgres) ProviderErrorsOwed(ctx context.Context, tx pgx.Tx, token claim.Token) (*OwedProviderErrors, error) {
+	owed := OwedProviderErrors{Token: token}
+	var role string
+	err := tx.QueryRow(ctx, "select issue, role from claims where token = $1 for update", string(token)).Scan(&owed.Issue, &role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("read the notices claim %s owes of its provider errors: %w", token, ErrNoClaim)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the notices claim %s owes of its provider errors: %w", token, err)
+	}
+	if owed.Issue == "" {
+		return nil, nil
+	}
+	owed.Role = claim.Role(role)
+	runs, err := owedRuns(ctx, tx, []string{string(token)})
+	if err != nil {
+		return nil, fmt.Errorf("read the notices claim %s owes of its provider errors: %w", token, err)
+	}
+	if owed.Runs = runs[token]; len(owed.Runs) == 0 {
+		return nil, nil
+	}
+	return &owed, nil
+}
+
+func (s *Postgres) ProjectProviderErrorsOwed(ctx context.Context, tx pgx.Tx, project string) ([]OwedProviderErrors, error) {
+	// The claims rows are keyed by the claim project token, not by the Dispatch project key.
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return nil, err
+	}
+	// The claims' rows are locked first, and their owed rows read after the locks are held, in a
+	// statement of their own: an owed row another transaction told and deleted while this one
+	// waited on its claim's lock is then read as gone, rather than from the snapshot this first
+	// statement took before it waited.
+	rows, err := tx.Query(ctx, `select token, issue, role from claims
+		where project = $1 and issue <> '' and token in (select claim_token from provider_errors_owed)
+		order by token for update`, token)
+	if err != nil {
+		return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+	}
+	var owed []OwedProviderErrors
+	var tokens []string
+	for rows.Next() {
+		var notice OwedProviderErrors
+		var claimToken, role string
+		if err := rows.Scan(&claimToken, &notice.Issue, &role); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+		}
+		notice.Token, notice.Role = claim.Token(claimToken), claim.Role(role)
+		owed = append(owed, notice)
+		tokens = append(tokens, claimToken)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+	}
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	runs, err := owedRuns(ctx, tx, tokens)
+	if err != nil {
+		return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+	}
+	kept := owed[:0]
+	for _, notice := range owed {
+		if notice.Runs = runs[notice.Token]; len(notice.Runs) > 0 {
+			kept = append(kept, notice)
+		}
+	}
+	return kept, nil
+}
+
+// owedRuns reads the owed runs of the claims of tokens, oldest first for each claim. The caller
+// holds each claim's row lock (ProviderErrorsOwed, ProjectProviderErrorsOwed), which a claim's
+// write takes before it writes an owed row (the claim store's upsertClaim) and the mark takes too
+// (MarkProviderErrorsTold), so the rows read here are every untold run of the claim until the
+// caller's transaction ends.
+func owedRuns(ctx context.Context, tx pgx.Tx, tokens []string) (map[claim.Token][]supervise.OwedNotice, error) {
+	rows, err := tx.Query(ctx, `select claim_token, run, reason from provider_errors_owed
+		where claim_token = any($1) order by claim_token, run`, tokens)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := make(map[claim.Token][]supervise.OwedNotice)
+	for rows.Next() {
+		var token string
+		var run int64
+		var notice supervise.OwedNotice
+		if err := rows.Scan(&token, &run, &notice.Reason); err != nil {
+			return nil, err
+		}
+		notice.Run = uint64(run)
+		runs[claim.Token(token)] = append(runs[claim.Token(token)], notice)
+	}
+	return runs, rows.Err()
+}
+
+func (s *Postgres) MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, through uint64) error {
+	tag, err := tx.Exec(ctx, "update claims set provider_errors_told_run = greatest(provider_errors_told_run, $2) where token = $1",
+		string(token), int64(through))
+	if err != nil {
+		return fmt.Errorf("mark claim %s told of its runs of provider errors through run %d: %w", token, through, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("mark claim %s told of its runs of provider errors through run %d: %w", token, through, ErrNoClaim)
+	}
+	if _, err := tx.Exec(ctx, "delete from provider_errors_owed where claim_token = $1 and run <= $2", string(token), int64(through)); err != nil {
+		return fmt.Errorf("mark claim %s told of its runs of provider errors through run %d: %w", token, through, err)
+	}
+	return nil
 }
 
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {

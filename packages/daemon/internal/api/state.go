@@ -857,8 +857,9 @@ type ClaimView struct {
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
 	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
-	// once, at a run of six, so without this key the number behind that telling stands on no
-	// surface its reader can reach.
+	// once a run reaches six: offered at every such turn from the sixth, written once a controller
+	// is registered, and marked told in the same transaction, so without this key the number
+	// behind that telling stands on no surface its reader can reach.
 	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
 	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
 	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
