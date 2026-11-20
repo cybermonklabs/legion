@@ -10,8 +10,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// releaseSaveFaults is the real release store with one save route refused: the row still reaches
-// every other real authorization and outbox effect.
+// releaseSaveFaults is the real release store with two faults a test arms by setting a field.
+// cancelErr refuses every CancelIssueRelease while it is set, whichever row asks; saveErr refuses
+// the first IssueReleaseSave and no later one. cancelTried records that some row asked to cancel
+// the release, and saveRefused that the save's one refusal was given. Every other call reaches the
+// real store.
 type releaseSaveFaults struct {
 	outboxTrees
 	cancelErr   error
@@ -53,9 +56,10 @@ func (r *idleRig) pendingSave(t *testing.T) {
 	}
 }
 
-// A workspace save that did not finish is a prerequisite of its own release's teardown. A failed
-// cancellation and a failed save authorization leave that row queued, but the stops and teardown
-// from the batch continue, so each route must leave the pod and its workspace alone.
+// A release's teardown waits until the release's own workspace save has left the outbox. A failed
+// cancel and a failed save authorization each leave that row queued while the role stop and the
+// teardown of the same pass go on, so each route must leave the pod and its workspace alone; once
+// the save row leaves on a later pass, the teardown it held back finishes or tears the pod down.
 func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 	ctx := context.Background()
 	// One drain over what the release queued: the save fails first, and the stop and teardown
@@ -127,7 +131,7 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 		runOnce(t, rig)
 
 		if !faults.cancelTried {
-			t.Fatal("the failed save did not attempt its cancellation")
+			t.Fatal("no row asked to cancel the release after its save failed")
 		}
 		pendingSaveKeepsPod(t, rig, 1)
 
