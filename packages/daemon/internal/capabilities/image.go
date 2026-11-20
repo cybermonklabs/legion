@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -45,11 +46,22 @@ type Image struct {
 	// Chromium. The daemon's probe Sandbox never sets it, so a Sandbox pod's image is always
 	// checked for the browser.
 	SkipBrowser bool
+	// cuts counts the commands the end of the caller's context stopped, or kept from starting
+	// (ran.cut), so CheckImage, which sets it on its own copy, tells a row whose check that end cut
+	// from one its own commands decided. A copy of the Image keeps the same count; nil counts
+	// nothing.
+	cuts *atomic.Int32
 }
 
 // commandTimeout bounds each command a check runs: a `--version` or a `--check` that has not
 // answered in a minute is hanging, not slow, and the probe's own budget is not to be spent on it.
 var commandTimeout = 60 * time.Second
+
+// errCommandTimeout is the cause a command's own budget gives its attempt's context when it
+// passes (runWithin). The context keeps the cause of whichever end fired first, the budget's or the
+// caller's, so the run tells the two apart by that record, and never by ctx.Err() read once the
+// command is gone.
+var errCommandTimeout = errors.New("the command's own budget passed")
 
 // maxDetail caps a command's quoted output in a State's detail, so a chatty command cannot push
 // the table past the log tail the daemon reads back.
@@ -73,15 +85,23 @@ var imageChecks = map[Name]imageCheck{
 // present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved the
 // prompt-named skills. err is nil when every image row checked passed; otherwise it names every
 // missing one, so one rebuild of the image fixes them all rather than the first alone. An image row
-// whose check returned after ctx ended, and every image row after it, is unanswered (render) and
-// left out of err: a row found missing while ctx was alive is still named.
+// a command of whose check the end of ctx stopped (img.cuts counts each such command), and every
+// image row render reaches after ctx ended, which is not run, is unanswered and left out of err.
+// Every other image row keeps what its check decided, whenever the check returned: a row found
+// missing while ctx was alive is still named, one whose command its own timeout stopped among
+// them, also where that command's stop outlasted ctx.
 func CheckImage(ctx context.Context, img Image) ([]State, error) {
+	img.cuts = new(atomic.Int32)
 	states := render(ctx, renderer{
 		image: func(row Capability) State {
 			if row.Name == Browser && img.SkipBrowser {
 				return State{Name: row.Name, Status: StatusUnchecked, Detail: "not checked (--skip-browser): the image is for a deployment that turns Oh My Pi's browser off"}
 			}
+			cuts := img.cuts.Load()
 			detail, ok := imageChecks[row.Name](ctx, img)
+			if img.cuts.Load() != cuts {
+				return unanswered(row.Name, ctx.Err())
+			}
 			if !ok {
 				return State{Name: row.Name, Status: StatusMissing, Detail: detail}
 			}
@@ -478,12 +498,15 @@ func envMap(env []string) map[string]string {
 	return m
 }
 
-// ran is one command's run: its exit code, what it printed, and the error when it could not run
-// to an exit of its own — it never started, its budget killed it, or a signal ended it.
+// ran is one command's run: its exit code, what it printed, the error when it could not run to an
+// exit of its own — it never started, its budget killed it, or a signal ended it — and whether the
+// end of the caller's context stopped it or kept it from starting (cut), which leaves the run no
+// answer of the command's own.
 type ran struct {
 	exit           int
 	stdout, stderr string
 	err            error
+	cut            bool
 }
 
 // output is what the command printed, stderr then stdout, as one line.
@@ -514,9 +537,17 @@ func (img Image) run(ctx context.Context, name string, args ...string) ran {
 	return img.runWithin(ctx, commandTimeout, name, args...)
 }
 
-// runWithin is run with budget in place of commandTimeout.
+// runWithin is run with budget in place of commandTimeout. What ended the command is read from the
+// run itself: whether the end of its attempt's context signalled its process group (killed), and
+// which end that context recorded as its cause when the end fired, errCommandTimeout for budget or
+// the cause of ctx's own end. The cause is read, and not ctx.Err() once the command is gone,
+// because a stop can take up to procgroup.StopGrace and procgroup.WaitDelay after the end that
+// sent it: a deadline of ctx that passes in that time does not make a command its budget stopped
+// one the caller stopped. A command its budget stopped timed out. One the end of ctx stopped, or
+// kept from starting, is cut (ran.cut, counted on img.cuts), whatever it answered the stop with.
+// One that exited before either end stopped it is its exit, whenever ctx ended.
 func (img Image) runWithin(ctx context.Context, budget time.Duration, name string, args ...string) ran {
-	attempt, cancel := context.WithTimeout(ctx, budget)
+	attempt, cancel := context.WithTimeoutCause(ctx, budget, errCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(attempt, name, args...)
 	cmd.Env = img.Env
@@ -525,14 +556,21 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
-	r := ran{stdout: stdout.String(), stderr: stderr.String()}
+	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
+	// own, context.Canceled.
+	cause := context.Cause(attempt)
+	timedOut := errors.Is(cause, errCommandTimeout)
+	r := ran{stdout: stdout.String(), stderr: stderr.String(), cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
-	case ctx.Err() == nil && killed():
+	case killed() && timedOut:
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
 		r.err = procgroup.Said(procgroup.Err(err), r.output())
 	default:
 		r.exit = cmd.ProcessState.ExitCode()
+	}
+	if r.cut && img.cuts != nil {
+		img.cuts.Add(1)
 	}
 	return r
 }

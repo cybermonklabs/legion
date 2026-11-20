@@ -114,23 +114,24 @@ type renderer struct {
 // render renders every row of Table, in its order, dispatching each to r's function for its site;
 // a withheld row renders itself: State{Name, StatusWithheld, the citation and the summary}. CheckImage
 // and Deployment.Report are its two callers, each with the renderer that gives a row's state as
-// that surface knows it. An image row's rendering runs commands under ctx, which ctx's end stops,
-// so ctx is read after each one: an image row whose rendering returned after ctx ended, and every
-// image row after it, which is not run, renders StatusUnanswered, "not checked: <ctx's error>",
-// in place of what a cut-short command would make it say. Every other row renders as it does
-// under a live ctx, since its rendering runs nothing. Report's renderers run no command and pass a
-// context that never ends.
+// that surface knows it. An image row's rendering runs commands under ctx, so an image row render
+// reaches after ctx ended is not run, and renders unanswered. An image row it ran renders what r
+// gives it, whenever its rendering returned: whether the end of ctx cut that rendering is r's to
+// say, from the cause each of its commands' contexts recorded when its end fired (CheckImage), and
+// never from ctx.Err() read once the rendering is done, since a command's own timeout can fire
+// while ctx is alive and its stop then outlast ctx, by procgroup.StopGrace and procgroup.WaitDelay
+// at most. Every other row renders as it does under a live ctx, since its rendering runs nothing.
+// Report's renderers run no command and pass a context that never ends.
 func render(ctx context.Context, r renderer) []State {
 	states := make([]State, 0, len(Table))
 	for _, row := range Table {
 		var state State
 		switch row.Site {
 		case SiteImage:
-			if ctx.Err() == nil {
-				state = r.image(row)
-			}
 			if err := ctx.Err(); err != nil {
-				state = State{Name: row.Name, Status: StatusUnanswered, Detail: "not checked: " + err.Error()}
+				state = unanswered(row.Name, err)
+			} else {
+				state = r.image(row)
 			}
 		case SiteLive:
 			state = r.live(row)
@@ -142,6 +143,12 @@ func render(ctx context.Context, r renderer) []State {
 		states = append(states, state)
 	}
 	return states
+}
+
+// unanswered is the state of an image row the end of the check's context left with no verdict,
+// err being that context's error: StatusUnanswered, "not checked: <err>".
+func unanswered(name Name, err error) State {
+	return State{Name: name, Status: StatusUnanswered, Detail: "not checked: " + err.Error()}
 }
 
 // Decidable is the SiteDeployment names in Table order: what a legion.yaml decided line may name,

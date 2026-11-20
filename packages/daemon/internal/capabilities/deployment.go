@@ -63,7 +63,8 @@ type Deployment struct {
 // `legion state` carries (api.CapabilityState) is never missing or reported, since the daemon
 // either measures it or has nothing yet to measure it with. StatusUnanswered is the probe table's
 // alone too: an image row the end of the check's context (the probe's deadline) left with no
-// verdict, its check returning after that end or never run, which says nothing of the image.
+// verdict, a command of its check stopped by that end or the check never run, which says nothing
+// of the image.
 const (
 	StatusPresent    = "present"
 	StatusMissing    = "missing"

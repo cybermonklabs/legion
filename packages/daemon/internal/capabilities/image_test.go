@@ -582,6 +582,63 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 	}
 }
 
+// A row whose command its own timeout (commandTimeout) ended while the context was alive stays
+// missing, its detail saying it timed out, also where the timeout's stop outlasts the context: the
+// browser's Chromium answers the timeout's SIGTERM with an exit of its own 0.9 s later, inside
+// procgroup.StopGrace, and the caller's context ends 0.4 s into that stop. Which end fired is the
+// cause the run recorded when it fired, so the row is a hanging command's, missing and in the
+// error, never unanswered; the rows after it, which the ended context leaves unrun, are unanswered.
+// The context ends a set time after Chromium started, read from the marker it writes first, so the
+// window does not hang on how long the rows before the browser's took.
+func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDeadline(t *testing.T) {
+	was := commandTimeout
+	commandTimeout = time.Second
+	t.Cleanup(func() { commandTimeout = was })
+	limit := commandTimeout
+	s := newStubs(t)
+	marker := filepath.Join(t.TempDir(), "started")
+	s.install("chromium", "#!/bin/sh\n: >'"+marker+"'\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	// seen says whether the marker appeared; once it has, the context ends 0.4 s after the timeout
+	// fires and 0.5 s before Chromium's exit, as the deadline of a probe would.
+	seen := make(chan bool, 1)
+	go func() {
+		for bound := time.Now().Add(10 * time.Second); time.Now().Before(bound); time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(marker); err == nil {
+				time.Sleep(limit + 400*time.Millisecond)
+				cancel(context.DeadlineExceeded)
+				seen <- true
+				return
+			}
+		}
+		t.Error("the browser's Chromium never wrote its marker within 10s")
+		seen <- false
+	}()
+
+	states, err := CheckImage(ctx, s.image())
+
+	if !<-seen {
+		t.Fatal("the browser's Chromium never started, so the row covers no window")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("CheckImage returned before the context ended; the row needs the context to end while the timeout's stop is under way")
+	}
+	got := byName(states)
+	if browser := got[Browser]; browser.Status != StatusMissing || !strings.HasSuffix(browser.Detail, " --version: timed out after 1s") {
+		t.Fatalf("browser = %+v, want missing, its Chromium timed out after 1s", browser)
+	}
+	if want := "capability browser is missing: " + got[Browser].Detail; err == nil || err.Error() != want {
+		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
+	}
+	notChecked := "not checked: " + ctx.Err().Error()
+	for _, name := range []Name{LSP, CodeGraph, Skills, Toolchain, ClaudeCode} {
+		if got[name].Status != StatusUnanswered || got[name].Detail != notChecked {
+			t.Errorf("%s = %+v, want unanswered (%s)", name, got[name], notChecked)
+		}
+	}
+}
+
 // A command that exits on its own inside its budget did not time out, however long
 // procgroup.WaitDelay then holds the run open for a child still holding its output pipe. The
 // budget here is 100 ms short of WaitDelay, so every such run returns past its deadline, while the
@@ -608,7 +665,7 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastTheBudget(t *te
 }
 
 // A command its budget cuts off is a run that timed out, named with that budget, never an exit of
-// its own.
+// its own, and no run the caller's context cut.
 func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
@@ -617,11 +674,14 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	if r.err == nil || r.err.Error() != "timed out after 1s" {
 		t.Errorf("run = exit %d, error %v; want the error \"timed out after 1s\": the budget cut the command off", r.exit, r.err)
 	}
+	if r.cut {
+		t.Error("run is cut, want a run its own budget ended, which the caller's context did not cut")
+	}
 }
 
 // A command its caller's context ended was not cut off by its budget: the run is no timeout but
-// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and the
-// check's row is unanswered rather than a hanging command's
+// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and it is cut
+// (ran.cut), so the check's row is unanswered rather than a hanging command's
 // (TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered). The cancel lands
 // once the command runs, never on one not yet started.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
@@ -643,6 +703,9 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	if r.err == nil || r.err.Error() != "signal: terminated" {
 		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)
+	}
+	if !r.cut {
+		t.Error("run is not cut, want a run the caller's context cut")
 	}
 }
 
