@@ -36,7 +36,7 @@ const REFUSED = 1;
 const USAGE = 2;
 
 /** `dispatch login --help`. */
-export const LOGIN_HELP = [
+const LOGIN_HELP = [
   "Usage: dispatch login --device [--person <address>]",
   "",
   "Logs this machine in at the secrets broker, once per machine, for a machine with no identity of its own, such as a laptop. It prints a code and the page to type it into; the person the login names approves it there, signed in to Dispatch. The login is then kept in the file AGENT_SECRETS_DEVICE_LOGIN_FILE names (default ~/.config/legion/device-login.json), mode 0600, and every session that sets AGENT_SECRETS_MACHINE_IDENTITY=device-login trades it for its broker token.",

@@ -103,7 +103,7 @@ export const DEVICE_LOGIN_FILE_NAMED = `the device login ${DEVICE_LOGIN_FILE_VAR
 const BROKER_SETTING = "AGENT_SECRETS_URL";
 
 /** A lock its holder has not touched for this long is one whose holder died, and is taken. */
-export const DEVICE_LOGIN_STALE_LOCK_MS = 30_000;
+const DEVICE_LOGIN_STALE_LOCK_MS = 30_000;
 /** How often a lock's holder touches it, well inside {@link DEVICE_LOGIN_STALE_LOCK_MS}. */
 const LOCK_HEARTBEAT_MS = 10_000;
 /** How long a caller waits between two tries of a lock another process holds. */
@@ -174,16 +174,16 @@ export interface DeviceLogin {
   readonly accessExpiresAt: Date | null;
 }
 
-/** A file's error code, "" where it has none. */
-function codeOf(error: unknown): string {
-  const { code } = (error ?? {}) as { code?: unknown };
-  return typeof code === "string" ? code : "";
-}
-
 /** A member of the file's JSON as a string, "" where it is absent or not one. */
 function member(json: Record<string, unknown>, name: string): string {
   const value = json[name];
   return typeof value === "string" ? value : "";
+}
+
+/** `key` as the DPoP key every request of the login proves; a key that is not P-256 is refused
+ *  naming it as this machine's device login key. */
+function loginDpopKey(key: KeyObject): DpopKey {
+  return dpopKeyOf(key, "this machine's device login key");
 }
 
 /**
@@ -280,7 +280,7 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
  * file by its setting. A caller holds the login's lock ({@link withDeviceLoginLock}), so no other
  * process's refresh writes between its read and this write.
  */
-export async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> {
+async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> {
   const dir = dirname(path);
   const data = JSON.stringify({
     key: login.key.export({ format: "der", type: "pkcs8" }).toString("base64"),
@@ -369,7 +369,7 @@ async function statOrNone(path: string): Promise<Stats | null> {
   try {
     return await stat(path);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return null;
+    if (readErrorCode(error) === "ENOENT") return null;
     throw new Error(`read the lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
 }
@@ -381,7 +381,7 @@ async function createOwn(path: string, value: string): Promise<boolean> {
   try {
     handle = await open(path, "wx", 0o600);
   } catch (error) {
-    if (codeOf(error) === "EEXIST") return false;
+    if (readErrorCode(error) === "EEXIST") return false;
     throw new Error(`take the lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   try {
@@ -428,7 +428,7 @@ async function removeIfStill(path: string, was: Seen, what: string): Promise<boo
   try {
     await rename(path, moved);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return true;
+    if (readErrorCode(error) === "ENOENT") return true;
     throw new Error(`take ${what} beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   const took = await look(moved);
@@ -572,6 +572,13 @@ function brokerOf(brokerUrl: string): string {
   return holdUrlUserinfo(trimmed);
 }
 
+/** A failure that carries no OAuth answer, as a text may name it: its HTTP status where it
+ *  reached one, and its class, never its message, which can repeat the URL it was handed. */
+function failureText(error: unknown): string {
+  const status = statusOf(error);
+  return status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
+}
+
 /** What a failed call to the broker's `endpoint` was, as `doing` names it: the OAuth error a 4xx
  *  answered, by its code and, scrubbed, its description; else its status and class. */
 function brokerFailure(doing: string, endpoint: string, error: unknown): Error {
@@ -584,10 +591,7 @@ function brokerFailure(doing: string, endpoint: string, error: unknown): Error {
       `${doing} at ${at}: the broker answered HTTP ${error.status} ${error.error}${said}`
     );
   }
-  const status = statusOf(error);
-  return new Error(
-    `${doing} at ${at}: ${status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`}`
-  );
+  return new Error(`${doing} at ${at}: ${failureText(error)}`);
 }
 
 /**
@@ -675,7 +679,7 @@ export async function startDeviceLogin(options: {
   const person = options.person.trim();
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   // The public half as every proof of the login embeds it: `kty`, `crv`, `x` and `y` alone.
-  const jwk = dpopKeyOf(privateKey, "this machine's device login key").publicJwk;
+  const jwk = loginDpopKey(privateKey).publicJwk;
   const thumbprint = await calculateJwkThumbprint(jwk);
   const iat = Math.floor(Date.now() / 1000);
   const claims = {
@@ -742,7 +746,7 @@ export async function finishDeviceLogin(
 ): Promise<DeviceLogin> {
   const sleep = options.sleep ?? pause;
   const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, options.signal, {
-    key: dpopKeyOf(started.key, "this machine's device login key"),
+    key: loginDpopKey(started.key),
     nonce: { value: "" },
   });
   const expired = new Error(
@@ -851,7 +855,7 @@ export class DeviceLoginIdentity implements TokenSource {
   #loaded(): Promise<LoginKey> {
     if (this.#key === undefined) {
       const loading = readDeviceLogin(this.#path).then(async ({ key }) => {
-        const dpop = dpopKeyOf(key, "this machine's device login key");
+        const dpop = loginDpopKey(key);
         return { key: dpop, thumbprint: await calculateJwkThumbprint(dpop.publicJwk) };
       });
       this.#key = loading;
@@ -883,8 +887,7 @@ export class DeviceLoginIdentity implements TokenSource {
             `${DEVICE_LOGIN_FILE_NAMED} was made at another secrets broker than ${BROKER_SETTING} names; log this machine in at this one with: ${DEVICE_LOGIN_COMMAND}`
           );
         }
-        const now = dpopKeyOf(login.key, "this machine's device login key").publicJwk;
-        if ((await calculateJwkThumbprint(now)) !== thumbprint) {
+        if ((await calculateJwkThumbprint(loginDpopKey(login.key).publicJwk)) !== thumbprint) {
           throw new Error(
             `${DEVICE_LOGIN_FILE_NAMED} holds another login than the one this process started with, since ${DEVICE_LOGIN_COMMAND} ran again; start this session again to trade the new one`
           );
@@ -935,7 +938,7 @@ export async function refreshDeviceLogin(
   }
 ): Promise<DeviceLogin> {
   const config = brokerConfiguration(login.broker, options.fetch ?? fetch, options.signal, {
-    key: dpopKeyOf(login.key, "this machine's device login key"),
+    key: loginDpopKey(login.key),
     nonce: { value: "" },
   });
   const endpoint = login.broker + TOKEN_PATH;
@@ -955,9 +958,8 @@ export async function refreshDeviceLogin(
         options.describe
       );
     }
-    const status = statusOf(error);
     throw new BrokerTradeFailedError(
-      `refresh ${options.describe} at ${urlForText(endpoint, BROKER_SETTING)}: ${status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`}`
+      `refresh ${options.describe} at ${urlForText(endpoint, BROKER_SETTING)}: ${failureText(error)}`
     );
   }
   const next = loginOf(login.key, login.broker, answered, Date.now());
