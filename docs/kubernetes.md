@@ -894,7 +894,7 @@ Never build it on a workstation — no `docker build`, `docker buildx`, or `dock
 an unrelated buildx job took the devbox host to load 646 on 2026-09-12 and the Legion daemon with it (the CI runner is not a workstation).
 Iterate by pushing the PR branch (trigger 2;
 a draft builds only once it is marked ready, and a push cancels the previous head's build) or, once merged, dispatching (trigger 3);
-check the Dockerfile and workflow statically (`hadolint`, and actionlint as `ci.yaml`'s `lint` job runs it: the `docker run` of `.github/workflows/ci-job-lint.yaml`'s step `Check every workflow file with actionlint`) and run `bun test` for the TypeScript.
+check the Dockerfile and workflow statically (`hadolint`, and actionlint with the command in `.github/ci-notes/README.md`, which runs the actionlint, the shellcheck and the severity that CI runs) and run `bun test` for the TypeScript.
 Pulling and running the published image locally is fine.
 A failed build is retried with `gh run rerun <run-id> --failed` or by pushing the branch again.
 In a `release.yaml` run, `--failed` keeps the build jobs' recorded outputs, and a failed `publish` reruns whole, each step safe to repeat:
