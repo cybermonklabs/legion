@@ -28,6 +28,10 @@ export type FocusFallback = (loss: FocusLoss) => HTMLElement | null | undefined;
 /** What takes an element, and everything inside it, out of the focus's reach. */
 const OUT_OF_REACH = "[hidden], [inert]";
 
+/** Exported for `usableControl` (`usable-control.ts`), which reads it inside a closed Details,
+ *  where `canHoldFocus` refuses everything, so both rules take an element out of reach alike. */
+export { OUT_OF_REACH };
+
 /**
  * Whether the element can take the focus as it stands: it is on the page, not disabled, and
  * neither it nor an ancestor is hidden or inert. It reads no layout, so a test's DOM, which has
