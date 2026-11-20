@@ -76,11 +76,12 @@ func TestDispatchSignInWorkspaceDomainsTakeEveryDomainDispatchTakes(t *testing.T
 
 // signInWorkspaceDomains is refused before anything registers wherever Dispatch could not read it,
 // and an entry Dispatch would refuse at boot is refused here, each refusal a core.InputError naming
-// the input or the entry. Dispatch reads the list only with Google sign-in, so it is refused without
-// the sign-in inputs (the clause naming each one still unset), in the sandbox, and beside
-// iapAudience, which replaces Google sign-in. clusterOnly refuses it as it refuses every input that
-// configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput), and a seed in an entry is
-// refused with every other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput).
+// signInWorkspaceDomains as the schema does, an entry's refusal naming the entry by its index in
+// its message. Dispatch reads the list only with Google sign-in, so it is refused without the
+// sign-in inputs (the clause naming each one still unset), in the sandbox, and beside iapAudience,
+// which replaces Google sign-in. clusterOnly refuses it as it refuses every input that configures
+// Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput), and a seed in an entry is refused
+// with every other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput).
 func TestDispatchRefusesASignInWorkspaceDomainsItCannotServe(t *testing.T) {
 	const (
 		needsSignIn = "signInWorkspaceDomains needs browser sign-in: it names the other domains of the Google Workspace that signInDomain names, " +
@@ -113,19 +114,19 @@ func TestDispatchRefusesASignInWorkspaceDomainsItCannotServe(t *testing.T) {
 			withWorkspaceDomains(publicOriginWithoutSignIn, dispatchWorkspaceDomains...)},
 		{"in a sandbox", "signInWorkspaceDomains", inSandbox, withWorkspaceDomains(dispatchSandboxArgs, dispatchWorkspaceDomains...)},
 		{"beside iapAudience", "signInWorkspaceDomains", besideIAP, withWorkspaceDomains(dispatchIAPArgs, dispatchWorkspaceDomains...)},
-		{"an empty entry", "signInWorkspaceDomains[1]", "signInWorkspaceDomains[1] is empty: each entry is a domain the Workspace owns",
+		{"an empty entry", "signInWorkspaceDomains", "signInWorkspaceDomains[1] is empty: each entry is a domain the Workspace owns",
 			withWorkspaceDomains(dispatchArgs, "example.net", "")},
-		{"an uppercase entry", "signInWorkspaceDomains[0]", notDomain(0, "Example.net"), withWorkspaceDomains(dispatchArgs, "Example.net")},
-		{"a single label", "signInWorkspaceDomains[0]", notDomain(0, "example"), withWorkspaceDomains(dispatchArgs, "example")},
-		{"two domains in one entry", "signInWorkspaceDomains[0]", notDomain(0, "example.net,example.org"),
+		{"an uppercase entry", "signInWorkspaceDomains", notDomain(0, "Example.net"), withWorkspaceDomains(dispatchArgs, "Example.net")},
+		{"a single label", "signInWorkspaceDomains", notDomain(0, "example"), withWorkspaceDomains(dispatchArgs, "example")},
+		{"two domains in one entry", "signInWorkspaceDomains", notDomain(0, "example.net,example.org"),
 			withWorkspaceDomains(dispatchArgs, "example.net,example.org")},
-		{"an address", "signInWorkspaceDomains[0]", notDomain(0, "person@example.net"), withWorkspaceDomains(dispatchArgs, "person@example.net")},
-		{"an origin", "signInWorkspaceDomains[0]", notDomain(0, "https://example.net"), withWorkspaceDomains(dispatchArgs, "https://example.net")},
-		{"a trailing dot", "signInWorkspaceDomains[0]", notDomain(0, "example.net."), withWorkspaceDomains(dispatchArgs, "example.net.")},
-		{"a label of 64 characters", "signInWorkspaceDomains[0]", notDomain(0, strings.Repeat("a", 64)+".example.net"),
+		{"an address", "signInWorkspaceDomains", notDomain(0, "person@example.net"), withWorkspaceDomains(dispatchArgs, "person@example.net")},
+		{"an origin", "signInWorkspaceDomains", notDomain(0, "https://example.net"), withWorkspaceDomains(dispatchArgs, "https://example.net")},
+		{"a trailing dot", "signInWorkspaceDomains", notDomain(0, "example.net."), withWorkspaceDomains(dispatchArgs, "example.net.")},
+		{"a label of 64 characters", "signInWorkspaceDomains", notDomain(0, strings.Repeat("a", 64)+".example.net"),
 			withWorkspaceDomains(dispatchArgs, strings.Repeat("a", 64)+".example.net")},
-		{"more than 253 characters", "signInWorkspaceDomains[0]", notDomain(0, tooLong), withWorkspaceDomains(dispatchArgs, tooLong)},
-		{"a fake A-label", "signInWorkspaceDomains[0]", notDomain(0, "xn--a.example.net"), withWorkspaceDomains(dispatchArgs, "xn--a.example.net")},
+		{"more than 253 characters", "signInWorkspaceDomains", notDomain(0, tooLong), withWorkspaceDomains(dispatchArgs, tooLong)},
+		{"a fake A-label", "signInWorkspaceDomains", notDomain(0, "xn--a.example.net"), withWorkspaceDomains(dispatchArgs, "xn--a.example.net")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
