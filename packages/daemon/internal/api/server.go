@@ -1247,7 +1247,7 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
-// repositories the project's live records name (version.go's 189, dispatch://INFRA-4401): `live`,
+// repositories the project's live records name (version.go's 195, dispatch://INFRA-4401): `live`,
 // one entry per repository with what GitHub and Dispatch answered of it, beside `caches` and
 // `withoutWebhookApp`, which it keeps in contract 152's shape for every caller, in place of
 // `owners`, `mapped` and `refused`. A plugin before it reads the block with the schema of contract
@@ -1256,8 +1256,8 @@ const pauseContract = 178
 // contract 152's shape, written from the same entries (withoutRepositoriesLive), and every other
 // caller the block this contract writes. pauseContract stands below it with no row of
 // stateNarrowings between the two, so a caller in a pod at or above pauseContract and below this
-// contract, 178 to 188, is served the pause and the block in contract 152's shape.
-const repositoriesLiveContract = 189
+// contract, 178 to 194, is served the pause and the block in contract 152's shape.
+const repositoriesLiveContract = 195
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
