@@ -20,6 +20,9 @@ import (
 // durable ($JS.ACK...) and every creation of that durable ($JS.EVENT.ADVISORY.CONSUMER.CREATED...),
 // on a connection of the test's own to uri. Both subscriptions feed one channel, which nats.go fills
 // in the order the server's messages arrive, so the record orders an answer against a creation.
+// That order cannot show a hand-back that made the recreated consumer deliver a message again: the
+// server sends a creation's advisory after the new consumer already takes answers, so the rows also
+// read that consumer itself (requireDeliveredOnceAfterTakeOver).
 type durableEvents struct {
 	mu     sync.Mutex
 	events []string
@@ -101,11 +104,11 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
 
-	publishMergedPullRequest(t, publisher, inFlight)
+	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
-	publishMergedPullRequest(t, publisher, inFlight)
+	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	awaitAckPending(t, publisher, 2)
 
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and on a loaded
@@ -151,8 +154,9 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 
 // heldHandBack is a holder's stop with a hand-back's publish held (stopWithAHeldHandBack): thaw
 // lets the holder's link move and ends the held write; stopped closes when the holder's Run has
-// returned; conn is the holder's connection, delivery the subscription its stop stopped, and from
-// the first durable event of the stop.
+// returned; conn is the holder's connection, delivery the subscription its stop stopped, from
+// the first durable event of the stop, and sequences the stream sequences of the row's two
+// messages.
 type heldHandBack struct {
 	holder    *intakeProcess
 	pool      *store.Pool
@@ -163,6 +167,7 @@ type heldHandBack struct {
 	publisher *bus.Client
 	conn      *natsgo.Conn
 	delivery  *intakeDelivery
+	sequences []uint64
 }
 
 // handBackPending reports whether a hand-back publish of the stopped delivery is still waiting for
@@ -220,8 +225,9 @@ func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 }
 
 // requireHandBackBeforeCreation waits until the server has had both the holder's hand-back and the
-// standby's creation of the durable, and fails the test when the hand-back came after.
-func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client) {
+// standby's creation of the durable, and fails the test when the hand-back came after, or when the
+// standby's consumer delivered one of the row's messages (sequences) more than once.
+func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
 	waitFor(t, 60*time.Second, func() bool {
 		events := recorded.since(from)
@@ -236,6 +242,7 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 	if handBackAfterCreation(events) {
 		t.Fatalf("a hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
+	requireDeliveredOnceAfterTakeOver(t, publisher, sequences)
 }
 
 // handBackAfterCreation reports whether a -NAK follows the first creation of the durable in events.
@@ -245,10 +252,52 @@ func handBackAfterCreation(events []string) bool {
 	return created >= 0 && slices.Contains(events[created+1:], "-NAK")
 }
 
+// requireDeliveredOnceAfterTakeOver waits until the consumer the standby created has delivered
+// every message it had to and the standby has acknowledged them, and fails the test when it
+// delivered one of them more than once. It had to deliver each of the row's messages (sequences)
+// from its start sequence on (OptStartSeq, the durable's ack floor plus one; takeOverConfig): the
+// message the holder's stop handed back, and the one before it too when the stop gave up the
+// holder's handler at its deadline and the handler's deferred answer handed that one back as well
+// (Intake.deliver). Delivered.Consumer counts every delivery, so a hand-back that made the new
+// consumer deliver a message again makes it one more than that count. The recorded order cannot
+// show that hand-back: nats-server v2.15.1 makes a new consumer's ack subscription live (setLeader,
+// consumer.go:1491) before it queues the consumer's create advisory (consumer.go:1504), and sends
+// the advisory from the stream's own send queue, so the -NAK can be recorded before "created".
+// NumRedelivered does not keep it either: the standby's acknowledgement clears it
+// (consumer.go:3802). A -NAK that reaches the new consumer before its first delivery of the
+// message, or after the standby acknowledged it, changes nothing, because the server ignores it
+// (processNak, consumer.go:3255 and :3259), and the row does not fail for it.
+func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequences []uint64) {
+	t.Helper()
+	var info *natsgo.ConsumerInfo
+	waitFor(t, 60*time.Second, func() bool {
+		read, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			return false
+		}
+		info = read
+		return info.Delivered.Consumer > 0 && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return "the standby's consumer did not deliver the messages the holder left and have them acknowledged: " + consumerState(publisher)
+	})
+	start := info.Config.OptStartSeq
+	var want uint64
+	for _, sequence := range sequences {
+		if sequence >= start {
+			want++
+		}
+	}
+	if info.Delivered.Consumer != want {
+		t.Fatalf("the standby's consumer delivered %d time(s) from stream sequence %d, want %d, once for each of the row's messages from there (stream sequences %v): a hand-back made it deliver one again (last delivered stream sequence %d, redelivered %d)",
+			info.Delivered.Consumer, start, want, sequences, info.Delivered.Stream, info.NumRedelivered)
+	}
+}
+
 // requireNoHandBackAfterCreation waits for the standby's creation of the durable and fails the test
-// when a hand-back reached the server after it. A hand-back the holder's client dropped with its
+// when a hand-back reached the server after it, or when the standby's consumer delivered one of the
+// row's messages (sequences) more than once. A hand-back the holder's client dropped with its
 // connection never reaches the server, which is allowed: the message stays with the durable.
-func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client) {
+func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
 	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
@@ -256,6 +305,7 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 	if events := recorded.since(from); handBackAfterCreation(events) {
 		t.Fatalf("a hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
+	requireDeliveredOnceAfterTakeOver(t, publisher, sequences)
 }
 
 // A hand-back the holder's stop published never reaches the durable a standby recreates.
@@ -268,10 +318,13 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // the stop releases the hold only once every hand-back has reached the server; one still pending at
 // the stop's deadline keeps the hold renewing until it has (heldDurable.finalizeHandBacks).
 //
-// Both subtests hold a write on the holder's link from inside its stop's hand-back
+// All three subtests hold a write on the holder's link from inside its stop's hand-back
 // (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
 // the durable and the durable's creations, on a connection of its own, and every step waits for an
-// event:
+// event. Once the standby has acknowledged the messages the holder left, each also reads the
+// consumer the standby created and requires that it delivered each of them once: a hand-back can
+// make that consumer deliver a message again before the server sends its creation's advisory,
+// where the order alone passes it (requireDeliveredOnceAfterTakeOver).
 //   - a hand-back that lands before the stop's deadline: the link moves once the stop has gone on
 //     without the publish (its log line). The hold is released by the time the stop returns, and the
 //     hand-back reached the server before the standby created the durable.
@@ -293,8 +346,13 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
 // a publish was left running fails the first's release; a release made at the deadline with a
 // hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
-// pending fails the second's renewal; and an untracked finalizer fails the third
-// by returning from its shutdown stop with the hold live.
+// pending fails the second's renewal; an untracked finalizer fails the third
+// by returning from its shutdown stop with the hold live; and the holder's -NAK published again
+// while the standby holds the message, with the server holding the creation's advisory until the
+// new consumer has delivered it a second time, fails all three by that second delivery. The count
+// does not fail a stop that gives up the holder's handler at its deadline, whose deferred answer
+// hands the first message back too: the new consumer then starts at that message and delivers both
+// once.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
@@ -311,7 +369,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if holdLive(t, row.pool) {
 			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
 		}
-		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 	})
 
 	t.Run("a hand-back still pending at the stop's deadline", func(t *testing.T) {
@@ -342,7 +400,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending and its hold renewing: %q", row.recorded.since(row.from))
 		}
 		row.thaw()
-		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 	})
 
 	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
@@ -393,6 +451,6 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if holdLive(t, row.pool) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")
 		}
-		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher)
+		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 	})
 }

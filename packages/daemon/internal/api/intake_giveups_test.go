@@ -705,15 +705,17 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 }
 
 // A plugin of the contract before intakeGiveUpsContract reads the state with a schema that does
-// not know `intakeGiveUps`, so the route serves a caller in a pod at that contract the state
-// without the key, and says so in its own log; a pod at the contract is served the key, and the
-// rest of the two bodies is the same.
+// not know `intakeGiveUps`, so the route serves a caller that states that contract the state
+// without the key, and says so in its own log; a caller that states the contract is served the
+// key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
+// states its contract in the header, and a pod's claims place no caller at 193 or above
+// (podContracts), so the header is what places a caller below this band.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if intakeGiveUpsContract > DaemonAPIVersion {
 		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)
 	}
-	older, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(intakeGiveUpsContract-1))
-	current := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(intakeGiveUpsContract))
+	older, narrowings := stateNarrowedStating(t, populatedState(t), "192.0.2.1:41000", nil, intakeGiveUpsContract-1)
+	current := stateStating(t, stateServer(t, populatedState(t), nil), "192.0.2.1:41000", intakeGiveUpsContract)
 	var olderBody, currentBody map[string]json.RawMessage
 	if err := json.Unmarshal(older, &olderBody); err != nil {
 		t.Fatal(err)
@@ -722,17 +724,17 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if served, carried := olderBody["intakeGiveUps"]; carried {
-		t.Errorf("a pod at %d is served `intakeGiveUps` %s, which its plugin's schema does not name", intakeGiveUpsContract-1, served)
+		t.Errorf("a caller at %d is served `intakeGiveUps` %s, which its plugin's schema does not name", intakeGiveUpsContract-1, served)
 	}
 	want, err := json.Marshal(populatedState(t).IntakeGiveUps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
-		t.Errorf("a pod at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
+		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
 	if len(narrowings) != 1 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
-		t.Errorf("the daemon logged %+v for a pod at %d, want one line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
+		t.Errorf("the daemon logged %+v for a caller at %d, want one line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")

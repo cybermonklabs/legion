@@ -18,8 +18,10 @@ import {
 } from "@legion/pi-shared/handoff-record";
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
+import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
 
 function context(sessionId = "ses_208"): SessionContext {
@@ -88,11 +90,13 @@ function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession
   };
 }
 
-/** A daemon stub that records every call: `grant` answers a grant, `state` the state given, and
- * every other route the answer given for it (an empty object by default). */
+/** A daemon stub that records every call: `grant` answers a grant, `state` the state given,
+ * `record` the issue's record out of that state, `daemonContract` the contract the daemon
+ * states, and every other route the answer given for it (an empty object by default). */
 function recordingDaemon(options: {
   readonly state?: unknown;
   readonly answers?: Readonly<Record<string, unknown>>;
+  readonly daemonContract?: number;
 }) {
   const calls: Array<readonly [string, object | undefined]> = [];
   const routes = [
@@ -121,6 +125,15 @@ function recordingDaemon(options: {
       calls.push(["state", undefined]);
       return options.state ?? { issues: {} };
     },
+    record: async (issue: string) => {
+      calls.push(["record", { issue }]);
+      const state = (options.state ?? { issues: {} }) as { issues: Record<string, unknown> };
+      return state.issues[issue];
+    },
+    daemonContract: async () => {
+      calls.push(["daemonContract", undefined]);
+      return options.daemonContract;
+    },
     ...Object.fromEntries(
       routes.map((name) => [
         name,
@@ -145,7 +158,8 @@ function daemonFixture(name: string): Record<string, unknown> {
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
  * under `status`, and records what reached it. A tool call over it goes through the contract's
- * request and answer schemas, as it does in a session. */
+ * request and answer schemas, as it does in a session, and states this build's own contract,
+ * as the extension's client does (`extensions/legion.ts`). */
 function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   const posted: Array<readonly [string, unknown]> = [];
   const stub = (async (input, init) => {
@@ -156,7 +170,10 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       ? Response.json({ error: `no golden answers ${route}` }, { status: 404 })
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
-  const client = createLegionDaemonClient("http://daemon.test", stub);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: pkg.legion.daemonApiVersion,
+    fetch: stub,
+  });
   return { posted, daemon: () => client };
 }
 
@@ -164,7 +181,7 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
-  "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. " +
+  "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. " +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
   "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
@@ -215,6 +232,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
+  "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
+  "It also reports the contract the daemon states on its answer to the health route. " +
+  "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
+  "The two numbers can differ, and the answer shows both. " +
+  "Report the version this call answers, never the one at the plugin's path on the image. " +
+  "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
+  "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
+  "read_build reads no project state. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -361,6 +386,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
+        "read_build",
         "read_state",
         "set_status",
         "fresh_session",
@@ -1078,7 +1104,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." }, paneJj(TIP))
   ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
   expect(calls).toEqual([
-    ["state", undefined],
+    ["record", { issue: "LEGION-208" }],
     [
       "grant",
       { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
@@ -1171,7 +1197,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["state", undefined]);
+  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
@@ -1219,7 +1245,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     );
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: message }]);
-    expect(calls.at(-1)).toEqual(["state", undefined]);
+    expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
   expect(completed).toHaveLength(4);
 });
@@ -1545,7 +1571,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       })
     ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
     expect(calls.slice(-3)).toEqual([
-      ["state", undefined],
+      ["record", { issue: "LEGION-208" }],
       [
         "grant",
         { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
@@ -1575,7 +1601,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       text: "handoff_complete on a production check names a verdict of pass, pending or fail",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["state", undefined]);
+  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   expect(completed).toHaveLength(3);
 
   // A completion on a done issue carries what a check report carries, whatever role sends it, and
@@ -1968,6 +1994,104 @@ test("the controller reads the state without a grant and sets an issue's status 
   });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// R6: a role reads which plugin build its own process runs. The build is the manifest of the
+// module this process loaded: `tools.ts` imports `../package.json` and takes `pluginBuildOf` of
+// it, never the image's copy at `/opt/legion/pi-legion`, which a relaunch never updates. For this
+// case alone a read of that copy answers a manifest with a version and a contract of its own
+// (withImageManifest), so the answer below fails wherever the build is read from that path,
+// whatever the image holds. The case imports `tools.ts` again under the mock and asks that copy.
+const TOOLS_LOADED_UNDER_THE_IMAGE_MOCK = "./tools?read_build";
+test("read_build answers the package and version this process loaded, both contract numbers, and reads no state", async () => {
+  const atImagePath = {
+    ...pkg,
+    version: "0.0.0-image",
+    legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
+  };
+  await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
+    const { createLegionTool: createFreshLegionTool } = (await import(
+      TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
+    )) as { readonly createLegionTool: typeof createLegionTool };
+    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const tool = createFreshLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession("implementer"),
+    });
+
+    await expect(
+      tool.execute("", { op: "read_build" }, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      details: {
+        plugin: pkg.name,
+        version: pkg.version,
+        pluginContract: pkg.legion.daemonApiVersion,
+        daemonContract: pkg.legion.daemonApiVersion + 1,
+        daemonContractNote: null,
+      },
+    });
+    // The health route's header is the one read, and no project state is asked for.
+    expect(calls).toEqual([["daemonContract", undefined]]);
+  });
+});
+
+test("read_build says the daemon stated no contract, and belongs to the controller session too", async () => {
+  const { daemon } = recordingDaemon({});
+  const toolFor = (active: LegionToolSession) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => active,
+    });
+
+  for (const active of [claimSession("architect"), claimSession("implementer")]) {
+    await expect(
+      toolFor(active).execute("", { op: "read_build" }, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      details: { daemonContract: null, daemonContractNote: "the daemon stated no contract" },
+    });
+  }
+  // The controller holds a claim like any other role, and it is the session that compares two
+  // contract numbers when a roll goes wrong (dispatch://INFRA-2694). It reaches no claim grant,
+  // so its answer comes from the controller's own branch of the tool.
+  const controller = toolFor({ kind: "controller", sessionID: "ses_controller" });
+  await expect(
+    controller.execute("", { op: "read_build" }, undefined, undefined, context("ses_controller"))
+  ).resolves.toMatchObject({
+    details: {
+      plugin: pkg.name,
+      version: pkg.version,
+      pluginContract: pkg.legion.daemonApiVersion,
+      daemonContract: null,
+      daemonContractNote: "the daemon stated no contract",
+    },
+  });
+  // It takes no field there either.
+  await expect(
+    controller.execute(
+      "",
+      { op: "read_build", issue: "LEGION-208" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: 'read_build does not accept field "issue"; it takes none' }],
+  });
 });
 
 // The project's pause (dispatch://INFRA-3759, check k6). The controller pauses its project with

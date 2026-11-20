@@ -805,10 +805,10 @@ const waitingLineNamedCap = 10
 // settings carries neither, so the list above declares the `memory` experiment alone and the
 // line is the one a `legion` without this change prints for the same body. A daemon of this
 // release serves the memory fields only where an issue's `memory` row records a draw, and serves
-// that row in `assignments` as well to every caller but a pod below contract 141 (api's stateFor),
+// that row in `assignments` as well to every caller but one below contract 141 (api's shapeIssue),
 // so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
-// either and the fallback counts nothing; in the body it serves such a pod it counts the `memory`
-// draws.
+// either and the fallback counts nothing; in the body it serves a caller below 141 it counts the
+// `memory` draws.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments(project)
 	counts := make(map[string]map[armDraw]int, len(declared))

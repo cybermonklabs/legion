@@ -99,7 +99,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 		var state api.State
 		if err := st.Tx(ctx, func(tx pgx.Tx) error {
 			var err error
-			state, err = Project(ctx, tx, records, name, nil, nil, nil, nil, nil, base.Add(5*time.Hour))
+			state, err = Project(ctx, Inputs{Tx: tx, Store: records, Project: name, Now: base.Add(5 * time.Hour)})
 			return err
 		}); err != nil {
 			t.Fatalf("project %s's state: %v", name, err)

@@ -41,7 +41,7 @@ Current secret names:
 - `ENVOY_SLACK_SIGNING_SECRET`
 - `ENVOY_GITHUB_WEBHOOK_SECRET`
 
-The secrets broker (`cmd/broker`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
+The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
 
 - `github-app`: stores an App id and private key; releases installation tokens for its listed GitHub owners.
 - `google-login`: stores an `authorized_user` credential; releases a Google access token, not the refresh token.

@@ -126,46 +126,49 @@ const projectPaused = "PROJECT_PAUSED"
 
 // projectPause is the controller's pause (decision 19): a controller grant, the controller
 // session's or one the operator's bearer minted, pauses the daemon's project, and the pause is the
-// operator's when the operator's bearer minted the grant (controllerActor).
+// operator's when the operator's bearer minted the grant (controllerActor). Its answer is a
+// plugin's (AnswerProjectPause).
 func (s *server) projectPause(w http.ResponseWriter, r *http.Request) {
 	var req ProjectPauseRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
 	if by, ok := s.controllerActor(w, r, req.GrantID, "a pause of the project requires a controller grant"); ok {
-		s.pauseProject(w, r, by, req.Reason)
+		s.pauseProject(w, r, AnswerProjectPause, by, req.Reason)
 	}
 }
 
 // projectResume is the controller's resume, which ends any pause of the project, the operator's
-// included.
+// included. Its answer is a plugin's (AnswerProjectResume).
 func (s *server) projectResume(w http.ResponseWriter, r *http.Request) {
 	var req ProjectResumeRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
 	if by, ok := s.controllerActor(w, r, req.GrantID, "a resume of the project requires a controller grant"); ok {
-		s.resumeProject(w, r, by)
+		s.resumeProject(w, r, AnswerProjectResume, by)
 	}
 }
 
-// operatorProjectPause is `legion project pause`: the operator's bearer pauses the project.
+// operatorProjectPause is `legion project pause`: the operator's bearer pauses the project. Its
+// answer is the `legion` command's, which no plugin parses (answerUnparsed, writeUnparsedAnswer).
 func (s *server) operatorProjectPause(w http.ResponseWriter, r *http.Request) {
 	var req OperatorPauseRequest
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	s.pauseProject(w, r, store.PauseActor{Kind: store.PauseByOperator}, req.Reason)
+	s.pauseProject(w, r, answerUnparsed, store.PauseActor{Kind: store.PauseByOperator}, req.Reason)
 }
 
 // operatorProjectResume is `legion project resume`: the operator's bearer ends the project's pause.
-// It reads no body, and refuses one that names anything.
+// It reads no body, and refuses one that names anything. Its answer is the `legion` command's, as
+// operatorProjectPause's is.
 func (s *server) operatorProjectResume(w http.ResponseWriter, r *http.Request) {
 	var req struct{}
 	if !s.readOptionalBody(w, r, &req) {
 		return
 	}
-	s.resumeProject(w, r, store.PauseActor{Kind: store.PauseByOperator})
+	s.resumeProject(w, r, answerUnparsed, store.PauseActor{Kind: store.PauseByOperator})
 }
 
 // controllerActor redeems grantID and answers who acts through it: the controller, naming the
@@ -175,7 +178,7 @@ func (s *server) operatorProjectResume(w http.ResponseWriter, r *http.Request) {
 // resume and the give-up routes all take their caller from it, so a later rule of what a
 // controller grant must be is written once and holds at each of them.
 func (s *server) controllerActor(w http.ResponseWriter, r *http.Request, grantID, refusal string) (store.PauseActor, bool) {
-	if !requireFailureFields(w, field{"grantId", grantID}) {
+	if !s.requireFailureFields(w, r, field{"grantId", grantID}) {
 		return store.PauseActor{}, false
 	}
 	grant, ok := s.redeem(w, r, grantID)
@@ -183,7 +186,7 @@ func (s *server) controllerActor(w http.ResponseWriter, r *http.Request, grantID
 		return store.PauseActor{}, false
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", refusal)
+		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", refusal)
 		return store.PauseActor{}, false
 	}
 	if grant.Operator {
@@ -195,10 +198,12 @@ func (s *server) controllerActor(w http.ResponseWriter, r *http.Request, grantID
 // pauseProject pauses the project for reason, by `by`, through the pause service, which refuses a
 // blank reason, a configuration that cannot hold a pause and a second pause, each answered here in
 // its code (decision 20). The service logs the pause and tells the controller when the operator
-// paused (decisions 23 and 24).
-func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, by store.PauseActor, reason string) {
+// paused (decisions 23 and 24). The pause it began is written as answer, the id of the route's own
+// answer: AnswerProjectPause on the controller's route, and answerUnparsed on the operator's,
+// which writeUnparsedAnswer writes its bodies under. Every refusal is AnswerRefusal.
+func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer AnswerID, by store.PauseActor, reason string) {
 	if s.pause == nil {
-		refuseWithoutPause(w, "pause")
+		s.refuseWithoutPause(w, r, "pause")
 		return
 	}
 	began, err := s.pause.Pause(r.Context(), by, reason)
@@ -208,25 +213,25 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, by store.P
 	)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, ProjectPauseResponse{Pause: pauseViewOf(began)})
+		s.writeAnswer(w, r, answer, http.StatusOK, ProjectPauseResponse{Pause: pauseViewOf(began)})
 	case errors.Is(err, pause.ErrReasonRequired):
-		writeFailure(w, http.StatusBadRequest, pause.CodeReasonRequired,
+		s.writeFailure(w, r, http.StatusBadRequest, pause.CodeReasonRequired,
 			"a pause needs a reason: say in reason why the project is paused; nothing was paused")
 	case errors.As(err, &unavailable):
-		writeJSON(w, http.StatusConflict, PauseFailure{
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{
 			Failure: Failure{Code: pause.CodeUnavailable, Error: unavailable.Error() + "; nothing was paused"},
 			Setting: string(unavailable.Setting),
 		})
 	case errors.As(err, &standing):
 		view := pauseViewOf(standing.Standing)
-		writeJSON(w, http.StatusConflict, PauseFailure{
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{
 			Failure: Failure{Code: pause.CodeAlreadyPaused, Error: fmt.Sprintf(
 				"the project is already paused (%s); this pause changed nothing", describePause(standing.Standing))},
 			Pause: &view,
 		})
 	default:
 		s.logRequestFailure(r, err, "api: the project's pause failed", "by", string(by.Kind), "by_session", by.Session)
-		writeFailure(w, http.StatusInternalServerError, "PAUSE_FAILED", "the project's pause failed: "+err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "PAUSE_FAILED", "the project's pause failed: "+err.Error())
 	}
 }
 
@@ -235,17 +240,18 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, by store.P
 // so a caller that finds the pause already ended learns who ended it and when. A daemon that runs
 // no workflow has no pause service and refuses a resume PAUSE_UNAVAILABLE, as it refuses a pause
 // (refuseWithoutPause); otherwise a resume is never refused for the configuration
-// (pause.Service.Resume).
-func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, by store.PauseActor) {
+// (pause.Service.Resume). The pause it ended is written as answer, as pauseProject writes the
+// pause it began.
+func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, answer AnswerID, by store.PauseActor) {
 	if s.pause == nil {
-		refuseWithoutPause(w, "resume")
+		s.refuseWithoutPause(w, r, "resume")
 		return
 	}
 	ended, released, err := s.pause.Resume(r.Context(), by)
 	var notPaused *store.NotPausedError
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, ProjectResumeResponse{Pause: pauseViewOf(ended), Released: len(released)})
+		s.writeAnswer(w, r, answer, http.StatusOK, ProjectResumeResponse{Pause: pauseViewOf(ended), Released: len(released)})
 	case errors.As(err, &notPaused):
 		body := PauseFailure{Failure: Failure{Code: pause.CodeNotPaused,
 			Error: "the project is not paused, and no pause of it has ended; this resume changed nothing"}}
@@ -260,18 +266,18 @@ func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, by store.
 			body.Error = fmt.Sprintf("the project is not paused: its last pause (%s) ended %s by %s; this resume changed nothing",
 				describePause(last), last.EndedAt.UTC().Format(time.RFC3339), describeActor(last.EndedBy))
 		}
-		writeJSON(w, http.StatusConflict, body)
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, body)
 	default:
 		s.logRequestFailure(r, err, "api: the project's resume failed", "by", string(by.Kind), "by_session", by.Session)
-		writeFailure(w, http.StatusInternalServerError, "RESUME_FAILED", "the project's resume failed: "+err.Error())
+		s.writeFailure(w, r, http.StatusInternalServerError, "RESUME_FAILED", "the project's resume failed: "+err.Error())
 	}
 }
 
 // refuseWithoutPause is the pause or resume of a daemon that has no pause service: one with no
 // workflow (the daemon's openWorkflow answers none without a dispatch_url), which has no outbox to
 // stop the project's roles or to hold their work.
-func refuseWithoutPause(w http.ResponseWriter, act string) {
-	writeJSON(w, http.StatusConflict, PauseFailure{Failure: Failure{Code: pause.CodeUnavailable, Error: fmt.Sprintf(
+func (s *server) refuseWithoutPause(w http.ResponseWriter, r *http.Request, act string) {
+	s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{Failure: Failure{Code: pause.CodeUnavailable, Error: fmt.Sprintf(
 		"this daemon cannot %s its project: it runs no workflow (legion.yaml names no dispatch_url), and a pause stops the project's roles and holds their work through the workflow's outbox; nothing changed",
 		act)}})
 }
