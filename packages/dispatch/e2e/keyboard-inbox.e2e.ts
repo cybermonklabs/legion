@@ -1,3 +1,6 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -289,7 +292,8 @@ test.describe("inbox selection", () => {
 
   // In a view that lists only what is waiting on the reader, the optimistic snooze takes every
   // marked row off the list at once, so the bar's own selection empties while its write is still
-  // in the air. The refusal that comes back has to survive that.
+  // in the air. The refusal that comes back has to survive that, and until it comes the list stays
+  // empty: a read of the Inbox asked while the pick is out waits for it (`holdBackReads`).
   test("a refusal reaches the reader even when the optimistic snooze empties the view", async ({
     browser,
   }) => {
@@ -300,6 +304,28 @@ test.describe("inbox selection", () => {
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
+      // Every read of the Inbox the page sends, and every snooze event of alice's its live feed
+      // carries: a snooze's event names no ask.
+      const inboxReads: string[] = [];
+      page.on("request", (request) => {
+        if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+          inboxReads.push(request.url());
+        }
+      });
+      const snoozeEvents: string[] = [];
+      page.on("websocket", (socket) => {
+        if (new URL(socket.url()).pathname !== "/ws/live") return;
+        socket.on("framereceived", ({ payload }) => {
+          const frame = String(payload);
+          if (
+            frame.includes("user_state.updated") &&
+            frame.includes('"login":"alice"') &&
+            frame.includes('"snoozed"')
+          ) {
+            snoozeEvents.push(frame);
+          }
+        });
+      });
       // Only the asks waiting on the reader, from this one agent: a snoozed row leaves this list
       // altogether rather than folding into `Later`.
       await page.goto(`/?agent=${session.actor.id}&section=needs-you`);
@@ -324,25 +350,38 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       // Let go of the row: one under the reader's hand is held on screen whatever the list does,
-      // and this test is about the write, not that mechanism. With the reading column on the
-      // hand is the selection, which has nowhere to be put down, so the row the column is
-      // showing is the one row the list keeps.
+      // and this test is about the write, not that mechanism. With the reading column on, `j`
+      // moved the selection and not the focus, so no row has the focus to let go of, and Escape
+      // would clear the marks instead.
       if (!hasReadingPane(page)) {
         await page.keyboard.press("Escape");
       }
       await page.mouse.move(0, 0);
       const bar = page.getByRole("group", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
+      inboxReads.length = 0;
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
 
       // Both rows go at once; the bar stays while its write is in the air, and counts the pick
-      // it is waiting on rather than the selection the optimistic move has just emptied. The
-      // list itself empties where the reader's hand was let go of above; where the hand is the
-      // selection, the row the column is showing is the one the list keeps.
-      await expect(rows).toHaveCount(hasReadingPane(page) ? 1 : 0);
+      // it is waiting on rather than the selection the optimistic move has just emptied. With the
+      // reading column on, the row it was showing goes too: it has no row left to fall to, and
+      // the column goes with it.
+      await expect(rows).toHaveCount(0);
       await expect(bar).toHaveCount(1);
       await expect(bar).toContainText("Snoozing 2…");
       await expect(bar).not.toContainText("0 selected");
+
+      // Dispatch takes the other ask, and its event reaches the page, whose feed asks for a read
+      // of the Inbox for it. That read waits for the pick: Dispatch has not decided the held ask,
+      // so the read would answer it with no moment and put its row back while its snooze is still
+      // out. The feed asks an event's reads 100 ms after the event comes, and the read of a query
+      // fetched in the second before that waits until a second after that fetch began
+      // (`MIN_REFETCH_INTERVAL_MS`); the 200 ms past both are for a request the page sends to
+      // reach Playwright's counter.
+      await expect.poll(() => snoozeEvents.length).toBeGreaterThan(0);
+      await sleep(MIN_REFETCH_INTERVAL_MS + 100 + 200);
+      expect(inboxReads, "reads of the Inbox sent while the pick is out").toEqual([]);
+      await expect(rows).toHaveCount(0);
 
       // The pick is the one thing in the air: the picker takes no second one while it settles.
       await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeDisabled();
