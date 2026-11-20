@@ -9,12 +9,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Two waits here stand behind the event horizon, whose proof is instance-wide: the event feed's
-// events_start (waitEventsStart) and a horizon proven and persisted above the log's newest event
-// (horizontest.AwaitPersisted). No fixed deadline bounds either; each waits on the horizon's own
-// account of itself (internal/dispatch/horizontest), which the router's horizon logs in this
-// process at horizontest.StallWarning (storeRouter). The 10 s and 30 s these tests had failed
-// whenever another client of the instance held a transaction for longer.
+// Two waits here stand behind the event horizon, which any event write open in the test's database
+// holds back: the event feed's events_start (waitEventsStart) and a horizon proven and persisted
+// above the log's newest event (horizontest.AwaitPersisted). No fixed deadline bounds either; each
+// waits on the horizon's own account of itself (internal/dispatch/horizontest), which the router's
+// horizon logs in this process at horizontest.StallWarning (storeRouter).
 
 // waitEventsStart returns the first frame but a heartbeat that conn receives once the caller has
 // subscribed it to the event feed: the events_start, which the caller checks. own is the store

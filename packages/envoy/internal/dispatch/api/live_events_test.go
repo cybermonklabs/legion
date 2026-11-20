@@ -29,9 +29,9 @@ const eventFeedWait = 30 * time.Second
 
 // The event feed stands behind the event horizon: a subscription's events_start is the last thing
 // it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
-// sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
-// a frame of the feed is as late as the longest transaction open anywhere on the Postgres
-// instance, which CI shares between every package of the module, and no clock bounds the wait for
+// sends an event only once the horizon has passed its id. An event write open in the test's
+// database holds the horizon back for as long as it lasts (internal/dispatch/events/horizon.go),
+// so a frame of the feed is as late as the longest such write, and no clock bounds the wait for
 // one: it keys on the horizon's own account of itself (internal/dispatch/horizontest). Every server
 // these tests build warns at horizontest.StallWarning (newRegisteredTestServer).
 

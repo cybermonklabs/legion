@@ -415,54 +415,6 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 	}
 }
 
-// holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes a
-// transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
-	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
-	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
-	}
-	tx, err := conn.Begin(t.Context())
-	if err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
-	}
-	var xid string
-	if err := tx.QueryRow(t.Context(), `select pg_current_xact_id()::text`).Scan(&xid); err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("take a transaction id: %v", err)
-	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
-	}()
-	var once sync.Once
-	release = func() {
-		once.Do(func() { close(released) })
-		<-done
-	}
-	t.Cleanup(release)
-	return release
-}
-
 // TestWhoamiEventHeadStaysBelowAnEventStillOpen: event ids do not commit in id order, because
 // writes to different owners take no lock in common (events.Broker.Append), so the newest id a read
 // can see says nothing about the ids below it. A page starts its reads after whoami answers and
@@ -492,19 +444,18 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 	}
 }
 
-// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: the safe horizon waits on every transaction
-// holding a transaction id anywhere on the Postgres instance, snapshots being instance-wide, but
-// only a transaction in Dispatch's own database can write its event log. whoami's event_head waits
-// on those alone (Horizon.WriterFloor), so another service's job on the same instance, or another
-// package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
-// wait -- and the head it answers is still the log's newest id.
+// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: only a transaction in Dispatch's own
+// database can write its event log, and whoami's event_head waits on those alone
+// (Horizon.WriterFloor), so another service's job on the same instance, or another package's test,
+// does not hold every page's load for the two seconds eventFeedHead would otherwise wait -- and
+// the head it answers is still the log's newest id.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
 	newest := newestEventID(t, database)
 
-	holdClusterTransactionID(t, 30*time.Second)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 	began := time.Now()
 	answer := askWhoami(t, handler)
 	if waited := time.Since(began); waited > time.Second {

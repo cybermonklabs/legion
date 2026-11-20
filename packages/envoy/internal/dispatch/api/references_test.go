@@ -409,8 +409,8 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// The read waits for an observation taken after it to be proven safe, so it answers the
 	// message committed before it. A read that answered inside referencesSinceWait had that
 	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an open transaction elsewhere on the shared
-	// test cluster can cause.
+	// again only a read held past that wait, which an event write open in the test's database can
+	// cause.
 	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
@@ -457,10 +457,9 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
-// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// stands at or below the event log's safe horizon (sinceHorizon): any event write open in the
+// server's database holds that horizon back, the test's own fixtures' and the server's own
+// writes included.
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
 // which may be short of what committed before it, so it is read again for as long as the horizon
 // says it is held back (horizontest.Watch), however long that is; database is the one the server

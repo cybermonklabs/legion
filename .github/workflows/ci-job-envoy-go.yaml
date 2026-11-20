@@ -122,17 +122,17 @@ jobs:
       # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
       # the API's eight source guards, and one_expression_guard_test.go beside them, carry that
       # tag as well and are deliberately not here: they read the module's source, the text-check
-      # job runs their seventeen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # job runs their eighteen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
       # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
       # run twice. It comes before the unit step for the
       # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
-      # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
-      # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. The restart storm took
-      # 17 s on a dev box. Measured over three
+      # wait for the event log's safe horizon, which only an event write open in the test's own
+      # database delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from
+      # the race lane's own packages and those files' //go:build !race and raceEnabled, so a test
+      # added to either and missing here fails the ci-filters job naming this step. The restart
+      # storm took 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
       # delivery 4.106 s (INFRA-636). 10 minutes each is ample.

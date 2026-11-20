@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the seventeen tests of those nine files are the text-check job's to run, once
+// included - and the eighteen tests of those nine files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 
@@ -27,6 +27,7 @@ import (
 	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -331,4 +332,326 @@ func literalsWithin(expression ast.Expr) string {
 		return true
 	})
 	return strings.Join(parts, " ")
+}
+
+// sqlTemplate is one SQL value a source passes to a database sink. statement is the text the
+// parser reads, with each run-time fragment standing as `null` so the statement keeps its shape;
+// fragments is every string literal inside those fragments, which a reader scans for the words a
+// draw needs and which the value's digest covers, so an edit to a fragment moves that digest.
+// complete reports whether every byte came from a literal or a package-level constant;
+// unresolved reports a sink whose SQL the scan could not read at all.
+type sqlTemplate struct {
+	locatedStatement
+	fragments  string
+	complete   bool
+	unresolved bool
+}
+
+// sqlTemplatesByFunction reads every value a function hands to a pgx or write-batch sink: the
+// query of Exec, Query, QueryRow and Prepare, and both argument shapes of Queue, since
+// pgx.Batch.Queue takes its SQL first and store.WriteBatch.Queue takes a description first. A
+// value bound once to a local is followed to that binding, whatever the local is called; a value
+// the scan cannot read at all is reported unresolved rather than dropped.
+// sqlSinkParameters names every function whose parameter reaches a database sink as its SQL, with
+// the positions of those parameters. A function that hands its caller's string to pgx is a sink
+// of its own, so the caller's call of it is read where the caller stands. A name is matched
+// without its package, which can only widen what is read.
+func sqlSinkParameters(files []*ast.File) map[string][]int {
+	forwarded := map[string][]int{}
+	for _, file := range files {
+		for _, declared := range file.Decls {
+			function, ok := declared.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Type.Params == nil {
+				continue
+			}
+			positions := map[string]int{}
+			position := 0
+			for _, field := range function.Type.Params.List {
+				for _, name := range field.Names {
+					positions[name.Name] = position
+					position++
+				}
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				for _, candidate := range queryArguments(call) {
+					identifier, ok := candidate.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					index, ok := positions[identifier.Name]
+					if !ok || slices.Contains(forwarded[function.Name.Name], index) {
+						continue
+					}
+					forwarded[function.Name.Name] = append(forwarded[function.Name.Name], index)
+				}
+				return true
+			})
+		}
+	}
+	return forwarded
+}
+
+func sqlTemplatesByFunction(file *ast.File, constants map[string]string) []sqlTemplate {
+	return sqlTemplatesReaching(file, constants, nil)
+}
+
+// sqlTemplatesReaching is sqlTemplatesByFunction with the module's forwarding functions, so a
+// string a caller hands to such a function is read at the call.
+func sqlTemplatesReaching(file *ast.File, constants map[string]string, forwarded map[string][]int) []sqlTemplate {
+	var statements []sqlTemplate
+	readAt := func(expression ast.Expr, name string, bindings map[string][]ast.Expr) (sqlTemplate, bool) {
+		text, fragments, found, complete := sqlTemplateText(expression, file.Name.Name, constants, bindings, map[string]bool{})
+		if !found {
+			return sqlTemplate{}, false
+		}
+		return sqlTemplate{
+			locatedStatement: locatedStatement{function: name, statement: strings.TrimSpace(text)},
+			fragments:        strings.TrimSpace(fragments),
+			complete:         complete,
+		}, true
+	}
+	// A package-level constant or variable holds SQL as often as a function body does, and the
+	// two id guards read the same module, so both are walked.
+	for _, declared := range file.Decls {
+		general, ok := declared.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range general.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for index, value := range values.Values {
+				name := "<package>"
+				if index < len(values.Names) {
+					name = values.Names[index].Name
+				}
+				ast.Inspect(value, func(node ast.Node) bool {
+					expression, ok := node.(ast.Expr)
+					if !ok {
+						return true
+					}
+					template, ok := readAt(expression, name, nil)
+					if !ok {
+						return true
+					}
+					statements = append(statements, template)
+					return false
+				})
+			}
+		}
+	}
+	for _, declared := range file.Decls {
+		function, ok := declared.(*ast.FuncDecl)
+		if !ok || function.Body == nil {
+			continue
+		}
+		bindings := localBindings(function.Body)
+		readTemplate := func(expression ast.Expr) (sqlTemplate, bool) {
+			text, fragments, found, complete := sqlTemplateText(expression, file.Name.Name, constants, bindings, map[string]bool{})
+			if !found {
+				return sqlTemplate{}, false
+			}
+			return sqlTemplate{
+				locatedStatement: locatedStatement{function: function.Name.Name, statement: strings.TrimSpace(text)},
+				fragments:        strings.TrimSpace(fragments),
+				complete:         complete,
+			}, true
+		}
+		// Every expression of the body, not only the argument of a database sink: a statement
+		// this scan cannot follow to its sink, one held in a struct field, a map or another
+		// function's return, is still written here, and is read where it is written. The
+		// arguments a forwarding function hands on to a sink are read for the same reason.
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			expression, ok := node.(ast.Expr)
+			if !ok {
+				return true
+			}
+			template, ok := readTemplate(expression)
+			if !ok {
+				return true
+			}
+			statements = append(statements, template)
+			return false
+		})
+		for _, candidate := range forwardedSinkArguments(function.Body, forwarded) {
+			if template, ok := readTemplate(candidate); ok {
+				statements = append(statements, template)
+			}
+		}
+	}
+	return statements
+}
+
+// forwardedSinkArguments is every argument a body hands to a function that passes it on to a
+// database sink, so a string built at such a call is read as SQL.
+func forwardedSinkArguments(body *ast.BlockStmt, forwarded map[string][]int) []ast.Expr {
+	var arguments []ast.Expr
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		arguments = append(arguments, forwardedArguments(call, forwarded)...)
+		return true
+	})
+	return arguments
+}
+
+// forwardedArguments is every argument of call that a forwarding function hands to a sink.
+func forwardedArguments(call *ast.CallExpr, forwarded map[string][]int) []ast.Expr {
+	var name string
+	switch function := call.Fun.(type) {
+	case *ast.Ident:
+		name = function.Name
+	case *ast.SelectorExpr:
+		name = function.Sel.Name
+	default:
+		return nil
+	}
+	var arguments []ast.Expr
+	for _, index := range forwarded[name] {
+		if index < len(call.Args) {
+			arguments = append(arguments, call.Args[index])
+		}
+	}
+	return arguments
+}
+
+// localBindings is every expression each local name of the function body is bound to. A name
+// bound more than once is followed nowhere: the scan cannot say which binding a sink reads.
+func localBindings(body *ast.BlockStmt) map[string][]ast.Expr {
+	bindings := map[string][]ast.Expr{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if len(node.Lhs) != len(node.Rhs) {
+				return true
+			}
+			for index, name := range node.Lhs {
+				if identifier, ok := name.(*ast.Ident); ok {
+					bindings[identifier.Name] = append(bindings[identifier.Name], node.Rhs[index])
+				}
+			}
+		case *ast.DeclStmt:
+			declaration, ok := node.Decl.(*ast.GenDecl)
+			if !ok {
+				return true
+			}
+			for _, spec := range declaration.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok || len(values.Names) != len(values.Values) {
+					continue
+				}
+				for index, name := range values.Names {
+					bindings[name.Name] = append(bindings[name.Name], values.Values[index])
+				}
+			}
+		}
+		return true
+	})
+	return bindings
+}
+
+// queryArguments is every argument of call that carries SQL. pgx.Batch.Queue's SQL is its first
+// argument and store.WriteBatch.Queue's is its second, and the two cannot be told apart without
+// types, so a Queue of two arguments or more gives both: a description reads as SQL that parses
+// as nothing and holds no event-id construct.
+func queryArguments(call *ast.CallExpr) []ast.Expr {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	switch selector.Sel.Name {
+	case "Exec", "Query", "QueryRow":
+		if len(call.Args) > 1 {
+			return []ast.Expr{call.Args[1]}
+		}
+	case "Prepare":
+		if len(call.Args) > 2 {
+			return []ast.Expr{call.Args[2]}
+		}
+	case "Queue":
+		switch len(call.Args) {
+		case 0:
+			return nil
+		case 1:
+			return []ast.Expr{call.Args[0]}
+		default:
+			return []ast.Expr{call.Args[0], call.Args[1]}
+		}
+	}
+	return nil
+}
+
+// sqlTemplateText renders a SQL value two ways: text, the statement with each run-time fragment
+// standing as `null`, which keeps the statement parseable, and fragments, the string literals
+// inside those run-time expressions (literalsWithin), which a reader scans for the words a draw
+// needs. complete is false wherever a fragment stood.
+func sqlTemplateText(expression ast.Expr, pkg string, constants map[string]string, bindings map[string][]ast.Expr, resolving map[string]bool) (text, fragments string, found, complete bool) {
+	switch node := expression.(type) {
+	case *ast.BasicLit:
+		if node.Kind != token.STRING {
+			return "", "", false, false
+		}
+		text, err := strconv.Unquote(node.Value)
+		return text, "", err == nil, err == nil
+	case *ast.Ident:
+		if values := bindings[node.Name]; len(values) == 1 && !resolving[node.Name] {
+			resolving[node.Name] = true
+			text, fragments, found, complete = sqlTemplateText(values[0], pkg, constants, bindings, resolving)
+			delete(resolving, node.Name)
+			return text, fragments, found, complete
+		}
+		text, found = constants[pkg+"."+node.Name]
+		return text, "", found, found
+	case *ast.SelectorExpr:
+		qualifier, ok := node.X.(*ast.Ident)
+		if !ok {
+			return "", "", false, false
+		}
+		text, found = constants[qualifier.Name+"."+node.Sel.Name]
+		return text, "", found, found
+	case *ast.CallExpr:
+		selector, ok := node.Fun.(*ast.SelectorExpr)
+		if !ok || len(node.Args) == 0 || selector.Sel.Name != "Sprintf" {
+			return "", "", false, false
+		}
+		qualifier, ok := selector.X.(*ast.Ident)
+		if !ok || qualifier.Name != "fmt" {
+			return "", "", false, false
+		}
+		format, formatFragments, found, _ := sqlTemplateText(node.Args[0], pkg, constants, bindings, resolving)
+		if !found {
+			return "", "", false, false
+		}
+		for _, argument := range node.Args[1:] {
+			formatFragments += " " + literalsWithin(argument)
+		}
+		return format, strings.TrimSpace(formatFragments), true, false
+	case *ast.BinaryExpr:
+		if node.Op != token.ADD {
+			return "", "", false, false
+		}
+		left, leftFragments, leftFound, leftComplete := sqlTemplateText(node.X, pkg, constants, bindings, resolving)
+		right, rightFragments, rightFound, rightComplete := sqlTemplateText(node.Y, pkg, constants, bindings, resolving)
+		if !leftFound && !rightFound {
+			return "", "", false, false
+		}
+		if !leftFound {
+			left = " null "
+			leftFragments = literalsWithin(node.X)
+		}
+		if !rightFound {
+			right = " null "
+			rightFragments = literalsWithin(node.Y)
+		}
+		return left + right, strings.TrimSpace(leftFragments + " " + rightFragments), true, leftFound && rightFound && leftComplete && rightComplete
+	}
+	return "", "", false, false
 }

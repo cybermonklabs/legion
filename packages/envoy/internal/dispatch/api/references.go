@@ -304,8 +304,8 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 // alone would not do: an observation is proven only by a later one, so on a process where
 // nothing else observes (no event stream has started the relay, no Delivery page the hub) the
 // first read after boot or a Reset would answer H = 0, and each later read stop at the previous
-// read's observation, however old. Await takes longer than an observation or two only while a
-// transaction that holds a transaction id on the instance holds the horizon back; past
+// read's observation, however old. Await takes longer than an observation or two only while an
+// event write open in this database holds the horizon back; past
 // referencesSinceWait, with the request still live, the read takes the horizon as an observation
 // started after that finds it (Horizon.Safe), and a mention above it waits for a later read. A
 // request that ends first answers Await's error.

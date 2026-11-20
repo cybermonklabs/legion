@@ -2,17 +2,13 @@ package api
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // appendOutOfOrder appends two events through broker so they commit out of id order: tx A
@@ -64,31 +60,25 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 	}
 }
 
-// holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
-// a transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// holdEventWrite opens an event write in Dispatch's own database and holds it open: a transaction
+// that takes its transaction id and then its write lock on events, RowExclusiveLock, as an insert
+// does before nextval hands its row an id. Until it ends, no horizon proves an observation taken
+// after it began (events/horizon.go, "Safe horizon"), and no mark taken after it began counts
+// (events.Horizon.WriterFloor). It draws no event id. It rolls back when release runs or after
+// hold, whichever comes first, and by the time the test ends; release returns once it has. A
+// transaction in another database of the instance would hold nothing: only this database's event
+// writers hold the horizon back.
+func holdEventWrite(t *testing.T, database *store.Store, hold time.Duration) (release func()) {
 	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	tx, err := database.Pool.Begin(t.Context())
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
+		t.Fatalf("begin the event write that holds the horizon: %v", err)
 	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
-	}
-	tx, err := conn.Begin(t.Context())
-	if err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
-	}
-	var xid string
-	if err := tx.QueryRow(t.Context(), `select pg_current_xact_id()::text`).Scan(&xid); err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("take a transaction id: %v", err)
+	for _, statement := range []string{`select pg_current_xact_id()`, `lock table events in row exclusive mode`} {
+		if _, err := tx.Exec(t.Context(), statement); err != nil {
+			_ = tx.Rollback(context.Background())
+			t.Fatalf("hold an event write (%s): %v", statement, err)
+		}
 	}
 	released := make(chan struct{})
 	done := make(chan struct{})
@@ -100,8 +90,7 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 		case <-released:
 		case <-timer.C:
 		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
+		_ = tx.Rollback(context.Background())
 	}()
 	var once sync.Once
 	release = func() {

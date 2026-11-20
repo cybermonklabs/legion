@@ -2890,7 +2890,7 @@ jobs:
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
             # packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-            # which the three Go lanes leave out of their own runs, those checks' seventeen tests
+            # which the three Go lanes leave out of their own runs, those checks' eighteen tests
             # by name, and those two pins by name, which the daemon-go plain step skips.
             # packages/envoy stays a wide
             # root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -3897,6 +3897,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
               - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
               - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/eventidtest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
@@ -4275,6 +4276,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
               - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
               - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/eventidtest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
               - '!packages/envoy/internal/dispatch/files/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
@@ -5703,7 +5705,7 @@ jobs:
   # nine static source checks, which read the module's own source, and the two pure pins of
   # packages/daemon's supervise table. None of them opens a database or starts a container, so the
   # job carries no service and no `bun install`, and the three Go lanes above leave those
-  # packages, those seventeen tests and those two pins out of their own runs
+  # packages, those eighteen tests and those two pins out of their own runs
   # (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
   # walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
   # the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
