@@ -9,6 +9,9 @@ import {
   agentStreamFramesSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  LISTENER_CALL_ATTEMPTS,
+  LISTENER_CALL_RETRY_DELAY_MS,
+  LISTENER_CALL_TIMEOUT_MS,
   legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
@@ -37,8 +40,10 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  NoRelaySubjectError,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -96,7 +101,13 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
+import {
+  connectNats,
+  NATS_DIAL_PLAN,
+  type NatsDialPlan,
+  natsConnectionOptions,
+  natsDialBudget,
+} from "@legion/envoy-client/nats-connection";
 import {
   type BrokerNatsCredential,
   followNatsCredential,
@@ -206,8 +217,10 @@ import {
 import { opensAsk } from "../src/opens-ask";
 import {
   createRegistrationState,
+  type DialLimit,
   type RegistrationInput,
   type RoleSnapshot,
+  stepWasRefused,
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
@@ -303,8 +316,9 @@ function liveSessionSettings(live: LiveAgentSession | undefined): AgentStreamSet
 const codec = StringCodec();
 
 /**
- * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect`, unless
- * a test put a stand-in in its place. Production never sets one.
+ * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect` with the
+ * redials every plugin makes (`NATS_DIAL_PLAN`), unless a test put a stand-in in its place, which
+ * dials once unless the test gives it a plan of its own. Production never sets one.
  *
  * The stand-in lives on `globalThis` under a process-wide symbol rather than in a binding of this
  * module, because a suite loads this entry many times over — each `import("./envoy.ts?<row>")` is
@@ -314,14 +328,23 @@ const codec = StringCodec();
  */
 const NATS_CONNECT = Symbol.for("legion.pi-envoy.nats-connect");
 
+interface NatsDialStandIn {
+  readonly connect: typeof connect;
+  readonly plan: NatsDialPlan;
+}
+
 interface GlobalNatsConnect {
-  [key: symbol]: typeof connect | undefined;
+  [key: symbol]: NatsDialStandIn | undefined;
 }
 
 const natsConnectStore = globalThis as unknown as GlobalNatsConnect;
 
-export function setNatsConnectForTests(dial: typeof connect): void {
-  natsConnectStore[NATS_CONNECT] = dial;
+/** A stand-in's plan unless its test gives one: one dial, so a row that holds NATS down fails
+ *  each pass's dial at once. */
+const DIAL_ONCE: NatsDialPlan = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+
+export function setNatsConnectForTests(dial: typeof connect, plan: NatsDialPlan = DIAL_ONCE): void {
+  natsConnectStore[NATS_CONNECT] = { connect: dial, plan };
 }
 
 // The slot outlives every instance of this entry in the process, so a file that set a stand-in
@@ -367,6 +390,8 @@ function listenerRoleName(role: string): string {
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
+/** Why the session's relay subject went when nats.js closed its connection and named no error. */
+const RELAY_CONNECTION_CLOSED = "the NATS connection closed";
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
 /** How long a delivery waits on the whole body of an item an event carried only in part before
@@ -1182,7 +1207,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // Opens a NATS connection for this session and stores nothing: `ensureConnection` keeps the one
   // this session uses, and a queued task dials through its handle, which closes a connection the
   // task was refused while the dial was in flight rather than leave it dangling.
-  const dialNats = async (): Promise<NatsConnection> => {
+  //
+  // A dial that fails is dialed again (`connectNats`): the hub closes a dial whose CONNECT the
+  // host's busy start delayed past its 2 s authentication timeout, and answers the next one. A
+  // queued task's dial (`limit`) redials only while the task can still confirm a subscription and
+  // register after it (`PASS_AFTER_DIAL_MS`), and stops once the task stops acting.
+  const dialNats = async (limit?: DialLimit): Promise<NatsConnection> => {
     const { natsUrls, natsCredential } = requireInbound();
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
     // The start has nothing to do until it holds one, so it waits for ready within its bound
@@ -1196,13 +1226,29 @@ export default function envoyExtension(hostApi: PiApi): void {
         boundMs: startTradeBoundMs(passDeadlineMs()),
       });
     }
+    const standIn = natsConnectStore[NATS_CONNECT];
+    const plan = standIn?.plan ?? NATS_DIAL_PLAN;
+    // What the task has left once the token is held, which the wait for it spent from.
+    const left = limit === undefined ? Infinity : limit.deadlineAt - performance.now();
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
-    return (natsConnectStore[NATS_CONNECT] ?? connect)(
+    return connectNats(
+      standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
         name: `omp-${sessionID || "unknown"}`,
         credential: natsCredential,
-      })
+      }),
+      { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
+      {
+        firstBoundMs: left,
+        stopped: () => shuttingDown || limit?.stopped() === true,
+        // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
+        // so the line says the next dial waits on that.
+        onRetry: (error, delayMs, attempt) =>
+          logger.warn(
+            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
+          ),
+      }
     );
   };
 
@@ -2272,6 +2318,15 @@ export default function envoyExtension(hostApi: PiApi): void {
   const SUBSCRIBE_FLUSH_TIMEOUT_MS =
     Number(process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS ?? "") || 10_000;
 
+  // The time a pass may still need once its NATS dial answers: the first subscription's
+  // confirmation, then one listener call for the registration with its retry. A dial's redials end
+  // this long before the pass's deadline (`dialNats`), so a connection that answers late still
+  // leaves the pass time to register. 10 + 2 x 5 + 0.25 = 20.25 s at the defaults.
+  const PASS_AFTER_DIAL_MS =
+    SUBSCRIBE_FLUSH_TIMEOUT_MS +
+    LISTENER_CALL_ATTEMPTS * LISTENER_CALL_TIMEOUT_MS +
+    (LISTENER_CALL_ATTEMPTS - 1) * LISTENER_CALL_RETRY_DELAY_MS;
+
   // The connections that have not answered a round trip since they last did. A background
   // confirmation asks each of them for that answer and clears the mark however it ends - on the
   // answer, on a connection closed for good, on a shutdown, or at its cap; a reconnect
@@ -2508,8 +2563,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     readonly sessionID: string;
     readonly delivery: ConsumerDelivery;
     subscription: Subscription | undefined;
+    /** Why the last open of the relay subject failed, or why its subscription ended, in words a
+     *  notice may hold (`natsFailureReason`): a registration sent while the subject is missing
+     *  names it, whoever sends it. */
+    missing: string | undefined;
   }
   let relay: Relay | undefined;
+  /** Why the last pass could not open its session's inbound, for a registration sent outside a
+   *  pass while that session has no relay yet (the start's dial failed before one existed). */
+  let passFailure: { readonly sessionID: string; readonly text: string } | undefined;
 
   // A relay frame for a session the host is no longer on (a switch, before the next pass closes
   // its relay), or one that drains in while the session shuts down, is one the session cannot
@@ -2565,7 +2627,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     const restored = consumerSnapshot(entries, id);
     if (restored !== undefined) delivery.restore(restored);
     persistedFollows = JSON.stringify(delivery.snapshot().follows);
-    return { sessionID: id, delivery, subscription: undefined };
+    return { sessionID: id, delivery, subscription: undefined, missing: undefined };
   };
 
   // Subscribes the relay subject, unless it is open: a subscription on a connection the listener
@@ -2577,12 +2639,23 @@ export default function envoyExtension(hostApi: PiApi): void {
     connect: () => Promise<NatsConnection> = ensureConnection
   ): Promise<void> => {
     if (owner.subscription !== undefined) return;
-    const connected = await connect();
+    let connected: NatsConnection;
+    try {
+      connected = await connect();
+    } catch (error) {
+      // A step the task refused (its pass was abandoned, or its session moved) is no reason the
+      // subject is missing: the reason recorded before it stands.
+      if (relay === owner && !stepWasRefused(error) && !taskWasAbandoned(error)) {
+        owner.missing = natsFailureReason(error);
+      }
+      throw error;
+    }
     if (relay !== owner || owner.subscription !== undefined) return;
     const subscription = connected.subscribe(owner.delivery.subject);
     owner.subscription = subscription;
+    owner.missing = undefined;
     owner.delivery.beginEpoch();
-    void pumpRelay(owner, subscription);
+    void pumpRelay(owner, subscription, connected);
     // The relay's own registration names this session's delivery subject the moment this returns,
     // and the listener publishes to it at once, so a SUB still in the out buffer costs the first
     // frames. A round trip this connection can still answer later does not fail the open, so only
@@ -2594,7 +2667,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       await confirmSubscribed(connected, `the relay subscription for ${owner.sessionID}`);
     } catch (error) {
-      if (owner.subscription === subscription) owner.subscription = undefined;
+      if (owner.subscription === subscription) {
+        owner.subscription = undefined;
+        owner.missing = natsFailureReason(error);
+      }
       subscription.unsubscribe();
       throw error;
     }
@@ -2630,16 +2706,35 @@ export default function envoyExtension(hostApi: PiApi): void {
   // and queues the frame in stream order. A subscription that ends under the session (its
   // connection closed) is opened again after the resubscribe delay, on a new epoch, and
   // registered, so the listener restarts the relay at its ack floor.
-  const pumpRelay = async (owner: Relay, subscription: Subscription): Promise<void> => {
+  const pumpRelay = async (
+    owner: Relay,
+    subscription: Subscription,
+    connected: NatsConnection
+  ): Promise<void> => {
+    let failure: unknown;
     try {
       for await (const message of subscription) {
         owner.delivery.receive(message);
       }
-    } catch {
+    } catch (error) {
       // Iterator failure falls through to the resubscribe path below.
+      failure = error;
     }
     if (owner.subscription !== subscription) return;
     owner.subscription = undefined;
+    if (failure !== undefined) owner.missing = natsFailureReason(failure);
+    else if (connected.isClosed()) {
+      // nats.js ends each subscription of a connection it closes with no error of its own, so the
+      // close is why the subject went: in the plugin's own words at once, then in the close's own
+      // error where it had one.
+      owner.missing = RELAY_CONNECTION_CLOSED;
+      void connected.closed().then((closedWith) => {
+        if (!(closedWith instanceof Error) || relay !== owner) return;
+        if (owner.subscription === undefined && owner.missing === RELAY_CONNECTION_CLOSED) {
+          owner.missing = natsFailureReason(closedWith);
+        }
+      });
+    }
     if (!shuttingDown && relay === owner) retryRelay(owner, RESUBSCRIBE_DELAY_MS);
   };
 
@@ -2962,6 +3057,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // and the task ends, so a newer pass's control subscription is never overwritten behind its
     // back.
     const connected = await connect();
+    // Another open of this subject - the pass's, or the pump's own resubscribe - may have landed
+    // while this one dialed, or the host may have moved to another session: either way this
+    // open takes nothing, so one subscription answers each viewer.
+    if (agentStreamControlSession !== session || agentStreamControl !== undefined) return;
     const subscription = connected.subscribe(agentStreamControlSubject(session));
     agentStreamControl = subscription;
     void pumpAgentStreamControl(subscription, session);
@@ -3274,15 +3373,27 @@ export default function envoyExtension(hostApi: PiApi): void {
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
   // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
   // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted.
-  const inboundOutage = inboundUnavailable((why) => {
-    logger.warn(`envoy: this session receives nothing: ${why}`);
-    activeSessionContext?.ui.notify(
-      `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-      "warning"
-    );
-    unwritten.sendNotice(inboundUnavailableNoticeText(why));
-  });
+  // every tick until one is accepted. That accepted registration is said too, in the same three
+  // places: without it the outage notice is the last word, and a session that recovered seconds
+  // later (the claim pass after a first dial the hub closed) reads itself as deaf for its life.
+  const inboundOutage = inboundUnavailable(
+    (why) => {
+      logger.warn(`envoy: this session receives nothing: ${why}`);
+      activeSessionContext?.ui.notify(
+        `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
+        "warning"
+      );
+      unwritten.sendNotice(inboundUnavailableNoticeText(why));
+    },
+    () => {
+      logger.warn("envoy: this session receives again: its registration was accepted");
+      activeSessionContext?.ui.notify(
+        "envoy: inbound messages reach this session again: its registration was accepted",
+        "warning"
+      );
+      unwritten.sendNotice(inboundRestoredNoticeText());
+    }
+  );
 
   // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
   // the sessions themselves report. The reading runs between registrations, never inside one: a
@@ -3311,8 +3422,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // decides for every host: every subject the session follows, a role-bound one included, since
   // a notice lane reaches this session from its own consumer and from nowhere else (INFRA-771),
   // but one the listener would not store for it. They are read afresh at every registration.
+  // `relayMissing` is why the pass could not open the relay, which the refusal of a registration
+  // with none, and so the outage notice, names. A registration sent outside a pass while the
+  // session's relay subject is missing names why it went (`Relay.missing`) instead.
   const sendRegistration = (
-    send: (input: RegistrationInput) => Promise<SubscribeResult>
+    send: (input: RegistrationInput) => Promise<SubscribeResult>,
+    relayMissing?: string
   ): Promise<SubscribeResult> => {
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
@@ -3326,6 +3441,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     const role = registrationState.heldRole();
     return registerWithRelay({
       relay: asking?.delivery,
+      relayMissing:
+        relayMissing ??
+        (asking !== undefined
+          ? undefined
+          : relay?.sessionID === registeringFor && relay.missing !== undefined
+            ? relay.missing
+            : passFailure?.sessionID === registeringFor
+              ? passFailure.text
+              : undefined),
       ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
@@ -3834,30 +3958,46 @@ export default function envoyExtension(hostApi: PiApi): void {
     // first (a Legion claim through the bridge included); the pass reports it, and the next pass
     // opens the relay and registers again. A steady pass touches no NATS.
     let inboundFailure: unknown;
-    if (inbound && registrationState.inboundOpenSession() !== host) {
+    // A session whose inbound this pass opens, and one a subject of whose inbound went after it
+    // opened - its connection closed for good, or its subscription ended - while its own
+    // resubscribe has not opened it again: the relay's waits NATS_RETRY_INTERVAL_MS after a dial
+    // that failed, and the agent stream's gives up. Both take the one path below, so every
+    // heartbeat restores what is missing, and a refused registration below names why it could not.
+    const opening = inbound && registrationState.inboundOpenSession() !== host;
+    if (
+      opening ||
+      (inbound &&
+        ((relay?.sessionID === host && relay.subscription === undefined) ||
+          (agentStreamControlSession === host && agentStreamControl === undefined)))
+    ) {
       try {
-        handle.markAgentSessionOpen(host);
-        const connected = await handle.connect();
-        // The auth service grants a session's token that session's subjects alone, so a session
-        // the connection was not admitted as - one the host switched to - subscribes nothing
-        // until the connection is back, admitted with its token (`followNatsCredential`).
-        // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
-        // a short pass deadline would run on beside the pass after it.
-        const broker = brokerNatsCredentialOf();
-        if (broker !== undefined) {
-          await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+        if (opening) {
+          handle.markAgentSessionOpen(host);
+          const connected = await handle.connect();
+          // The auth service grants a session's token that session's subjects alone, so a session
+          // the connection was not admitted as - one the host switched to - subscribes nothing
+          // until the connection is back, admitted with its token (`followNatsCredential`).
+          // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
+          // a short pass deadline would run on beside the pass after it.
+          const broker = brokerNatsCredentialOf();
+          if (broker !== undefined) {
+            await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+          }
+          await handle.subscribe(legacyAgentSubject(host));
         }
-        await handle.subscribe(legacyAgentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
-        // listener's first relayed frame has a subscriber.
+        // listener's first relayed frame has a subscriber. A viewer's replay request and its watch
+        // pings reach the session on the agent-stream control subject; opening it costs one core
+        // subscription and publishes nothing, so a session nobody opens stays silent. Each opens
+        // only what is not open already.
         await openRelay(context, host, handle.connect);
-        // A viewer's replay request and its watch pings reach the session here. Opening it costs
-        // one core subscription and publishes nothing: a session nobody opens stays silent.
         await watchAgentStream(host, handle.connect);
-        if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
-          await recoverRegisteredInterests(handle);
+        if (opening) {
+          if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
+            await recoverRegisteredInterests(handle);
+          }
+          handle.markInboundOpen(host);
         }
-        handle.markInboundOpen(host);
       } catch (error) {
         inboundFailure = error;
       }
@@ -3865,10 +4005,22 @@ export default function envoyExtension(hostApi: PiApi): void {
     // A step this pass was refused ends it here: what it was refused is no NATS outage to
     // report, and the pass the move queued opens the subject.
     handle.check();
+    // nats.js's own error can carry what the servers were set to (a resolver's error names the
+    // host it looked up, a socket's the port, a password's digits included), so a notice carries
+    // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
+    const failureText =
+      inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
+    passFailure = failureText === undefined ? undefined : { sessionID: host, text: failureText };
     // Every session subscribes to its own agent subject, so every session is registered;
     // envoy_send treats an unregistered id as dead. The listener rejects a claim from a session it
-    // does not currently know, so this comes before the role.
-    const registration = await trackRegistration(host, sendRegistration(handle.register)).then(
+    // does not currently know, so this comes before the role. A registration refused for want of
+    // the relay names why the relay did not open, in the refusal and in the outage notice: it is
+    // the cause a person can act on (a hub with no auth service under NATS_AUTH=broker says so and
+    // what to unset), which the refusal alone hides.
+    const registration = await trackRegistration(
+      host,
+      sendRegistration(handle.register, failureText)
+    ).then(
       () => undefined,
       (error: unknown) => ({ error })
     );
@@ -3901,20 +4053,14 @@ export default function envoyExtension(hostApi: PiApi): void {
     leftSessions.delete(host);
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
-    // nats.js's own error can carry what the servers were set to (a resolver's error names the
-    // host it looked up, a socket's the port, a password's digits included), so a notice carries
-    // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
-    const failureText =
-      inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
     if (registration !== undefined) {
-      // A registration refused for want of the relay subject the failed dial would have opened
-      // names that dial's own failure too: it is the cause a person can act on (a hub with no auth
-      // service under NATS_AUTH=broker says so and what to unset), which the refusal alone hides.
+      // A registration the listener refused while the open failed too names that failure here;
+      // the client's own refusal of a session with no relay already names it.
       const refused = messageFor(registration.error);
       throw new RegistrationError(
-        failureText === undefined
+        failureText === undefined || registration.error instanceof NoRelaySubjectError
           ? refused
-          : `${refused}, because its NATS connection failed: ${failureText}`,
+          : `${refused}, because its relay subject could not be opened: ${failureText}`,
         { cause: registration.error }
       );
     }

@@ -126,7 +126,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
           redials.slice(0, stalledRedials).every((opened) => opened.subscribedAt === undefined)
         ).toBe(true);
         expect(redials[stalledRedials]?.subscribedAt).toBeDefined();
-        // nats.js abandons a dial after its 20 s timeout; the socket it opened must go with it, so
+        // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
         // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
         // real clock.

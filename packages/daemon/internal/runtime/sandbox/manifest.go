@@ -128,7 +128,7 @@ var runtimeOwned = func() map[string]bool {
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 		"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
-		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true,
+		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true, leakguard.CheckerVar: true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
@@ -415,6 +415,37 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
+	// checker is the manifest digest of the deployment's leak check this pod's install holds, as
+	// the pod records it (recordedLeakChecker): the digest its template was built under
+	// (leakCheckerAnnotation), the install made at the image's own pin, or else the digest of the
+	// tarball the daemon served into it (leakCheckPushedAnnotation); and so the one its role is
+	// told (launch.leakChecker). recorded is whether the pod records one at all. A pod that records
+	// none was built under no setting, or by a daemon before the record: its role is told none where
+	// its launcher holds an install from before, which a daemon of a release before the setting
+	// pushed and hashed nothing of. Where it holds none, serveLeakCheck records the manifest of the
+	// served tarball for the reconnected session, then tells that digest to the role.
+	checker  string
+	recorded bool
+}
+
+// leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
+// deployment's leak check (Options.LeakCheckSetting's ManifestSHA256) the pod was built under,
+// written where the template is built (podTemplate) and only under a configured setting. A pod's
+// install is made once, at its own image's pin, so a pod kept after the deployment moved its pin
+// and its digest together holds the install of the old pin, whose digest is the old one. A role
+// started in such a pod is told the digest its pod was built under (keptPod.checker), so its shim
+// starts against the install its pod holds, and it can push its work and answer the update round
+// that replaces the pod (leakCheckDrift), where told the digest now it would start no agent at all.
+const leakCheckerAnnotation = "legion.dev/leak-checker-manifest-sha256"
+
+// leakChecker is the manifest digest this launch's generation is told (leakguard.CheckerVar): the
+// one the live pod it keeps records (keptPod.checker), and the deployment's own for a launch that
+// builds the pod itself. "" tells none.
+func (l launch) leakChecker(r *Runtime) string {
+	if l.kept != nil {
+		return l.kept.checker
+	}
+	return r.leakCheck.ManifestSHA256
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -603,7 +634,11 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
 // names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
 // frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
-// supervisor can tell it from a launch that failed).
+// supervisor can tell it from a launch that failed). So is a Claude Code spec that names its
+// session by its id alone (ResumeSession), whoever was to resolve that id: a Claude Code claim's
+// recorded session is its transcript's path, which the id is read from (claudelaunch.ResumeSession),
+// and supervise forgets a Claude Code session recorded with no file rather than look it up, so no
+// Claude Code command is started on an id it would find no transcript of.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
@@ -622,6 +657,9 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		l.microVM = r.sandboxConfig.MicroVM
 	}
 	if l.runsClaude() {
+		if spec.ResumeSession != "" {
+			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
+		}
 		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(spec.Role))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
@@ -704,7 +742,10 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// on the `default` role, `--resume` on the session being resumed — the recorded file, or for a
+// claim that records no file the session's id (ResumeSession), which the launcher replaces with the
+// file it looks up where it was told the id (launcherCommand) and which Oh My Pi resolves itself
+// where the launch has the agent resolve it (ResumeByAgent) — then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -742,8 +783,11 @@ func (l launch) agentArgv(agent []string) []string {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
-	if l.spec.ResumeSessionFile != "" {
+	switch {
+	case l.spec.ResumeSessionFile != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
+	case l.spec.ResumeSession != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSession)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -877,15 +921,16 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	if l.microVM != nil {
 		labels[labelSandbox] = string(SandboxMicroVM)
 	}
+	annotations := map[string]string{
+		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
+		podShapeAnnotation: r.podShapes[l.shapeKey()],
+	}
+	if r.leakCheck.Configured() {
+		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
+	}
 	return podTemplate{
-		Metadata: podMetadata{
-			Labels: labels,
-			Annotations: map[string]string{
-				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.shapeKey()],
-			},
-		},
-		Spec: spec,
+		Metadata: podMetadata{Labels: labels, Annotations: annotations},
+		Spec:     spec,
 	}
 }
 
@@ -1569,15 +1614,30 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
-	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
-	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
-	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
-	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
-	// is named here is the installed copy, under the scratch the roles of this pod share. The path
-	// is the installer's own constant, so the path a role is told and the path the install writes
-	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
-	add(leakguard.CheckVar, leakguard.InstalledCheck)
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else (leakguard's Resolve) and, told
+	// the deployment's checker (leakguard.CheckerVar), refuse the write when they find no check.
+	// The check is not in the image — it is published by tag from the repository the deployment
+	// names, the image carries the pin, and the daemon reads the check at that pin and pushes it
+	// to the pod's launcher, which installs it once for the pod before any role starts
+	// (launchers.serveLeakCheck; each role's shim only reads that install) — so what is named here
+	// is the installed copy, under the scratch the roles of this pod share. The path is the
+	// installer's own constant, so the path a role is told and the path the install writes are
+	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The digest is
+	// the manifest digest of the check the deployment names (leakguard.Manifest), as the pod the
+	// role starts in was built under (launch.leakChecker): a kept pod holds the install of its own
+	// image's pin, so its role is told the digest that install has; a pod recording none is told
+	// the setting's where its launcher holds no install, since the check pushed into it then is the
+	// setting's, and none where it holds one from before (relaunch). It is the sign, to the shim
+	// and the guard, that the deployment runs a check at all; `legion gh` trusts its read rule
+	// under the program that rule was proven against, whose digest it compiles in, and not under
+	// this digest. A deployment that names none (Options.LeakCheckSetting) tells neither: its pods
+	// are pushed no check, and its roles start without one and refuse no write for its absence.
+	if r.leakCheck.Configured() {
+		add(leakguard.CheckVar, leakguard.InstalledCheck)
+		if checker := l.leakChecker(r); checker != "" {
+			add(leakguard.CheckerVar, checker)
+		}
+	}
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a
 	// kept pod that carries no enrollment is started with neither the flags nor these, so its
@@ -1663,11 +1723,13 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
 	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
 	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
-	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
-	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
-	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
-	// start command alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+	// never recorded. A resume of a session named by its id alone (spec.ResumeSession, the file the
+	// launcher finds or Oh My Pi's own lookup) resumes a recorded session too, so it is held the
+	// same way. A fresh launch is told nothing of it, and neither is a Claude role, whose resume is
+	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
+	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
+	// alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env
