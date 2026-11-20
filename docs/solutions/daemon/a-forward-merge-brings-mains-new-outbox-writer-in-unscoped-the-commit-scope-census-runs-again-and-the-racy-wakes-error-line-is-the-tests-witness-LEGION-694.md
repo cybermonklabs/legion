@@ -5,7 +5,7 @@ tags:
   - outbox
   - forward-merge
   - commit-hooks
-  - intake.WithCommitHooks
+  - store.OnCommit
   - wakeOnCommit
   - census
   - race-witness
@@ -23,16 +23,20 @@ related_issues:
 Extends docs/solutions/testing/the-comparability-grep-runs-again-after-every-forward-merge-of-main-and-a-port-to-deepequal-keeps-slices-equals-nil-rule-LEGION-578.md.
 
 - A branch that puts a new invariant on an existing call — here, every outbox write runs inside
-  `intake.WithCommitHooks` so `projectRecords.wakeOnCommit` can wake the row's lane at the commit
-  (`internal/daemon/daemon.go`), and every field the runner reads on many goroutines sits under a
+  a transaction of the daemon's one boundary, `store.Transact`, so `projectRecords.wakeOnCommit`
+  can wake the row's lane at the commit (`store.CommitScoped`, `store.OnCommit`,
+  `internal/daemon/daemon.go`), and every field the runner reads on many goroutines sits under a
   mutex — has a census of that call's sites. The census is a step of every forward merge, run over
   `main`'s delta, not a list the plan settled once: code `main` gained after the fork point was
   written against the call as it was, and arrives either with no conflict marker or inside a
   conflict you resolve by keeping both sides, which makes `main`'s side look reviewed when it is
   new. For the outbox the census is
   `grep -n 'records\.Enqueue(\|records\.ExpediteOutbox(' internal/daemon/*.go internal/api/*.go | grep -v _test`:
-  every hit's context must be the `scoped` a `WithCommitHooks` returned (a write inside an
-  `intake.ApplyFact` handler owns its scope by construction). For a runner the branch made
+  every hit's context must be the one a `store.Transact` body is handed (a write inside an
+  `intake.ApplyFact` handler owns its scope by construction). The transaction half of the census
+  is a test: `TestNoTransactionOrStatementBypassesTheBoundary`
+  (`internal/textcheck/transaction_boundary_test.go`) refuses any transaction or statement opened
+  outside the boundary, so main's new opener fails it on the merge. For a runner the branch made
   concurrent, every field `main` added to the runner struct is shared state until shown otherwise:
   grep `r.<field>` and guard it, and move a check `main` made before its serial loop's `execute`
   into the per-row path.
@@ -42,9 +46,9 @@ Extends docs/solutions/testing/the-comparability-grep-runs-again-after-every-for
   witness is the fallback's own log line (`wakeOnCommit`'s ERROR
   `outbox row written outside a commit scope; its lane is woken at once`), captured by the
   package's `syncBuffer` and asserted absent, beside the effect and the untouched sweep timer,
-  never instead of them. Prove the test red by replacing the scope with
-  `scoped, committed := ctx, func() {}` at the site (a `go test -overlay` file does it without
-  touching the tree), then restore it.
+  never instead of them. Prove the test red by making the write at the site on a context no
+  `store.Transact` scopes (a `go test -overlay` file does it without touching the tree), then
+  restore it.
 - `go test -race` in CI catches none of this: the race is between a commit and a wake, not two
   memory accesses, and an unguarded map `main` added is only raced once a test drives two rows of
   different issues at once, which no test did. The census is the check.
