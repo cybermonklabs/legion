@@ -1496,43 +1496,44 @@ func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
 	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
 	seen := map[string]bool{}
-	current := &recorded
-	for {
-		if current.Key == grant.Issue {
-			return true, nil
+	// ends is whether the walk ends at issue, and what it answers there: owned at the grant's own
+	// issue, and the tree root's answer at an issue with no parent, a tree root or one already
+	// seen. An issue the walk goes on from is marked seen.
+	ends := func(issue record.Issue) (owned, ended bool) {
+		switch {
+		case issue.Key == grant.Issue:
+			return true, true
+		case issue.Parent == nil || claim.IsTreeRoot(issue.Key, issue.Tree) || seen[issue.Key]:
+			return byRoot, true
 		}
-		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
-			return byRoot, nil
-		}
-		seen[current.Key] = true
-		if s.pool == nil {
-			return false, errors.New("record dependencies are unavailable")
-		}
-		var owned bool
-		err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			for {
-				parent, err := s.records.Issue(ctx, tx, *current.Parent)
-				if err != nil {
-					return err
-				}
-				if parent == nil || parent.Tree != grant.Tree {
-					owned = byRoot
-					return nil
-				}
-				current = parent
-				if current.Key == grant.Issue {
-					owned = true
-					return nil
-				}
-				if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
-					owned = byRoot
-					return nil
-				}
-				seen[current.Key] = true
-			}
-		})
-		return owned, err
+		seen[issue.Key] = true
+		return false, false
 	}
+	if owned, ended := ends(recorded); ended {
+		return owned, nil
+	}
+	if s.pool == nil {
+		return false, errors.New("record dependencies are unavailable")
+	}
+	var owned bool
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		for current := recorded; ; {
+			parent, err := s.records.Issue(ctx, tx, *current.Parent)
+			if err != nil {
+				return err
+			}
+			if parent == nil || parent.Tree != grant.Tree {
+				owned = byRoot
+				return nil
+			}
+			current = *parent
+			var ended bool
+			if owned, ended = ends(current); ended {
+				return nil
+			}
+		}
+	})
+	return owned, err
 }
 
 // parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue
