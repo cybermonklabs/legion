@@ -8279,3 +8279,224 @@ func TestMemoryGuardAsksForNoReadingAfterAPanicInItsLoop(t *testing.T) {
 	}
 	h.requireKilled()
 }
+
+// Run `8g-latepool-r2` of the tester's latepool probe at 28732f65 under gVisor at 8 GiB, replayed
+// with the readings and the times of its sizes log, the sizes it read there, its kill lines and the
+// part its trace names for each pid (INFRA-3531 R1 of spec version 43; INFRA-3368's architect's
+// decision of 2026-11-20T08:13Z, item 2: in the order's third tier, growth since the stay's first
+// kill, a process the guard never read before that kill counts from 0 where its first read after
+// it is not a fork's read). The shim, pid 99 (7160), and the agent, pid 100 (7165), which holds
+// 2.17 GB, are protected. The probe's parent, pid 700 (7172), grows to 4.8 GB through the band, and
+// its three sleeping forks, pids 701 to 703 (7174 to 7176), start between the band's last two
+// readings, each reporting its parent's 4.8 GB as its own. Six growers, pids 800 to 805 (7177 to
+// 7182), children of the parent that run the grow program, start after the band's last reading. At
+// the reading at the mark, 86.83% and below the urgent share, nothing held has grown: the guard
+// reads the parent again and, its reads slow, the newest grower alone, and ends it 70 ms after the
+// reading (`rule=new sizes=search new_read=1:1`, as in r2). It reads pids 800 to 804 first after
+// that kill, and before those reads pid 802 (7179) steps from 60.6 to 68.6 MiB and pid 800 (7177)
+// from 67.6 to 69.6 MiB. At the next reading, fallen, the guard ends pid 804, the largest new to
+// the stay (`rule=new sizes=reading`, as in r2). At the reading after, fallen again with no
+// grower's step in the window, none is new to the stay: pids 800 to 803 have grown since the
+// stay's first kill from 0, and rank before the parent, which never grew. So the guard ends every
+// grower before the parent or a sleeping fork, and no rule=largest kill comes while a grower lives.
+// At a28d75a8, as in r2, the guard took each grower's first read after the kill as its size as of
+// that kill, saw none grown since it, and its third kill ended the parent by rule=largest while
+// pids 800 to 803 lived.
+func TestMemoryGuardRanksAGrowerFirstReadAfterTheStaysFirstKillBeforeALargeProcessThatNeverGrew(t *testing.T) {
+	pod := newFakePod(t)
+	pod.setLimit(strconv.FormatUint(8*gib, 10))
+	shim := fakeProcess{pid: 99, ppid: 1, exe: "/scratch/bin/launcher.test", args: []string{"/scratch/bin/launcher.test", "worker-shim"}, anon: 28446720}
+	omp := agent(2174492672)
+	omp.ppid = shim.pid
+	// The parent's command line is the 8 GiB run's, whose sixth argument is its block's size.
+	args := slices.Clone(latepoolArgs)
+	args[6] = "4810363372"
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: args, anon: 4268990464}
+	pod.add(shim, omp, parent)
+	pod.setAnon(6529400832)
+	h := newHarness(t, pod, protect("controller", 99, 100))
+	reads := recordReads(h)
+	_, perRead := slowMark(h)
+	growers := make([]*fakeProcess, 6)
+	for i := range growers {
+		growers[i] = &fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs}
+	}
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		// The reads after a kill cost nothing.
+		perRead.Store(0)
+		if pid == 805 {
+			// Pids 800 and 802 step after the first kill, before the guard's first reads of them.
+			pod.resize(growers[0], 73019392)
+			pod.resize(growers[2], 71901184)
+		}
+		return exit(pid)
+	}
+	h.run()
+	// band takes a reading of the band gap after the one before, the parent at anon.
+	band := func(reading, anon uint64, gap time.Duration) {
+		pod.resize(&parent, anon)
+		pod.setAnon(reading)
+		h.tickAfter(gap - Defaults().Interval)
+	}
+	band(6711869440, 4453539840, 102*time.Millisecond)
+	band(6888620032, 4635992064, 101*time.Millisecond)
+	band(7071072256, 4818444288, 102*time.Millisecond)
+	band(7085457408, 4818444288, 102*time.Millisecond)
+	band(7085461504, 4818444288, 101*time.Millisecond)
+	for j := range 3 {
+		pod.add(fakeProcess{pid: 701 + j, ppid: 700, start: uint64(5100 + 100*j), exe: "/usr/bin/python3.13", args: args, anon: 4818444288})
+	}
+	band(7103791104, 4818444288, 119*time.Millisecond)
+	h.requireKilled()
+
+	for i, size := range []uint64{70922240, 73392128, 63512576, 71929856, 73719808, 73564160} {
+		pod.resize(growers[i], size)
+	}
+	pod.setAnon(7458320384)
+	inTheBand := len(reads())
+	perRead.Store(int64(35 * time.Millisecond))
+	markAt := h.clock.Now().Add(102 * time.Millisecond)
+	h.tickAfter(2 * time.Millisecond)
+	perRead.Store(0)
+	// spent is how long the reading at the mark took by the guard's clock.
+	spent := h.clock.Now().Sub(markAt)
+	h.requireKilled(805)
+	requireChosenBy(h, 805, "new", "search")
+	requireNewRead(h, 805, "1:1")
+	readAfter := map[int]bool{}
+	for _, r := range reads()[inTheBand:] {
+		switch {
+		case r.scan || r.pid < 800:
+		case r.killsBefore == 0 && r.pid != 805:
+			t.Fatalf("the guard read pid %d before the first kill at the reading at the mark, where r2's guard first read it after that kill; its reads there: %+v; the log:\n%s",
+				r.pid, reads()[inTheBand:], strings.Join(h.log.all(), "\n"))
+		case r.killsBefore > 0:
+			readAfter[r.pid] = true
+		}
+	}
+	for pid := 800; pid <= 804; pid++ {
+		if !readAfter[pid] {
+			t.Fatalf("the guard did not read pid %d after the first kill at the reading at the mark; its reads there: %+v", pid, reads()[inTheBand:])
+		}
+	}
+
+	for i, r := range []struct {
+		reading uint64
+		gap     time.Duration
+		// sizes are pids 800 to 804's at the reading, by the run's sizes log; one the log no longer
+		// lists, ended there, keeps its last size.
+		sizes [5]uint64
+	}{
+		{7454584832, 190 * time.Millisecond, [5]uint64{73019392, 73392128, 71901184, 71929856, 73719808}},
+		{7384449024, 104 * time.Millisecond, [5]uint64{73019392, 73392128, 71901184, 71929856, 73719808}},
+		{7647019008, 103 * time.Millisecond, [5]uint64{140132352, 140505088, 139014144, 139042816, 73719808}},
+		{7509762048, 103 * time.Millisecond, [5]uint64{140132352, 140505088, 139014144, 139042816, 73719808}},
+		{7439613952, 102 * time.Millisecond, [5]uint64{140132352, 140505088, 139014144, 206155776, 73719808}},
+		{7302352896, 102 * time.Millisecond, [5]uint64{140132352, 140505088, 206127104, 206155776, 73719808}},
+	} {
+		killed := h.signal.kills()
+		for j, size := range r.sizes {
+			if !slices.Contains(killed, growers[j].pid) {
+				pod.resize(growers[j], size)
+			}
+		}
+		pod.setAnon(r.reading)
+		// The guard waits its interval from the end of its tick, so the time the reading at the
+		// mark took comes off the gap to the reading after it.
+		extra := r.gap - Defaults().Interval
+		if i == 0 {
+			extra -= spent
+		}
+		h.tickAfter(extra)
+	}
+	choices := endedChoices(h)
+	ended := make([]int, len(choices))
+	for i, c := range choices {
+		ended[i] = c.pid
+	}
+	if kills := h.signal.kills(); !slices.Equal(ended, kills) {
+		t.Fatalf("the guard killed %v and its ended lines name %v; the log:\n%s", kills, ended, strings.Join(h.log.all(), "\n"))
+	}
+	if len(choices) < 2 || choices[1] != (endedChoice{804, "new", "reading", 0}) {
+		t.Fatalf("the guard ended %+v, want pid 804 second by rule=new sizes=reading, as in r2; the log:\n%s", choices, strings.Join(h.log.all(), "\n"))
+	}
+	living := []int{800, 801, 802, 803, 804, 805}
+	for i, c := range choices {
+		if slices.Contains(living, c.pid) {
+			living = slices.DeleteFunc(living, func(pid int) bool { return pid == c.pid })
+			continue
+		}
+		if len(living) > 0 {
+			t.Fatalf("the guard's kill %d ended pid %d by rule=%s while growers %v lived, each grown since the stay's first kill and first read after it; it ended %+v; the log:\n%s",
+				i+1, c.pid, c.rule, living, choices, strings.Join(h.log.all(), "\n"))
+		}
+	}
+	if len(living) > 0 {
+		t.Fatalf("the guard left growers %v, each grown since the stay's first kill, at the run's last reading; it ended %+v; the log:\n%s",
+			living, choices, strings.Join(h.log.all(), "\n"))
+	}
+}
+
+// A read after a kill never lowers a process's size as of that kill (INFRA-3531 R1 of spec version
+// 43; INFRA-3368's architect's decision of 2026-11-20T08:13Z, item 3: "a process whose read after
+// the kill is below the decision's read, then grows back to that size, gives no go-on. Reads after
+// a kill never lower a size as of it"). Pid 300, python3 grow.py, and pid 301, python3 worker.py of
+// 600 MiB, start before the band's last reading, which reads each once. At the reading at the
+// mark, below the urgent share, nothing has grown by the held reads, so the guard reads both again
+// before its kill: pid 301 reads 600 MiB, and pid 300 has grown 100 MiB, and the guard ends it.
+// Between that kill and the guard's read of pid 301 after it, at the same reading, pid 301 reads 20
+// MiB less, 580 MiB; by the next reading it holds 600 MiB again. The three readings after the kill
+// stay at or above the reading at the kill and nothing else grows: pid 301's size as of the kill is
+// the decision's read, 600 MiB, it has not grown since, and the guard ends no second process. With
+// the tester's mutant k10, which lets that read after the kill lower the size as of the kill to 580
+// MiB, the guard sees 20 MiB of growth since the kill, goes on and ends pid 301.
+func TestMemoryGuardTakesNoGrowthSinceAKillFromAReadAfterItBelowTheDecisionsRead(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(2 * gib))
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	reads := recordReads(h)
+	grower := fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "grow.py"}, anon: 100 * mib}
+	worker := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "worker.py"}, anon: 600 * mib}
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		if pid == grower.pid {
+			// After the kill, before the guard's read of pid 301 after it.
+			pod.resize(&worker, 580*mib)
+		}
+		return exit(pid)
+	}
+	h.run()
+	pod.add(grower, worker)
+	pod.setAnon(3200 * mib)
+	h.tick()
+	h.requireKilled()
+
+	pod.resize(&grower, 200*mib)
+	pod.setAnon(3500 * mib)
+	inTheBand := len(reads())
+	h.tick()
+	h.requireKilled(300)
+	requireChosenBy(h, 300, "grew", "reread")
+	var before, after int
+	for _, r := range reads()[inTheBand:] {
+		switch {
+		case r.scan || r.pid != worker.pid:
+		case r.killsBefore == 0:
+			before++
+		default:
+			after++
+		}
+	}
+	if before != 1 || after != 1 {
+		t.Fatalf("at the reading at the mark the guard read pid 301 %d times before the kill and %d times after it, want once each", before, after)
+	}
+
+	pod.resize(&worker, 600*mib)
+	for _, r := range []uint64{3500, 3510, 3520} {
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled(300)
+}
