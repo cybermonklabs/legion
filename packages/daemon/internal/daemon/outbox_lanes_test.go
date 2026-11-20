@@ -128,8 +128,8 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 	return g.Runtime.Spawn(ctx, spec)
 }
 
-// gatedPublisher is holderPublisher with every publish behind a gate: a notice blocked in it is a
-// lane blocked on the listener.
+// gatedPublisher is holderPublisher with every publish behind a gate, kept or not: a notice
+// blocked in it is a lane blocked on the listener.
 type gatedPublisher struct {
 	*holderPublisher
 	gate *gate
@@ -138,6 +138,11 @@ type gatedPublisher struct {
 func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
+}
+
+func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	g.gate.enter()
+	return g.holderPublisher.PublishKept(ctx, topic, message, payload, key)
 }
 
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
@@ -194,6 +199,15 @@ func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, er
 	return true, nil
 }
 func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
 func (d *postingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
@@ -262,8 +276,13 @@ func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
 	return nil, nil
 }
-func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
+func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -337,6 +356,17 @@ func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
 		t.Fatalf("count the outbox rows of %s: %v", issue, err)
+	}
+	return rows
+}
+
+// outboxRowsOfKind is how many rows of kind issue has left. A finished row is deleted
+// (record.Postgres.FinishOutbox).
+func outboxRowsOfKind(t *testing.T, pool *store.Pool, issue string, kind record.OutboxKind) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = $2", issue, string(kind)).Scan(&rows); err != nil {
+		t.Fatalf("count the %s rows of %s: %v", kind, issue, err)
 	}
 	return rows
 }
@@ -711,7 +741,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger()}
 	runLanes(t, runner, clock)
 
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the older row failed and its lane armed its backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -749,7 +779,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -942,9 +972,9 @@ func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.
 	released.Do(func() { close(release) })
 	<-done
 	retried := rowStateOf(t, pool, id)
-	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(retryBackoff(0))) {
+	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(record.RetryBackoff(0))) {
 		t.Fatalf("after Run returned the row is leased %q with %d attempts, due %v; want it retried unleased on its first backoff, due %v",
-			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(retryBackoff(0)))
+			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(record.RetryBackoff(0)))
 	}
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one the stop interrupted", got)

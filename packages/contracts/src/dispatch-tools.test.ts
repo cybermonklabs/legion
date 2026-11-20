@@ -200,11 +200,25 @@ const validCalls = {
   dispatch_limits: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
+  dispatch_steps: { issue: "DSP-1" },
+  dispatch_plans: { project: "INFRA" },
   dispatch_inbox: {},
 } as const;
 
 function schemaFor(name: keyof typeof validCalls) {
   return dispatchToolSchema(specFor(name), schemaApi);
+}
+
+/** `schema` refuses each of `inputs` once, naming the project-key rule and nothing else. */
+function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string, unknown>[]): void {
+  for (const input of inputs) {
+    const refused = schema.safeParse(input);
+    expect(refused.success, JSON.stringify(input)).toBe(false);
+    expect(
+      refused.error?.issues.map((issue) => issue.message),
+      JSON.stringify(input)
+    ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
+  }
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
@@ -303,6 +317,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_limits",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
+      "dispatch_steps",
+      "dispatch_plans",
       "dispatch_inbox",
     ]);
 
@@ -349,16 +365,35 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // An empty key is the value where this rule and `dispatch_search`'s differ: a search takes `""`
+  // as no project, and a key in the request path cannot be empty.
   test("dispatch_related takes a project key and refuses anything else by name", () => {
     const schema = schemaFor("dispatch_related");
 
     expect(schema.safeParse({ project: "CORE", text: "a draft spec" }).success).toBe(true);
     expect(schema.safeParse({ title: "no project" }).success).toBe(false);
-    const lower = schema.safeParse({ project: "core", title: "Retry deliveries" });
-    expect(lower.success).toBe(false);
-    expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
-      `project is not a project key: ${PROJECT_KEY_RULE}`,
+    expectNotAProjectKey(schema, [
+      { project: "core", title: "Retry deliveries" },
+      { project: "", title: "Retry deliveries" },
     ]);
+  });
+
+  test("dispatch_plans takes a project key, an optional since and until, and nothing else", () => {
+    const schema = schemaFor("dispatch_plans");
+
+    expect(schema.safeParse({ project: "INFRA" }).success).toBe(true);
+    expect(
+      schema.safeParse({
+        project: "INFRA",
+        since: "2026-11-01T00:00:00Z",
+        until: "2026-11-17T00:00:00Z",
+      }).success
+    ).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", issue: "INFRA-1" }).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
+    // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
+    expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -403,22 +438,20 @@ describe("dispatchToolSpecs", () => {
     for (const project of [undefined, "", "AB", "K8S", "LEGION", "LEGSMOKE", "ABCDEFGHIJ"]) {
       expect(schema.safeParse({ query: "ok", project }).success).toBe(true);
     }
-    for (const project of [
-      "A",
-      "ABCDEFGHIJK",
-      "1ABC",
-      "legion",
-      " LEGION",
-      "LEGION\n",
-      "LEGION\nX",
-      "LEGION-1",
-      "中".repeat(100),
-    ]) {
-      const refused = schema.safeParse({ query: "ok", project });
-      expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
-        `project is not a project key: ${PROJECT_KEY_RULE}`,
-      ]);
-    }
+    expectNotAProjectKey(
+      schema,
+      [
+        "A",
+        "ABCDEFGHIJK",
+        "1ABC",
+        "legion",
+        " LEGION",
+        "LEGION\n",
+        "LEGION\nX",
+        "LEGION-1",
+        "中".repeat(100),
+      ].map((project) => ({ query: "ok", project }))
+    );
   });
 
   test("dispatch_project's description gives the project-key rule", () => {
@@ -445,6 +478,7 @@ describe("dispatchToolSpecs", () => {
       "acme/infra",
       "sjawhar/legion",
       "Owner-1/repo.name_2",
+      "mona-cat_octo/arch",
       "a/..b",
     ]) {
       expect(schema.safeParse({ project: "CORE", repo }).success, String(repo)).toBe(true);
@@ -721,6 +755,15 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", phase: "review", body: "{}" }).success).toBe(false);
   });
 
+  test("dispatch_steps takes one issue and nothing else", () => {
+    const schema = schemaFor("dispatch_steps");
+
+    expect(schema.safeParse({ issue: "DSP-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "acme/infra#12" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", task: "default" }).success).toBe(false);
+    expect(schema.safeParse({ issue: 1 }).success).toBe(false);
+  });
+
   test("dispatch_project takes a key and a name and nothing else", () => {
     const schema = schemaFor("dispatch_project");
 
@@ -817,7 +860,7 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
-      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: "alice@example.com" },
       { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },

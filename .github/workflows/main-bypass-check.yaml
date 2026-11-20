@@ -47,7 +47,7 @@ on:
 
 jobs:
   bypass-check:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The checkout, two API reads at the push's head, and at most one dispatch.
     timeout-minutes: 10
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
@@ -80,6 +80,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.after }}
           HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          # The commit main pointed at before this push: the dispatched run's envoy-go-checks
+          # compares every migration it held with main's tip (ci.yaml's migration-base input), so
+          # an edit any commit of the push made is judged, not only the head's.
+          BASE_SHA: ${{ github.event.before }}
         run: |
           # The merge-group runs at the push's head. `--workflow ci.yaml` is what holds the list
           # to this repository's router; the decision reads each run's headSha itself, so a run
@@ -109,7 +113,7 @@ jobs:
 
           while read -r act sha; do
             case $act in dispatch) ;; *) continue ;; esac
-            gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+            gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f migration-base="$BASE_SHA"
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it"
             {
               echo

@@ -17,7 +17,7 @@ import (
 // that reads its value. The table is the only way the loader dispatches a top-level key — readKeys
 // looks each key up in it and calls its Read, and a key the table does not list falls through to
 // the warned, migration and tossed classification — so a new key is a new row here, never a new
-// case. `legion config-reference --json` prints the table, the documentation site's configuration
+// case. `legion config reference --json` prints the table, the documentation site's configuration
 // reference is generated from that output, and TestNoKeyBypassesTheKeyTable holds internal/config
 // to it: a key the loader dispatches with no row, and a row with no description, each fail the
 // build.
@@ -111,7 +111,7 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
 
 // topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
-// order `legion config-reference --json` prints them in: the project and where the daemon keeps
+// order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
 // projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
@@ -187,7 +187,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "omp_invocation", Default: "`LEGION_OMP_PATH` in the daemon's environment, which names the `omp` binary directly", RequiredBy: "when runtime is tmux and `LEGION_OMP_PATH` is unset",
-			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
+			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`, which runs the tool's own `bin/omp` (`mise where <tool>`) with the pane's launcher directory put back first on `PATH`, ahead of any directory mise puts there; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OmpInvocation = v }),
 		},
 		{
@@ -197,7 +197,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -237,7 +237,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -261,12 +261,12 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
-			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
+			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or a merger of the tree starts.",
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, narrowed to the repositories that agent works.",
+			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -439,7 +439,7 @@ type member struct {
 
 // memberGroup is one mapping of nested keys: the dotted path an operator writes them under, with
 // `<KEY>` for a project key and `[]` for a sequence entry, and the keys the mapping may carry. A
-// group's path begins with the top-level key it belongs to, which is how `legion config-reference
+// group's path begins with the top-level key it belongs to, which is how `legion config reference
 // --json` prints each nested key under its own top-level key.
 type memberGroup struct {
 	Path    string
@@ -510,7 +510,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
-			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; each must be one Dispatch maps to this project."},
+			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the boot checks each name against Dispatch's mapping for this project and warns about one it does not find, which catches a typo, and a pane working that repository stamps its commits all the same."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",
@@ -598,15 +598,17 @@ var nestedKeys = []memberGroup{
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
 			Description: "Each mapped repository's cache pod, which an issue pod's feed is filled from before GitHub is asked for the rest."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
-			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0; it must fetch nothing, since a clone in a role's launch context ends the pod's sandbox."},
-		{Name: "skills_repository", Default: "a pod's roles install no skill", RequiredBy: "no",
-			Description: "The Oh My Pi plugin marketplace every issue pod's roles install their skills from, as `owner/name`, cloned shallow in an init container of the pod's own, so a pod's skills are that branch as of the pod's start."},
+			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
+		{Name: "skills_repository", Default: "", RequiredBy: "no",
+			Description: "Removed: a role installs its skills with Oh My Pi's own commands in `setup`; the loader refuses a file that still sets it."},
 		{Name: "test_postgres", Default: "`false`", RequiredBy: "no",
 			Description: "Whether every issue pod's roles container serves its own PostgreSQL for the tests that need one."},
 		{Name: "idle_release", Default: "a pod quiet for ten minutes is released, and an open phase's worker is woken an hour after that", RequiredBy: "no",
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
 		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod at the defaults of `memory_guard.issue_pods`", RequiredBy: "no",
 			Description: "The memory guard in each gVisor issue pod's launcher, which near the container's memory limit ends with SIGKILL the largest process that is neither Legion's own nor an agent's own, and tells that process's role, so the pod's other roles keep their turns; a microVM issue pod's launcher runs the guest memory watch instead, whatever this block says."},
+		{Name: "volume_trim", Default: "every issue pod's launcher sweeps its cache roots at 85% of the volume, toward 70%, deleting nothing modified in the last 15 minutes, and reads the volume every 60 seconds", RequiredBy: "no",
+			Description: "The cache trimmer in each issue pod's launcher process: when it reads the volume, at which used fraction it sweeps the pod's four cache roots, of which `$TMPDIR` gives up only Go's own build trees, toward which fraction, and how old an entry must be to be deleted."},
 		{Name: "sandbox", Default: "every issue pod runs in gVisor", RequiredBy: "no",
 			Description: "The sandbox the project's issue pods run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod, the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
@@ -790,13 +792,25 @@ var nestedKeys = []memberGroup{
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},
 		{Name: "exchange_audience", Default: "no pod carries an identity the broker's exchange trades", RequiredBy: "no",
-			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until t-e-54 holds each session id to the claim that first recorded it and t-e-53 makes a role trade with its own key, both in the daemon and its pods (dispatch://INFRA-840), because until then a role's own trade is refused."},
+			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report. The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds."},
 	}},
 	{Path: pluginsKey, Members: []member{
 		{Name: "pi_legion", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_envoy` is set: a relaunch installs the pair together or not at all",
 			Description: "The exact `@sjawhar/pi-legion` a stale-plugin relaunch installs into a kept pod, as an exact version, an absolute tarball path or an http(s) URL the pod can read, never a dist-tag or a range."},
 		{Name: "pi_envoy", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_legion` is set: a relaunch installs the pair together or not at all",
 			Description: "The exact `@sjawhar/pi-envoy` that relaunch installs beside it, in the same three forms."},
+	}},
+	{Path: kubernetesKey + ".volume_trim", Members: []member{
+		{Name: "enabled", Default: "`true`", RequiredBy: "no",
+			Description: "Whether the daemon hands each issue pod's launcher the trimmer's settings; `false` hands it none, and its trimmer then reads and deletes nothing."},
+		{Name: "high_percent", Default: "`85`", RequiredBy: "no",
+			Description: "The used fraction of the issue volume, as `df` computes it, at or above which the trimmer sweeps, a whole percentage from 1 to 99."},
+		{Name: "low_percent", Default: "`70`", RequiredBy: "no",
+			Description: "The used fraction the sweep stops deleting at, if nothing stops it sooner, a whole percentage that must be below `high_percent`, which the loader refuses otherwise."},
+		{Name: "min_age_minutes", Default: "`15`", RequiredBy: "no",
+			Description: "How long nothing in an entry may have been modified before the sweep may delete it, an hour more in the Go build cache, as Go's own trim judges it; at most a week."},
+		{Name: "interval_seconds", Default: "`60`", RequiredBy: "no",
+			Description: "How often the trimmer reads the volume, at most an hour; `0` is refused."},
 	}},
 	{Path: kubernetesKey + ".idle_release", Members: []member{
 		{Name: "idle_minutes", Default: "`10`", RequiredBy: "no",
@@ -853,7 +867,7 @@ var nestedByPath = func() map[string]*memberGroup {
 	return byPath
 }()
 
-// ConfigKey is one top-level key as `legion config-reference --json` prints it: the key table's
+// ConfigKey is one top-level key as `legion config reference --json` prints it: the key table's
 // own four columns, and beneath them the nested keys that belong to this key, so a generator of
 // the documentation site renders one section per top-level key and one table of the nested keys
 // under it. Nested is never null.
@@ -876,7 +890,7 @@ type ConfigNestedKey struct {
 	Description string `json:"description"`
 }
 
-// ConfigReference is the key table as `legion config-reference --json` prints it: every top-level
+// ConfigReference is the key table as `legion config reference --json` prints it: every top-level
 // key in table order, each with its described nested keys in nestedKeys order. It reads no file
 // and no daemon.
 func ConfigReference() []ConfigKey {

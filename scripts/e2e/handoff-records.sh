@@ -34,8 +34,8 @@
 #     same database, the retried write succeeds, the completion is accepted, and GET
 #     /api/v1/issues/<KEY>/handoffs (what Conversation lists) holds it.
 #
-# Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's
-# root), awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/handoff-records.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the
@@ -55,18 +55,8 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-command -v bun >/dev/null || {
-  echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
-  exit 1
-}
-[ -d "$root/node_modules" ] || {
-  echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
-  exit 1
-}
-# The driver binary runs from this directory, not the package's, so it is told the checkout it
-# builds Dispatch from and runs the CLI out of.
-export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+require_dispatch_cli
 live_daemon_proof 'handoff records' handoff-records TestHandoffRecordsLive \
   "${HANDOFF_RECORDS_EVIDENCE_DIR:-}"

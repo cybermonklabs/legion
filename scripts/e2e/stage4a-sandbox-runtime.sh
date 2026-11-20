@@ -82,8 +82,9 @@
 # (under aws-private-ip, a port the devbox's security group admits from the Legion nodes; under
 # bridge, forwarded through the same tunnel); LEGION_E2E_REPO_SECOND_OWNER (required) `<owner>/<name>`,
 # a repository under an owner other than sjawhar on which both Legion Apps are installed, where
-# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke with
-# read-only tokens (nothing is pushed to it); LEGION_E2E_IMPLEMENT_APP_ID and
+# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke and
+# that GitHub serves its credential for it the receive-pack advertisement, the answer a token that
+# may write gets (nothing is pushed to either repository); LEGION_E2E_IMPLEMENT_APP_ID and
 # LEGION_E2E_IMPLEMENT_APP_SECRET (this deployment's implement App by default) the App's numeric
 # id and the secrets broker github-app secret the `agent-secrets` client releases its installation
 # tokens from (agent tier: no person's grant), which prerequisites proves is that id's App from its
@@ -257,7 +258,10 @@ esac
 [ "$session_db_port" != "$port" ] || fail "LEGION_E2E_SESSION_DB_PORT is the worker stream's port $port"
 [ -n "$second_owner_repo" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER is unset: the second-owner check provisions an issue on a repository of another owner (owner/name, never a literal here)"
-[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
+# The owner half is ghrepo's grammar for an account: a letter or digit, then up to 38 letters,
+# digits, hyphens and underscores, a managed user's `_<shortcode>` among them, so an operator may
+# name a repository of such an account here as the daemon may record one.
+[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
 [ "$(tr '[:upper:]' '[:lower:]' <<<"${second_owner_repo%%/*}")" != "$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER $second_owner_repo is under ${repo%%/*}, $repo's owner: the check needs a repository of another owner"
 case "$previous_image" in *@sha256:*) ;; *) fail "LEGION_E2E_PREVIOUS_IMAGE must be a worker image of main from before one container, pinned by digest (…@sha256:…), not '$previous_image'" ;; esac

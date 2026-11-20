@@ -90,6 +90,7 @@ func watchCreateSignals() (stop func()) {
 	}
 	signals := make(chan os.Signal, len(watched))
 	signal.Notify(signals, watched...)
+	formWatchesSignals.Add(1)
 	done, exited := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
@@ -106,6 +107,7 @@ func watchCreateSignals() (stop func()) {
 	return sync.OnceFunc(func() {
 		close(done)
 		<-exited
+		formWatchesSignals.Add(-1)
 		signal.Stop(signals)
 		select {
 		case sig := <-signals:
@@ -145,9 +147,12 @@ func endAtOnce(sig os.Signal) {
 	exitBySignal(sig)
 }
 
-// exitBySignal ends the process by sig: back at its default action, the platform raises it where
-// it can (raiseSignal), and the exit status a shell gives for sig is the fallback.
+// exitBySignal ends the process by sig: it first kills each gcloud runGcloud is running, with its
+// group (killRunningGcloud), since gcloud, in a group of its own, does not get sig; then, back at
+// sig's default action, the platform raises it where it can (raiseSignal), and the exit status a
+// shell gives for sig is the fallback.
 func exitBySignal(sig os.Signal) {
+	killRunningGcloud()
 	signal.Reset(sig)
 	if raiseSignal(sig) {
 		time.Sleep(time.Second)

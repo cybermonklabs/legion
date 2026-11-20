@@ -678,10 +678,10 @@ test("the table lists the parent and start of a process whose command name holds
   });
 });
 
-// Last of the scripted rows. Were the walk's cycle guard, the `found.has` of `treeOf`, to
-// regress, the walk would take this loop for ever and the row would hang: no row clock stops a
-// synchronous loop, so only the job's limit would end it. It stands last so that every scripted
-// row above reports first.
+// Were the walk's cycle guard, the `found.has` of `treeOf`, to regress, the walk would take this
+// loop for ever and the row would hang: no row clock stops a synchronous loop, so only the job's
+// limit would end it. The rows run in random order (packages/dispatch/bunfig.toml), so the rows
+// of this file that had not run by then would not report either.
 test("a kill's walk by parent pid ends where its table lists two processes as each other's parent", () => {
   // `processTable` reads one process at a time, so where a pid is reused between two of its
   // reads, a table can list a process as the parent of its own parent.

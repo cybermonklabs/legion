@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
@@ -247,9 +265,11 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
+need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
+from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -312,6 +332,44 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## callout-check.sh
+
+Proves, on the whole local stack behind the NATS auth service, what the hub lets a
+connection reach: `check c-callout-live` of the NATS auth service's verification.
+`dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
+brokers on one database, and the listener and Dispatch connecting as services with the
+NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
+`lib/callout-stack.sh`, which `dev-stack.sh` sources on every run; without the option each
+addition is empty. The check prints one line per property:
+a session subscribes its own delivery channel; it is refused another session's, in
+nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
+with no credential is refused, and a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
+answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
+`listener/<its machine id>`; and with one broker killed, three new sessions are each
+admitted within 2 s, the first counted from the kill. A session opened before the hub has
+read the killed broker's close can be routed to the dead replica and refused at the hub's
+authorization timeout, so the check opens the first session once the hub lists one
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
+how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+
+```bash
+LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
+# or, in a shell that exported a `dev-stack.sh --callout` banner:
+bash scripts/callout-check.sh
+```
+
+With nothing exported it starts `dev-stack.sh --callout` itself, passing on its own
+arguments (`--database-url`, `--binaries`), and stops it on exit, which drops its
+databases; against an exported stack it kills that stack's second broker, which the stack
+outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subject by
+hand too: as a session it trades the stack's pod token for a broker token, as a service
+it presents `--service-token-file`, and `--no-credential` presents nothing.
+`callout-check.test.sh` holds the verdicts to fakes, including the negative control:
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
+a hub that never drops the killed broker's connection fails line 6.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
@@ -337,27 +395,65 @@ in its time budget; the job runs it as "Count the store-form rows on each backen
 
 ## database-skips.sh
 
-Counts the tests of the broker's packages (`internal/broker/...`) that skipped, and fails on
-any: every database broker suite skips, which go test counts as a pass, when
-`BROKER_TEST_DATABASE_URL` is unset, and a `t.Skip` left in one skips it with the variable
-set.
+The one skip counter of the module's database-backed packages: it runs `go test -json` and
+counts the tests that skipped, and fails on any. A database suite skips, which go test counts
+as a pass and prints nothing for without `-v`, when its variable is unset, and a `t.Skip`
+left in one skips it with the variable set.
 
 ```bash
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
-packages/envoy/scripts/database-skips.sh --report REPORT.json
+DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
+  packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
-With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
-reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
-prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
-`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
-`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
-broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
-script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
-replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
-the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
-`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
-its own (`timeout-minutes: 25`) that its time budget counts.
+A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
+its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+`DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
+auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
+in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
+anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
+`BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
+`database_skips=UNKNOWN` naming it, and nothing runs.
+`--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
+when `--timeout` is not given; it bounds each package's test binary and not the run, since
+the packages run several at a time, so one that starts late ends later. `--report` reads a
+`go test -json` report instead and runs nothing, and refuses the three options that shape a
+run.
+
+It names the packages as `go list` does under the run's own flags, so a pattern spelled
+`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
+`EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
+database variables and none of what those tests need (a corpus, a seeded database, a built
+Lean model), and are not counted; each line gives its reason, and a line without one
+is refused. A report that is missing or empty, one in which a listed package with test files
+holds no test that passed or failed (its tests all skipped, or its `TestMain` returned before
+it ran them), and an `EXPECTED_SKIPS` line whose package is listed but whose test the report
+does not hold, print `database_skips=UNKNOWN`, name what could not be read, and exit 1. A
+failed test fails the count, read from a report as in a run. It exits 0 only when tests ran,
+none skipped but the expected ones, none failed, and go test passed. A failure prints, on
+stderr, each failed test, each test a failed package never finished, that package's output
+from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
+under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary's goroutine
+dump and a data race report among them), the build output and, for a run of its own, go test's
+stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
+
+`ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
+`--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
+(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
+Dispatch API through it as the second line above.
+`database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
+skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
+that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
+a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
+package spelled other than canonically is counted;
+`--timeout 1s` ends a package's binary; and a copy with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
+a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## aws-moto-check.sh
 
@@ -405,10 +501,13 @@ result block; `--help` prints the usage, and a usage error exits 2.
 
 ## airlock-clients.sh
 
-Installs the clients checks `k6` and `k7` drive and that a Legion issue pod has not
-got — the Azure CLI, the Google Cloud CLI, Pulumi with the Tailscale provider, and
-boto3 — each at a pinned version whose SHA-256 is checked before anything of it runs,
-under `${TMPDIR:-/tmp}`, and prints the exports a check needs on stdout:
+Installs the clients checks `k6` and `k7` drive — the Azure CLI, the Google Cloud CLI,
+Pulumi with the Tailscale provider, and boto3 — each at a pinned version whose SHA-256
+is checked before anything of it runs, under `${TMPDIR:-/tmp}`, and prints the exports
+a check needs on stdout. A Legion issue pod has no Pulumi and no boto3, and a pod on a
+worker image from before dispatch://INFRA-3257 has no `az` and no `gcloud` either. An
+image since then carries both, and the script still installs its own, first on the
+`PATH` its exports set, so the checks drive the same versions on every digest:
 
 ```bash
 eval "$(packages/envoy/scripts/airlock-clients.sh)"
@@ -497,7 +596,14 @@ Each tick prints one tab-separated line per target:
 attempt rides the name's line). On exit it prints, per target, when it was
 seen, how many ticks `/healthz` answered, and the `/v1` non-200 answers at the
 ticks `/healthz` answered 200, counted by `code:error` with the first and last
-time, then the sends and Dispatch attempts by outcome, then the verdict.
+time, then the sends and Dispatch attempts by outcome, then the verdict. A
+signal ends the run the same way, whether it reaches the probe alone
+(`kill <pid>`) or its whole process group, as Ctrl-C at a terminal and
+`timeout -s TERM` send it. The group's signal also kills the request or the
+sleep in flight. The target whose request it cut short, and each target after
+it in that tick, print no line for that tick and are not counted; the summary
+and the verdict cover every target line printed before it, and a Dispatch
+message that tick had already posted.
 
 ### Verdict and exit codes
 
@@ -542,8 +648,10 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
-whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
+kernel chose, behind a fake `getent`, and that a `TERM` sent to the probe's
+process group during its sleep or a request, or an `INT` during its sleep,
+still ends in the summary and the verdict; CI runs it in the `envoy-go-checks`
+job, whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## daemon-release-gate.sh
 
@@ -554,25 +662,36 @@ issue event named in the new form for another project's and acknowledges it with
 producer that moves first stops the fleet's workflow in silence.
 
 ```bash
-packages/envoy/scripts/daemon-release-gate.sh <commit>
-packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --listeners <commit>
 ```
 
-Without `--listeners` it reads the image each Legion daemon runs: each entry of
-theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
-`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
+`--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
+required, and the gate compiles in no deployment's name. Each stack's config keys are under its
+Pulumi project's name, which the gate reads from that stack's own `Pulumi.yaml` (`name:`): a stack
+whose `Pulumi.yaml` is missing or declares no name prints `UNKNOWN` by name, and no name is guessed.
+
+The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-<KEY>.yaml`, one
+mapping of a project's settings each, in file-name order), as the deployment's legion program reads
+them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
+projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
+listing, a file that is not one mapping, and a deployment that declares no project print `UNKNOWN`
+naming what the gate read.
+
+Without `--listeners` it reads the image each Legion daemon runs: each project's `daemonImage` when
+set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
-its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
+its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
 by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
 dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
 Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+that key (deployment `dispatch/main.go`) and the listener runs no other image. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
 platform agreeing. A pin built from `https://github.com/cybermonklabs/legion`, or from a name the
-deployment records as the same repository — the `repositoryRenames` pairs of `legion/Pulumi.prod.yaml`,
+deployment records as the same repository — the `repositoryRenames` pairs of its Legion projects,
 which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
 transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
 answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
@@ -582,13 +701,15 @@ naming a branch (`main`) would compare as wherever that branch points now.
 
 It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
 `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
-(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error exits
-2. It needs `gh` with read access to both repositories, docker with buildx able to read each pin's
+(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error, a
+missing `--deployment` among them, exits 2 and reads nothing. It needs `gh` with read access to both
+repositories, docker with buildx able to read each pin's
 registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
 `DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
 
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does; CI runs it in the
+answers a single image and an index the way the real one does. Its fakes, fixture builders and
+assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
 `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
@@ -784,6 +905,74 @@ identity. The script writes 50 comments, 50 asks, 50 messages, 100 document vers
 edits for every run, which is what A9 measures: run it after the statement timings, and re-seed
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
+
+## coverage-scale.sh
+
+Measures the search coverage statement as the route runs it (the head: `coverageQuery` under the settings `planCoverage` sets) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
+in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
+and states the corpus size at which the head would reach its 10 s bound in the slowest of them.
+It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
+`testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
+(11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
+with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
+Autovacuum is off on `embeddings`, so nothing but the test sets its visibility map or its statistics.
+Once the corpus is loaded it drops the two window indexes, `embeddings_window_embedded` and `embeddings_window_unembedded`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
+timing each build and reading each index's size:
+the downtime a deploy of those migrations takes, since Dispatch migrates before it serves.
+On each corpus it then measures six states in turn:
+`fresh`, every table vacuumed and analyzed;
+`third`, one row of every third heap page of `embeddings` updated and the table analyzed, so about a third of its pages are not all-visible;
+`all`, one row of every page updated and the table analyzed, so no page is all-visible;
+`stale`, the table vacuumed, one row of every even page updated and the table analyzed, then one row of every odd page updated with no analyze after it,
+so no page is all-visible while the statistics still record about half of them all-visible;
+`embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
+and `embedder-analyzed`, the same table analyzed.
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
+In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
+and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:
+the base on the connection,
+the head in a read-only transaction that `planCoverage` plans, as the route runs it, with no `statement_timeout`.
+In every state it also runs a negative control:
+the head's text once with none of `planCoverage`'s settings, the planner free.
+It drops the database before the next scale.
+
+It runs as a Job in the cluster's `builds` namespace, never in an issue pod.
+It starts a Postgres of its own on 127.0.0.1:5433 with `legion-testpg ensure`, where an issue pod's own test server already listens,
+and a corpus of production's size is more disk than an issue pod may use;
+the script refuses to start where a server already answers on that port.
+It needs the worker image, which carries Go, the PostgreSQL 18 server with pgvector and `legion-testpg`,
+and a scratch disk of about 10 GB for scales 1 and 2:
+one scale's database at a time, the write-ahead log, the Go caches and the clone.
+The Job runs it from `packages/envoy` of a clone:
+
+```bash
+cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
+```
+
+`COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
+`DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
+both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
+
+It prints the server's version and the settings the times depend on
+(`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
+then the test's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
+and for each state how many vectors its embedder change dropped, how many pages of `embeddings` the statistics record as all-visible and that share, the database's size,
+each statement's median and every run, one plan of each,
+and the negative control's time and whether it read `embeddings` by a Seq Scan.
+Read the result from the line that starts `coverage-scale:`, which the script prints again as its last line.
+It names each window index's build time and size at the two smallest scales;
+then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible, the head's and the base's medians, the negative control's times and whether it read `embeddings` by a Seq Scan, at both scales;
+and the item count at which the head would reach 10 s by a linear fit and by a power law `t = a × s^k` through the two points,
+with the smaller of the two as a multiple of the 1 × corpus's items.
+It ends with the slowest state, the one with the smallest multiple, and its multiple;
+where a state has no fit, it says the slowest state is not known and names the slowest of the others.
+`pass` means that multiple is at least 4.
+`FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
+The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
+CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
 
 ## going-smoke.sh
 

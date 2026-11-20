@@ -73,10 +73,9 @@ const fakeCodegraph = `#!/bin/sh
 printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 `
 
-// issueVolume is one issue's volume and what a pod's two init containers run against it (the third
-// a `skills_repository` adds, `skills-fetch`, mounts nothing of this volume): a PATH whose git
-// clones a local bare remote in place of github.com/acme/widgets, the provisioning token file
-// `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
+// issueVolume is one issue's volume and what a pod's two init containers run against it: a PATH
+// whose git clones a local bare remote in place of github.com/acme/widgets, the provisioning token
+// file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
 // fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
 // user configuration. defaultBranch is the remote's default branch, which `provision` is told.
 type issueVolume struct {
@@ -313,19 +312,19 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			name: "no subcommand",
 			args: func(*issueVolume) []string { return nil },
 			code: 2,
-			says: func(*issueVolume) string { return subcommandUsage("workspace-init", workspaceInitCommands) },
+			says: func(*issueVolume) string { return "Usage:\n  legion workspace-init [flags]\n" },
 		},
 		{
 			name: "an unknown subcommand",
 			args: func(v *issueVolume) []string { return append([]string{"init"}, v.args("LEGION-42")[1:]...) },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "init"` },
+			says: func(*issueVolume) string { return `unknown command "init" for "legion workspace-init"` },
 		},
 		{
 			name: "the one-container invocation, with no subcommand",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[1:] },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "--issue"` },
+			says: func(*issueVolume) string { return `unknown flag: --issue` },
 		},
 		{
 			name: "no --issue",
@@ -467,9 +466,10 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 }
 
 // A fresh issue volume, provisioned from the feed `fetch` filled: the issue's clone, its origin
-// still GitHub's, and the issue's jj workspace on its bookmark, the clone's credential helper the
-// one named, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's PATH names the
-// image's gh and legion, and its credential is the gh files its role Secret projects), one log
+// still GitHub's and marked as gh's default repository (`remote.origin.gh-resolved base`), and the
+// issue's jj workspace on its bookmark, the clone's credential helper the one named, no gh shim
+// and no tmux pane's `legion` launcher on the volume (a pod's PATH names the image's gh and
+// legion, and its credential is the gh files its role Secret projects), one log
 // line naming the workspace, and no sessions directory: no container of the pod mounts one, every
 // session being a row in the database the deployment names (INFRA-80). The permanent
 // guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
@@ -495,6 +495,9 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	}
 	if origin := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "remote", "get-url", "origin"); origin != "https://github.com/acme/widgets" {
 		t.Fatalf("the clone's origin is %q, want GitHub's", origin)
+	}
+	if markers := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "config", "--get-regexp", `^remote\..*\.gh-resolved$`); markers != "remote.origin.gh-resolved base" {
+		t.Fatalf("the clone's gh-resolved lines are %q, want the one marking origin as gh's default repository, remote.origin.gh-resolved base", markers)
 	}
 	// -z, because v.git trims its output and the first of the clone's two values is the empty
 	// reset: with newline separators that value is a leading newline, which the trim takes away.

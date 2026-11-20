@@ -39,7 +39,7 @@ var _ supervise.Store = (*Store)(nil)
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
-	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
+	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
@@ -57,7 +57,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -406,17 +406,18 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
+		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
-		$53, $54, $55, $56, $57,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
+		$55, $56, $57, $58,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		session = excluded.session, session_file = excluded.session_file,
 		locator = excluded.locator, state = excluded.state, failure = excluded.failure,
+		pod_end = excluded.pod_end,
 		launch_failures = excluded.launch_failures, deaths = excluded.deaths,
 		prompt_failures = excluded.prompt_failures,
 		prompt_retires = excluded.prompt_retires, boot_token_hash = excluded.boot_token_hash,
@@ -491,7 +492,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
+		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 	)
 	if err != nil {
@@ -678,9 +679,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note)
+		provider_error_retries, provider_error_note, round_named)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -691,12 +692,12 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note`,
+		provider_error_note = excluded.provider_error_note, round_named = excluded.round_named`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote,
+		d.ProviderErrorRetries, d.ProviderErrorNote, d.RoundNamed,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -820,13 +821,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		kept                        []byte
 		retries                     *int64
 		note                        *string
+		roundNamed                  *bool
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
-		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
+		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
@@ -844,7 +846,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &roundNamed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -937,6 +939,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			Kept:                 keptDecisions(kept),
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
+			// A delivery a release before this one wrote takes the column's default, false: its
+			// task names no review round (supervise's Delivery.message).
+			RoundNamed: orFalse(roundNamed),
 		}
 	}
 	return c, nil

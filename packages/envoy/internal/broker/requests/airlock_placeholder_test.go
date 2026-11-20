@@ -86,8 +86,8 @@ func placeholderRows(t *testing.T, m *Machine, grantID string) map[string]string
 func wellFormed(t *testing.T, what, placeholder string) {
 	t.Helper()
 	rest, ok := strings.CutPrefix(placeholder, PlaceholderPrefix)
-	if !ok || len(rest) != placeholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholderAlphabet, r) }) {
-		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, placeholderLength, placeholderAlphabet)
+	if !ok || len(rest) != PlaceholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(PlaceholderAlphabet, r) }) {
+		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, PlaceholderLength, PlaceholderAlphabet)
 	}
 }
 
@@ -156,6 +156,29 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	holdsNothingOf(t, release, "auto-v1")
 	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "proxy" || got["SECOND_TOKEN"] != "inject" {
 		t.Errorf("delivery = %v; want AUTO_TOKEN proxy and SECOND_TOKEN inject", got)
+	}
+}
+
+// TestAHostlessEntryReleasesItsValue: an entry with no host says who decides a request for its key
+// and binds the value nowhere, so a grant of it releases the value itself, as a name with no entry
+// does, and nothing of it goes to the airlock.
+func TestAHostlessEntryReleasesItsValue(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{
+		{Name: "AUTO_TOKEN", Judge: new(uint32(600)), Guidance: "grant for the release job"},
+	}})
+	requestID, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if got := release.Values["AUTO_TOKEN"]; got != "auto-v1" {
+		t.Fatalf("values = %v; want AUTO_TOKEN's own value: a host-less entry holds nothing back", release.Values)
+	}
+	if release.Airlock != nil {
+		t.Errorf("the release carries an airlock %+v; want none for a key the airlock binds nowhere", release.Airlock)
+	}
+	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "inject" {
+		t.Errorf("delivery = %v; want AUTO_TOKEN inject", got)
 	}
 }
 
@@ -378,6 +401,9 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		approve  bool
 		want     map[string]string
 		wantType string
+		// wantAzure is the application and tenant the proxy holds an azure-login's every
+		// exchange to, and none for every other type.
+		wantAzure secrets.AzureLoginValue
 	}{
 		{
 			name:   "a stored secret",
@@ -409,6 +435,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			approve:   true,
 			want:      map[string]string{SlotAzureFederated: "real-federated-token"},
 			wantType:  policy.TypeAzureLogin,
+			wantAzure: secrets.AzureLoginValue{TenantID: "tenant", ClientID: "client"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -449,6 +476,9 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			if held.Type != c.wantType {
 				t.Errorf("type = %q, want %q", held.Type, c.wantType)
+			}
+			if held.Azure != c.wantAzure {
+				t.Errorf("azure = %+v, want %+v: the document's own application and tenant, and none for another kind", held.Azure, c.wantAzure)
 			}
 			if !held.Expires.Equal(wantExpires) {
 				t.Errorf("expiry = %v, want %v: the minter's own, and none for a stored value", held.Expires, wantExpires)

@@ -18,7 +18,7 @@ import (
 // call, and at most mintWaitBudget of added wait over every call one mint makes (a GitHub mint
 // lists installation pages, asks for a token for each owner, perhaps once more without actions,
 // perhaps revokes one). Each attempt runs under mintAttemptTimeout, since the production minters'
-// http.DefaultClient has none and the airlock mints under a caller's request that has no
+// own client (ownClient) has none and the airlock mints under a caller's request that has no
 // deadline: without it a hung attempt would spend the whole release and leave no time to retry.
 const (
 	mintAttemptsPerCall = 3
@@ -57,8 +57,9 @@ const (
 // Retry is the one policy every call of the three HTTP minters (GitHubApp, GoogleLogin and
 // GoogleServiceAccount) is retried under (mintCall), and the one process-wide budget their
 // retries draw from. The broker builds one (NewRetry) and sets it on all three, so a GitHub
-// brownout that spends the budget leaves a Google mint's failure unretried as well. A nil Retry
-// makes one attempt of each call and counts nothing.
+// brownout that spends the budget leaves a Google mint's failure unretried as well. A give-back's
+// revokes (GitHubApp.GiveBack), which nobody waits on, make one attempt each and draw nothing from
+// it (startOnce). A nil Retry makes one attempt of each call and counts nothing.
 //
 // Now, Sleep and Draw are the clock, the wait and the jitter's draw, each the real one when nil,
 // so a test sets all three and never sleeps.
@@ -161,17 +162,26 @@ func (r *Retry) take() bool {
 }
 
 // mintRetry is one mint's share of its minter's Retry: the type its attempts are counted under,
-// and what is left of the mint's mintWaitBudget, which every call the mint makes waits from. A
-// share of a nil Retry makes one attempt of each call.
+// what is left of the mint's mintWaitBudget, which every call the mint makes waits from, and
+// whether it makes one attempt of each call and no retry (startOnce). A share of a nil Retry makes
+// one attempt of each call.
 type mintRetry struct {
 	retry      *Retry
 	secretType string
 	waitLeft   time.Duration
+	once       bool
 }
 
 // start is the share a Mint of type begins with: the whole of mintWaitBudget.
 func (r *Retry) start(secretType string) *mintRetry {
 	return &mintRetry{retry: r, secretType: secretType, waitLeft: mintWaitBudget}
+}
+
+// startOnce is the share of calls nobody waits on, a give-back's revokes (GitHubApp.GiveBack): one
+// attempt of each call, counted under type as every other, and no retry, so it draws nothing from
+// the process-wide budget the mints a caller waits on retry from.
+func (r *Retry) startOnce(secretType string) *mintRetry {
+	return &mintRetry{retry: r, secretType: secretType, once: true}
 }
 
 // count counts one attempt of a call in broker_mint_attempts_total.
@@ -190,7 +200,7 @@ func (m *mintRetry) count(outcome string, attempt int) {
 // retry draws one from the process-wide budget once its wait fits, and a spent budget ends the
 // call; so does a context that ends during the wait.
 func (m *mintRetry) again(ctx context.Context, attempt int, err error) bool {
-	if m.retry == nil || attempt >= mintAttemptsPerCall {
+	if m.retry == nil || m.once || attempt >= mintAttemptsPerCall {
 		return false
 	}
 	var wait time.Duration

@@ -8,12 +8,14 @@ import {
   stubProjectNames,
   tagged,
 } from "./configurations";
+import { expectTimeout } from "./expect-timeout";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
+import { inVisualOrder, visualOrder } from "./visual-order";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -29,10 +31,10 @@ const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // row exercises one engine behaviour the comment above those projects lists - the usual reason
 // - or every measured failure of that row was in that engine, so the row is kept where its
 // cause lives: a row green only on an engine its defect was never seen on proves nothing about
-// that defect. Two rows carry a tag for the second reason today, each named in
-// `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask answer whose answer is lost (two
-// timeouts in 213 CI runs, both in WebKit) and `keyboard-agents-picker.e2e.ts`'s row back after
-// the reader left mid-send (six failures on six branches, every one in WebKit). A row that only
+// that defect. Two rows carry a tag for the second reason today: `keyed-writes.e2e.ts`'s ask
+// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
+// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
+// branches, every one in WebKit). A row that only
 // repeats an assertion Chromium already made, and whose failures are not an engine's, carries
 // no tag. An untagged test drops out with no failure. The pattern is anchored so a tag matches
 // only as a whole whitespace-separated token, never inside a longer one such as `@phones`,
@@ -167,10 +169,6 @@ if (clockFile !== undefined) {
       "all three engines, run `bun run e2e:clock`."
   );
 }
-
-// The default wait for asynchronous server and rendering readiness. A spec only sets its own
-// timeout when that deadline is its observable contract (the keyboard chord-expiry test).
-const expectTimeout = 15_000;
 
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
 // when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
@@ -597,8 +595,8 @@ const visualProjects = [
     grepInvert: phoneRowTagged,
     // A baseline is an input a person reads in a review, not an output of a row, so these files
     // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
-    // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
-    // (packages/dispatch/AGENTS.md). The template carries no `{platform}` segment, which the
+    // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`.
+    // The template carries no `{platform}` segment, which the
     // default template adds: every shot is taken in the one pinned Linux image, so the segment
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
@@ -792,7 +790,9 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          ...visualProjects,
+          // The phone project first in a reverse run, so the whole run is the other way round
+          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
+          ...inVisualOrder(visualProjects, visualOrder()),
           ...(stub.declared ? stubProjects : []),
         ],
 });

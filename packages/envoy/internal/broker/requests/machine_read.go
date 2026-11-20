@@ -52,8 +52,51 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // leaves out of an approver's list because its signed record does not verify for this broker:
 // most often "aud does not match", from a request signed for another BROKER_PUBLIC_URL, after
 // the public URL changed while it waited or when a second broker shares this database. It names
-// the record id and the reason. Every other record of the list is listed and can be decided.
+// the record id and the reason. Every other record of the list is listed and can be decided. An
+// expired record a list that asks for states leaves out is not logged (PendingForApprover says
+// why).
+// A request whose record is signed for another broker address stays off every list here, and
+// Create ends it on its session's next ask of this broker for one of its names that writes a
+// request, pending or decided at once, or that a live grant answers, whatever its age beside a
+// request of this broker (RequestEndedBrokerMovedMessage), while its deadline has not passed. An
+// ask Create refuses before it writes a request ends nothing, and a request that no valid ask
+// reaches before its deadline is expired by the sweep.
 const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
+
+// RequestEndedBrokerMovedMessage is logged, at INFO, once for each pending request Create ends
+// because its record is signed for another broker address (signedForAnotherBroker): its session
+// asked a broker of another BROKER_PUBLIC_URL that shares this database, or this broker before
+// its public URL changed, and asks again here, where no person and no judge could decide the
+// request it left waiting (PendingLeftOutMessage). It is written once the transaction that ended
+// the request has committed, beside the request.cancelled grant-log line of the same end, so a
+// Create that rolls back or whose commit fails writes none. It carries request=<the ended
+// request's id>, record_id=<its credential-request record's id>, new_request=<the request the
+// session is referred to now: the one Create made, granted, denied or pending, the oldest pending
+// request of this broker it kept and coalesced onto or refused the ask with ErrRequestPending
+// for, or, for an ask a live grant answered (reuseLiveGrant), the request of that grant> and
+// enrollment=<the enrollment that asked>, and nothing else. Each is an id, so the line holds no
+// secret value, no token and no request object.
+const RequestEndedBrokerMovedMessage = "broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it"
+
+// GrantChainInvalidMessage is logged, at WARN, each time a release finds that a grant's whole
+// approval chain no longer verifies (ErrGrantChainInvalid, verifyChainForRelease), in one of three
+// places, which at= names: values, the session's own release (Values), which the session is
+// answered GRANT_CHAIN_INVALID for; airlock, the airlock proxy's read of the values it swaps in
+// (AirlockValues), which the proxy answers the same; and reuse, Create's check of a live grant it
+// would hand back for the same names (reuseLiveGrant), which passes that grant over for the next
+// newest and, with none left, asks afresh. Most often the grant's record was signed for another
+// BROKER_PUBLIC_URL ("aud does not match"): a broker of another address that shares this database
+// made the grant, or this broker did before its public URL changed, and the grant's session asks
+// here now, its enrollment having adopted the grant (enroll.go, adopt). So these lines count each
+// release such a session was refused and each such grant its next ask passed over. It carries
+// grant=<the grant's id>, record_id=<the credential-request record its chain rests on>,
+// enrollment=<the enrollment that holds the grant: the grant's own>, at= and reason=<the error's
+// text, which names the link of the chain that failed>, and nothing else: no secret value, no
+// token and no request object. A database failure inside the chain check (verifyChain: reading
+// the grant, its record or its decisions) writes no such line, since it is no failed chain, and
+// the release answers that error as it is. ApplyDecision's refusal of a record whose chain is
+// broken is a decision and no release, and writes none either.
+const GrantChainInvalidMessage = "broker: a grant's approval chain does not verify; it releases nothing"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
@@ -78,22 +121,26 @@ type grantRelease struct {
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
 // Values and AirlockValues so that what the broker proxies and what it hands over are held to
 // one rule. It re-checks the enrollment and the grant, re-verifies the grant's whole approval
-// chain (VerifyChain), and — when the policy has changed since the grant's request was decided,
-// any granted name is a service's (anyServiceOwned: the policy's version does not cover which
-// service BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag
-// (anyListed: an entry naming a service matches by those same accounts) — that the current
-// policy still allows the session, with the names its operator withheld from it, every granted
-// name under the login that decided it, or, for a grant the model judge decided, under the
-// judge the rules still give that name (stillAllowed), that no granted name's max-grant is now
-// shorter than the lifetime the grant's request signed (overMaxGrant), and that no granted
-// name's airlock entry has changed since the request recorded its fingerprint, which ends the
-// grant for good.
+// chain (verifyChainForRelease, which logs a chain that fails), and — when the policy has
+// changed since the grant's request was decided, any granted name is a service's
+// (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
+// prove), or any granted name carries a requesters tag (anyListed: an entry naming a service
+// matches by those same accounts) — that the current policy still allows the session, with the
+// names its operator withheld from it, every granted name under the login that decided it, or,
+// for a grant the model judge decided, under the judge the rules still give that name
+// (stillAllowed), that no granted name's max-grant is now shorter than the lifetime the grant's
+// request signed (overMaxGrant), and that no granted name's airlock entry has changed since the
+// request recorded its fingerprint, which ends the grant for good.
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
 // that grant's placeholders, which AirlockConnection checked, and the session it belongs to is
 // what the row answers rather than what the caller claims.
-func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (grantRelease, error) {
+//
+// at is the release GrantChainInvalidMessage names when the chain fails: "values" from Values and
+// "airlock" from AirlockValues. The line's enrollment is the grant's own, read here, which is the
+// owner the caller proved wherever it proved one.
+func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (grantRelease, error) {
 	var enrollmentID, requestID, reason, policyVersion, decidedBy string
 	var expires *time.Time
 	var lifetime *int
@@ -117,7 +164,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	if !live {
 		return grantRelease{}, ErrGrantNotLive
 	}
-	if err := m.VerifyChain(ctx, grantID); err != nil {
+	if err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
 		return grantRelease{}, err
 	}
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
@@ -174,6 +221,22 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
 }
 
+// verifyChainForRelease is verifyChain for a release of grantID, which enrollmentID holds: the
+// session's (Values) and the airlock proxy's (AirlockValues), both through checkRelease, and
+// Create's reuse of a live grant (reuseLiveGrant). A chain that fails, ErrGrantChainInvalid and
+// only that, writes GrantChainInvalidMessage naming at, the release, with the error's text as its
+// reason; any other error, a database failure inside the check among them, writes nothing, since
+// it is no failed chain. The error is returned as verifyChain answered it, so each caller refuses
+// or passes over exactly as before the line. ApplyDecision, which also answers
+// ErrGrantChainInvalid, is a decision and no release, and does not come through here.
+func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) error {
+	recordID, err := m.verifyChain(ctx, grantID)
+	if errors.Is(err, ErrGrantChainInvalid) {
+		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
+	}
+	return err
+}
+
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
 // nil for a grant that lasts until its session ends. Every call runs checkRelease's whole set of
 // re-checks and then the release loop both releases of a grant run (readRelease, release.go). A
@@ -190,17 +253,18 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 //
 // A granted name the airlock's rules name is released as placeholders instead of as its value:
 // its value is read or minted exactly as every other name's is, which is what says the value
-// exists and which slots it fills, and is then discarded. Such a name is left out of Values
-// altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
-// running the command with a placeholder it does not understand — and what the session needs to
-// reach it is Release.Airlock.
+// exists and which slots it fills, and is then discarded, a minted one given back to its upstream
+// once the release is recorded (giveBack, heldBack), since the proxy mints a value of its own
+// (AirlockValues). Such a name is left out of Values altogether — a CLI from before the airlock
+// finds it missing and runs nothing, rather than running the command with a placeholder it does
+// not understand — and what the session needs to reach it is Release.Airlock.
 //
 // call is what the session says of this release: the command it starts and the reason its own
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
 // row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
 // nothing about the release.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
-	checked, err := m.checkRelease(ctx, grantID, enrollmentID)
+	checked, err := m.checkRelease(ctx, grantID, enrollmentID, "values")
 	if err != nil {
 		return Release{}, err
 	}
@@ -230,6 +294,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	release := Release{Values: values, Expires: checked.expires}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
+			m.giveBack(ctx, read)
 			return Release{}, err
 		}
 	}
@@ -241,8 +306,12 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	}
 	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
+		// The row is what says the values left the broker, and a release whose row failed hands
+		// nothing over, so what it minted is given back.
+		m.giveBack(ctx, read)
 		return Release{}, err
 	}
+	m.giveBack(ctx, heldBack(read))
 	return release, nil
 }
 
@@ -300,7 +369,7 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 		return "", ErrNarrowingNotApplicable
 	}
 	for _, g := range granted {
-		if m.Airlock.Lookup(g.name) != nil {
+		if m.Airlock.Bound(g.name) != nil {
 			return g.name, fmt.Errorf("%w: the airlock holds %s, whose value the proxy spends for this grant", ErrNarrowingBehindAirlock, g.name)
 		}
 	}
@@ -519,6 +588,15 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	return requested, rows.Err()
 }
 
+// neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
+// policy wanted approved when the request was made: the keys the judge decided of a request it
+// held, where every other name is one the session got at once (record.MayJudge).
+func neededADecision(requested []requestedSecret) func(string) bool {
+	return func(name string) bool {
+		return slices.ContainsFunc(requested, func(g requestedSecret) bool { return g.name == name && g.decision == policy.Approval })
+	}
+}
+
 // stillAllowed re-checks one granted name against a policy newer than the one its request was
 // decided under. The policy must still serve the name and still let this requester have it: a
 // deny refuses; so does a name granted automatically that the current policy wants approved,
@@ -712,14 +790,15 @@ func (m *Machine) JudgeRequestState(ctx context.Context, recordID string) (strin
 
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
-// person whose list shows it; a request with no record has none.
+// person whose list shows it; a request with no record has none. JudgeDeciding is whether the
+// judge holds it now: pending, with its judge_until ahead.
 func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	var r Request
 	var enrollmentID string
 	err := m.Store.Pool.QueryRow(ctx, `select r.id, r.state, r.enrollment_id, r.lifetime_seconds, r.decided_at, r.decided_by, r.decision_detail, r.record_id, cr.approver,
-		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1)
+		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1), r.state='pending' and coalesce(r.judge_until > now(), false)
 		from requests r left join credential_requests cr on cr.id = r.record_id where r.id=$1`, id).
-		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID)
+		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID, &r.JudgeDeciding)
 	if err != nil {
 		return Request{}, err
 	}
@@ -738,10 +817,35 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
-func (m *Machine) OwnerOf(ctx context.Context, requestID string) (string, error) {
+// OwnerAndState reads whose request requestID is, its state, and whether the model judge holds it
+// (pending with judge_until ahead), in one statement. The owner is the one the enrollment it hangs
+// off now records (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment
+// that records none, which no other enrollment's owner can spell. A caller may read and cancel the
+// request when its own enrollment answers the same (EnrollmentOwner), so a request is any
+// enrollment's of the person, the Legion claim or the machine that made it, and an enrollment with
+// no owner's alone. It reads the request's enrollment as it stands, which an adoption rewrites, so
+// a request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
+// checks it before it answers, and its held read reads it again at each step while the request is
+// pending. A request with no row is pgx.ErrNoRows.
+func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, judging bool, err error) {
+	err = m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
+		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner, &state, &judging)
+	return owner, state, judging, err
+}
+
+// EnrollmentOwner is OwnerAndState's owner for an enrollment: the owner it records, or
+// 'enrollment:<id>'. A caller's proof names a live enrollment, so pgx.ErrNoRows means it ended
+// under the call.
+func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (string, error) {
 	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select enrollment_id from requests where id=$1`, requestID).Scan(&owner)
+	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&owner)
 	return owner, err
+}
+
+// ownerOf is the one SQL text for whose requests the enrollment aliased alias makes are, which
+// OwnerAndState, EnrollmentOwner and Cancel compare.
+func ownerOf(alias string) string {
+	return `coalesce(` + alias + `.owner, 'enrollment:' || ` + alias + `.id::text)`
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the
@@ -765,7 +869,7 @@ func (m *Machine) SessionID(ctx context.Context, id string) (string, error) {
 }
 
 // Grant is a live grant's public summary, for GET /v1/enrollments/self. It follows the same query
-// pattern as OwnerOf and enrollment above.
+// pattern as OwnerAndState and enrollment above.
 type Grant struct {
 	// The grant's id, which the values and revoke routes take.
 	ID string `json:"grant_id"`
@@ -824,33 +928,56 @@ type pendingRequestRow struct {
 	// Legacy is a request written before migration 0013 (writtenBeforeMigration13), which asked
 	// for no lifetime and recorded the release's fixed one.
 	Legacy bool
+	// RecordBody and RecordCreatedAt are the request's credential-request record: its canonical
+	// body and when it was written, which is what signedForAnotherBroker verifies it against.
+	// They are pointers because the left join reads NULL in both for a request with no record,
+	// which pgx scans into no string and no time.Time.
+	RecordBody      *string
+	RecordCreatedAt *time.Time
 }
 
-// pendingRequest returns the oldest pending request for any name sorted names shares. Create holds
-// every matching name's advisory lock before it asks, so a concurrent request cannot pass the
-// lookup and open another record for that name.
+// pendingRequests returns every pending request of the enrollment for any name sorted names
+// shares whose deadline has not passed (requestBeforeDeadline), oldest first, with its names, its
+// lifetime and its credential-request record. Create holds every requested name's advisory lock
+// before it asks (lockPendingNames), so no other Create of the enrollment can pass the lookup and
+// open another record for one of those names, and one read sees every overlapping request there
+// is. endBesideReusedGrant first reads straight on the pool, under no lock, only to tell whether
+// any request is signed for another broker address, and ends what a second read under those locks
+// finds.
+// A request past its deadline, though the sweep has not ended it yet, is neither kept, ended
+// nor in the way: every decision of it answers ErrExpired, so a session coalesced onto it would
+// wait on an answer that can never come, its approver seeing only a request nobody can approve,
+// and one refused over it (ErrRequestPending) could ask again only once the sweep had run. The new
+// request opens a record of its own instead, listed pending beside the expired one, and the sweep
+// expires the old one, whichever broker address its record is signed for.
 // It reads the requests row's own enrollment_id, so a card that moved with its session is found
 // under the enrollment holding it now: the moved session coalesces onto the card a person is
 // already holding rather than opening a second one, and the box it moved off, which holds the
 // card no longer, is refused nothing.
-func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted []string) (pendingRequestRow, error) {
-	rows, err := q.Query(ctx, `select r.id, r.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("r")+`
-		from requests r join request_secrets s on s.request_id=r.id
-		where r.enrollment_id=$1 and r.state='pending' and exists (
-			select 1 from request_secrets matching where matching.request_id=r.id and matching.name = any($2)
-		) group by r.id, r.lifetime_seconds, r.created_at order by min(r.created_at)`, enrollmentID, sorted)
+// It reads each request's credential-request record beside it, so Create can tell each one
+// signed for another broker address (signedForAnotherBroker) and end it, and keep every other one
+// (endSignedForAnotherBroker). The record is a left join, so a request with no record is still
+// found. The order is the request's created_at and then its id, a total order, so two
+// transactions that end the same requests take their row locks in one order.
+// It reads every row and closes them before it returns: a caller that ends requests does so in
+// the same transaction, and a pgx transaction runs no statement while rows of its connection are
+// open.
+func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted []string) ([]pendingRequestRow, error) {
+	rows, err := q.Query(ctx, `select req.id, req.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("req")+`,
+			cr.body, cr.created_at
+		from requests req join request_secrets s on s.request_id=req.id
+		left join credential_requests cr on cr.id = req.record_id
+		where req.enrollment_id=$1 and req.state='pending' and `+requestBeforeDeadline+` and exists (
+			select 1 from request_secrets matching where matching.request_id=req.id and matching.name = any($2)
+		) group by req.id, req.lifetime_seconds, req.created_at, cr.id, cr.body, cr.created_at order by req.created_at, req.id`, enrollmentID, sorted)
 	if err != nil {
-		return pendingRequestRow{}, err
+		return nil, err
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return pendingRequestRow{}, rows.Err()
-	}
-	var pending pendingRequestRow
-	if err := rows.Scan(&pending.ID, &pending.Lifetime, &pending.Names, &pending.Legacy); err != nil {
-		return pendingRequestRow{}, err
-	}
-	return pending, rows.Err()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (pendingRequestRow, error) {
+		var p pendingRequestRow
+		err := row.Scan(&p.ID, &p.Lifetime, &p.Names, &p.Legacy, &p.RecordBody, &p.RecordCreatedAt)
+		return p, err
+	})
 }
 
 // joins answers whether a request asking for lifetime joins this pending request: the same
@@ -867,39 +994,63 @@ func sameLifetime(a, b *int) bool {
 	return *a == *b
 }
 
+// signedForAnotherBroker reports whether pending request p's record is signed for another broker
+// address: its request object does not verify for this broker, by the check PendingForApprover
+// lists a record by (requestedIdentifiers), because its aud is not Machine.Audience
+// (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
+// approver's list shows it and the judge was never handed it. A request with no record, a body
+// that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
+// such a request and applies the one-pending-request rule to it: the broker's move is the one
+// reason it ends one.
+func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
+	if p.RecordBody == nil || p.RecordCreatedAt == nil {
+		return false
+	}
+	_, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
+	return errors.Is(err, record.ErrAudienceMismatch)
+}
+
 // querier is what a read takes to run inside a transaction or straight on the pool.
 type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// matchingRequest runs query (whose rows are a request id, that request's own live grant's id and
-// that request's secret names, with $1 bound to enrollmentID and $2 to lifetime, the lifetime the
-// request must have asked for) and answers the first request whose names are exactly sorted with
-// the grant its row named, or "" for both when none is. Names are compared
-// as sets of whole strings, never as one joined string, so a name containing a separator cannot
-// pass for two names. The grant's id is read beside the request's rather than looked up again
-// because reuseLiveGrant ends exactly the grant this row matched when the policy no longer allows
-// it.
+// liveMatch is one row matchingRequests answers: a request whose names are exactly the ones asked
+// for, and the live grant the row named beside it.
+type liveMatch struct {
+	requestID, grantID string
+}
+
+// matchingRequests runs query (whose rows are a request id, that request's own live grant's id
+// and that request's secret names, with $1 bound to enrollmentID and $2 to lifetime, the lifetime
+// the request must have asked for) and answers every request whose names are exactly sorted, each
+// with the grant its row named, in the query's own order, or none. Names are compared as sets of
+// whole strings, never as one joined string, so a name containing a separator cannot pass for
+// two names. The grant's id is read beside the request's rather than looked up again because
+// reuseLiveGrant ends exactly the grant this row matched when the policy no longer allows it.
+// It reads every row and closes them before it returns, so no connection is held open while the
+// caller checks each match, which reads and writes on connections of its own.
 // Which column $1 is compared against is the query's own; every query here names the requests
 // row's own enrollment_id, the column an adoption rewrites.
-func matchingRequest(ctx context.Context, q querier, query, enrollmentID string, lifetime *int, sorted []string) (requestID, grantID string, _ error) {
+func matchingRequests(ctx context.Context, q querier, query, enrollmentID string, lifetime *int, sorted []string) ([]liveMatch, error) {
 	rows, err := q.Query(ctx, query, enrollmentID, lifetime)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer rows.Close()
+	var matches []liveMatch
 	for rows.Next() {
-		var id, grant string
+		var match liveMatch
 		var names []string
-		if err := rows.Scan(&id, &grant, &names); err != nil {
-			return "", "", err
+		if err := rows.Scan(&match.requestID, &match.grantID, &names); err != nil {
+			return nil, err
 		}
 		sort.Strings(names)
 		if slices.Equal(names, sorted) {
-			return id, grant, nil
+			matches = append(matches, match)
 		}
 	}
-	return "", "", rows.Err()
+	return matches, rows.Err()
 }
 
 // writtenBeforeMigration13 is the SQL predicate that request alias was written before migration
@@ -928,9 +1079,23 @@ func writtenBeforeMigration13(alias string) string {
 // (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
 // give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
 // whose secret the policy now tags as an administrator's), and its whole approval chain still
-// verifies (VerifyChain, the same check Values makes). A caller that already holds a live grant
-// for these exact names never re-asks a human who already approved it, a policy tightened since
-// then is never bypassed by reuse, and neither is a chain that no longer verifies.
+// verifies (verifyChainForRelease, the same check Values makes). A caller that already holds a
+// live grant for these exact names never re-asks a human who already approved it, a policy
+// tightened since then is never bypassed by reuse, and neither is a chain that no longer
+// verifies.
+// Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
+// candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
+// at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
+// adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
+// database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
+// after its first grant here, a newer one of this broker for the same names. Without the order,
+// Postgres may answer the old grant first on any call, which would ask a person or the judge
+// again on each until the old grant expired. Newest first,
+// the grant the session was given last is the one handed back, and an older one is checked, and
+// its failed chain logged, only when every newer one was passed over. Every other outcome stops
+// at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
+// longer live answers none, and any other error is returned. With no candidate left there is
+// none, and Create asks afresh.
 // A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
 // now tags as an administrator's, are not merely passed over: each is ended for good here, as
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
@@ -941,61 +1106,64 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names []string, lifetime *int, set *policy.Set) (Request, bool, error) {
-	id, grantID, err := matchingRequest(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set) (Request, bool, error) {
+	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
 		where r.enrollment_id=$1 and (
 			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
 		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
-		group by r.id, g.id`, enr.ID, lifetime, sortedCopy(names))
-	if err != nil || id == "" {
-		return Request{}, false, err
-	}
-	var rulesVersion, decidedBy string
-	if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, id).Scan(&rulesVersion, &decidedBy); err != nil {
-		return Request{}, false, err
-	}
-	granted, err := requestedSecrets(ctx, m.Store.Pool, id)
+		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sorted)
 	if err != nil {
 		return Request{}, false, err
 	}
-	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
+	for _, match := range matches {
+		var rulesVersion, decidedBy string
+		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
+			return Request{}, false, err
+		}
+		granted, err := requestedSecrets(ctx, m.Store.Pool, match.requestID)
 		if err != nil {
 			return Request{}, false, err
 		}
-		for _, g := range granted {
-			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
-			switch {
-			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
-				// The list dropped this requester while the grant was live, or the secret became
-				// an administrator's, which a person approves every release of: end the grant
-				// here as Values does, rather than leave it live and unrevoked, and answer no
-				// reusable grant so Create goes on to ask for the names afresh.
-				if ended := m.endGrant(ctx, grantID, err); !errors.Is(ended, ErrGrantNotLive) {
-					return Request{}, false, ended
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
+			requester, err := m.requester(ctx, m.Store.Pool, enr)
+			if err != nil {
+				return Request{}, false, err
+			}
+			for _, g := range granted {
+				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				switch {
+				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+					// The list dropped this requester while the grant was live, or the secret
+					// became an administrator's, which a person approves every release of: end
+					// the grant here as Values does, rather than leave it live and unrevoked, and
+					// answer no reusable grant so Create goes on to ask for the names afresh.
+					if ended := m.endGrant(ctx, match.grantID, err); !errors.Is(ended, ErrGrantNotLive) {
+						return Request{}, false, ended
+					}
+					return Request{}, false, nil
+				case errors.Is(err, ErrGrantNotLive):
+					return Request{}, false, nil
+				case err != nil:
+					return Request{}, false, err
 				}
-				return Request{}, false, nil
-			case errors.Is(err, ErrGrantNotLive):
-				return Request{}, false, nil
-			case err != nil:
+			}
+		}
+		r, err := m.Get(ctx, match.requestID)
+		if err != nil {
+			return Request{}, false, err
+		}
+		if r.GrantID != nil {
+			if err := m.verifyChainForRelease(ctx, *r.GrantID, enr.ID, "reuse"); errors.Is(err, ErrGrantChainInvalid) {
+				continue
+			} else if err != nil {
 				return Request{}, false, err
 			}
 		}
+		return r, true, nil
 	}
-	r, err := m.Get(ctx, id)
-	if err != nil {
-		return Request{}, false, err
-	}
-	if r.GrantID != nil {
-		if err := m.VerifyChain(ctx, *r.GrantID); errors.Is(err, ErrGrantChainInvalid) {
-			return Request{}, false, nil
-		} else if err != nil {
-			return Request{}, false, err
-		}
-	}
-	return r, true, nil
+	return Request{}, false, nil
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
@@ -1005,6 +1173,18 @@ func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, erro
 	var kind string
 	err := m.Store.Pool.QueryRow(ctx, `select kind from credential_requests where id=$1`, recordID).Scan(&kind)
 	return kind, err
+}
+
+// JudgeHolds reports whether the model judge holds the request of a credential-request record now:
+// the request is pending and its judge_until lies ahead. It reads that one fact and not the
+// record, so api.decideRecord can say JUDGE_DECIDES for a record whose signed request verifies for
+// no audience of this broker's, which ReadRecord refuses. A record with no request (a machine
+// login) is held by nobody.
+func (m *Machine) JudgeHolds(ctx context.Context, recordID string) (bool, error) {
+	var held bool
+	err := m.Store.Pool.QueryRow(ctx, `select coalesce(bool_or(state = 'pending' and judge_until > now()), false)
+		from requests where record_id=$1`, recordID).Scan(&held)
+	return held, err
 }
 
 // Session is the two possibly-differing session ids a credential-request record can name, read
@@ -1020,67 +1200,201 @@ type Session struct {
 	Enrollment string
 }
 
-// PendingSummary is one still-undecided credential-request record for GET /v1/pending: its id,
-// kind, the plain identifiers its request object names (secret names for agent_secret, the single
-// host for launcher_credential), when it was requested, and the session it names.
+// PendingSummary is one credential-request record for GET /v1/pending: its id, kind, the plain
+// identifiers its request object names (secret names for agent_secret, the single host for
+// launcher_credential), when it was requested, the session it names, its state and its deadline.
 type PendingSummary struct {
 	RecordID    string
 	Kind        string
 	Identifiers []string
 	RequestedAt time.Time
 	Session     Session
+	// State is "pending" for a record a decision may still settle, and "expired" for one whose
+	// deadline passed before anybody decided it, which every decision refuses (recordStateSQL).
+	State string
+	// ExpiresAt is the record's deadline (recordDeadlineSQL): a secret request's
+	// requests.pending_expires_at, the column its decision reads, and a machine login's
+	// credential_requests.expires_at.
+	ExpiresAt time.Time
 }
 
-// pendingForApproverQuery is PendingForApprover's whole SQL text, pulled out so
-// TestPendingForApproverAvoidsSequentialScans (same package) can PREPARE and EXPLAIN the exact
-// statement the pool runs rather than a copy that could drift from it.
+// PendingStates is which records PendingForApprover lists. Its zero value asks for no state and
+// lists what GET /v1/pending listed before a record had a state: every record still pending by
+// what is stored, its deadline passed or not, until the expiry sweep ends it. The approval page
+// lists with it, and so does a Dispatch build that sends no state. A set field asks for the
+// records of that state alone, as a two-field struct so that no caller can ask for a state that
+// does not exist.
+type PendingStates struct {
+	// Pending lists every record a decision may still settle: nobody has decided it, and its
+	// deadline has not passed.
+	Pending bool
+	// Expired lists every record whose deadline passed before anybody decided it and that nobody
+	// has dismissed (Dismiss), before the expiry sweep ends it and after.
+	Expired bool
+}
+
+// requestBeforeDeadline is the SQL predicate that req, a requests row, has not reached its
+// deadline: its pending_expires_at is after now(), the moment the decision compares it with
+// (applyDecisionAttempt's `pending_expires_at <= now()`). A request with no pending_expires_at
+// has no deadline to pass. Create writes one on every request it leaves pending (insertRequest),
+// and has since the first broker, so only a request decided at once has none, and such a request
+// has no record; the rule says what a row with none would mean rather than leave it to whichever
+// reader meets it. The sweep never expires such a row (store.RequestsPastDeadline) and no decision
+// refuses it as expired, so it stays pending, as it always read. It is a constant over one alias,
+// rather than a function of the alias, so the constant statements below can be built from it.
+const requestBeforeDeadline = `(req.pending_expires_at is null or req.pending_expires_at > now())`
+
+// recordStateSQL is the one SQL rule for whether a credential-request record is pending, held for
+// the model judge or expired, over cr, its credential_requests row, and req, its requests row left
+// joined on requests.record_id (none for a machine login). It is 'pending' for a record a person's
+// decision may still settle, 'held' for a secret request the model judge holds before its
+// deadline, 'expired' for a record whose deadline passed before anybody decided it, and null for
+// every other record: one decided, or a secret request cancelled before its deadline, which never
+// reached it. Expired is exactly what a decision refuses as expired, with the database's now():
 //
-// The launcher_credential branch's NOT EXISTS spells its terminal-event predicate literally
-// (event in ('approved','denied','expired','cancelled')) rather than binding
-// record.TerminalEventNames() as a parameter, for the same reason machine.ExpirePending's ON
-// CONFLICT target already does for the same index (credential_request_decision,
-// store/migrations/0005_credential_requests.up.sql): Postgres can only recognize a partial index
-// from a predicate it can prove implies the index's at plan time, which a bound parameter never
-// does once the plan goes generic. The literal makes the index provably reachable in every plan
-// shape; whether an unforced planner actually prefers it over hashing the far smaller matching set
-// in one pass is then an ordinary cost comparison, which is why
-// TestPendingForApproverAvoidsSequentialScans also sets enable_seqscan = off — that is what
-// guarantees the index path, not the literal alone. A later change to the terminal event list must
-// change this literal too, which TestPendingForApproverTerminalEventsLiteralMatchesTheList pins
-// against record.TerminalEventNames().
+//   - A secret request by its request row: 'expired', which the sweep wrote; or 'pending' past its
+//     pending_expires_at (requestBeforeDeadline), which applyDecisionAttempt answers ErrExpired
+//     before the sweep gets to it, the judge's hold or none; or 'cancelled' at or after that
+//     deadline (pending_expires_at <= decided_at), a cancel that came after the deadline had
+//     passed, which the requesting session (Cancel) or its enrollment's end writes on any pending
+//     request whatever its deadline. Before its deadline, one with judge_until ahead is 'held': it
+//     is no person's yet, so no list shows it and Dismiss refuses it as not expired; once the hold
+//     ends (handed over, or run out) it is 'pending'.
+//   - A machine login by its terminal event: an 'expired' event, which the sweep wrote
+//     (machine.Service.ExpirePending); or none, with expires_at passed, which machine's
+//     ApplyDecision answers ErrLoginExpired. Nothing cancels a machine login.
+//
+// The terminal-event predicate is spelled literally, as pendingForApproverQuery's doc comment says
+// why, so the subquery reads credential_request_decision. PendingForApprover lists by it, Dismiss
+// refuses by it, and ReadRecord reads a record still pending past its deadline as expired by it.
+const recordStateSQL = `case cr.kind
+		when 'agent_secret' then case
+			when req.state = 'pending' and ` + requestBeforeDeadline + ` and req.judge_until > now() then 'held'
+			when req.state = 'pending' and ` + requestBeforeDeadline + ` then 'pending'
+			when req.state = 'pending' then 'expired'
+			when req.state = 'expired' then 'expired'
+			when req.state = 'cancelled' and req.pending_expires_at <= req.decided_at then 'expired'
+		end
+		when 'launcher_credential' then case coalesce((select ev.event from credential_request_events ev
+				where ev.record_id = cr.id and ev.event in ('approved','denied','expired','cancelled')), '')
+			when 'expired' then 'expired'
+			when '' then case when cr.expires_at <= now() then 'expired' else 'pending' end
+		end
+	end`
+
+// recordDeadlineSQL is the deadline of the record cr whose requests row is req, as recordStateSQL
+// reads it: a secret request's pending_expires_at, the column its decision compares, and a machine
+// login's own expires_at. Create writes the two columns of a secret request from one value
+// (createPending), so the record's own expires_at stands in for a request row with none.
+const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
+
+// pendingListFrom is the select list, the joins and the approver filter of both of
+// PendingForApprover's statements, which differ only in what they keep of the approver's records
+// and in their order. The approver scan is credential_requests_approver
+// (store/migrations/0011_credential_requests_approver.up.sql) in both: either one reads every
+// record of the approver, as the one statement before records had a state already did, and
+// keeps those of the states it lists. Each row's state is recordStateSQL's, read once in a
+// lateral of its own, so a statement that filters on it, orders by it and answers it reads one
+// value. The lateral's `offset 0` keeps the planner from pulling it up into the statement, which
+// would copy recordStateSQL into the filter, the select list and the sort key and run a machine
+// login's terminal-event read once for each copy.
 //
 // The two left joins read each row's session (LEGION-587): req on requests.record_id, the same
 // column requests_record (0008_lookup_indexes.up.sql) already indexes for ReadRecord, and enr on
-// credential_requests' own enrollment_id, its primary-key lookup into enrollments.
-// TestPendingForApproverAvoidsSequentialScans checks only credential_requests and
-// credential_request_events for a sequential scan; it pins nothing about how Postgres joins in
-// req and enr (a hash join over requests and enrollments, measured locally at 5,000 enrollments —
-// free to change with the planner's own cost estimates, and not this test's concern).
+// credential_requests' own enrollment_id, its primary-key lookup into enrollments. req is also
+// the request row recordStateSQL and recordDeadlineSQL read.
 //
 // A session's move re-points its requests row and not the append-only record, so enr is the
 // enrollment that asked. It is read for its session id alone, and an adoption moves a session's
 // rows only to another enrollment of the same session id (the carry pair enroll.Create matches
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
-// moved off lists it no more.
-const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+// moved off lists it no more. A request the model judge holds (judge_until ahead) is no person's
+// yet: recordStateSQL reads it as neither pending nor expired while its deadline has not passed,
+// so neither statement lists it until its hold has ended (handed over, or run out), and past its
+// deadline it reads expired, as every request does.
+//
+// An agent_secret record waiting on $2, record.AnyoneApprover, is listed for the person its
+// notify column names, and for everyone where it names none (responsiblePerson), in both
+// statements. A launcher_credential record carries no notify, so the filter lists it for everyone.
+const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
+		s.state, ` + recordDeadlineSQL + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
-	where (
-		cr.approver in ($1, $2) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
-		or cr.approver in ($1, $2) and cr.kind='launcher_credential' and not exists (
+	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
+	where (cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1)) and `
+
+// pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
+// (PendingStates' zero value): every record of the approver still pending by what is stored,
+// newest first, which is exactly the list from before records had a state. An agent_secret record
+// is that while its request row is 'pending' and the model judge does not hold it, and a machine
+// login while it carries no terminal event, its deadline passed or not, so a record past its
+// deadline stays on this list until the expiry sweep ends it, and leaves it then. Each row carries
+// its state all the same, so a record past its deadline reads 'expired' here too. It and
+// pendingOrExpiredForApproverQuery are pulled out so TestPendingForApproverAvoidsSequentialScans
+// (same package) can PREPARE and EXPLAIN the exact statements the pool runs rather than copies
+// that could drift from them.
+//
+// The launcher_credential branch's NOT EXISTS spells its terminal-event predicate literally
+// (event in ('approved','denied','expired','cancelled')) rather than binding
+// record.TerminalEventNames() as a parameter, and so does recordStateSQL's subquery, which both
+// statements read, for the same reason machine.ExpirePending's ON CONFLICT target already does for
+// the same index (credential_request_decision, store/migrations/0005_credential_requests.up.sql):
+// Postgres can only recognize a partial index from a predicate it can prove implies the index's at
+// plan time, which a bound parameter never does once the plan goes generic. The literal makes the
+// index provably reachable in every plan shape; whether an unforced planner actually prefers it
+// over hashing the far smaller matching set in one pass is then an ordinary cost comparison, which
+// is why TestPendingForApproverAvoidsSequentialScans also sets enable_seqscan = off — that is what
+// guarantees the index path, not the literal alone. A later change to the terminal event list must
+// change these literals too, which TestPendingForApproverTerminalEventsLiteralMatchesTheList pins
+// against record.TerminalEventNames().
+//
+// TestPendingForApproverAvoidsSequentialScans checks credential_requests,
+// credential_request_events and credential_request_dismissals for a sequential scan; it pins
+// nothing about how Postgres joins in req and enr (a hash join over requests and enrollments,
+// measured locally at 5,000 enrollments — free to change with the planner's own cost estimates,
+// and not this test's concern).
+const pendingForApproverQuery = pendingListFrom + `(
+		cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending' and (r.judge_until is null or r.judge_until <= now()))
+		or cr.kind='launcher_credential' and not exists (
 			select 1 from credential_request_events ev where ev.record_id=cr.id and ev.event in ('approved','denied','expired','cancelled'))
 	) order by cr.created_at desc`
 
-// PendingForApprover lists every still-pending credential-request record — of either kind — that
-// approver may decide, newest first: GET /v1/pending's exact contract. That is every record naming
-// approver, and every record whose approver is record.AnyoneApprover: a request for a shared
-// human-tier secret, and a service's machine login. A service's login a broker from before that
-// rule opened names a person instead and is listed for that person alone, though anyone who types
-// its code may decide it (record.MayDecide). The rule for
-// pending, which ReadRecord applies too: an agent_secret record is pending while its request is.
-// Every writer moves the request out of 'pending' together with the record's terminal event
+// pendingOrExpiredForApproverQuery is PendingForApprover's statement for a caller that asks for
+// states, $3 for the pending records and $4 for the expired ones: the records of the approver
+// recordStateSQL reads 'pending' while $3 holds, and those it reads 'expired' that have no row in
+// credential_request_dismissals (migration 0033) while $4 holds. The pending rows come first and
+// the expired ones after them, each newest first, so a caller that cuts the list into pages from
+// the front never pushes a record a person can still decide off its first page to show records
+// nobody can.
+// TestPendingForApproverAvoidsSequentialScans holds the dismissal's NOT EXISTS to the table's
+// primary key, as it holds the rest of this statement to pendingForApproverQuery's indexes.
+const pendingOrExpiredForApproverQuery = pendingListFrom + `(
+		s.state = 'pending' and $3::boolean
+		or s.state = 'expired' and $4::boolean and not exists (
+			select 1 from credential_request_dismissals d where d.record_id = cr.id)
+	) order by s.state = 'expired', cr.created_at desc`
+
+// PendingForApprover lists the credential-request records — of either kind — that approver is
+// asked to decide, and the states they are in: GET /v1/pending's exact contract, which Dispatch
+// relays to each person's Inbox. Which records it lists is what states asks for: with no state,
+// every record still pending by what is stored, newest first (pendingForApproverQuery); with
+// states, the records a decision may still settle and the expired records nobody has dismissed,
+// as states asks, the pending ones first (pendingOrExpiredForApproverQuery). Either way each row
+// says whether it is pending or expired, and when its deadline is, by the one rule a decision
+// refuses an expired record by (recordStateSQL), which ReadRecord and Dismiss read as well.
+//
+// An approver's records are every record naming approver; every request for a shared human-tier
+// secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
+// for the agent that made it, or names no such person (credential_requests.notify, Create's
+// responsiblePerson), so it waits where everyone sees it; and every service's machine login, whose
+// approver is record.AnyoneApprover too. Who may decide is not this list's to say: anyone signed
+// in decides a shared secret's request from its page whether or not it is listed for them
+// (record.MayDecide). A service's login a broker from before that rule opened names a person
+// instead and is listed for that person alone, though anyone who types its code may decide it
+// (record.MayDecide). Whether an agent_secret record is still pending is read from its request
+// row: every writer moves the request out of 'pending' together with the record's terminal event
 // (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
 // endEnrollment wrote that event carries none, so the request row is the truth. A machine login
 // has no request row and is pending while it carries no terminal decision event, matching
@@ -1093,31 +1407,44 @@ const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, 
 //
 // A record whose signed request does not verify for this broker — one signed for another
 // BROKER_PUBLIC_URL, after the public URL changed while it waited or when a second broker shares
-// this database — is left out of the list and logged once (leaveOut), and the list goes on. That
-// record can be decided by no broker that cannot verify it, and returning its error instead
-// answered 503 to the approval page and GET /v1/pending for every request of that approver until
-// the record expired, up to the whole pending window.
-func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]PendingSummary, error) {
-	rows, err := m.Store.Pool.Query(ctx, pendingForApproverQuery, record.CanonicalLogin(approver), record.AnyoneApprover)
+// this database — is left out of the list, and the list goes on. That record can be decided by no
+// broker that cannot verify it, and returning its error instead answered 503 to the approval page
+// and GET /v1/pending for every request of that approver until the record expired, up to the whole
+// pending window. A record left out is logged once (leaveOut), with one exception: an expired
+// record left out of a list that asks for states is not logged at all. Such a list reads that
+// record until somebody dismisses it, which nobody does to a record no list shows, so a line about
+// it would come back every leftOutRetention for as long as the broker runs and say nothing anybody
+// can act on. A list with no state reads an expired record only until the sweep ends it, and its
+// one line is the one it always wrote.
+func (m *Machine) PendingForApprover(ctx context.Context, approver string, states PendingStates) ([]PendingSummary, error) {
+	query, args := pendingForApproverQuery, []any{record.CanonicalLogin(approver), record.AnyoneApprover}
+	byState := states != (PendingStates{})
+	if byState {
+		query, args = pendingOrExpiredForApproverQuery, append(args, states.Pending, states.Expired)
+	}
+	rows, err := m.Store.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []PendingSummary
 	for rows.Next() {
-		var id, kind, canonical, requestSession, enrollmentSession string
+		var id, kind, canonical, requestSession, enrollmentSession, state string
 		var createdAt, expiresAt time.Time
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession); err != nil {
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt); err != nil {
 			return nil, err
 		}
 		identifiers, err := m.requestedIdentifiers(canonical, createdAt)
 		if err != nil {
-			m.leaveOut(id, kind, expiresAt, err)
+			if !byState || state != "expired" {
+				m.leaveOut(id, kind, expiresAt, err)
+			}
 			continue
 		}
 		out = append(out, PendingSummary{
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
+			State:   state, ExpiresAt: expiresAt,
 		})
 	}
 	return out, rows.Err()
@@ -1224,22 +1551,40 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
+	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
+	// judge_until ahead. No person decides such a record until the judge has given it up.
+	JudgeDeciding bool
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
 // and, reused verbatim, POST /v1/machine-logins/lookup.
 // pgx.ErrNoRows means no such record.
+//
+// A record nobody has decided reads "pending" until its deadline and "expired" from then on, with
+// Decided nil in both, by recordStateSQL: so a record past its deadline that the sweep has not
+// ended yet reads as what every decision of it already answers, rather than as one a person may
+// still approve, on the approval page and in the machine-login lookup alike. Once the sweep ends
+// it, its expired event (a secret request's expired row) says the same. A cancelled record keeps
+// reading "cancelled", whenever the cancel came. ExpiresAt is the deadline recordStateSQL reads
+// (recordDeadlineSQL): a secret request's pending_expires_at, and a machine login's expires_at.
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
-	var canonical, approver, kind, requestSession, enrollmentSession string
+	var canonical, approver, kind, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, cr.expires_at,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+	var judgeDeciding bool
+	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
+			coalesce(req.state = 'pending' and req.judge_until > now(), false)
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding); err != nil {
 		return RecordDetail{}, err
+	}
+	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
+	// and the lookup show an undecided record as pending or expired, and the hold beside it.
+	if state == "held" {
+		state = "pending"
 	}
 	body, err := record.ParseBody(canonical)
 	if err != nil {
@@ -1264,17 +1609,20 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		}
 	}
 	detail := RecordDetail{
-		RecordID: recordID, Kind: kind, State: "pending", Approver: approver, Enrollment: enr,
+		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession},
+		Session:       Session{Request: requestSession, Enrollment: enrollmentSession},
+		JudgeDeciding: judgeDeciding,
 	}
-	// Whether the record is still pending follows PendingForApprover's rule: an agent_secret record
-	// by its request's state, a machine login by its terminal event. A decided record's terminal
-	// event names the decision; a request an ended enrollment cancelled before endEnrollment wrote
-	// that event has none, and its request row stands in for it. The actor is the event's own and
-	// has no stand-in there: a record with no event was decided by nobody, so there is nobody to
-	// name, and the empty actor says so.
+	// Whether the record is still undecided follows PendingForApprover's rule: an agent_secret
+	// record by its request's state, a machine login by its terminal event. A decided record's
+	// terminal event names the decision; a request an ended enrollment cancelled before
+	// endEnrollment wrote that event has none, and its request row stands in for it. The actor is
+	// the event's own and has no stand-in there: a record with no event was decided by nobody, so
+	// there is nobody to name, and the empty actor says so. An undecided record keeps the state
+	// read above: pending, or expired past its deadline. A record cancelled after its deadline
+	// reads expired there as well, and the read below finds it and names it cancelled.
 	var event, credID, login, actor, eventDetail string
 	var decidedAt time.Time
 	if agentSecret {

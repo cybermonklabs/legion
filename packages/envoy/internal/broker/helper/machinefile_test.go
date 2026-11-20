@@ -1,13 +1,14 @@
 // packages/envoy/internal/broker/helper/machinefile_test.go
-//go:build linux
 
 package helper
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,14 +64,15 @@ func TestTheMachineFileRoundTripsAndIsPrivate(t *testing.T) {
 		t.Fatalf("machine file directory mode %o; want 700", mode)
 	}
 
-	// A save that fails after writing part of the new file: the old file is still the login.
+	// A save that fails after writing part of the new file: the old file is still the login, and
+	// the error says why without the temporary file's path.
 	replacement := testMachineFile(t, "cred-2", "refresh-2")
 	failing := func(f *os.File, data []byte) (int, error) {
 		n, _ := f.Write(data[:len(data)/2])
-		return n, errors.New("disk full")
+		return n, &fs.PathError{Op: "write", Path: f.Name(), Err: syscall.ENOSPC}
 	}
-	if err := replacement.save(path, failing); err == nil || !strings.Contains(err.Error(), "disk full") {
-		t.Fatalf("a save whose writer fails: %v; want its error", err)
+	if err := replacement.save(path, failing); err == nil || !strings.Contains(err.Error(), "no space left on device") || strings.Contains(err.Error(), filepath.Dir(path)) {
+		t.Fatalf("a save whose writer fails: %v; want its reason, without the path", err)
 	}
 	again, err := LoadMachineFile(path)
 	if err != nil || again.CredentialID != "cred-1" || again.RefreshToken != "refresh-1" {
@@ -156,7 +158,8 @@ func TestASaveRefusesWhatALoadWouldRefuse(t *testing.T) {
 }
 
 // TestAMachineFileThatDoesNotParseIsAnErrorNamingIt: a file that is there but is not a machine
-// login is an error that names its path, never a login the helper silently goes without.
+// login is an error that names it by AGENT_SECRETS_MACHINE_FILE, never by its path, and never a
+// login the helper silently goes without.
 func TestAMachineFileThatDoesNotParseIsAnErrorNamingIt(t *testing.T) {
 	dir := t.TempDir()
 	good := testMachineFile(t, "cred-1", "refresh-1")
@@ -180,8 +183,8 @@ func TestAMachineFileThatDoesNotParseIsAnErrorNamingIt(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadMachineFile(path); err == nil || errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), path) {
-			t.Errorf("%s: LoadMachineFile = %v; want an error naming %s", name, err, path)
+		if _, err := LoadMachineFile(path); err == nil || errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), path) {
+			t.Errorf("%s: LoadMachineFile = %v; want an error naming AGENT_SECRETS_MACHINE_FILE and not %s", name, err, path)
 		}
 	}
 }
@@ -212,7 +215,8 @@ func TestAMachineFileWithAFieldThisReleaseDoesNotKnowLoads(t *testing.T) {
 }
 
 // TestAMachineFileOthersCanReadIsRefused: LoadMachineFile refuses a machine file whose mode grants
-// its group or anyone else any access, naming the path and the fix, and loads it once it is 0600.
+// its group or anyone else any access, naming AGENT_SECRETS_MACHINE_FILE (never the path) and the
+// fix, and loads it once it is 0600.
 func TestAMachineFileOthersCanReadIsRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "machine.json")
 	if err := testMachineFile(t, "cred-1", "refresh-1").Save(path); err != nil {
@@ -222,8 +226,8 @@ func TestAMachineFileOthersCanReadIsRefused(t *testing.T) {
 		if err := os.Chmod(path, mode); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadMachineFile(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "chmod 600") {
-			t.Errorf("mode %v: LoadMachineFile = %v; want a refusal naming %s and chmod 600", mode, err, path)
+		if _, err := LoadMachineFile(path); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "chmod 600") {
+			t.Errorf("mode %v: LoadMachineFile = %v; want a refusal naming AGENT_SECRETS_MACHINE_FILE, not %s, and chmod 600", mode, err, path)
 		}
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
@@ -231,21 +235,6 @@ func TestAMachineFileOthersCanReadIsRefused(t *testing.T) {
 	}
 	if _, err := LoadMachineFile(path); err != nil {
 		t.Fatalf("mode 0600: %v", err)
-	}
-}
-
-// TestASaveAfterTheBrokerClosesWritesNothing: once Close returns, no save of the machine login
-// writes into its directory, so the caller that closed the broker can remove that directory
-// while a refresh or an approved login is still finishing.
-func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
-	dir := t.TempDir()
-	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
-	b.Close()
-	if err := b.saveFile(testMachineFile(t, "cred-1", "refresh-1")); err != nil {
-		t.Fatalf("a save after Close: %v; want nil, since it writes nothing", err)
-	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("a save after Close wrote into the directory: %v %v", entries, err)
 	}
 }
 

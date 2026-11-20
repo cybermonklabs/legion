@@ -175,9 +175,10 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	// Once the start has succeeded, closing the listener never unlinks the socket. Go's unlink goes
 	// by the socket's full path, and once the generation's agent runs it can replace a directory on
 	// that path, its own g<n> among them, with a link to a sibling's, which would make the unlink
-	// remove the sibling's socket. The socket's owner removes it with the directory instead
-	// (os.RemoveAll follows no link). A refused start above still unlinks: nothing of the
-	// generation runs yet, and the address must be free for the generation's next start.
+	// remove the sibling's socket. The socket's owner removes it with the directory instead, through
+	// a walk that follows no link (the launcher's rolefile.RemoveTree). A refused start above still
+	// unlinks: nothing of the generation runs yet, and the address must be free for the
+	// generation's next start.
 	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 
 	p := &Proxy{

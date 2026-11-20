@@ -107,6 +107,8 @@ on:
       - 'packages/daemon/internal/record/*'
       - 'packages/daemon/internal/registry/*'
       - 'packages/daemon/internal/repocache/*'
+      - 'packages/daemon/internal/reviewround/*'
+      - 'packages/daemon/internal/rolefile/*'
       - 'packages/daemon/internal/runtime/*'
       - 'packages/daemon/internal/runtime/sandbox/*'
       - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -123,6 +125,7 @@ on:
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
+      - 'packages/envoy/brokeraddr/*'
       - 'packages/envoy/brokerclient/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/brokerclient/*'
@@ -133,12 +136,14 @@ on:
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/googleidentity/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
+      - 'packages/envoy/steprecord/*'
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
@@ -169,10 +174,13 @@ on:
       - 'packages/envoy/internal/dispatch/githubapi/*'
       - 'packages/envoy/internal/dispatch/githubapp/*'
       - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+      - 'packages/envoy/internal/dispatch/githubreads/*'
       - 'packages/envoy/internal/dispatch/identity/*'
       - 'packages/envoy/internal/dispatch/itemblocks/*'
+      - 'packages/envoy/internal/dispatch/legion/*'
       - 'packages/envoy/internal/dispatch/model/*'
       - 'packages/envoy/internal/dispatch/outbox/*'
+      - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/prioritystore/*'
       - 'packages/envoy/internal/dispatch/processes/*'
@@ -188,6 +196,7 @@ on:
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
+      - 'packages/envoy/internal/dispatch/workflowstore/*'
       - 'packages/envoy/internal/envconf/*'
       - 'packages/envoy/internal/fold/*'
       - 'packages/envoy/internal/githubappjwt/*'
@@ -207,6 +216,7 @@ on:
       - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
       - 'packages/envoy/internal/store/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
       # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
@@ -228,6 +238,7 @@ on:
       - 'packages/envoy/internal/broker/judge/*'
       - 'packages/envoy/internal/broker/leasetime/*'
       - 'packages/envoy/internal/broker/machine/*'
+      - 'packages/envoy/internal/broker/netaddr/*'
       - 'packages/envoy/internal/broker/oauth/*'
       - 'packages/envoy/internal/broker/oauthstore/*'
       - 'packages/envoy/internal/broker/oauthwire/*'
@@ -241,11 +252,17 @@ on:
       - 'packages/envoy/internal/broker/store/*'
       - 'packages/envoy/internal/broker/store/migrations/**'
       - 'packages/envoy/internal/broker/wake/*'
+      - 'packages/envoy/internal/broker/natscallout/*'
+      - 'packages/envoy/natsgrant/*'
+      - 'packages/envoy/natscred/*'
       - 'packages/envoy/internal/broker/wire/*'
       - 'packages/envoy/internal/brokertoken/*'
       - 'packages/envoy/internal/buildversion/*'
       - 'packages/envoy/internal/fileowner/*'
       - 'packages/envoy/internal/ratelimit/*'
+      - 'packages/envoy/internal/broker/rulehost/*'
+      - 'packages/envoy/internal/broker/logmask/*'
+      - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
       - 'packages/proof-editor/src/**'
@@ -303,6 +320,8 @@ jobs:
     with:
       upload-pages-artifact: true
       save-cache: true
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # No concurrency of its own: the workflow's group already holds the next run until this one's
   # deploy ends. The if: holds the deployment to main: a workflow_dispatch of a branch builds the
@@ -310,7 +329,7 @@ jobs:
   deploy:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # Publishes the built site to GitHub Pages: pages: write performs the deployment, id-token:
     # write is the OIDC token actions/deploy-pages exchanges for it.

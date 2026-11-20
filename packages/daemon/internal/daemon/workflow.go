@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -55,7 +58,13 @@ type workflowRuntime struct {
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
 	// (config.Gates.Steps).
 	gatedSteps []record.DesignStep
-	tokens     appauth.Tokens
+	// tokens mints every lease the workflow's own reads and writes use. apps is that same token
+	// source whole, the leases and the owners each App is installed on (appauth.Source), which
+	// the daemon hands on to the runtime it builds and to the API's routes (run, serve): both
+	// build gh bundles, which need the owners too. The workflow itself asks for no owner list,
+	// so its own code and its tests hold the narrower type.
+	tokens appauth.Tokens
+	apps   appauth.Source
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -86,7 +95,8 @@ type workflowRuntime struct {
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
-	// then — the outbox's boot sweep finds every row written before it ran.
+	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
+	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
@@ -158,16 +168,19 @@ type workflowRuntime struct {
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
 	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
-	// lowercased, a read of the mapping stopped leaving out for a read GitHub did not answer (its
-	// installation read, or its default-branch read past GitHub's rate limit), whose issues are still
-	// to recover from Dispatch's listing (markRecovered, recoverRepositories),
+	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
+	// listing (recoverRepositories): one a read of the mapping stopped leaving out for a read
+	// GitHub did not answer (its installation read, or its default-branch read past GitHub's
+	// rate limit: markRecovered), and one no mapping names that a preparation left unread and
+	// whose reads a later preparation got answered (readAnswered),
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
 	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
-	// of each it did not record (tellReleaseWaits); recoveryHeldSince is when a recovery's listing
-	// was first found held with waits to tell (zero for none), so a hold past recoveryHoldBound
-	// tells them.
+	// of each it did not record (tellReleaseWaits), and which leave with the repository's own
+	// marker where a pass stops reading GitHub for it (settleRecovery, tellLetGoWaits);
+	// recoveryHeldSince is when a recovery's listing was first found held with waits to tell (zero
+	// for none), so a hold past recoveryHoldBound tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories
@@ -184,10 +197,38 @@ type workflowRuntime struct {
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
+	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot) and then
+	// each read of the mapping's (refreshMapping), with each repository a record first names added
+	// to it with no read of the records (hearRecorded). Every write holds mappingMu, so no read of
+	// the mapping overwrites what a record just added, and publishes a new set whole; a recording
+	// reads it with no lock at all, so one whose repository it names waits on no read of the
+	// mapping (hearRepository, which says why reading it without the lock is sound).
+	// heardPending marks a consumer update a record's repository could not be given, which the
+	// refresher's next read publishes in full. unread is each repository no mapping names whose
+	// GitHub reads a preparation could not make (leaveUnread) or the boot's listing did not make
+	// (leaveForRecovery), lowercased, with why, under recoveringMu: while any is, the refresher
+	// reads again of its own and recovers the issues each left. unreadMarks is, by the same
+	// repository, the last mark a preparation's failure or GitHub's answer gave it (markUnread,
+	// readAnswered), each a value of the sequence unreadMarked no mark held before, under
+	// recoveringMu. It exists because a marker already present is no evidence that nothing
+	// happened: leaveUnread returns at once when the repository was unread already, recording
+	// nothing, so without the mark a preparation that failed inside a recovery's own window — an
+	// issue moved to todo after its listing was read — is invisible to the pass that then lets the
+	// repository go, and that issue's note of its silence is read by no later pass
+	// (settleRecovery). cacheRepos is what the runtime keeps a repository cache of
+	// (cacheRepositories), published for the sweep to read without a lock.
+	heard        atomic.Pointer[[]ghrepo.Repository]
+	heardPending atomic.Bool
+	unread       map[string]string
+	unreadMarks  map[string]uint64
+	unreadMarked uint64
+	cacheReposMu sync.Mutex
+	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
 	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
-	// whose commits a pane stamps with the issue key, as the file names them. The boot's mapping
-	// load says of each one the project does not serve that it stamps nothing
-	// (logUnservedCommitIssueTrailerRepos); nothing else in the daemon reads it.
+	// whose commits a pane stamps with the issue key, as the file names them: a launch stamps
+	// when its own repository is one of these names, whatever the mapping holds. The boot's
+	// mapping load names each of these the mapping does not hold, which catches a typo
+	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
 	commitIssueTrailerRepos []ghrepo.Repository
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
 	// review it submits decides a round by that login and the reviewer's recorded session
@@ -223,16 +264,24 @@ type workflowRuntime struct {
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
-	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
-	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
-	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
-	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
-	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
-	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
+	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
+	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
+	// testing through merging), each the start read found GitHub still computing
+	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
+	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
+	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
+	// long the outbox's merge-queue read and second conflict read wait before they read again
+	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
+	// shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateRunning map[string]bool
+	mergeStateQueued  map[string]string
+	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
 
@@ -286,10 +335,11 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine judges a review
-// by the login that authored it (workflow's byReviewer), so one App configured for both roles
-// would submit every role's review under the one login, and is refused, as is a review App that
-// names no login.
+// other failure is refused at once. It returns the review App's login: the engine tells the review
+// App's reviews from every other account's by the login that authored them, and the reviewer's own
+// among those by the session their Legion footer names, which must be the one the reviewer's claim
+// records (workflow's byReviewer), so one App configured for both roles would submit every role's
+// review under the one login, and is refused, as is a review App that names no login.
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
 	logins := map[appauth.AppRole]string{}
 	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
@@ -311,19 +361,19 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 	return logins[appauth.Review], nil
 }
 
-// mintAtBoot mints the implement and then the review App token for repo, as one attempt run again
-// after a failure GitHub reports as its own trouble (appauth.TransientError); any other failure is
-// refused at once. The token manager keeps a lease it minted, so an attempt after the implement
-// token passed asks GitHub only for the review token. A mint asks for what each App's
-// installation is granted of the role's set and says on stderr what it left out (appauth's
-// exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is an installation granted none of the role's set, an answer the mint refuses, an App not
-// installed on the owner, or GitHub's own trouble lasting past the retries.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Repository, log *slog.Logger) error {
+// mintAtBoot mints the implement and then the review App token on owner's installation, as one
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError);
+// any other failure is refused at once. The token manager keeps a lease it minted, so an attempt
+// after the implement token passed asks GitHub only for the review token. A mint asks for what
+// each App's installation is granted of the role's set and says on stderr what it left out
+// (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
+// boot: what does is an App with no installation on the owner, an installation granted none of
+// the set at all, an answer the mint refuses, or GitHub's own trouble lasting past the retries.
+func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
-			if _, err := tokens.Token(ctx, role, repo); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, repo, err)
+			if _, err := tokens.Token(ctx, role, owner); err != nil {
+				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
 			}
 		}
 		return nil
@@ -332,8 +382,9 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
-// checked for both GitHub Apps) into repos, the served repositories every role's gh bundle reads
-// its directories from, the Apps' logins, the App tokens minted for every served repository, the
+// checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
+// directories from, which each App's own installations give (appauth.InstalledOwners) and no
+// repository list decides, the Apps' logins, the App tokens minted on each served owner account, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
 // recorded gate of every issue Dispatch has not closed queued for its own
@@ -347,7 +398,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -382,11 +433,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]bool{},
+		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
@@ -402,18 +453,22 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
-	// lease for every repository the mapping serves rather than once per owner. No mint names its
-	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
-	// that owner's installation the same request, and what stops the boot is about the owner: an
-	// App not installed on it, or an installation granted none of the permissions a role's write
-	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
-	// it would otherwise leave a role with no gh files at its launch. An installation granted some
-	// of the set mints with what it is granted, and the mint says the rest on stderr (appauth's
-	// exchangeGranted), so one permission awaiting an account's approval costs the role no gh
-	// files at all.
-	for _, repo := range w.repositories.Accepted() {
-		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
+	// A token reaches every repository its App's installation holds, and the account that
+	// installs the App chooses those, so the boot proves each App's key once for each owner
+	// account of the repositories the mapping serves rather than once for each repository: an
+	// App with no installation on an owner, or one granted none of the permissions a role's
+	// write token asks for, stops the boot naming that owner, where it would otherwise leave a
+	// role with no gh files at its launch. An installation granted some of the set mints with
+	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
+	// one permission awaiting an account's approval costs the role no gh files at all. An owner
+	// the App is installed on that the mapping does not reach is not proved at boot: the boot
+	// would then depend on installations no work of this project needs.
+	//
+	// The owners are the mapping's own answer (repositories.Owners), deduplicated as a token's
+	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
+	// mint, and minted in their sorted order, so one boot's log reads like the next's.
+	for _, owner := range w.repositories.Owners() {
+		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
 			return nil, err
 		}
 	}
@@ -436,7 +491,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if engineCfg.Pods, err = st.PodRecordsOf(cfg.Project); err != nil {
 		return nil, err
 	}
-	engineCfg.Repositories, engineCfg.NoteUnread, engineCfg.ReadMergeState = w, w.noteUnread, w.queueMergeState
+	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
+	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -624,6 +681,79 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
+// write of the record that names a session or a model (workflow.Config.StepAgent): the session the
+// claim's machine published (supervise.Machine.View) and the model that answered last in that
+// session (supervise.Machine.LastAnswer). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing, as does a claim this daemon does
+// not supervise. It finds the machine without the supervisor's lock (supervisedMachine), since the
+// engine reads here inside a fact's transaction, which holds the fact lock that a Create holding
+// that lock waits on. Neither read of the machine waits on a decision in flight, so the engine's
+// transaction may make them. The session is read on both sides of the model, and a model read while
+// the session changed is left out, so the pair never names a model with a session it did not serve;
+// the end is the record's one write of either, so that record then names no model.
+//
+// Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
+// agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
+// than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
+// shift the columns of `dispatch steps` or forge a line of it.
+//
+// The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
+// suspend can record another claim's session, or one no claim holds, and its step's record would
+// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
+// no store call), and where the machine has not seen the answer, as after a restart, it reads
+// claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
+// savepoint on the connection that already holds the fact lock: no store write, and no wait on
+// another connection while that lock is held, where the store's hold (HoldSessions) would write
+// through the pool. A read that fails names no session, and the record's end then names none.
+func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.Token) workflow.StepAgent {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return workflow.StepAgent{}
+	}
+	machine, ok := r.supervisor.supervisedMachine(token)
+	if !ok {
+		return workflow.StepAgent{}
+	}
+	view := machine.View()
+	session := view.Session
+	model := machine.LastAnswer().Model
+	if machine.View().Session != session {
+		model = ""
+	}
+	if session != "" && !machine.Admits(session, view.SessionFile) && !w.sessionHeld(ctx, tx, view.Claim) {
+		session = ""
+	}
+	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
+// transaction tx (record.SessionHeld); false for no transaction and for a read that failed, which
+// is logged.
+func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool {
+	if tx == nil {
+		return false
+	}
+	held, err := record.SessionHeld(ctx, tx, c.Project, c.Token, c.Session, c.SessionFile)
+	if err != nil {
+		w.log.Warn("legion step record names no session: the read of whether its claim holds it failed", "claim", string(c.Token), "error", err)
+	}
+	return held
+}
+
+// agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
+// "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
+// what the record leaves out without the log carrying text of any length.
+func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
+	if text == "" || steprecord.AgentTextHolds(text) {
+		return text
+	}
+	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
+		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+	return ""
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
@@ -989,11 +1119,14 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		switch {
 		case fact.Status == "todo":
-			prepared, err := w.prepareListed(ctx, records, walk, fact)
+			prepared, err := w.prepareListed(ctx, records, walk, fact, boot)
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
-			fact.Ancestry = prepared.Ancestry
+			// What the preparation read: the chain it walked, and the refusal GitHub answered for
+			// a repository no mapping names, which this listing's own apply says on the issue
+			// (intake.DispatchIssue.RepositoryRefusal).
+			fact.Ancestry, fact.RepositoryRefusal = prepared.Ancestry, prepared.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
@@ -1016,8 +1149,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on.
+	// is recording an issue on. It settles the runs its writes end as a fact does
+	// (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1040,7 +1175,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
@@ -1061,7 +1199,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // every launch of a tree open at the transfer.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	served := w.repositories.serving(recorded)
-	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served)
+	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served.Owner())
 	if err != nil {
 		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", appauth.AppRoleFor(role), role, served, err)
 	}
@@ -1172,21 +1310,22 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
-// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
-// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake).
+// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// request, the merge-queue read and the second read of a conflicting head, read GitHub through
+// this runtime's own read of a pull request, apply its answer as every read of this runtime does,
+// the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
+// read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
+// attempt read no answer hands the head to this runtime's merge-state reader to follow
+// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
-		w.repositories, supervision.plan.tools, w.log)
-	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
-		_, pull, err := w.readPullRequest(ctx, pr)
-		return pull, err
-	}
-	w.outbox.mergeStateWait = w.mergeStateWait
+		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
+	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1326,6 +1465,31 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 	return nil
 }
 
+// openUncountedRuns gives each run no start of this release counted, which an issue of the
+// project stands in at the boot, an open row in step_starts (workflow's OpenUncountedRuns), in one
+// transaction of its own under the lock every fact applies under. run runs it before the listing's
+// reconcile, the boot's first admission pass, and before any fact, so each fact's settle ends such
+// a run as an open run, and a fact its agent's request applies waits for that agent's stream
+// first. It queues nothing, and a boot that runs again opens nothing; it logs how many runs it
+// opened when it opened any.
+func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
+	var opened int
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the open of the uncounted runs with every fact: %w", err)
+		}
+		var err error
+		opened, err = w.engine.OpenUncountedRuns(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	if opened != 0 {
+		w.log.Info("opened the runs a start of an earlier release began", "count", opened)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can
@@ -1407,7 +1571,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:

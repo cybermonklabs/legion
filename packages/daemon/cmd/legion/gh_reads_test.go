@@ -228,7 +228,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 		want  bool
 	}{{ghReadCalls(), true}, {ghGuardedCalls, false}, {ghGuardedLeafSpellings, false}, {guardedAPI, false}} {
 		for _, argv := range calls.argvs {
-			target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository)
+			target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
 			if err != nil {
 				t.Errorf("ghTargetOf(%q) = %v", argv, err)
 				continue
@@ -236,6 +236,132 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 			if target.writesNothing != calls.want {
 				t.Errorf("ghTargetOf(%q) writes nothing = %v, want %v", argv, target.writesNothing, calls.want)
 			}
+		}
+	}
+}
+
+// ghGraphQLQueryRead admits a query of GitHub's GraphQL API that writes nothing (R4 of
+// dispatch://INFRA-3399), and nothing else: `api graphql` typed first and exactly, then only raw
+// and typed fields, headers that name no method override and no Content-Length, the output
+// filters and the pagination switches, in each of their spellings and each value in the next
+// word; exactly one raw `query` field and no other field naming the query; no typed value gh
+// reads from a file; and a query whose text holds neither `mutation` nor `subscription`, in any
+// case and wherever it stands. A call it admits is one ghTargetOf reads, and still one that does
+// not write nothing by ghWritesNothing's rule, which the guard's reading of the call rests on.
+func TestGhGraphQLQueryRead(t *testing.T) {
+	graphql := func(words ...string) []string { return append([]string{"api", "graphql"}, words...) }
+	const viewer = "query={viewer{login}}"
+	const paged = "query=query($endCursor:String){viewer{repositories(first:1,after:$endCursor){nodes{name}pageInfo{hasNextPage endCursor}}}}"
+	for _, tc := range []struct {
+		argv []string
+		want bool
+	}{
+		// A fragment; the shorthand query; and three documents whose block string opens on a run
+		// of quotes, its `"""` followed by a backslash and four quotes, by a backslash and five, or
+		// by three more quotes, which lexers may close at different quotes: each holds neither
+		// word, so it is a read whatever a lexer makes of its quotes.
+		{graphql("-f", "query=query{...f} fragment f on Query{viewer{login}}"), true},
+		{graphql("-f", viewer), true},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} query M{c}`), true},
+		// The twins of two refused documents below, each holding neither word: a repository's
+		// nameWithOwner read in place of its viewerSubscription, and the review's document with a
+		// query in place of its mutation.
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"), true},
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} query M{viewer{login}} # """`), true},
+		// A variable typed beside the raw query, and each option and switch, by each spelling.
+		{graphql("-F", "owner=octocat", "-f", "query=query($owner:String!){repositoryOwner(login:$owner){login}}"), true},
+		{graphql("-F", "name=hello", "-f", viewer), true},
+		{graphql("-H", "Accept: application/json", "-f", viewer), true},
+		{graphql("-f", viewer, "-q", ".data"), true},
+		{graphql("-f", viewer, "-t", "{{.data}}"), true},
+		{graphql("--paginate", "-f", paged), true},
+		{graphql("--paginate", "--slurp", "-f", paged), true},
+		{graphql("--raw-field", viewer), true},
+		{graphql("--field", "name=hello", "-f", viewer), true},
+		{graphql("--header", "Accept: application/json", "-f", viewer), true},
+		{graphql("-f", viewer, "--jq", ".data"), true},
+		{graphql("-f", viewer, "--template", "{{.data}}"), true},
+		// A document naming `mutation` or `subscription` as an operation, a field or an argument.
+		{graphql("-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
+		{graphql("-f", "query=subscription{x}"), false},
+		{graphql("-f", `query=query{viewer{login}} mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
+		{graphql("-f", "query=query{mutation}"), false},
+		{graphql("-f", "query=query{a(subscription:1){b}}"), false},
+		// The word anywhere refuses, where GraphQL reads no name too: in a comment, a string and a
+		// block string, one holding an escaped `\"""` among them; inside a longer name; and in any
+		// case.
+		{graphql("-f", "query=query{viewer{login}} # mutation{addStar}"), false},
+		{graphql("-f", "owner=octocat", "-f", "query=query{viewer{login}} # mutation"), false},
+		{graphql("-f", "query=# mutation\r\nquery{viewer{login}}"), false},
+		{graphql("-f", `query=query{a(x:"mutation{b} \" # \\")}`), false},
+		{graphql("-f", "owner=octocat", "-f", `query=query{search(query:"subscription",type:REPOSITORY,first:1){repositoryCount}}`), false},
+		{graphql("-f", `query=query{a(x:"""mutation{b}""")}`), false},
+		{graphql("-f", "query=query{a(x:\"\"\"line\nmutation{b} \\\"\"\" still the string\"\"\")}"), false},
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){viewerSubscription}}"), false},
+		{graphql("-f", "query=query{a} MUTATION{b}"), false},
+		{graphql("-f", "query=query{a} Subscription{b}"), false},
+		// A mutation after a run of quotes: the review's document, whose block string GitHub's
+		// lexer closes at the backslash and four quotes and a lexer written to the GraphQL
+		// specification runs on to the comment's `"""`, and the three documents above with a
+		// mutation in place of their second query.
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", "id=x", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} mutation M($id:ID!){addStar(input:{starrableId:$id}){clientMutationId}} # """`), false},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} mutation M{c}`), false},
+		// A mutation a lexer could take for a comment's text where it reads comments and strings
+		// otherwise than GraphQL: after a `#` in a string, after a comment a lone `\r` ends, and
+		// after a comment holding a quote.
+		{graphql("-f", `query=query{a(x:"#")} mutation{b}`), false},
+		{graphql("-f", "query=query{a} #\rmutation{b}"), false},
+		{graphql("-f", "query=query{a} # \"\nmutation{b}"), false},
+		// Not exactly one raw `query` field, or another field gh reads as the query.
+		{graphql("-f", viewer, "-f", viewer), false},
+		{graphql("-f", "owner=octocat"), false},
+		{graphql("-f", viewer, "-f", "query[]=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "query[x]=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "query]x=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "[query]=mutation{b}"), false},
+		// A query gh fills placeholders in after this read it, or reads from a file; and a
+		// typed value read from a file or standard input.
+		{graphql("-F", viewer), false},
+		{graphql("-F", "query={branch}{viewer{login}}"), false},
+		{graphql("-F", "query=:branch{viewer{login}}"), false},
+		{graphql("-F", "query={repo}{viewer{login}}"), false},
+		{graphql("--field", viewer), false},
+		{graphql("-F", "query=@f"), false},
+		{graphql("-f", viewer, "-F", "x=@f"), false},
+		{graphql("-f", viewer, "-F", "x=@-"), false},
+		// An option that sends another body, method or host, or names a method override or the
+		// body's length; a value joined to its option; `--`; a value missing.
+		{graphql("-f", viewer, "--input", "f"), false},
+		{graphql("-f", viewer, "-X", "GET"), false},
+		{graphql("-f", viewer, "--method", "GET"), false},
+		{graphql("-f", viewer, "--hostname", "github.com"), false},
+		{graphql("-f", viewer, "-H", "X-HTTP-Method-Override: DELETE"), false},
+		{graphql("-f", viewer, "-H", " x-http-method : DELETE"), false},
+		{graphql("-f", viewer, "-H", "Content-Length: 0"), false},
+		{graphql("-fquery={viewer{login}}"), false},
+		{graphql("--raw-field=query={viewer{login}}"), false},
+		{graphql("--", "-f", viewer), false},
+		{graphql("-f", viewer, "-q"), false},
+		// Another endpoint, a word before `api graphql`, and a field with no `=`.
+		{[]string{"api", "/graphql", "-f", viewer}, false},
+		{[]string{"api", "graphql/", "-f", viewer}, false},
+		{[]string{"api", "GraphQL", "-f", viewer}, false},
+		{[]string{"-R", "acme/widgets", "api", "graphql", "-f", viewer}, false},
+		{[]string{"x", "api", "graphql", "-f", viewer}, false},
+		{graphql("-f", viewer, "-f", "owner"), false},
+	} {
+		if got := ghGraphQLQueryRead(tc.argv); got != tc.want {
+			t.Errorf("ghGraphQLQueryRead(%q) = %v, want %v", tc.argv, got, tc.want)
+		}
+		if !tc.want {
+			continue
+		}
+		if target, err := ghTargetOfKept(t, tc.argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || target.writesNothing {
+			t.Errorf("ghTargetOf(%q) = %+v, %v; want a call it reads, which writes nothing by no rule of ghWritesNothing's", tc.argv, target, err)
 		}
 	}
 }
@@ -280,7 +406,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). A bump of the pin fails here until
 // the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
-	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
+	const prove = "follow the steps in ghReadsProvenCheck's comment (gh_reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +440,7 @@ func TestGhReadLeafCallsCoverEveryReadLeaf(t *testing.T) {
 		if _, listed := ghReadLeaves[leaf]; !listed {
 			t.Errorf("ghReadLeafCalls holds %q, which ghReadLeaves does not list", leaf)
 		}
-		if target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository); err != nil || target.command != leaf {
+		if target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || target.command != leaf {
 			t.Errorf("ghTargetOf(%q) = %+v, %v; want the leaf %q", argv, target, err, leaf)
 		}
 		families[strings.Fields(leaf)[0]] = true
@@ -396,18 +522,20 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
-// ghRigEnv is the pager and browser the rig's caller names, and what the stand-in gh records of
-// them when it is given them unchanged; ghRigReadEnv is what it records for a call that writes
-// nothing, which runs with no pager and no browser program from the environment.
+// ghRigEnv is what the stand-in gh records of the pager, browsers and editor the rig's caller
+// names for a call guarded whole: none of them, since gh is run from an allowlist of its caller's
+// environment that holds no program (ghChildEnviron), and as its editor a program that fails
+// (ghNoEditor), so no editor gh starts can post text the guard never read; ghRigReadEnv is what it
+// records for a call that writes nothing, which runs with cat as its pager.
 const (
-	ghRigEnv     = "env GH_PAGER=rig-pager GH_BROWSER=rig-gh-browser BROWSER=rig-browser\n"
-	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset\n"
+	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
+	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
 )
 
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers.
+// from another run. The caller's environment names a pager, two browsers and three editors.
 func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
@@ -418,7 +546,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
-		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s GH_EDITOR=%s EDITOR=%s VISUAL=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" \"${GH_EDITOR-unset}\" \"${EDITOR-unset}\" \"${VISUAL-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -434,6 +562,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+			"GH_EDITOR": "rig-gh-editor", "EDITOR": "rig-editor", "VISUAL": "rig-visual",
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{
@@ -502,7 +631,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 			if want := "gh " + strings.Join(args, " ") + "\n" + ghRigReadEnv + "stdin " + strings.TrimSuffix(stdin, "\n") + "\n"; got.gh != want {
 				t.Errorf("gh recorded %q, want %q", got.gh, want)
 			}
-			target, err := ghTargetOf(args, nil, savedGhHelp, noGitRepository)
+			target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
 			if err != nil {
 				t.Fatalf("ghTargetOf(%q) = %v", args, err)
 			}
@@ -530,7 +659,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 		{"api", "-H", "Authorization: token " + ghFakeToken, "repos/acme/widgets/pulls"},
 	} {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
-			if target, err := ghTargetOf(args, nil, savedGhHelp, noGitRepository); err != nil || !target.writesNothing {
+			if target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || !target.writesNothing {
 				t.Fatalf("ghTargetOf(%q) = %+v, %v; want a call that writes nothing", args, target, err)
 			}
 			got := run(t, ghCheckAt(t, ghCheckRefusesACredential), "", args...)
@@ -576,13 +705,14 @@ func TestLegionGhRefusesAReadWhoseGuardCannotRun(t *testing.T) {
 	}
 }
 
-// A read whose shared check is stopped before it answers is refused, exit 2 with the guard's
-// setup error, and never reaches gh. `legion gh` gives the check no bound of its own, as it gives
-// a write's none; what ends a check that hangs is this process's own end, a SIGTERM to its pid,
-// which cancels the context the check runs under (main's signal.NotifyContext), and the guard
-// kills the check's process group (procgroup). The bound the guard reads a check's stop against
-// is leakguard's own test of a read past its bound
-// (TestAGhCallThatWritesNothingRunsTheSharedCheckAlone).
+// A read whose shared check is stopped before it answers never reaches gh, and `legion gh` ends
+// with the status of the signal that stopped it, 143 for a SIGTERM, as for any signal that comes
+// before gh starts (runGh), rather than with the setup error the stopped check would otherwise be
+// refused with. `legion gh` gives the check no bound of its own, as it gives a write's none; what
+// ends a check that hangs is this process's own end, a SIGTERM to its pid, which cancels the
+// context the check runs under (main's signal.NotifyContext), and the guard kills the check's
+// process group (procgroup). The bound the guard reads a check's stop against is leakguard's own
+// test of a read past its bound (TestAGhCallThatWritesNothingRunsTheSharedCheckAlone).
 func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -622,11 +752,11 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	}
 	waited := command.Wait()
 	exit, ok := waited.(*exec.ExitError)
-	if !ok || exit.ExitCode() != 2 {
-		t.Fatalf("legion gh under a stopped check = %v, want exit 2: %s", waited, readRecord(t, printed.Name()))
+	if !ok || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+		t.Fatalf("legion gh under a stopped check = %v, want exit %d: %s", waited, 128+int(syscall.SIGTERM), readRecord(t, printed.Name()))
 	}
-	if out := readRecord(t, printed.Name()); !strings.Contains(out, "LEAK CHECK SETUP ERROR") {
-		t.Errorf("legion gh printed %q, want the guard's setup error", out)
+	if out := readRecord(t, printed.Name()); out != "" {
+		t.Errorf("legion gh printed %q, want nothing: a stopped check is no refusal", out)
 	}
 	if ran := readRecord(t, ghRecord); ran != "" {
 		t.Errorf("gh ran for a call whose check was stopped: %q", ran)
@@ -657,8 +787,8 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // guardedWhole fails t unless got is a call the guard read whole under a check that clears it:
 // the check recorded its run of the call, the guard asked gh the visibility of the repository the
 // call names (none for a call naming none, such as a GraphQL call, which the guard scans for that
-// reason), and only then did gh run, with the pager and the browsers the caller set, and the log
-// line is no checked-only one.
+// reason), and only then did gh run, with none of the pager and the browsers the caller set, and
+// the log line is no checked-only one.
 func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	t.Helper()
 	if got.code != 7 {
@@ -675,7 +805,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 		t.Errorf("the guard read the visibility %d times, want %d: %q", reads, wantReads, got.gh)
 	}
 	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv; !strings.Contains(got.gh, want) {
-		t.Errorf("gh recorded %q, want the call %q after the guard, with the caller's pager and browsers", got.gh, want)
+		t.Errorf("gh recorded %q, want the call %q after the guard, with none of the caller's pager and browsers", got.gh, want)
 	}
 	if strings.Contains(got.log, `visibility="checked-only"`) {
 		t.Errorf("the call log reads a call the guard read whole as checked-only: %q", got.log)

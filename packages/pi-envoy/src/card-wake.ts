@@ -84,15 +84,25 @@ import type {
  *
  * The startup phase. Oh My Pi starts the sends an extension makes from `session_start` and
  * startup discovery only once that discovery is done (`runtime-init.ts` `initializeExtensions`
- * runs both inside `runner.sends.withHeld`, ~535-545), then awaits every send it tracks, those
- * started while it waits included (`runner.sends.drain()`, ~548; `send-queue.ts` `drain`), before
- * it returns, and RPC mode reads no input until it has returned. An idle card sent with
- * `triggerTurn` is a send that lasts as long as the run it starts, so a card that reached
- * pi-envoy in that window, as it opens its agent subject in `session_start`, ran a whole turn
- * inside the drain, and the host answered no RPC command (`get_state`, `prompt`) until it ended.
- * The host gives extensions no event once the drain is over. Without the start-turn mark (below)
- * the phase needs `ctx.mode` "rpc": RPC mode reads nothing until the drain returns. ACP
- * initialises extensions with "rpc" too (`acp-agent.ts` ~2732), so the phase holds there as well,
+ * runs both inside `runner.sends.withHeld`, ~535-545), then, unless its caller passes `drainSends:
+ * false`, awaits every send it tracks, those started while it waits included
+ * (`runner.sends.drain()`, ~548; `send-queue.ts` `drain`), before it returns. An idle card sent
+ * with `triggerTurn` is a send that lasts as long as the run it starts. On 18.12.2, the pin this
+ * phase was written against (#2278), RPC mode drained and read no input until
+ * `initializeExtensions` had returned, so a card that reached pi-envoy in that window, as it opens
+ * its agent subject in `session_start`, ran a whole turn inside the drain, and the host answered
+ * no RPC command (`get_state`, `prompt`) until it ended. 18.16.0 passed `drainSends: false`, and
+ * held every RPC frame but an extension dialog's answer and `set_ask_dialog` until its startup
+ * was over. The pinned build (18.18.6-sami.20261117-013345, `rpc-mode.ts` `runRpcMode`) passes
+ * `drainSends: false` too and reads input while its startup runs: it answers `get_state` and every
+ * other command that starts no turn at once, and holds one that starts a turn or changes the
+ * session (`waitsForStartup`, `STARTUP_HELD_TYPES`: `prompt`, `steer`, `follow_up`,
+ * `abort_and_prompt`, the session changes, `compact`, `handoff`, the live types, and every `goal`
+ * op but `get`) until `initializeExtensions` has returned, after `session_start` and startup
+ * discovery, and its goal controller has reconciled (`startupSettled`). The host gives extensions
+ * no event once the drain is over. Without the start-turn mark (below) the phase needs `ctx.mode`
+ * "rpc", the mode that on 18.12.2 read nothing until the drain returned. ACP initialises
+ * extensions with "rpc" too (`acp-agent.ts` ~2732), so the phase holds there as well,
  * at no cost: ACP's bridge defers a turn the agent starts (`agent-session.ts` ~9301-9303), so the
  * wake becomes hidden next-turn context there, as an idle card's turn did. Print and JSON mode
  * prompt right after their own awaits that follow it (`print-mode.ts`, MCP readiness and a tool
@@ -383,8 +393,7 @@ export class CardWake {
     // wake for one would start a turn main never started. A startup targeted Aside does get one:
     // in the startup phase every idle card goes as a follow-up with no turn, where main's idle
     // aside started a turn outside the latch and plan mode, and a fresh process has no latch. Plan
-    // mode at startup is the one case where that wake starts a turn main did not, which
-    // `AGENTS.md` states.
+    // mode at startup is the one case where that wake starts a turn main did not.
     const setup = handOver === "prompt-setup";
     const wake = startup ? "startup" : setup || targetedAside ? undefined : "fold";
     const details: EnvoyCardMarker = {

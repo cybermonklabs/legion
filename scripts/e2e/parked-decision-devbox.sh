@@ -2,7 +2,7 @@
 # The devbox proof that a person's decision on a parked Legion tree reaches the controller
 # (INFRA-214, A3 and A4). A scratch Dispatch, NATS, a real Envoy listener, the Go daemon and the
 # operator-launched controller, all built from this checkout, run on this box with real agents.
-# Trees 1, 2 and 4 wait on their design gate and are parked: the operator's `legion status` parks
+# Trees 1, 2 and 4 wait on their design gate, all parked: the operator's `legion issue status` parks
 # trees 1 and 2 (the daemon's session), with the controller's hold mark beside tree 1's park only,
 # and the person parks tree 4. The person answers tree 1's question, and the controller re-admits
 # it from the `parked-decision` notice, since it is Legion's own hold; the person questions tree 2,
@@ -275,7 +275,8 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue holds one of the cap's slots as root AGENTS.md's "Admission" says. The four
+# Four: an issue holds one of the cap's slots as "Admission and the `legion` label" in
+# docs/site/src/content/docs/legion/concepts.md says. The four
 # roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
 # at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
 # the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running
@@ -471,7 +472,7 @@ parked() {
   daemon_state | jq -e --arg k "$1" '.issues[$k].phase == "done" and .issues[$k].slot == null and .issues[$k].architect.state == "suspended"' >/dev/null
 }
 active() { daemon_state | jq -e --arg k "$1" '.admission.active | index($k) != null' >/dev/null; }
-park() { "$work/legion" status "$1" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" >/dev/null; }
+park() { "$work/legion" issue status "$1" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" >/dev/null; }
 # parked_by ISSUE prints `<kind>:<id>` of the newest status write to backlog on ISSUE.
 parked_by() {
   dispatch_events "$1" | jq -er '[.[] | select(.type == "issue.updated" and .payload.status == "backlog")] | last | "\(.actor.kind):\(.actor.id)"'
@@ -730,11 +731,11 @@ keep_port daemon_keeper port_daemon
 write_legion_config
 # In the environment start_daemon gives the daemon: boot refuses a first gh on PATH that is a script,
 # such as the devbox's dotfiles shim, and realbin puts the real gh first (lib/rig.sh, real_bin_path).
-out=$(HOME="$omp_home" OMP_PROFILE="$profile" PATH="$realbin:$PATH" "$work/legion" start --check-config --config "$work/legion.yaml") ||
-  fail "legion start --check-config refused the run's legion.yaml: $out"
+out=$(HOME="$omp_home" OMP_PROFILE="$profile" PATH="$realbin:$PATH" "$work/legion" config check --config "$work/legion.yaml") ||
+  fail "legion config check refused the run's legion.yaml: $out"
 # The OK line names the design-gate steps the file resolved to; this run's `gates.design` is
 # root-issues, which is the single step spec.
-[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "legion start --check-config said: $out"
+[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "legion config check said: $out"
 note "$(head -n 1 <<<"$out")"
 start_daemon
 daemon_state >"$evidence/boot-state.json" || fail "legion state does not answer"
@@ -805,10 +806,10 @@ dispatch_agent PATCH "issues/$tree5" '{"status":"backlog"}' >/dev/null
 for tree in $tree1 $tree2 $tree4; do
   until_true 300 "$tree to be parked" parked "$tree"
 done
-# Who parked a tree is the author of its park: the operator's `legion status` writes as the daemon's
-# session and the person's own write as the person. Tree 1 also carries the controller's hold mark,
-# as session 1 posts it after a park for a hold, so its park is Legion's own hold; tree 2's operator
-# park carries none.
+# Who parked a tree is the author of its park: the operator's `legion issue status` writes as the
+# daemon's session and the person's own write as the person. Tree 1 also carries the controller's
+# hold mark, as session 1 posts it after a park for a hold, so its park is Legion's own hold; tree
+# 2's operator park carries none.
 [ "$(parked_by "$tree1")" = "session:legion-daemon:$project" ] || fail "$tree1's park is by $(parked_by "$tree1"), want the daemon's session"
 [ "$(parked_by "$tree2")" = "session:legion-daemon:$project" ] || fail "$tree2's park is by $(parked_by "$tree2"), want the daemon's session"
 [ "$(parked_by "$tree4")" = "user:$proof_human_user" ] || fail "$tree4's park is by $(parked_by "$tree4"), want user:$proof_human_user"
@@ -896,7 +897,7 @@ waited=$SECONDS
 # A park that is not Legion's own hold moves only when a person sets it to todo, approves its spec
 # when it has no parent, or asks Legion to start it: the controller moves none of these trees and
 # names who parked each, the daemon's session with no hold mark for tree 2 (the operator's
-# `legion status`) and the person for tree 4.
+# `legion issue status`) and the person for tree 4.
 declare -A seq_of before_of told_of parker_of read_of
 parker_of[$tree2]="legion-daemon"
 parker_of[$tree4]="$proof_human_user parked the tree"

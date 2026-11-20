@@ -372,7 +372,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 
 // The teardown acts on the answer the runtime took under its pod lock, not on the one this row
 // read before it. The two differ: the release's rows run on the issue's lifecycle lane, and a
-// notice or a phase-ended message runs on a lane of its own, so the wake one of those makes can
+// notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
 // resume a role in between. A teardown that took the first answer and ignored the second
 // recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
 // marks, and left the other roles released in a running pod with nothing to bring them back.
@@ -537,7 +537,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 		t.Fatalf("the open resume after that take = %d, %t, %v; want the one it recorded", resume, open, err)
 	}
 
-	woken, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
 	if err != nil || !woken {
 		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
 	}
@@ -554,7 +554,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	// And a wake that meets the open resume of a role whose process is running resumes nothing:
 	// that pod is back, which is what the refusal means when the claim is no longer released.
 	before := len(rig.rt.CallsOf("Resume"))
-	woken, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key)
+	woken, _, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key)
 	if err != nil || woken {
 		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
 	}

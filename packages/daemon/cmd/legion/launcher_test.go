@@ -133,6 +133,25 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 	}
 }
 
+// A word under `legion launcher` names a command of its or is a usage error naming the word, even
+// when a flag the launcher does not have follows it: `launcher role-inix --generation 1` is a
+// mistyped role-init, and naming --generation would send the reader to the wrong word.
+func TestTheLauncherCommandRefusesAWordItDoesNotKnowByTheWord(t *testing.T) {
+	for _, args := range [][]string{
+		{"role-inix"},
+		{"role-inix", "--generation", "1"},
+		{"--connect", "tcp://127.0.0.1:1", "role-inix", "--status-fd", "3"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var stdout, stderr bytes.Buffer
+		code := run(ctx, append([]string{"legion", "launcher"}, args...), &stdout, &stderr)
+		cancel()
+		if want := `legion launcher: unknown command "role-inix" for "legion launcher"`; code != 2 || !strings.Contains(stderr.String(), want) || strings.Contains(stderr.String(), "unknown flag") {
+			t.Errorf("legion launcher %q = %d, stderr %q; want 2 naming the word: %q", args, code, stderr.String(), want)
+		}
+	}
+}
+
 // A service account to impersonate names a session database, so the launcher told one without the
 // instance, the database and the login refuses before it dials anything. A launcher that did not
 // know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
@@ -199,13 +218,14 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 
 // `legion launcher role-init` is the launcher's own, hidden from its usage, and refuses to run
 // anywhere but as the init of a role's new namespaces: run by hand it would otherwise mount a
-// role's private view over the caller's own. Every refusal, its usage's included, is a failure
-// before the shim started, so it exits launcher.RoleInitSetupFailedExit, the one status the
-// launcher reports as a setup failure, never the 2 a panic exits with.
+// role's private view over the caller's own. Its help is read on stdout, where cobra prints it
+// (newRoot), and on stderr. Every refusal, its usage's included, is a failure before the shim
+// started, so it exits launcher.RoleInitSetupFailedExit, the one status the launcher reports as a
+// setup failure, never the 2 a panic exits with.
 func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || strings.Contains(stderr.String(), "role-init") {
-		t.Fatalf("launcher --help: exit %d, %q; want its usage without the hidden role-init", code, stderr.String())
+	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "role-init") {
+		t.Fatalf("launcher --help: exit %d, stdout %q, stderr %q; want its usage on stdout without the hidden role-init", code, stdout.String(), stderr.String())
 	}
 	stderr.Reset()
 	if code := run(context.Background(), []string{"legion", "launcher", "role-init", "--roles-dir", "/r", "--role", "a", "--status-fd", "3"}, &stdout, &stderr); code != launcher.RoleInitSetupFailedExit {
@@ -219,5 +239,58 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "launcher", "role-init", "--roles-dir", t.TempDir(), "--role", "a", "--generation", "1", "--status-fd", "3", "--", "/bin/true"}, &stdout, &stderr)
 	if code != launcher.RoleInitSetupFailedExit || !strings.Contains(stderr.String(), "role-init: not the init of a PID namespace of its own") {
 		t.Fatalf("role-init outside a role's namespaces: exit %d, %q; want a refusal with exit %d", code, stderr.String(), launcher.RoleInitSetupFailedExit)
+	}
+}
+
+// `legion launcher volume-trim-delete` is the launcher's second hidden subcommand, the deleter
+// one sweep of the pod's cache trimmer makes its removals through. It takes every directory it
+// covers — the roles directory, the directory the container mounts the home's volumes under and
+// the home, which the trimmer passes it as role-init is given them — and it refuses to run
+// anywhere but as the init of a PID namespace of its own: run by hand it holds no descriptor of
+// the volume, and a flag it does not know would end it with its usage and exit 2 instead of the
+// refusal below. Its help is read on stdout, where cobra prints it (newRoot), and on stderr. The
+// command line the launcher itself writes, with all four directories of the cover, is the case
+// after this one.
+func TestVolumeTrimDeleteIsHiddenAndTakesEveryDirectoryItCovers(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "volume-trim-delete") {
+		t.Fatalf("launcher --help: exit %d, stdout %q, stderr %q; want its usage on stdout without the hidden volume-trim-delete", code, stdout.String(), stderr.String())
+	}
+	stderr.Reset()
+	code = run(context.Background(), []string{
+		"legion", "launcher", "volume-trim-delete",
+		"--roles-dir", "/var/run/legion/roles", "--home-mounts", "/var/run/legion/home", "--home", "/home/legion",
+	}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "volume-trim-delete: not the init of a PID namespace of its own") {
+		t.Fatalf("volume-trim-delete outside its own namespaces: exit %d, %q; want exit 1 and that refusal, with every directory it covers taken as a flag", code, stderr.String())
+	}
+}
+
+// The command line the launcher runs its deleter with is read by `legion launcher
+// volume-trim-delete` whole: every flag the trimmer writes for the pod's cover
+// (launcher.VolumeTrimDeleteArgv, which answers what trimDeleteLaunch builds) is one cobra reads
+// for that command, so the words after `launcher volume-trim-delete` reach the refusal of a
+// process that is not the init of a PID namespace of its own, exit 1. A flag the command does not
+// register would end it with its usage and exit 2, and every sweep of the pod would then delete
+// nothing. The launcher package reads the same command line back with RoleCoverFlags on a
+// flag.FlagSet (TestTheDeletersCommandLineNamesEveryDirectoryItCovers); this case reads it
+// through the command itself.
+func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testing.T) {
+	cover := launcher.RoleCover{
+		RolesDir: "/var/run/legion/roles", Home: "/home/legion",
+		HomeMounts: "/var/run/legion/home", FixedRoot: "/var/run/legion",
+	}
+	argv, err := launcher.VolumeTrimDeleteArgv(cover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) < 3 || argv[1] != "launcher" || argv[2] != launcher.VolumeTrimDeleteSubcommand {
+		t.Fatalf("the launcher runs its deleter as %q, want this binary's launcher %s", argv, launcher.VolumeTrimDeleteSubcommand)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), append([]string{"legion", "launcher", launcher.VolumeTrimDeleteSubcommand}, argv[3:]...), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "volume-trim-delete: not the init of a PID namespace of its own") {
+		t.Fatalf("legion launcher volume-trim-delete %q, the launcher's own command line: exit %d, %q; want exit 1 and the refusal of a process that is not the init of a PID namespace of its own, every flag read", argv[3:], code, stderr.String())
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -70,16 +71,18 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Its repositories are Dispatch's mapping (Settings → Repositories → Projects), which the
-// daemon reads at boot and when it changes, never this file.
+// all. Dispatch's mapping (Settings → Repositories → Projects) names the project's default
+// repository and the repositories the daemon prepares before an issue names one. The daemon reads
+// that mapping at boot and when it changes, never this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
-	// pane stamps with the issue key, in the file's order; nil when the file names none. The
-	// project's repositories are Dispatch's mapping (Settings → Repositories → Projects), and this
-	// key only selects among them, so a name the project does not serve stamps nothing.
+	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
+	// pane stamps the commit when its launch's repository is one of these names. The boot checks
+	// each name against Dispatch's mapping for this project alone, which catches a typo. That
+	// mapping decides no reach: an issue may name any repository.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
@@ -203,7 +206,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`, key+".repo")
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`, key+".repo")
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
 		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
@@ -211,15 +214,10 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if err != nil {
 		return Project{}, nil, err
 	}
-	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		if value.Content[index].Value == "deploys" {
-			warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
-			break
-		}
+	if namesKey(value, "deploys") {
+		warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
 	}
 	var project Project
 	if channels := fields["slack_channels"]; channels != nil {
@@ -317,12 +315,10 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		// A present merge is refused whatever its value, null included, as the shipped loader
-		// refuses it (parseGates, config.ts).
-		if value.Content[index].Value == "merge" {
-			return nil, errors.New(gatesMergeMessage)
-		}
+	// A present merge is refused whatever its value, null included, as the shipped loader
+	// refuses it (parseGates, config.ts).
+	if namesKey(value, "merge") {
+		return nil, errors.New(gatesMergeMessage)
 	}
 	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
@@ -646,16 +642,18 @@ func daemonEnvironment() []string {
 	return filtered
 }
 
+// commandError is a configured command's failure: how it ended (its exit, or the signal that ended
+// it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		stderr := strings.TrimSpace(string(exit.Stderr))
-		if stderr != "" {
-			return fmt.Errorf("%s failed (exit %d): %s", field, exit.ExitCode(), stderr)
-		}
-		return fmt.Errorf("%s failed (exit %d)", field, exit.ExitCode())
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) {
+		return fmt.Errorf("%s could not run: %w", field, err)
 	}
-	return fmt.Errorf("%s could not run: %w", field, err)
+	end := procgroup.Ended(err)
+	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
+		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
+	}
+	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
@@ -687,7 +685,7 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 		cfg.GitHubApps = *file.GitHubApps
 	}
 	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion start --check-config` never passes a file `legion start` refuses.
+	// here, so `legion config check` never passes a file `legion start` refuses.
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
 		case cfg.DispatchTokenFile == "":

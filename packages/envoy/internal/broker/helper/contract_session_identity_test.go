@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
@@ -96,13 +97,12 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	}
 
 	// --- the machine reboots: the helper stops, and the recorded process is gone ---
-	cr.cancel()
-	rebootRecords(t, cr.sessionsPath)
+	rebootRecords(t, cr)
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}
@@ -150,12 +150,21 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	}
 }
 
-// rebootRecords rewrites the records file as a reboot leaves it: every recorded process is gone,
-// so each record names a pid whose start ticks no live process can match. Everything else — the
-// session id, the runtime id, the key and the enrollment — is exactly what the helper wrote,
-// because that file is all a reboot leaves behind.
-func rebootRecords(t *testing.T, path string) {
+// rebootRecords stops cr's helper and rewrites its records file as a reboot leaves it: every
+// recorded process is gone, so each record names a pid whose start ticks no live process can
+// match. Everything else — the session id, the runtime id, the key and the enrollment — is exactly
+// what the helper wrote, because that file is all a reboot leaves behind.
+//
+// The helper answers a register as soon as its enrollment is recorded in memory, and saves the
+// file just after (enrollLoop), so a reboot read at once can find the record without its
+// enrollment: the sweep then revokes nothing and the grant answers on, which failed the dormant
+// sweep test under load (the pull request records the runs). So the reboot first waits, under the
+// test's own deadline, until the file names every enrollment the helper's sessions hold.
+func rebootRecords(t *testing.T, cr *contractRig) {
 	t.Helper()
+	awaitEnrollmentsSaved(t, cr)
+	cr.cancel()
+	path := cr.sessionsPath
 	recs, err := LoadRecords(path)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +181,38 @@ func rebootRecords(t *testing.T, path string) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// awaitEnrollmentsSaved waits, under the test's own deadline and no bound of its own, until cr's
+// records file names, for every session the helper holds with an enrollment, that session's
+// runtime id with that enrollment.
+func awaitEnrollmentsSaved(t *testing.T, cr *contractRig) {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	for {
+		want := map[string]string{}
+		for _, sess := range cr.srv.Registry.List() {
+			if id := sess.identity().EnrollmentID; id != "" {
+				want[sess.RuntimeID()] = id
+			}
+		}
+		recs, err := LoadRecords(cr.sessionsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rec := range recs {
+			if want[rec.RuntimeID] == rec.EnrollmentID {
+				delete(want, rec.RuntimeID)
+			}
+		}
+		if len(want) == 0 {
+			return
+		}
+		if bounded && time.Now().After(deadline) {
+			t.Fatalf("the helper never saved the enrollments %v its sessions hold to %s", want, cr.sessionsPath)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -210,8 +251,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 		t.Fatalf("an agent-tier secret is granted at once: %+v", created)
 	}
 
-	cr.cancel()
-	rebootRecords(t, cr.sessionsPath)
+	rebootRecords(t, cr)
 
 	// The grace is the Server's, never a package variable: a test writing a global that the
 	// Server's goroutines read is a data race, and was one.
@@ -219,7 +259,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}
@@ -234,15 +274,12 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	next.SweepDormant(ctx)
 
 	// The sweep fires each revoke off rather than holding its own goroutine on one
-	// (SweepDormant), so the broker stops honouring the grant a moment after the sweep returns.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
-		if status != http.StatusOK || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// (SweepDormant). The test waits for every revoke the helper fired to return (waitRevokes,
+	// goRevoke), so the broker has answered the revoke before the grant is read, however long a
+	// loaded machine takes; a poll of five seconds failed here under load on main, 1 run of 12
+	// (the pull request records the runs).
+	next.waitRevokes()
+	status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
 	}

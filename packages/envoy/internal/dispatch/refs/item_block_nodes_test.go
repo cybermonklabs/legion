@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,12 +12,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const itemBlockServer = "https://dispatch.example"
 
 // insertIndexedItem inserts a comment or an issue message of issueKey with body and indexes it
-// as a write of this build does (ReplaceCountedItem), returning its id.
+// as a write of this build does (indexItemAsAWriteDoes), returning its id.
 func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -29,9 +31,7 @@ func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body st
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text, created_at`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert %s: %v", kind, err)
 	}
-	if _, err := ReplaceCountedItem(ctx, tx, kind, id, body, itemBlockServer, createdAt); err != nil {
-		t.Fatalf("index %s %s: %v", kind, id, err)
-	}
+	indexItemAsAWriteDoes(t, tx, kind, id, body, itemBlockServer, createdAt)
 	return id
 }
 
@@ -91,7 +91,8 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, itemBlockServer), ask.Question); err != nil {
+	askMentions := NewReader(ctx, tx, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -255,5 +256,134 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 	}
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
+	}
+}
+
+// BlockTexts reads each block as the one-item read of it does. GET /api/v1/references?to= gives a
+// block node its text through CurrentBlockText, for a document's block, and through
+// CurrentItemBlockText, for a block of a comment, of a message or of an ask; GET
+// /api/v1/reference-targets gives the same blocks theirs through BlockTexts, the batched copy of
+// both, so a fix made to one copy alone would have the two answer one block with two texts.
+// Asked once for the blocks of a document whose second version reworded one, of a comment whose
+// edit reworded one, of an ask whose edit reworded an option, and of a message, one of them past
+// its stored excerpt, it holds an entry for every block, and each is the text the one-item read
+// gives: the reworded blocks' later text, which their first is recorded beside, so a copy that
+// read the oldest text, or a message block's excerpt, fails here.
+func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin fixture transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+
+	artifact, document := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	parts := []part{{"intro", "heading", "# Rollout"}, {"plan", "paragraph", "Ship it on Monday."}}
+	markdown, blocks := documentOf(parts)
+	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+		t.Fatalf("index version 1 of the document: %v", err)
+	}
+	parts[1].text = "Ship it on Tuesday, after the freeze."
+	markdown, blocks = documentOf(parts)
+	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+		t.Fatalf("index version 2 of the document: %v", err)
+	}
+
+	written := "First, the plan.\n\nShip it on Monday.\n\nThen tell support."
+	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", written)
+	edited := "First, the plan.\n\nShip it on Tuesday, after the freeze.\n\nThen tell support."
+	var editedAt time.Time
+	if err := tx.QueryRow(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at`, comment, edited).Scan(&editedAt); err != nil {
+		t.Fatalf("edit the comment: %v", err)
+	}
+	indexItemAsAWriteDoes(t, tx, ItemComment, comment, edited, itemBlockServer, editedAt)
+
+	ask := insertAsk(t, tx, "CORE-1", "Which day do we ship?",
+		model.AskOption{Label: "Monday"}, model.AskOption{Label: "Tuesday", Description: "before the freeze"})
+	indexAskPartsAt(t, tx, ask, 1)
+	writeAskOptions(t, tx, &ask, model.AskOption{Label: "Monday"}, model.AskOption{Label: "Tuesday", Description: "after the freeze"})
+	indexAskPartsAt(t, tx, ask, 2)
+
+	long := strings.TrimSpace(strings.Repeat("The rollout waits on the freeze. ", 20))
+	if runes := len([]rune(long)); runes <= BlockExcerptRunes {
+		t.Fatalf("the long message block has %d runes; want more than the %d its stored excerpt holds", runes, BlockExcerptRunes)
+	}
+	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Heads up.\n\n"+long)
+
+	// Each reworded block's first text is on record beside its later one.
+	if at, err := BlockTextAt(ctx, tx, artifact, "plan", 1); err != nil || at.Text == nil || *at.Text != "Ship it on Monday." {
+		t.Fatalf("block plan of the document at version 1 = %+v, %v; want its first text on record", at, err)
+	}
+	for _, first := range []struct {
+		kind               ItemKind
+		id, blockID, wants string
+	}{
+		{ItemComment, comment, "b2", "Ship it on Monday."},
+		{ItemAsk, ask.ID, "b3", "Tuesday — before the freeze"},
+	} {
+		if at, err := ItemBlockAt(ctx, tx, first.kind, first.id, first.blockID, 1); err != nil || at.Current != 2 || at.Text == nil || *at.Text != first.wants {
+			t.Fatalf("block %s of %s %s at revision 1 = %+v, %v; want its first text on record and revision 2 current", first.blockID, first.kind, first.id, at, err)
+		}
+	}
+
+	// Each block's target, the text its latest version or revision holds, and its one-item read.
+	type blockRead struct {
+		target Target
+		want   string
+		alone  func() (string, error)
+	}
+	documentBlock := func(blockID, want string) blockRead {
+		return blockRead{Target{Kind: "block", ID: document + "#" + blockID}, want, func() (string, error) {
+			return CurrentBlockText(ctx, tx, artifact, blockID)
+		}}
+	}
+	itemBlock := func(kind ItemKind, itemID, blockID, want string) blockRead {
+		node := itemBlockNodeID(kind, itemID, blockID)
+		return blockRead{Target{Kind: kind.BlockKind(), ID: node}, want, func() (string, error) {
+			return CurrentItemBlockText(ctx, tx, kind, node)
+		}}
+	}
+	reads := []blockRead{
+		documentBlock("intro", "# Rollout"),
+		documentBlock("plan", "Ship it on Tuesday, after the freeze."),
+		itemBlock(ItemComment, comment, "b1", "First, the plan."),
+		itemBlock(ItemComment, comment, "b2", "Ship it on Tuesday, after the freeze."),
+		itemBlock(ItemComment, comment, "b3", "Then tell support."),
+		itemBlock(ItemAsk, ask.ID, "b1", "Which day do we ship?"),
+		itemBlock(ItemAsk, ask.ID, "b2", "Monday"),
+		itemBlock(ItemAsk, ask.ID, "b3", "Tuesday — after the freeze"),
+		itemBlock(ItemMessage, message, "b1", "Heads up."),
+		itemBlock(ItemMessage, message, "b2", long),
+	}
+	targets := make([]Target, len(reads))
+	for i, read := range reads {
+		targets[i] = read.target
+	}
+	texts, err := BlockTexts(ctx, tx, targets)
+	if err != nil {
+		t.Fatalf("read the blocks' texts in one batch: %v", err)
+	}
+	for _, read := range reads {
+		one, err := read.alone()
+		if err != nil {
+			t.Fatalf("read the text of %s %s alone: %v", read.target.Kind, read.target.ID, err)
+		}
+		if one != read.want {
+			t.Errorf("the one-item read of %s %s = %q; want %q, the text its latest version or revision holds", read.target.Kind, read.target.ID, one, read.want)
+		}
+		batched, held := texts[read.target]
+		if !held {
+			t.Errorf("BlockTexts holds no entry for %s %s; the one-item read gives %q", read.target.Kind, read.target.ID, one)
+			continue
+		}
+		if batched != one {
+			t.Errorf("BlockTexts reads %s %s as %q; the one-item read gives %q", read.target.Kind, read.target.ID, batched, one)
+		}
+	}
+	if len(texts) != len(reads) {
+		t.Errorf("BlockTexts holds %d entries for the %d blocks asked: %v", len(texts), len(reads), texts)
 	}
 }

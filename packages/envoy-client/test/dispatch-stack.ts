@@ -1,13 +1,15 @@
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import * as path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
 import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
-  freePorts,
+  type PortChosen,
   type ReadyBudget,
+  startOnHeldPort,
   stopProcess,
 } from "./envoy-stack";
 
@@ -69,6 +71,8 @@ export interface DispatchStackOptions {
    * so a row cannot quietly take the server's database, port or token away from it.
    */
   readonly env?: Readonly<Record<string, string>> | undefined;
+  /** Called with the port the stack chooses for the server, before the server starts. */
+  readonly portChosen?: PortChosen;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -96,7 +100,9 @@ function testDatabaseServer(): string {
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below and nothing else.
+ * reaches it, since the child is given the environment below and nothing else. It serves on a
+ * socket the stack holds from the choice of its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}),
+ * so no other program can take the port before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -133,42 +139,48 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       stack: "Dispatch",
       binaries: "./cmd/dispatch",
     });
-    const [port] = await freePorts(1);
-    const url = `http://127.0.0.1:${port}`;
-    const token = `dispatch-stack-${crypto.randomUUID()}`;
+    const token = fixtureSecret("dsp");
     const home = path.join(work, "home");
     mkdirSync(home);
     const log = path.join(work, "dispatch.log");
-    const out = openSync(log, "a");
-    const settings: Record<string, string> = {
-      PATH: SHELL_PATH,
-      HOME: home,
-      DATABASE_URL: databaseUrl.toString(),
-      DISPATCH_AGENT_TOKEN: token,
-      DISPATCH_IDENTITY: "header:X-Dispatch-User",
-      DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-      DISPATCH_NATS_DISABLED: "1",
-      DISPATCH_LISTEN_HOST: "127.0.0.1",
-      DISPATCH_PORT: String(port),
-      DISPATCH_SERVER_URL: url,
-      DISPATCH_WEB_DIST: WEB_DIST,
-    };
-    for (const [name, value] of Object.entries(options.env ?? {})) {
-      if (name in settings) {
-        throw new Error(
-          `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
-        );
+    const started = await startOnHeldPort(
+      "dispatch",
+      "DISPATCH_LISTEN_FD",
+      options.portChosen,
+      (port) => {
+        const settings: Record<string, string> = {
+          PATH: SHELL_PATH,
+          HOME: home,
+          DATABASE_URL: databaseUrl.toString(),
+          DISPATCH_AGENT_TOKEN: token,
+          DISPATCH_IDENTITY: "header:X-Dispatch-User",
+          DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
+          DISPATCH_NATS_DISABLED: "1",
+          // With DISPATCH_LISTEN_FD these name the held socket's address, which the server checks.
+          DISPATCH_LISTEN_HOST: "127.0.0.1",
+          DISPATCH_PORT: String(port),
+          DISPATCH_SERVER_URL: `http://127.0.0.1:${port}`,
+          DISPATCH_WEB_DIST: WEB_DIST,
+        };
+        for (const [name, value] of Object.entries(options.env ?? {})) {
+          if (name in settings) {
+            throw new Error(
+              `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+            );
+          }
+          settings[name] = value;
+        }
+        return {
+          command: [path.join(bin, "dispatch")],
+          cwd: ENVOY_MODULE,
+          env: settings,
+          log,
+        };
       }
-      settings[name] = value;
-    }
-    child = Bun.spawn([path.join(bin, "dispatch")], {
-      cwd: ENVOY_MODULE,
-      env: settings,
-      stdout: out,
-      stderr: out,
-    });
-    closeSync(out);
-    await awaitReady("Dispatch", child, log, DISPATCH_READY, async () => {
+    );
+    child = started.child;
+    const url = `http://127.0.0.1:${started.port}`;
+    await awaitReady("Dispatch", started.child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });

@@ -21,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -100,18 +99,6 @@ type Kubernetes struct {
 	// of its Oh My Pi, after a stale-plugin relaunch's install and with the environment and working
 	// directory Oh My Pi gets; Oh My Pi starts only once it exits 0. Nil when the file sets none.
 	Setup []string
-	// SkillsRepository is `runtime.kubernetes.skills_repository`: the GitHub repository holding the
-	// Oh My Pi plugin marketplace every issue pod's roles load their skills from. With it, each
-	// issue pod runs a third init container that clones the repository's default branch shallow
-	// into a volume of the pod's own, read-only in the pod's launcher container, and every role's
-	// start wrapper installs from that directory before Oh My Pi starts — so a pod's skills are the
-	// repository's default branch as GitHub names it, as of the pod's start, with no image rebuild,
-	// and no role's launch ever clones or fetches anything (dispatch://INFRA-1300). The clone takes
-	// that default branch and no other: a deployment whose skills must come from a branch of
-	// another name needs a repository whose default branch is that one. The zero repository when
-	// the file names no skills repository, in which case a pod runs two init containers and no
-	// role installs a skill.
-	SkillsRepository ghrepo.Repository
 	// RepositoryCache is `runtime.kubernetes.repository_cache`, settled: the file's members where it
 	// sets them and the defaults (DefaultRepositoryCache) for the rest, field by field.
 	RepositoryCache RepositoryCacheConfig
@@ -132,6 +119,13 @@ type Kubernetes struct {
 	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
 	// settings at all (sandbox.Options.MemoryGuard nil).
 	MemoryGuard MemoryGuardConfig
+	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
+	// issue pod's launcher process runs by, deleting the oldest entries of the four cache roots
+	// when the volume reaches a size mark. Every default applies when the file sets no block, so
+	// the trimmer is on for every Kubernetes deployment, as idle release is; `enabled: false`
+	// turns it off, and the pod's launcher is then handed no settings at all
+	// (sandbox.Options.VolumeTrim nil), on which its trimmer reads and deletes nothing.
+	VolumeTrim VolumeTrimConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -233,6 +227,31 @@ func DefaultMemoryGuard() MemoryGuardConfig {
 	}}
 }
 
+// VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
+// pod's launcher process runs by. The trimmer reads the pod's volume every IntervalSeconds,
+// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only entries in
+// which nothing was modified for MinAgeMinutes, and stops deleting at the first reading at or
+// below LowPercent, if nothing stops it sooner (shimwire.LauncherVolumeTrim, which the launcher
+// is handed on the answer to its hello). Enabled false hands the launcher no settings, on which
+// its trimmer reads and deletes nothing, and an issue volume then fills as it did before this
+// work.
+type VolumeTrimConfig struct {
+	Enabled         bool
+	HighPercent     int
+	LowPercent      int
+	MinAgeMinutes   int
+	IntervalSeconds int
+}
+
+// defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
+// volume down to 70%, deleting nothing modified inside the last quarter hour, looking every
+// minute. Every deployment's issue volume is a fixed size whose caches grow with the issue's
+// work, so the defaults are on, as idle release's are (defaultIdleRelease).
+var defaultVolumeTrim = VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}
+
+// DefaultVolumeTrim is the cache trimmer's settled configuration when the file sets none.
+func DefaultVolumeTrim() VolumeTrimConfig { return defaultVolumeTrim }
+
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
 // http(s) URL the pod can read — never an npm dist-tag or a range, since the pair must be one
@@ -305,8 +324,8 @@ func (c SandboxConfig) AnyMicroVM() bool {
 }
 
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers carry Issue — its third too, where the
-// deployment names a SkillsRepository — and the controller's pod's one container Controller.
+// issue pod's one container and its two init containers, workspace-fetch and workspace-init,
+// carry Issue, and the controller's pod's one container Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
@@ -356,7 +375,7 @@ func below(request, limit string) bool {
 // knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
 // main container requesting more than 10Gi of it and clamps each container's limit to its request,
 // so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 250m and 1Gi
+// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{
@@ -613,12 +632,13 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 
 // readKubernetes reads the `runtime.kubernetes` block, refusing any member it does not model and
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
-// TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
-// it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
-// that read the block's scheduling, pod and agent_secrets too are checked once all four are read
-// (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
-// file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
-// block is settled (resolveKubernetes).
+// TypeScript daemon's role_profiles and gateway, and skills_repository) is known so that its
+// refusal names what replaced it, which is what `legion config check` shows the operator to edit;
+// skills_repository is refused whatever its value, a null one included (namesKey). The sandbox's
+// rules that read the block's scheduling, pod and agent_secrets too are checked once all four are
+// read (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the
+// whole file is read (checkKubernetesKeys), and the reservations the file leaves out are filled
+// when the block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -635,6 +655,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	}
 	if fields["gateway"] != nil {
 		return nil, errors.New("runtime.kubernetes.gateway was removed (LEGION-270): configure pods with runtime.kubernetes.pod (docs/kubernetes.md, Operator configuration)")
+	}
+	if namesKey(value, "skills_repository") {
+		return nil, errors.New("runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key")
 	}
 	block := &Kubernetes{IssueVolume: defaultIssueVolume}
 	if block.Namespace, err = requiredString(fields["namespace"], kubernetesKey+".namespace", ""); err != nil {
@@ -687,9 +710,6 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.Setup, err = readSetup(fields["setup"]); err != nil {
 		return nil, err
 	}
-	if block.SkillsRepository, err = readSkillsRepository(fields["skills_repository"]); err != nil {
-		return nil, err
-	}
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
@@ -700,6 +720,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, err
 	}
 	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
+		return nil, err
+	}
+	if block.VolumeTrim, err = readVolumeTrim(fields["volume_trim"]); err != nil {
 		return nil, err
 	}
 	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
@@ -724,20 +747,6 @@ func readTestPostgres(value *yaml.Node) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return on, nil
-}
-
-// readSkillsRepository reads `runtime.kubernetes.skills_repository`, the zero repository when
-// absent: the GitHub repository (<owner>/<name>) holding the Oh My Pi plugin marketplace every
-// issue pod's roles install their skills from. It is read with ghrepo.Parse, as every other
-// repository the file names is, so an owner or a name GitHub could not carry is refused at load
-// rather than in a pod's init container.
-func readSkillsRepository(value *yaml.Node) (ghrepo.Repository, error) {
-	const key = kubernetesKey + ".skills_repository"
-	named, err := optionalString(value, key)
-	if err != nil || named == "" {
-		return ghrepo.Repository{}, err
-	}
-	return ghrepo.Parse(key, named)
 }
 
 // readSetup reads `runtime.kubernetes.setup`, an argv of non-empty strings (readStrings), nil when
@@ -1132,6 +1141,80 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 	return settled, nil
 }
 
+// readVolumeTrim reads `runtime.kubernetes.volume_trim`, settled: each member the file sets and
+// the default (DefaultVolumeTrim) for each it leaves out, so the trimmer runs wherever the file
+// says nothing. `enabled` is read from the settled default rather than from the key's presence,
+// as every number of the block is and unlike `test_postgres` (readTestPostgres), because this
+// block's default is on: an operator writing `enabled: true` back must get the trimmer, and a
+// value that is no YAML boolean — `off` and `yes` among them, which this loader's reader tags
+// as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
+// read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
+// shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
+// both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
+// at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
+// may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
+// period. An interval of 0 that reached the launcher would be refused there too, before any clock
+// is armed, logged, and the pod's trimmer would stay off with no fault counted (launcher's
+// refusedTrimSettings); armed with it, the trimmer would fault each time its interval loop
+// started, and three of those in a row would switch it off for the life of its launcher process
+// (launcher's trimmer.run).
+//
+// The maximum of a mark, of the age and of the interval are the wire's own
+// (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
+// launcher's trimmer checks the settings against a second time on its side of the connection: a
+// maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
+// which then sweeps nothing until a daemon sends settings inside the launcher's ranges.
+func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
+	const key = kubernetesKey + ".volume_trim"
+	settled := defaultVolumeTrim
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return VolumeTrimConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := describedMembers(value, key, kubernetesKey+".volume_trim")
+	if err != nil {
+		return VolumeTrimConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return VolumeTrimConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field string
+		max   int
+		into  *int
+	}{
+		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
+		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
+		// The age is bounded because an unbounded one is not the trimmer switched off but the
+		// trimmer deleting everything: the sweep's cutoff is its start less min_age_minutes of
+		// time.Duration, which is int64 nanoseconds, so a large age wraps the cutoff past the
+		// sweep's own start and every entry of every root is then eligible however recently it
+		// was written (launcher's sweep, shimwire.VolumeMinAgeMax). `enabled: false` is how an
+		// operator switches the trimmer off.
+		{"min_age_minutes", shimwire.VolumeMinAgeMax, &settled.MinAgeMinutes},
+		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
+	} {
+		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)
+		if err != nil {
+			return VolumeTrimConfig{}, err
+		}
+		if read != nil {
+			*number.into = *read
+		}
+	}
+	if settled.LowPercent >= settled.HighPercent {
+		return VolumeTrimConfig{}, fmt.Errorf("%s.low_percent (%d) is not below %s.high_percent (%d): the sweep stops at the low mark, so marks that meet leave it nothing to stop at",
+			key, settled.LowPercent, key, settled.HighPercent)
+	}
+	return settled, nil
+}
+
 // ReadPodFile reads a `runtime.kubernetes.pod` block kept in a file of its own, such as an
 // operator's own route (deploy/kubernetes/operator-route/pod.yml), with every check the
 // loader makes of the block inside a legion.yaml.
@@ -1209,7 +1292,7 @@ func unfilledPlaceholder(key, value, put string) error {
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
 // to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
-// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// refused here, where a person reads the refusal — under `legion config check` as at boot
 // — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
@@ -1443,7 +1526,7 @@ type objectSource struct {
 // `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
 // setting the mode of a projected volume's files for the whole volume and never per source. The
 // group decides which names the mapping may carry, so deriving it from one of the four, as this
-// read did, left the other three's keys out of `legion config-reference` and the page generated
+// read did, left the other three's keys out of `legion config reference` and the page generated
 // from it.
 func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
@@ -1493,7 +1576,7 @@ func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, s
 // The four members readers a source's place names (readObjectSource): a volume's own `secret` and
 // `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
 // which do not. Each names its group as a constant of its own, which is what carries every one of
-// those keys into `legion config-reference` and holds the four to the key table
+// those keys into `legion config reference` and holds the four to the key table
 // (TestNoKeyBypassesTheKeyTable).
 
 func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {

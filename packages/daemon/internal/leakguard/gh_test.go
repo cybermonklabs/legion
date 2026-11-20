@@ -202,6 +202,36 @@ func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
 	}
 }
 
+// gh 2.104.0's --attach uploads a file this guard does not read, so a bare argv naming it, the
+// fallback's input, is refused naming the option, as `legion gh` refuses it before the guard:
+// separately and with its value attached, on every leaf that carries it. The same argv past a
+// bare `--` names no option gh reads and is cleared, and so is the same call without --attach.
+func TestAGhCallsUploadTheGuardDoesNotReadIsASetupFailure(t *testing.T) {
+	for _, args := range [][]string{
+		{"pr", "comment", "1", "--body", "hi", "--attach", "notes.svg"},
+		{"issue", "create", "--title", "t", "--body", "b", "--attach=notes.svg#alt"},
+		{"issue", "artifact", "edit", "142", "2", "--attach", "./flow.png"},
+	} {
+		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			_, err := guard.GhCall(bound(t), GhRequest{Args: args, Repo: "invented-org/invented-repo"})
+			failed := setupFailure(t, err)
+			if !strings.Contains(failed.Error(), "--attach uploads the file it names, which this guard does not read") {
+				t.Fatalf("the failure is %q, want it to name --attach", failed)
+			}
+		})
+	}
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	for _, args := range [][]string{
+		{"pr", "comment", "1", "--body", "hi"},
+		{"repo", "clone", "invented-org/invented-repo", "--", "--attach", "notes.svg"},
+	} {
+		if _, err := guard.GhCall(bound(t), GhRequest{Args: args, Repo: "invented-org/invented-repo"}); err != nil {
+			t.Fatalf("GhCall(%q): %v, want it cleared", args, err)
+		}
+	}
+}
+
 // A body file naming nothing private is cleared, which is what makes the refusal above a report
 // of the text rather than of the option.
 func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {

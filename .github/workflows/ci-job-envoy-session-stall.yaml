@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-session-stall:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     services:
       postgres:
@@ -67,8 +67,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
@@ -76,6 +76,14 @@ jobs:
         working-directory: packages/contracts
       - name: Stall test of envoy-client's NATS connection options
         run: bun test src/__tests__/nats-stall.test.ts
+        working-directory: packages/envoy-client
+      # A session's broker-token credential on a real natsd behind the real NATS auth service
+      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
+      # while the stub broker is away, every reconnect refused and the connection admitted again
+      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
+      # the new session's subject only once the connection is admitted with its token (t-e-10).
+      - name: Broker credential tests on a hub behind the auth service
+        run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
       # this one as a file because of the leading "./".

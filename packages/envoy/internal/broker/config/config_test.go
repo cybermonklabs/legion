@@ -152,7 +152,7 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 // whole entry, so an operator reads which one to fix.
 func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	const (
-		dev   = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+		dev   = "dev-aditya@example-identities.iam.gserviceaccount.com"
 		admin = "gcp-admin@example-project.iam.gserviceaccount.com"
 	)
 	cfg, err := Load(env(validEnv()))
@@ -164,36 +164,36 @@ func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	}
 
 	e := validEnv()
-	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = " DEV_ADITYA=" + dev + "\tGCP_ADMIN=" + admin + "\n"
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = " DEV_PERSON=" + dev + "\tGCP_ADMIN=" + admin + "\n"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"DEV_ADITYA": dev, "GCP_ADMIN": admin}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+	if want := map[string]string{"DEV_PERSON": dev, "GCP_ADMIN": admin}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
 		t.Fatalf("ServiceAccountSecrets = %v, want %v", cfg.ServiceAccountSecrets, want)
 	}
 
 	// Two secrets of one account: a person's own account may back both their dev secret and a
 	// second one, and the mint is refused by the secret's name, not the account's.
 	e = validEnv()
-	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " DEV_ADITYA_2=" + dev
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_PERSON=" + dev + " DEV_PERSON_2=" + dev
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"DEV_ADITYA": dev, "DEV_ADITYA_2": dev}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+	if want := map[string]string{"DEV_PERSON": dev, "DEV_PERSON_2": dev}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
 		t.Fatalf("ServiceAccountSecrets with one account on two secrets = %v, want %v", cfg.ServiceAccountSecrets, want)
 	}
 
 	for _, row := range []struct{ entry, want string }{
-		{"DEV_ADITYA", "must be <SECRET NAME>=<account email> entries"},
+		{"DEV_PERSON", "must be <SECRET NAME>=<account email> entries"},
 		{"dev-aditya=" + dev, "not an agent secret name"},
-		{"DEV_ADITYA=aditya@theorem.dev", "user-managed Google service account"},
-		{"DEV_ADITYA=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
-		{"DEV_ADITYA=" + admin, "names the secret DEV_ADITYA twice"},
+		{"DEV_PERSON=aditya@example.com", "user-managed Google service account"},
+		{"DEV_PERSON=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+		{"DEV_PERSON=" + admin, "names the secret DEV_PERSON twice"},
 	} {
 		e := validEnv()
-		e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " " + row.entry
+		e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_PERSON=" + dev + " " + row.entry
 		_, err := Load(env(e))
 		if err == nil || !strings.HasPrefix(err.Error(), "BROKER_SERVICE_ACCOUNT_SECRETS ") ||
 			!strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), strconv.Quote(row.entry)) {
@@ -532,6 +532,165 @@ func TestTheAirlocksProxyURLIsHeldToItsForm(t *testing.T) {
 		if err != nil || cfg.AirlockProxyURL != value {
 			t.Errorf("Load(BROKER_AIRLOCK_PROXY_URL=%q) = (%q, %v); want it taken as it is", value, cfg.AirlockProxyURL, err)
 		}
+	}
+}
+
+// TestLoadReadsTheAirlockClusterRanges: BROKER_AIRLOCK_CLUSTER_RANGES is a comma-separated list
+// of CIDR prefixes, IPv4 and IPv6 alike, with spaces around the commas allowed, each read as its
+// network; unset is none, which is a broker outside a cluster.
+func TestLoadReadsTheAirlockClusterRanges(t *testing.T) {
+	for _, row := range []struct{ name, value, want string }{
+		{"unset", "", ""},
+		{"one range", "34.118.224.0/20", "34.118.224.0/20"},
+		{"IPv4 and IPv6 with spaces around the commas", " 34.118.224.0/20 , 2001:db8:5::/48,198.51.100.0/24 ", "34.118.224.0/20 2001:db8:5::/48 198.51.100.0/24"},
+		{"a prefix with host bits, read as its network", "34.118.230.7/20", "34.118.224.0/20"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.value
+			cfg, err := Load(env(e))
+			if err != nil {
+				t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.value, err)
+			}
+			var got []string
+			for _, prefix := range cfg.AirlockClusterRanges {
+				got = append(got, prefix.String())
+			}
+			if strings.Join(got, " ") != row.want {
+				t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q) read %q; want %q", row.value, got, row.want)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAClusterRangeItCannotRead: an element that is empty or not a CIDR prefix refuses
+// the start, naming the setting and the element's position and never quoting the element, which
+// could be anything an operator pasted. An IPv4-mapped IPv6 prefix is refused too, since the proxy
+// reads every address it checks as plain IPv4 and no address would ever be inside one.
+func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
+	for _, row := range []struct{ name, value, want string }{
+		{"a trailing comma", "34.118.224.0/20,", "element 2 is empty"},
+		{"a leading comma", ",34.118.224.0/20", "element 1 is empty"},
+		{"a blank element between two", "34.118.224.0/20, ,198.51.100.0/24", "element 2 is empty"},
+		{"an element that is no prefix", "34.118.224.0/20,not-a-range", "element 2 is not a CIDR prefix"},
+		{"an address with no prefix length", "34.118.224.1", "element 1 is not a CIDR prefix"},
+		{"an IPv4-mapped IPv6 prefix", "::ffff:34.118.224.0/116", "element 1 is an IPv4-mapped IPv6 prefix"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, e := range []map[string]string{validEnv(), airlockEnv()} {
+				e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.value
+				_, err := Load(env(e))
+				if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_CLUSTER_RANGES") || !strings.Contains(err.Error(), row.want) {
+					t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q) = %v; want a refusal naming the setting and %q", row.value, err, row.want)
+				}
+				if strings.Contains(err.Error(), "not-a-range") {
+					t.Fatalf("the refusal quotes the element: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
+// setting KUBERNETES_SERVICE_HOST in every container, a broker with the airlock on refuses to start
+// unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes Service's ClusterIP, so a
+// deployment that forgot the setting or gave the wrong range cannot pass silently. Each refusal
+// names both variables. Outside a cluster, and in a cluster with no airlock, the setting is
+// optional.
+func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
+	for _, row := range []struct{ name, host, ranges, want string }{
+		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
+		{"a range that does not hold the address", "34.118.224.1", "198.51.100.0/24", "KUBERNETES_SERVICE_HOST 34.118.224.1 is inside no range"},
+		{"an IPv6 address outside an IPv4 range", "2001:db8:5::1", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST 2001:db8:5::1 is inside no range"},
+		// Kubernetes never sets these, and a value that is not empty is not "outside a cluster".
+		{"a KUBERNETES_SERVICE_HOST of spaces", "   ", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		{"a KUBERNETES_SERVICE_HOST of a tab", "\t", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		// A zone is read off before the check, and the refusal repeats the parsed address alone.
+		{"a zoned address outside the ranges", "fe80::1%some arbitrary text", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST fe80::1 is inside no range"},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) {
+			e := airlockEnv()
+			e["KUBERNETES_SERVICE_HOST"] = row.host
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
+			}
+			for _, want := range []string{"BROKER_AIRLOCK_CLUSTER_RANGES", "KUBERNETES_SERVICE_HOST", row.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal reads %q; want it to name %q", err, want)
+				}
+			}
+			if row.host == "kubernetes.default.svc" && strings.Contains(err.Error(), row.host) {
+				t.Errorf("the refusal quotes a KUBERNETES_SERVICE_HOST that is not an address: %v", err)
+			}
+			if strings.Contains(err.Error(), "arbitrary") {
+				t.Errorf("the refusal repeats the text after a zone's %%: %v", err)
+			}
+		})
+	}
+	for _, row := range []struct{ name, host, ranges string }{
+		{"a range that holds the address", "34.118.224.1", "34.118.224.0/20"},
+		{"a later range that holds the address", "34.118.224.1", "198.51.100.0/24, 34.118.224.0/20"},
+		{"an IPv6 range that holds an IPv6 address", "2001:db8:5::1", "2001:db8:5::/48"},
+		{"an IPv6 range that holds a zoned IPv6 address", "2001:db8:5::1%eth0", "2001:db8:5::/48"},
+		{"outside a cluster, with the setting missing", "", ""},
+		{"outside a cluster, with a range", "", "34.118.224.0/20"},
+	} {
+		t.Run("starts with "+row.name, func(t *testing.T) {
+			e := airlockEnv()
+			e["KUBERNETES_SERVICE_HOST"] = row.host
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+			if _, err := Load(env(e)); err != nil {
+				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
+			}
+		})
+	}
+	t.Run("starts in a cluster with no airlock and no ranges", func(t *testing.T) {
+		e := validEnv()
+		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
+		if _, err := Load(env(e)); err != nil {
+			t.Fatalf("Load with no rules file in a cluster: %v", err)
+		}
+	})
+}
+
+// TestEveryAddressConfigReadsIsReadWithoutItsZone: the addresses config reads are read the way
+// the proxy reads every address it checks (netaddr.Canonical): an IPv4-mapped address as the IPv4
+// address it holds, and a zone dropped. BROKER_AIRLOCK_TEST_RESOLVE's address is one the proxy
+// dials, and a sign-in issuer on a zoned loopback address is on this machine as the unzoned one
+// is. A zone cannot ride on a prefix at all: netip.ParsePrefix refuses one, which the control
+// below holds.
+func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
+	e := validEnv()
+	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=2001:db8::1%eth0 t.airlock.test=::ffff:127.0.0.2"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a zoned and a mapped BROKER_AIRLOCK_TEST_RESOLVE address: %v", err)
+	}
+	for host, want := range map[string]netip.Addr{
+		"s.airlock.test": netip.MustParseAddr("2001:db8::1"),
+		"t.airlock.test": netip.MustParseAddr("127.0.0.2"),
+	} {
+		if got := cfg.AirlockTestResolve[host]; got != want {
+			t.Errorf("BROKER_AIRLOCK_TEST_RESOLVE read %s as %v; want %v, with no zone and unmapped", host, got, want)
+		}
+	}
+	for _, issuer := range []string{"http://[::1%25lo]:8080", "http://[::1]:8080", "http://127.0.0.1:8080"} {
+		if !signInIssuerOK(issuer) {
+			t.Errorf("signInIssuerOK(%q) = false; want true: it is a loopback address", issuer)
+		}
+	}
+	for _, issuer := range []string{"http://[2001:db8::1%25lo]:8080", "http://[fe80::1%25eth0]:8080", "http://example.com"} {
+		if signInIssuerOK(issuer) {
+			t.Errorf("signInIssuerOK(%q) = true; want false: it is no loopback address", issuer)
+		}
+	}
+	e = validEnv()
+	e["BROKER_AIRLOCK_CLUSTER_RANGES"] = "2001:db8:5::%eth0/48"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "element 1 is not a CIDR prefix") {
+		t.Fatalf("Load(a zoned prefix) = %v; want the refusal naming element 1", err)
 	}
 }
 
@@ -1242,6 +1401,229 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	}
 	if !maps.Equal(cfg.ServiceLogins, want) {
 		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
+	}
+}
+
+// TestRegistrarSettings pins BROKER_POD_REGISTRARS and BROKER_POD_REGISTRATION_AUDIENCE. Unset,
+// the broker loads with no entry and no audience, a registration route that admits nothing. Each
+// malformed entry of the list — one without exactly one "=", an account that is no ServiceAccount
+// subject (a google: one included), a namespace's default account on either side — and a pair
+// given twice are refused naming the setting and the entry, and the list is refused with no
+// cluster issuer. The audience is refused naming it and the other setting when it equals the
+// broker's own audience, the token exchange's or the NATS auth service's, each set beside it, and
+// refused with no cluster issuer. A registrar with two pod accounts, a pod account with two
+// registrars and an account paired with itself load as exactly those pairs beside an audience of
+// its own, with no BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not
+// refused, since it can register nothing and the boot names it instead.
+func TestRegistrarSettings(t *testing.T) {
+	const (
+		daemonA = "system:serviceaccount:legion-system:legion-daemon-a"
+		daemonB = "system:serviceaccount:legion-system:legion-daemon-b"
+		worker  = "system:serviceaccount:legion:worker"
+		other   = "system:serviceaccount:legion:other"
+	)
+	user, account, curve, _ := natsSeeds(t)
+	// withAudiences is the cluster issuer with every other audience its tokens are accepted at
+	// set beside the broker's own: the token exchange's and the NATS auth service's, whose service
+	// needs its hub and its three seeds. So an audience row is refused for the one equality it
+	// names and nothing else.
+	withAudiences := func(set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+		e["BROKER_NATS_SEED_FILE"], e["BROKER_NATS_ISSUER_SEED_FILE"], e["BROKER_NATS_XKEY_SEED_FILE"] = user, account, curve
+		e["BROKER_NATS_K8S_AUDIENCE"] = "envoy-nats"
+		maps.Copy(e, set)
+		return e
+	}
+	// withoutIssuer is validEnv, which names no cluster issuer, with set.
+	withoutIssuer := func(set map[string]string) map[string]string {
+		e := validEnv()
+		maps.Copy(e, set)
+		return e
+	}
+	list := func(entries string) map[string]string { return map[string]string{"BROKER_POD_REGISTRARS": entries} }
+	audience := func(value string) map[string]string {
+		return map[string]string{"BROKER_POD_REGISTRATION_AUDIENCE": value}
+	}
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is every text the refusal must name; none for an environment that loads.
+		refused []string
+		// registrars and audience are what an environment that loads reads.
+		registrars api.PodRegistrars
+		audience   string
+	}{
+		{name: "both unset", env: validEnv()},
+		{
+			name: "an entry with no =", env: withAudiences(list(daemonA)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA)},
+		},
+		{
+			name: "an entry with two =", env: withAudiences(list(daemonA + "=" + worker + "=" + other)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=" + worker + "=" + other)},
+		},
+		{
+			name: "an entry naming no registrar", env: withAudiences(list("=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("=" + worker)},
+		},
+		{
+			name: "a registrar that is a service's name", env: withAudiences(list("legion-daemon=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("legion-daemon=" + worker)},
+		},
+		{
+			name: "a registrar that is a Google account", env: withAudiences(list(googleAPIAccountTag + exampleListenerAccount + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(googleAPIAccountTag + exampleListenerAccount + "=" + worker)},
+		},
+		{
+			name: "a pod account that is no subject", env: withAudiences(list(daemonA + "=example-worker")),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=example-worker")},
+		},
+		{
+			name: "a namespace's default account as the registrar", env: withAudiences(list("system:serviceaccount:legion-system:default=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("system:serviceaccount:legion-system:default=" + worker), "default service account"},
+		},
+		{
+			name: "a namespace's default account as the pod account", env: withAudiences(list(daemonA + "=system:serviceaccount:legion:default")),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=system:serviceaccount:legion:default"), "default service account"},
+		},
+		{
+			name: "one pair given twice", env: withAudiences(list(daemonA + "=" + worker + " " + daemonA + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=" + worker), "twice"},
+		},
+		{
+			name: "the list with no cluster issuer", env: withoutIssuer(list(daemonA + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", "BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "the audience equal to the broker's own", env: withAudiences(audience(" agent-secrets\n")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name: "the audience equal to the token exchange's", env: withAudiences(audience("dispatch-exchange")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "the audience equal to the NATS auth service's", env: withAudiences(audience("envoy-nats")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE"},
+		},
+		{
+			name: "the audience with no cluster issuer", env: withoutIssuer(audience("legion-broker-registration")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "a registrar with two pod accounts, a pod account with two registrars and a self-pair",
+			env: withAudiences(map[string]string{
+				"BROKER_POD_REGISTRARS":            " " + daemonA + "=" + worker + "\n" + daemonA + "=" + other + "\t" + daemonB + "=" + worker + " " + daemonB + "=" + daemonB + " ",
+				"BROKER_POD_REGISTRATION_AUDIENCE": " legion-broker-registration ",
+			}),
+			registrars: api.PodRegistrars{{Registrar: daemonA, Pod: worker}: {}, {Registrar: daemonA, Pod: other}: {}, {Registrar: daemonB, Pod: worker}: {}, {Registrar: daemonB, Pod: daemonB}: {}},
+			audience:   "legion-broker-registration",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			for _, name := range row.refused {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, strings.Join(row.refused, " and "))
+				}
+			}
+			if len(row.refused) > 0 {
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
+				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			}
+		})
+	}
+}
+
+// The accounts the session account pair tests pair: the shared account a deployment's pods ran
+// as, the project's own account it moves them to, and a third. Each pair below is written with
+// its later account first in sorted order, so a reader that sorted a pair would be caught.
+const (
+	sharedWorkerAccount  = "system:serviceaccount:example-ns:shared-worker"
+	projectWorkerAccount = "system:serviceaccount:example-ns:project-worker"
+	otherWorkerAccount   = "system:serviceaccount:example-ns:other-worker"
+)
+
+// TestSessionAccountPairsAreRead pins BROKER_SESSION_ACCOUNT_PAIRS: whitespace-separated
+// <account>=<account> entries, each read as its two accounts in the order written and the pairs
+// in the order given, since cmd/broker logs the pairs as the operator wrote them; an account in
+// two pairs, which is a deployment moving one shared account's pods to two accounts, or moving
+// them on again; and no pair at all when the setting is unset, empty or white space only, which
+// is the broker that takes no name from anyone.
+func TestSessionAccountPairsAreRead(t *testing.T) {
+	for _, value := range []string{"", " \t\n "} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = value
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(BROKER_SESSION_ACCOUNT_PAIRS=%q) = %v, want no refusal", value, err)
+		}
+		if cfg.SessionAccountPairs != nil {
+			t.Errorf("SessionAccountPairs with BROKER_SESSION_ACCOUNT_PAIRS=%q = %v, want nil", value, cfg.SessionAccountPairs)
+		}
+	}
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionAccountPairs != nil {
+		t.Errorf("SessionAccountPairs = %v, want nil when BROKER_SESSION_ACCOUNT_PAIRS is unset", cfg.SessionAccountPairs)
+	}
+
+	e := validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = sharedWorkerAccount + "=" + projectWorkerAccount
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}}; !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with one pair = %v, want %v, its two accounts in the order written", cfg.SessionAccountPairs, want)
+	}
+
+	e = validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = " " + sharedWorkerAccount + "=" + projectWorkerAccount + "\n\t" + projectWorkerAccount + "=" + otherWorkerAccount + " "
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load(two pairs sharing an account) = %v, want no refusal: an account may be in several pairs", err)
+	}
+	want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}, {projectWorkerAccount, otherWorkerAccount}}
+	if !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with two pairs sharing an account = %v, want %v, in the order given", cfg.SessionAccountPairs, want)
+	}
+}
+
+// TestSessionAccountPairsRefuseABadEntry pins BROKER_SESSION_ACCOUNT_PAIRS' refusals, one row per
+// kind: an entry that is not two accounts joined by one "=", an account that is not a
+// ServiceAccount subject or is a namespace's default account, an account paired with itself, and
+// a pair given twice, as written or reversed. Each bad entry follows a good pair, so the reader
+// refuses whichever entry is bad and not only the first, and each refusal stops the start naming
+// the setting and the bad entry as written, so the operator reads which one to fix, and says
+// which kind of mistake it is.
+func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
+	const good = sharedWorkerAccount + "=" + projectWorkerAccount
+	for _, row := range []struct{ name, entry, reason string }{
+		{"no =", otherWorkerAccount, "<account>=<account>"},
+		{"two =", projectWorkerAccount + "=" + otherWorkerAccount + "=" + sharedWorkerAccount, "<account>=<account>"},
+		{"an empty first side", "=" + otherWorkerAccount, "<account>=<account>"},
+		{"an empty second side", otherWorkerAccount + "=", "<account>=<account>"},
+		{"a side that is not an account subject", projectWorkerAccount + "=other-worker", "must name system:serviceaccount:<namespace>:<name>"},
+		{"a namespace's default account", projectWorkerAccount + "=system:serviceaccount:example-ns:default", "default service account"},
+		{"an account paired with itself", otherWorkerAccount + "=" + otherWorkerAccount, "with itself"},
+		{"the same pair repeated", good, "again"},
+		{"the reversed pair repeated", projectWorkerAccount + "=" + sharedWorkerAccount, "again"},
+	} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = good + " " + row.entry
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_SESSION_ACCOUNT_PAIRS") || !strings.Contains(err.Error(), strconv.Quote(row.entry)) ||
+			!strings.Contains(err.Error(), row.reason) {
+			t.Errorf("BROKER_SESSION_ACCOUNT_PAIRS with %s, %q: err = %v, want a refusal naming the setting, the entry and %q", row.name, row.entry, err, row.reason)
+		}
 	}
 }
 
@@ -2183,12 +2565,13 @@ func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlocksTestOnlySettings pins each of the eight settings the broker's local
-// stack configures with: the airlock's seven — the two minter bases, the addresses the proxy
-// may dial although they are loopback, the extra upstream roots, where a name resolves to, and
-// its two negative-control switches — and the judge's one, the switch that turns its checks
-// before the model off. Each is read as it is given and is empty or off when unset. The
-// refusal of each on a production start is cmd/broker's, which has its own rows.
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the nine settings the broker's local
+// stack configures with: the airlock's eight — the two minter bases, the addresses the proxy
+// may dial although they are loopback, the extra upstream roots, where a name resolves to, the
+// token authority the azure exchange is held to, and its two negative-control switches — and
+// the judge's one, the switch that turns its checks before the model off. Each is read as it is
+// given and is empty or off when unset. The refusal of each on a production start is
+// cmd/broker's, which has its own rows.
 func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2196,6 +2579,7 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	}
 	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
 		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind ||
+		cfg.AirlockTestAzureAuthority != "" ||
 		cfg.JudgeTestSkipChecks {
 		t.Fatalf("with none of them set the local stack's test settings read %+v; want every one empty or off", cfg)
 	}
@@ -2208,6 +2592,7 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
 	e["BROKER_AIRLOCK_TEST_KEEP_VALUES"] = "true"
 	e["BROKER_AIRLOCK_TEST_NO_KIND"] = "1"
+	e["BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"] = " microsoft.airlock.test "
 	e["BROKER_JUDGE_TEST_SKIP_CHECKS"] = "true"
 	cfg, err = Load(env(e))
 	if err != nil {
@@ -2229,6 +2614,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	if !maps.Equal(cfg.AirlockTestResolve, want) {
 		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, want)
 	}
+	if cfg.AirlockTestAzureAuthority != "microsoft.airlock.test" {
+		t.Errorf("the azure token authority reads %q; want microsoft.airlock.test, the host the environment named", cfg.AirlockTestAzureAuthority)
+	}
 	if !cfg.AirlockTestKeepValues || !cfg.AirlockTestNoKind || !cfg.JudgeTestSkipChecks {
 		t.Errorf("the three switches read %v, %v and %v; want all three on", cfg.AirlockTestKeepValues, cfg.AirlockTestNoKind, cfg.JudgeTestSkipChecks)
 	}
@@ -2236,8 +2624,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 
 // TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy or the judge
 // could not act on refuses the start naming the setting, rather than being read as none: an
-// address with no port, an entry that is no IP address, a host resolved twice, and a switch
-// that is neither true nor false.
+// address with no port, an entry that is no IP address, a host resolved twice, a token authority
+// that is no lower-case host name a rules entry can bind, and a switch that is neither true nor
+// false.
 func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 	for _, c := range []struct{ setting, value, want string }{
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test", "must be <host>:<port>"},
@@ -2247,6 +2636,18 @@ func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test=127.0.0.1 s.airlock.test=127.0.0.2", "twice"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", "yes please", "must be true or false"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", "off-ish", "must be true or false"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "https://microsoft.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test:443", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "Microsoft.Airlock.Test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test.", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "127.0.0.4", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "-microsoft.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft-.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "*.airlock.test", "must be a host name"},
+		// A host airlock.HostShapeOK accepts and the rules-host grammar refuses, with the
+		// grammar's reason: config reads the authority by the grammar the rules file is read by.
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.0x1f", "ends in a number"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "ab--cd.airlock.test", "third and fourth characters"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", "skip", "must be true or false"},
 	} {
 		e := validEnv()
@@ -2280,17 +2681,18 @@ func judgeEnv() map[string]string {
 	return e
 }
 
-// TestLoadReadsTheJudgeSettings pins the judge's six: with none of the five set there is no
+// TestLoadReadsTheJudgeSettings pins the judge's seven: with none of the five set there is no
 // judge and every one of its fields is empty, and with all five set each is read as it was
 // given. The protocol is the one with a default, anthropic-messages, and each of the four it
-// takes is read as it was given.
+// takes is read as it was given. The account is optional: unset it reads empty, which is the
+// metadata server's identity token, and set it is read as given, without the space around it.
 func TestLoadReadsTheJudgeSettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.JudgeModelURL != "" || cfg.JudgeModel != "" || cfg.JudgeModelAudience != "" ||
-		cfg.JudgeDispatchURL != "" || cfg.JudgeDispatchTokenFile != "" {
+		cfg.JudgeDispatchURL != "" || cfg.JudgeDispatchTokenFile != "" || cfg.JudgeModelAccount != "" {
 		t.Fatalf("with none of them set the judge reads %+v; want every field empty", cfg)
 	}
 
@@ -2312,6 +2714,9 @@ func TestLoadReadsTheJudgeSettings(t *testing.T) {
 	if cfg.JudgeModelProtocol != "anthropic-messages" {
 		t.Errorf("the protocol with none named reads %q; want anthropic-messages", cfg.JudgeModelProtocol)
 	}
+	if cfg.JudgeModelAccount != "" {
+		t.Errorf("BROKER_JUDGE_MODEL_ACCOUNT unset reads %q; want empty, the metadata server's identity token", cfg.JudgeModelAccount)
+	}
 	for _, protocol := range []string{"anthropic-messages", "openai-responses", "openai-chat", "azure-anthropic"} {
 		e := judgeEnv()
 		e["BROKER_JUDGE_MODEL_PROTOCOL"] = protocol
@@ -2319,6 +2724,62 @@ func TestLoadReadsTheJudgeSettings(t *testing.T) {
 		if err != nil || cfg.JudgeModelProtocol != protocol {
 			t.Errorf("Load(BROKER_JUDGE_MODEL_PROTOCOL=%q) = (%q, %v); want it taken as it is", protocol, cfg.JudgeModelProtocol, err)
 		}
+	}
+	e = judgeEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount + " "
+	if cfg, err = Load(env(e)); err != nil || cfg.JudgeModelAccount != judgeAccount {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = (%q, %v); want %q", e["BROKER_JUDGE_MODEL_ACCOUNT"], cfg.JudgeModelAccount, err, judgeAccount)
+	}
+}
+
+// judgeAccount is the service account a judge's account setting names here, a placeholder of the
+// form secrets.ValidServiceAccountEmail takes.
+const judgeAccount = "judge-model@example-project.iam.gserviceaccount.com"
+
+// TestTheJudgeAccountAloneIsRefused pins the second judge setting that is never missing: a
+// deployment that names whose identity token a judge presents and none of the five has named a
+// judge it never configured, the mistake of the protocol alone, so the start is refused naming
+// the setting, its value, and the five a judge needs, all of them missing.
+func TestTheJudgeAccountAloneIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "BROKER_JUDGE_MODEL_ACCOUNT") || !strings.Contains(err.Error(), strconv.Quote(judgeAccount)) ||
+		!strings.Contains(err.Error(), "needs "+strings.Join(judgeSettings, ", ")) {
+		t.Fatalf("Load(BROKER_JUDGE_MODEL_ACCOUNT alone) = %v; want a refusal naming the setting, its value and the five a judge needs", err)
+	}
+	if _, named, _ := strings.Cut(err.Error(), "missing "); named != strings.Join(judgeSettings, ", ") {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT alone) = %v; want all five named as missing", err)
+	}
+}
+
+// TestTheJudgeAccountIsHeldToOneServiceAccountEmail pins the rule BROKER_SERVICE_ACCOUNT_SECRETS'
+// accounts are held to: one user-managed service account's address in lowercase, and never a
+// Google-managed service agent. A person's address, a list, a capitalised address and a service
+// agent would each boot a judge whose every mint is refused, or one that mints as Google's own
+// service, so each is refused at start naming the setting and the value, and the placeholder
+// account is taken.
+func TestTheJudgeAccountIsHeldToOneServiceAccountEmail(t *testing.T) {
+	for _, c := range []struct{ name, value, want string }{
+		{"a person's address", "ada@example.com", "user-managed Google service account"},
+		{"two accounts", judgeAccount + ", another-judge@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"an upper-case address", "Judge-Model@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := judgeEnv()
+			e["BROKER_JUDGE_MODEL_ACCOUNT"] = c.value
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_JUDGE_MODEL_ACCOUNT") || !strings.Contains(err.Error(), strconv.Quote(c.value)) ||
+				!strings.Contains(err.Error(), c.want) {
+				t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = %v; want a refusal naming the setting and the value, saying %q", c.value, err, c.want)
+			}
+		})
+	}
+	e := judgeEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount
+	if cfg, err := Load(env(e)); err != nil || cfg.JudgeModelAccount != judgeAccount {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = (%q, %v); want it taken as it is", judgeAccount, cfg.JudgeModelAccount, err)
 	}
 }
 

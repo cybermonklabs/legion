@@ -21,6 +21,7 @@ import type {
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -1434,6 +1435,9 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
 });
 
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
+  // The quote is read in the commit that mounts the composer, which only a loaded engine draws
+  // (`MarkdownPreview`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
   let cancelled = 0;
@@ -1490,7 +1494,35 @@ test("a direct message to a session that advertises no mode warns that it takes 
     await user.paste("Ship it.");
     const warning = screen.getByText(/Worker advertises no delivery mode, so sending it records/);
     expect(warning).toHaveTextContent("while its plugin cannot reach its conversation");
+    expect(warning.textContent).not.toContain("None of the capabilities");
     expect(warning.textContent).not.toContain("Prefix with");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A session listing only capabilities that are no delivery mode takes none, as one listing none
+// does: it gets the warning that it takes no message, not one naming Send as the mode it lacks.
+test("a direct message to a session whose capabilities hold no delivery mode warns that it takes none", async () => {
+  const user = userEvent.setup();
+  const session: Agent = { ...worker, capabilities: ["future-capability"] };
+  const { view } = renderComposer({
+    agents: [session],
+    owner: { kind: "session", sessionId: "B" },
+  });
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    expect(
+      screen.getByText(/Worker advertises no delivery mode, so sending it records/).textContent
+    ).toBe(
+      "Worker advertises no delivery mode, so sending it records a failed attempt. None of the capabilities it lists is a delivery mode this Dispatch knows."
+    );
+    expect(screen.queryByText(/while its plugin cannot reach/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/does not advertise Send/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1641,6 +1673,86 @@ test("the Sending as Aside line leaves out a mentioned session that takes no mes
     view.unmount();
   }
 });
+
+// A mentioned session listing only capabilities that are no delivery mode takes none, so it leaves
+// the plain mode to the session that takes one, and the Aside line leaves it out too.
+test("a mentioned session whose capabilities hold no delivery mode decides no mode and gets its own warning", async () => {
+  const user = userEvent.setup();
+  const aside: Agent = { ...planner, capabilities: ["aside"] };
+  const unknown: Agent = { ...worker, capabilities: ["future-capability"] };
+  const { view } = renderComposer({
+    agents: [aside, unknown],
+    seedMentions: [
+      { target: "session:A", title: "Planner" },
+      { target: "session:B", title: "Worker" },
+    ],
+  });
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.paste(" hello");
+    expect(screen.getByText("Sending as Aside: Planner does not advertise Send.")).toBeTruthy();
+    expect(screen.getByText(/Worker advertises no delivery mode/).textContent).toBe(
+      "Worker advertises no delivery mode, so sending it records a failed attempt. None of the capabilities it lists is a delivery mode this Dispatch knows."
+    );
+    expect(screen.queryByText(/while its plugin cannot reach/)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A warning naming several sessions gives each cause once, of the sessions it is true of: an
+// empty list, the plugin that cannot reach its conversation; a list of capabilities that are no
+// mode, that none is one - said of `they` when it is every session named, else of their names.
+for (const { lists, reasons } of [
+  {
+    lists: [[], [], []],
+    reasons: "A session advertises none while its plugin cannot reach its conversation.",
+  },
+  {
+    lists: [["future-capability"], ["other-capability"], ["future-capability"]],
+    reasons: "None of the capabilities they list is a delivery mode this Dispatch knows.",
+  },
+  {
+    lists: [["future-capability"], [], []],
+    reasons:
+      "A session advertises none while its plugin cannot reach its conversation. None of the capabilities Planner lists is a delivery mode this Dispatch knows.",
+  },
+  {
+    lists: [["future-capability"], [], ["other-capability"]],
+    reasons:
+      "A session advertises none while its plugin cannot reach its conversation. None of the capabilities Planner and Tester list is a delivery mode this Dispatch knows.",
+  },
+]) {
+  test(`the no-delivery-mode warning for sessions listing ${JSON.stringify(lists)} says why each takes none`, async () => {
+    const user = userEvent.setup();
+    const [first = [], second = [], third = []] = lists;
+    const { view } = renderComposer({
+      agents: [
+        { ...planner, capabilities: first },
+        { ...worker, capabilities: second },
+        { ...worker, capabilities: third, session_id: "C", title: "Tester" },
+      ],
+      seedMentions: [
+        { target: "session:A", title: "Planner" },
+        { target: "session:B", title: "Worker" },
+        { target: "session:C", title: "Tester" },
+      ],
+    });
+
+    try {
+      const field = screen.getByLabelText("Comment");
+      await user.click(field);
+      await user.paste(" hello");
+      expect(screen.getByText(/advertise no delivery mode/).textContent).toBe(
+        `Planner and Worker and Tester advertise no delivery mode, so sending it records a failed attempt. ${reasons}`
+      );
+    } finally {
+      view.unmount();
+    }
+  });
+}
 
 test("mentioning two targets that both lack the outbound mode names both in the warning", async () => {
   const user = userEvent.setup();

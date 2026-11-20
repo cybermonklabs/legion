@@ -20,7 +20,8 @@ import (
 // INFRA-626: a session the Envoy listener knows and that is not running is a recipient, not a
 // refusal. The listener stores the message for it and hands it over when it runs again, and
 // Dispatch records that attempt `queued`. A session the listener knows nothing about is refused
-// with "no live session <id>".
+// with "no live session <id>"; Dispatch then queues a targeted message to it itself where it has
+// a publisher (message_queue_publish_test.go).
 
 // fakeSession is one session the queueing listener knows. stopped is a session the listener knows
 // by its known-session record alone, with no registry entry: GET /v1/registry/<id> answers it 200
@@ -329,10 +330,12 @@ func TestASendAnsweredStoppedIsQueuedThoughTheRegistryReadFoundItLive(t *testing
 }
 
 // A session Envoy knows nothing about is refused by the text retryableDeliveryFailure and the
-// dashboard both key on, and is excluded from a broadcast with the reason they key on there.
+// dashboard both key on, and is excluded from a broadcast with the reason they key on there. With
+// no publisher - NATS disabled and no test hooks - Dispatch cannot queue a targeted message to it
+// either, so the attempt keeps that text.
 func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T) {
 	listener := stoppedAndLive(t)
-	handler, database := newTargetedMessageHandler(t, listener.url)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.url, noAgentPublisher: true})
 
 	created := postAgentMessage(t, handler, "ghost", map[string]any{
 		"body": "Anyone there?", "delivery": "aside",

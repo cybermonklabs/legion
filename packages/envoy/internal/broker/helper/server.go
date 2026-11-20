@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -64,6 +65,15 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
+	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
+	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
+	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
+	// It is not a sync.WaitGroup: a session's own goroutine can fire a revoke off while a test
+	// waits with none in flight, and a WaitGroup forbids an Add from zero concurrent with a Wait.
+	// Both under revokesMu.
+	revokesMu       sync.Mutex
+	revokesInFlight int
+	revokesIdle     chan struct{}
 }
 
 // Serve accepts until ctx ends. Each connection carries one request.
@@ -492,7 +502,7 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 	s.save()
 	s.adopt(ctx, sess)
 	for _, id := range orphans {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	if adm.Took {
 		s.Log.Info("session registered, taking back the identity it had before", "pid", pid, "caller_pid", caller, "runtime_id", sess.RuntimeID(), "session_id", sessionID, "enrollment_id", adm.Record.EnrollmentID)
@@ -627,7 +637,7 @@ func (s *Server) adoptSessionID(ctx context.Context, sess *Session, sessionID st
 	}
 	s.save()
 	for _, id := range got.Orphans {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	s.Log.Info("session named by its launcher; enrolling it under that name", "pid", sess.PID, "runtime_id", sess.RuntimeID(), "session_id", sessionID)
 	return Response{}, false
@@ -692,7 +702,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	// asked for no wait sees exactly that — and the session becomes enrolled on its own when
 	// one lands.
 	if resp.State != "enrolled" && !credential {
-		resp.Code, resp.Error = CodeNoCredential, noCredentialMsg
+		resp.Code, resp.Error = CodeNoCredential, s.Broker.noCredentialText()
 	}
 	return resp
 }
@@ -705,7 +715,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 // so the failure named is the one that goes with that answer.
 func (s *Server) notEnrolled(st enrollmentState) Response {
 	if !s.Broker.HasCredential() {
-		return Response{Code: CodeNoCredential, Error: noCredentialMsg}
+		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	msg := "this session is not enrolled with the broker yet"
 	if st.LastError != "" {
@@ -789,7 +799,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL, details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -816,10 +826,9 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL, method, url) {
+	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		b := redact.URL(s.Broker.URL)
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", b, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {
@@ -837,12 +846,13 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 	peer.Close()
 	compact, cred, err := s.Broker.launcherProof(method, url)
 	if errors.Is(err, errNoCredential) {
-		return Response{Code: CodeNoCredential, Error: noCredentialMsg}
+		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
-	return Response{OK: true, Proof: compact, CredentialID: cred.id}
+	return Response{OK: true, Proof: compact, CredentialID: cred.id,
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 }
 
 // operatorRoute reports whether method and url are one of the broker's four operator routes
@@ -958,16 +968,20 @@ func (s *Server) login(ctx context.Context) Response {
 // or it reached its expiry).
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
-	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped}
+	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)
 	}
 	return resp
 }
 
-// cannotEnrollMsg is the ERROR an enrollment (a machine session's or a box's) logs while the
-// helper holds no launcher credential to attempt it with, beside why (noCredentialReason).
-const cannotEnrollMsg = "session cannot enroll: the helper holds no launcher credential; run: agent-secrets machine login, and have a human approve it"
+// cannotEnrollText is the ERROR an enrollment (a machine session's or a box's) logs while the
+// helper holds no launcher credential to attempt it with, beside why (noCredentialReason), with
+// the hint of holding none in this mode.
+func (s *Server) cannotEnrollText() string {
+	return "session cannot enroll: the helper holds no launcher credential; " + brokerclient.Hint(s.Broker.noCredentialFailure())
+}
 
 // lacksCredential reports whether err failed for want of a launcher credential the helper still
 // lacks: errNoCredential, unless a login has installed one since the attempt failed. That login
@@ -980,7 +994,9 @@ func (s *Server) lacksCredential(err error) bool {
 // sessionHeld reports whether err is the broker refusing an enrolment the session name it
 // states belongs to another principal (403 SESSION_HELD, enroll.ErrSessionHeld). The broker
 // keys a name's carry on its principal — person, Google account or service account — and hands
-// a name back to that one alone.
+// a name back to that one alone, but for a service account BROKER_SESSION_ACCOUNT_PAIRS pairs
+// with a holding one. No pair names a person or a Google account, the principals this helper
+// enrols under, so to this helper the name is its holder's alone.
 //
 // That refuses the principal THIS attempt enrolled under, and not the name for ever: the
 // helper chooses the principal again at every attempt (Broker.signingAuthority), so the person
@@ -1037,7 +1053,7 @@ func heldPrincipal(err error) (string, bool) {
 // enrollSessionKey enrolls a key a launcher holds for a session on this machine — a broker-call
 // op (brokerCall) requiring no registered session (see Broker.EnrollSessionKey), so unlike sign
 // it does not check descendancy at all. An enrollment the helper cannot attempt for want of a
-// launcher credential logs cannotEnrollMsg, as a registered session's does. An enrollment whose
+// launcher credential logs cannotEnrollText, as a registered session's does. An enrollment whose
 // outcome the helper does not know (Broker.enrollUnder) answers ENROLL_OUTCOME_UNKNOWN
 // (enrollUnknown); a known failure answers ENROLL_FAILED with the failure as it came.
 func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) Response {
@@ -1047,7 +1063,7 @@ func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 	id, lease, err := s.Broker.EnrollSessionKey(ctx, runtimeID, thumbprint, sessionID)
 	if err != nil {
 		if s.lacksCredential(err) {
-			s.Log.Error(cannotEnrollMsg, "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
+			s.Log.Error(s.cannotEnrollText(), "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
 		}
 		if outcomeUnknown(err) {
 			return enrollUnknown(mayHaveReachedCause(err))
@@ -1088,7 +1104,7 @@ func unenrollUnknown(cause string) Response {
 }
 
 func loginUnknown(cause string) Response {
-	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to run: agent-secrets machine login, again"}
+	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to log in again: " + brokerclient.Hint(brokerclient.FailureNoMachineLogin)}
 }
 
 // mayHaveReachedCause is the cause of an unknown outcome that requestReach.settle marked, with
@@ -1300,7 +1316,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 				return
 			}
 			if s.lacksCredential(err) {
-				s.Log.Error(cannotEnrollMsg, "runtime_id", sess.RuntimeID(), "why", s.Broker.noCredentialReason(), "in", delay)
+				s.Log.Error(s.cannotEnrollText(), "runtime_id", sess.RuntimeID(), "why", s.Broker.noCredentialReason(), "in", delay)
 				return
 			}
 			s.Log.Warn("enroll failed; retrying", "runtime_id", sess.RuntimeID(), "error", err, "in", delay)
@@ -1339,7 +1355,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			s.Log.Info("an enrollment arrived for a name this session no longer has; enrolling again under its new one",
 				"runtime_id", sess.RuntimeID(), "enrollment_id", id)
 			if !sess.adoptLapsed(id) {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1482,13 +1498,15 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // a skewed clock's PROOF_INVALID above all, which a corrected clock mends — says nothing about
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
-// place, so a renewal and a confirmation cannot disagree about what ended an enrollment.
+// place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
+// fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
+// whose refusals do not print them.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && strings.Contains(be.Message, "not live")) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
 		return be.Code, true
 	}
 	return be.Code, false
@@ -1568,14 +1586,14 @@ func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, 
 func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) bool {
 	revoked := retryUntilStop(ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
 		if s.lacksCredential(err) {
-			s.Log.Error("session cannot enroll: revoking its lapsed enrollment first needs a launcher credential, and the helper holds none; run: agent-secrets machine login, and have a human approve it",
+			s.Log.Error("session cannot enroll: revoking its lapsed enrollment first needs a launcher credential, and the helper holds none; "+brokerclient.Hint(s.Broker.noCredentialFailure()),
 				"runtime_id", sess.RuntimeID(), "enrollment_id", id, "why", s.Broker.noCredentialReason(), "in", delay)
 			return
 		}
 		s.Log.Warn("revoking the lapsed enrollment failed; retrying", "runtime_id", sess.RuntimeID(), "enrollment_id", id, "error", err, "in", delay)
 	}, func() error { return s.revokeOnce(ctx, id) })
 	if !revoked && ctx.Err() == nil {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	return revoked
 }
@@ -1698,7 +1716,7 @@ func (s *Server) retire(ctx context.Context, sess *Session, why string) {
 	// Nothing can claim an unnamed session's identity, so both its enrollments end now: the
 	// live one and any still awaiting its revoke.
 	for _, id := range nonEmpty(cur.EnrollmentID, cur.LapsedID) {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	s.Log.Info("session retired", "runtime_id", cur.RuntimeID, "why", why)
 }
@@ -1715,20 +1733,43 @@ func (s *Server) SweepDormant(ctx context.Context) {
 		ids := rec.enrollments()
 		s.Log.Info("a session did not come back; ending its enrollment", "runtime_id", rec.RuntimeID, "session_id", rec.SessionID, "enrollment_ids", ids)
 		for _, id := range ids {
-			// Fired off, never waited for: this runs on the one goroutine SweepLoop owns, and
-			// a revoke that fails costs about four seconds of bounded retries on top of its
+			// Fired off, never waited for here: this runs on the one goroutine SweepLoop owns,
+			// and a revoke that fails costs about four seconds of bounded retries on top of its
 			// own HTTP timeouts, with nothing to interrupt it. A reboot parks every recorded
 			// session, so one batch of twenty records — up to two ids each — is potentially
 			// eighty seconds in which this loop sweeps nothing, the ticker drops its ticks and
-			// the save below does not run. There is nothing to wait for either: revoke returns
-			// nothing, logs its own failure, and touches no registry state. ctx bounds these
-			// goroutines exactly as it bounded the calls made inline, and every sibling path
-			// in this file fires the same call off the same way (register, adoptSessionID,
-			// retire and both branches of Recover).
-			go s.revoke(ctx, id)
+			// the save below does not run. revoke returns nothing, logs its own failure, and
+			// touches no registry state. ctx bounds these goroutines exactly as it bounded the
+			// calls made inline, and every sibling path in this file fires the same call off
+			// the same way (goRevoke, nine sites: register, adoptSessionID, enrollLoop,
+			// revokeLapsed, retire, this one, and Recover's three), each counted in
+			// s.revokesInFlight for a test to wait on.
+			s.goRevoke(ctx, id)
 		}
 	}
 	s.save()
+}
+
+// goRevoke fires off revoke(ctx, id), counted in s.revokesInFlight until it returns, so a test of a
+// path that revokes waits for the revoke to land (the tests' waitRevokes) instead of polling for
+// its effect.
+func (s *Server) goRevoke(ctx context.Context, id string) {
+	s.revokesMu.Lock()
+	if s.revokesInFlight == 0 {
+		s.revokesIdle = make(chan struct{})
+	}
+	s.revokesInFlight++
+	s.revokesMu.Unlock()
+	go func() {
+		defer func() {
+			s.revokesMu.Lock()
+			if s.revokesInFlight--; s.revokesInFlight == 0 {
+				close(s.revokesIdle)
+			}
+			s.revokesMu.Unlock()
+		}()
+		s.revoke(ctx, id)
+	}()
 }
 
 // SweepLoop runs SweepDormant until ctx ends. every is the tick; cmd/agent-secrets-helper passes
@@ -1837,7 +1878,7 @@ func (s *Server) Recover(ctx context.Context) {
 			}
 			s.Log.Info("recorded session is gone", "runtime_id", rec.RuntimeID)
 			for _, id := range rec.enrollments() {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1864,7 +1905,7 @@ func (s *Server) Recover(ctx context.Context) {
 			s.Log.Info("session re-pinned after a restart with the key it had; it keeps its enrollment", "runtime_id", rec.RuntimeID, "enrollment_id", rec.EnrollmentID)
 			s.adopt(ctx, sess)
 			for _, id := range orphans {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1874,7 +1915,7 @@ func (s *Server) Recover(ctx context.Context) {
 		// retry-until-gone loop; a second id belongs to a name this session no longer has, so
 		// it blocks nothing and the bounded revoke ends it.
 		for _, id := range takeLapsed(sess, rec.enrollments(), rec.EnrollmentID != "") {
-			go s.revoke(ctx, id)
+			s.goRevoke(ctx, id)
 		}
 		s.Registry.Add(sess)
 		s.Log.Warn("session re-pinned after a restart with a fresh key; its previous grants are revoked", "runtime_id", rec.RuntimeID)

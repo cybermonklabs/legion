@@ -119,6 +119,18 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// Metrics is the registry New registers the gauges of the fallback copies held behind an
+	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
+	Metrics *metrics.Registry
+	// held is the fallback copies this process's passes found waiting behind an earlier event of
+	// their owner, which the gauges read and which logs one WARN for a copy held past
+	// heldCopyWarnAfter (heldCopies). New makes it; a pass run with none - one by itself, as this
+	// package's tests run it - counts and reports nothing.
+	held *heldCopies
+	// heldCopyWarnAfter is how long a copy waits before that WARN, and zero is
+	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
+	// need not wait a claim lease out; it is unexported, so no importer can.
+	heldCopyWarnAfter time.Duration
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -190,13 +202,16 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // in at most eight statements (loadLookups) and its role routes' holders read once per role
 // (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
 // chains: the sends of one owner's events to one destination key go one at a time, in id order,
-// each once the one before it reached its destination, while the chains of different owners and
-// destination keys proceed side by side (planChains, sendChains). That is the order a receiver
-// needs and the only one the batch keeps: a session takes an owner's events in id order on each
-// subject family it receives them on, while the sends to different owners or destination keys land
-// in whatever order their answers allow. A send that fails holds back only its own chain, and an
-// event that is not due holds back its owner's later events only from the destinations it has not
-// reached. An event whose recipient read failed holds them back too, from every session key its
+// each once the one before it reached its destination, and each send of the owner to a key other
+// than its topic family once the owner's earlier topic sends reached that family, while the chains
+// of different owners and destination keys proceed side by side (planChains, sendChains). That is
+// the order a receiver needs and the only one the batch keeps: a session takes an owner's events
+// in id order across its own subject and the owner's topic family it follows, while the sends to
+// different owners or destination keys land in whatever order their answers allow. A send that
+// fails holds back only its own chain, save a topic send, which holds back the owner's later sends
+// to every key, and an event that is not due holds back its owner's later events only from the
+// destinations it has not reached, and from every key while one of them is the topic family. An
+// event whose recipient read failed holds them back too, from every session key its
 // list neither names nor it already reached, until its retry. What an owner came to is written in
 // one statement, and what the owners left at the batch's end came to in one more (recordBatch).
 //
@@ -322,9 +337,13 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
+				outcomes = append(outcomes, outcome{
+					id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedKnown: true, owedSeq: event.ownerSeq,
+				})
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
+			event.outcome.owed, event.outcome.owedKnown, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), true, event.ownerSeq
 			outcomes = append(outcomes, event.outcome)
 			switch event.outcome.state {
 			case published:
@@ -534,6 +553,14 @@ const (
 	// connection was replaced or the process is stopping, so it is due again at once, with no
 	// attempt counted.
 	released outcomeState = "released"
+	// owedAgain: the event was not due, and the batch read its destinations only to hold its
+	// owner's later events back (planChains); the record writes what it owes now (owed_keys) and
+	// the owner's last_seq the batch read (owed_seq), and nothing of its schedule or its attempts.
+	// A write since its last record - a route that moved, a follower added - already holds a
+	// mention's copy, by moving the owner's last_seq past that record's owed_seq
+	// (model.MentionCopyHolderSQL); this record ends that hold, naming the destination the event
+	// gained, which then holds the copy as it holds the owner's later events.
+	owedAgain outcomeState = "owed_again"
 )
 
 // outcome is what one event of a batch came to, as recordBatch writes it.
@@ -551,6 +578,63 @@ type outcome struct {
 	// falls due at the earlier of the two.
 	delay *time.Duration
 	until *time.Time
+	// owed is what the event still owes once the batch settled it (owedKeys), which the record
+	// writes to events.owed_keys when owedKnown is set, and owedSeq the owner's last_seq the
+	// batch's read saw (pendingEvent.ownerSeq), which the record writes to events.owed_seq beside
+	// it, and only beside it. owedKnown is set where the outcome of an event the batch read is
+	// built - settled, or read as a blocker, a row that did not scan among them - and is not for
+	// an event the batch chose and did not read (deferPastWindow), of which nothing is known: the
+	// record leaves that one's owed_keys and owed_seq as they are, null or what an earlier record
+	// wrote.
+	owed      []string
+	owedKnown bool
+	owedSeq   int
+}
+
+// owedKeys is what event still owes once its batch has settled it, as events.owed_keys records it
+// for the two roads a mention's copy takes outside the chains (model.MentionCopyHolderSQL): the key
+// of every destination of its list that neither an earlier batch (batchEvent.delivered) nor this
+// one (reached) reached, by destination.key, the owner's topic family spelled
+// model.OwedTopicFamily. A role route is the exception: it is recorded as its role topic, not as
+// the key of the holder it resolved to, because the holder can change before the event's next
+// record - a claim taken over, or one that could not be read becoming readable - and planChains
+// keys the route on whoever holds it at each batch; the copy's road reads the holder when it asks
+// (model.MentionCopyRolesSQL). A copy that waits on a mention is owed, and holds its key as
+// planChains holds it. A copy a comment_fallback_copies row owns (destination.heldAsARow) and a
+// role route reached with nothing to send (roleForward.skip) are not: planChains reads neither as
+// holding anything back. An event whose list ends at a recipient read that failed owes
+// model.OwedAnySession beside its list, the sessions that read would name, as planChains holds the
+// owner's later events from every session key it does not name. An event the outbox cannot read
+// or publish - its row did not scan, its list holds a null, or its actor or payload does not
+// decode (pendingEvent.failure) - owes nothing, as it holds nothing back. Whether the record
+// writes the answer is the outcome's owedKnown, never whether the answer is nil.
+func owedKeys(event *batchEvent, reached []string) []string {
+	owed := []string{}
+	if event.failure != nil {
+		return owed
+	}
+	if event.incomplete {
+		owed = append(owed, model.OwedAnySession)
+	}
+	for _, dest := range event.destinationsOf {
+		if _, ok := event.delivered[dest.subject]; ok || slices.Contains(reached, dest.subject) {
+			continue
+		}
+		if dest.heldAsARow || (dest.forward != nil && dest.forward.skip != "") {
+			continue
+		}
+		key := dest.key()
+		switch {
+		case dest.role != "":
+			key = dest.subject
+		case key == ownerTopicKey:
+			key = model.OwedTopicFamily
+		}
+		if !slices.Contains(owed, key) {
+			owed = append(owed, key)
+		}
+	}
+	return owed
 }
 
 // settleEvent returns what event, sent by its batch, came to. An event that could not be read is
@@ -760,10 +844,17 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // holds the hold is written regardless: the destinations an event reached are added to its
 // published_destinations, and an event that reached every destination is marked published, its
 // publish_error cleared. A back-off (next_attempt_at on the database's clock, the attempt count and
-// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until)
-// and a release are written only while the hold is holder's and has not lapsed, checked in the
-// same statement, so a process that lost the hold mid-batch schedules nothing beside the holder
-// that took it. Each row is guarded on published_at is null.
+// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until),
+// a release, and what the event still owes (owed_keys, from outcome.owed, and beside it owed_seq,
+// the owner's last_seq the batch read, from outcome.owedSeq) are written only while the hold is
+// holder's and has not lapsed, checked in the same statement, so a process that lost the hold
+// mid-batch schedules nothing beside the holder that took it and leaves the owed keys to that
+// holder's record: a record it skipped is one whose owed_seq the owner's next event leaves behind,
+// which holds a mention's copy until that holder writes it (model.MentionCopyHolderSQL). Each row
+// is guarded on published_at is null. An event the batch read only as a blocker, not due
+// (owedAgain), has its owed_keys and owed_seq written alone, and only when either changed, so an
+// owner whose events wait, and that no event was written to since, rewrites no row a batch finds
+// as it left it.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -780,8 +871,12 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	delays := make([]*float64, 0, len(outcomes))
 	until := make([]*time.Time, 0, len(outcomes))
 	failures := make([]*string, 0, len(outcomes))
+	owedKnown := make([]bool, 0, len(outcomes))
+	owedSeqs := make([]int32, 0, len(outcomes))
 	var reachedIDs []int64
 	var reachedTopics []string
+	var owedIDs []int64
+	var owed []string
 	for _, result := range outcomes {
 		ids = append(ids, result.id)
 		states = append(states, string(result.state))
@@ -802,6 +897,12 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedIDs = append(reachedIDs, result.id)
 			reachedTopics = append(reachedTopics, topic)
 		}
+		owedKnown = append(owedKnown, result.owedKnown)
+		owedSeqs = append(owedSeqs, int32(result.owedSeq))
+		for _, key := range result.owed {
+			owedIDs = append(owedIDs, result.id)
+			owed = append(owed, key)
+		}
 	}
 	var holds bool
 	if err := deps.lanes.statement(func() error {
@@ -811,11 +912,15 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 				select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now()
 			) as mine
 		), outcome as (
-			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[])
-				as o(id, state, attempts, delay, until, failure)
+			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[], $11::bool[], $14::int[])
+				as o(id, state, attempts, delay, until, failure, owed_known, owed_seq)
 		), reached as (
 			select id, array_agg(topic order by position) as topics
 			from unnest($9::bigint[], $10::text[]) with ordinality as r(id, topic, position)
+			group by id
+		), owed as (
+			select id, array_agg(key order by position) as keys
+			from unnest($12::bigint[], $13::text[]) with ordinality as w(id, key, position)
 			group by id
 		), recorded as (
 			update events e set
@@ -836,16 +941,22 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					when not h.mine then e.next_attempt_at
 					when o.state = 'backed_off' then now() + make_interval(secs => o.delay)
 					when o.state = 'blocked' then least(now() + make_interval(secs => o.delay), o.until)
+					when o.state = 'owed_again' then e.next_attempt_at
 					else null
-				end
+				end,
+				owed_keys = case when o.owed_known and h.mine then coalesce(w.keys, '{}') else e.owed_keys end,
+				owed_seq = case when o.owed_known and h.mine then o.owed_seq else e.owed_seq end
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id
+			left join owed w on w.id = o.id
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
+			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}') or e.owed_seq is distinct from o.owed_seq)
 		)
 		select mine from hold
-	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics).Scan(&holds)
+	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
+			owedKnown, owedIDs, owed, owedSeqs).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}

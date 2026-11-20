@@ -25,23 +25,44 @@ import (
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
 // holder, and the publish is refused as the listener refuses it (notify.ErrNoHolder); any other
-// publish is delivered and kept, in order.
+// publish is delivered, and recorded in order. keeps is whether the listener keeps a kept publish
+// (PublishKept) for a claim whose holder is not live, as the listener of
+// cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept for the
+// role's next holder and recorded in kept, and without it that publish is refused as a keep:
+// false publish is, which is what a listener before #4079 answers a claim whose holder is gone.
 type holderPublisher struct {
 	mu        sync.Mutex
 	absent    map[string]bool
+	keeps     bool
 	attempts  int
 	delivered []outboxPublish
+	kept      []outboxPublish
 }
 
 func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	_, err := p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	return err
+}
+
+func (p *holderPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+}
+
+// answer is the one body of both publishes: whether the listener kept the message, and its
+// refusal.
+func (p *holderPublisher) answer(published outboxPublish) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.attempts++
-	if p.absent[topic] {
-		return fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", topic, notify.ErrNoHolder)
+	if p.absent[published.topic] {
+		if published.keep && p.keeps {
+			p.kept = append(p.kept, published)
+			return true, nil
+		}
+		return false, fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", published.topic, notify.ErrNoHolder)
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
-	return nil
+	p.delivered = append(p.delivered, published)
+	return false, nil
 }
 
 func (p *holderPublisher) setAbsent(topics ...string) {
@@ -79,6 +100,13 @@ func (p *holderPublisher) snapshot() (int, []outboxPublish) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.attempts, append([]outboxPublish(nil), p.delivered...)
+}
+
+// keptCopies is every message the listener's kept lane holds for a role's next holder, in order.
+func (p *holderPublisher) keptCopies() []outboxPublish {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]outboxPublish(nil), p.kept...)
 }
 
 // noticeTree records a root, its child and the child's child, all of tree LEGION-1.
@@ -236,7 +264,10 @@ func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
 // row at a time, and a machine holds its lock through the runtime call its decision makes, so a
 // read of the architect's claim that waited would hold every row behind it for as long as a
 // Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, so the notice
-// goes to its role topic, as it would once the launch returned.
+// goes to its role topic, as it would once the launch returned. The publish goes through the
+// outbox's hold gate (outbox.publish, supervise.Machine.HoldsItsSession), which must not wait on
+// the launch either (review round 13 of #4220); its control, the gate reading the hold under the
+// machine's lock, fails here with "the notice waited on its architect's launch in the runtime".
 func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

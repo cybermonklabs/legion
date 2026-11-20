@@ -104,7 +104,6 @@ type Runtime struct {
 	controllerSlackChannels []string
 	agent                   []string
 	setup                   []string
-	skills                  ghrepo.Repository
 	testPostgres            bool
 	bootTimeout             time.Duration
 	registrationIntervals   int
@@ -128,6 +127,9 @@ type Runtime struct {
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
+	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
+	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
+	volumeTrim *shimwire.LauncherVolumeTrim
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -136,8 +138,9 @@ type Runtime struct {
 	// it (PodDrift, once per claim of the deployment per tick) read a string rather than
 	// marshalling that configuration again.
 	podShapes map[podShapeKey]string
-	// cacheConfig is how each repository's cache is made, mapped the repositories the project's
-	// mapping names now (Options.RepositoryCache, Options.Mapped), and cacheDial opens every
+	// cacheConfig is how each repository's cache is made, over the repositories the project works
+	// now — the mapping's and those of its live issue records (Options.RepositoryCache,
+	// Options.Mapped) — and cacheDial opens every
 	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
 	cacheConfig RepositoryCache
 	mapped      func() []ghrepo.Repository
@@ -260,7 +263,7 @@ func checkSupervision(opts Options) error {
 	case opts.Conns == nil:
 		return refuse("no connection directory")
 	case opts.Mapped == nil:
-		return refuse("no repository mapping for the repository caches")
+		return refuse("no repository set for the repository caches")
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
 		return refuse("%v", err)
@@ -405,7 +408,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
+		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -424,9 +427,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports, and log what they could
-	// not carry or record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
+	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
+	// sweep reports, and log what they could not carry or record, so they are built once the
+	// runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
+		opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.

@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -74,6 +75,17 @@ const repoLabelPrefix = "repo:"
 // fails with an error matching oidc.ErrIssuerUnavailable.
 type ServiceTokenVerifier interface {
 	Verify(ctx context.Context, raw string) (oidc.Claims, error)
+}
+
+// AgentPublisher is what a person's targeted message is queued through when no store of the
+// listener's holds its session (queueForUnknownSession, message_queue_publish.go): the bus client
+// (*bus.Client) where the deployment has NATS, and an AgentPublishRecorder in a test process that
+// has none.
+type AgentPublisher interface {
+	// PublishReportingDuplicateWithin publishes the envelope and returns once the stream has
+	// acknowledged it, reporting whether the stream already held it. ctx bounds the whole publish,
+	// and a publish whose ctx has ended sends nothing.
+	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
 }
 
 // Deps are the API's application dependencies.
@@ -124,6 +136,10 @@ type Deps struct {
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when neither
+	// the listener's registry nor its known-session store holds that session. Nil is a deployment
+	// with no NATS and no test hooks, where such a message settles failed instead.
+	AgentPublisher AgentPublisher
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
@@ -175,6 +191,17 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
+	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
+	// earlier event of its comment's owner still owes a send its session may take
+	// (model.MentionCopyHolderSQL, deliverResolvedCommentMention), the order the outbox keeps for its
+	// own sends. With no outbox no event is ever sent, so there is no order to keep with them and
+	// the wait would never end: the send goes at once, as it does in every test of this package
+	// that runs no outbox.
+	OutboxPublishes bool
+	// Metrics is the process's registry, which register adds the gauges of the mention sends held
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	Metrics *metrics.Registry
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -226,6 +253,9 @@ type DepsInput struct {
 	BrokerTokens *brokertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
+	// nil queues none. See Deps.AgentPublisher; cmd/dispatch passes its NATS client.
+	AgentPublisher AgentPublisher
 	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); empty
 	// means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
@@ -254,6 +284,11 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events; see
+	// Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry; see Deps.Metrics.
+	Metrics *metrics.Registry
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -328,6 +363,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
+		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
@@ -338,6 +374,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		OutboxPublishes:        input.OutboxPublishes,
+		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
@@ -567,6 +605,15 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
+// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
+// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
+// reads every route the router mounts from the mounting itself rather than from a list kept beside
+// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+type RouteMux interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
 // same table answers GET /api/v1.
 //
@@ -604,7 +651,7 @@ type queryer interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
+func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
 }
@@ -706,7 +753,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
+func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -720,6 +767,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
+	s.registerHeldGauges(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -898,17 +946,27 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // confirms, a revoked token) it cancels the connection's context, on which the document server and
 // the live socket close the socket. stillResolves is the mount's own admission asked again, never
 // a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
-// that is all the document service admits it by. A check that resolved anything the request
-// carries would let a credential that admitted nothing keep the socket open once the one that did
-// had ended. The check runs beside the handler, which holds pooled connections of its own while it
-// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
-// it resolves on a context detached from the access-log line, which names the caller the socket
-// was admitted as (accesslog.Detached).
+// admitted it, and the document socket's is signInStillResolves, the browser credential alone
+// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
+// admits it by. A check that resolved anything the request carries would let a credential that
+// admitted nothing keep the socket open once the one that did had ended. The check runs beside
+// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
+// context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
+// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
+// assertion, which lives about ten minutes while IAP signs a fresh one for every request it
+// passes, that IAP's key set still verifies and whose person is still admitted) cancels the
+// context with errCredentialExpired instead, which each socket closes with a code on which the
+// page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
+// and the document socket with the close frame ygo sends for that cause. The reopened socket's
+// upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
+// its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
+// any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, closeConnection := context.WithCancel(r.Context())
-		defer closeConnection()
+		ctx, closeConnection := context.WithCancelCause(r.Context())
+		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -923,7 +981,11 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves).
 					if err := stillResolves(check); err != nil {
-						closeConnection()
+						if errors.Is(err, identity.ErrCredentialExpired) {
+							closeConnection(errCredentialExpired)
+						} else {
+							closeConnection(nil)
+						}
 						return
 					}
 				}
@@ -933,15 +995,36 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 	}
 }
 
-// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
-// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
-// document service admits a socket by that cookie and nothing else (docs.Service.requestActor,
-// Identity.Login), and this asks the API's Identity the same question; cmd/dispatch hands the API
-// and the document service one Identity, so the two read one cookie the same way. It reads no
-// Authorization header. A bearer or a broker-issued token sent beside the cookie admitted nothing,
-// so it keeps nothing open either: resolved here, it would hold the socket open for the token's
-// whole life after the cookie ended, a read-only token's included, which the read list lets read
-// no document at all (readScopeRoutes).
+// errCredentialExpired is the cause whileCallerResolves cancels a socket's context with once the
+// credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
+// off the cause and sends the document socket's peer that close frame, and the live socket reads
+// the cause itself (liveSocket.write).
+var errCredentialExpired error = credentialExpired{}
+
+// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
+type credentialExpired struct{}
+
+func (credentialExpired) Error() string {
+	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
+}
+
+// CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
+// for a socket whose admission no longer stands, on which the provider reconnects and the
+// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
+func (credentialExpired) CloseCode() (int, string) {
+	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInStillResolves answers whether the browser credential a document socket was admitted with
+// still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
+// is what whileCallerResolves asks on that socket's every heartbeat. The document service admits a
+// socket by that credential and nothing else (docs.Service.requestActor, Identity.Login), and this
+// asks the API's Identity the same question; cmd/dispatch hands the API and the document service
+// one Identity, so the two read one credential the same way. It reads no Authorization header. A
+// bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
+// either: resolved here, it would hold the socket open for the token's whole life after the cookie
+// ended, a read-only token's included, which the read list lets read no document at all
+// (readScopeRoutes).
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
@@ -956,7 +1039,8 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429); writeHandlerError writes the header.
+	// (brokerTokenActor's 429, and the results write's 409 CHECK_CONTENDED);
+	// writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1028,9 +1112,10 @@ func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value
 // place, so a retry goes out on the new cookie before this tab knows. A request whose caller is
 // another person, or no person at all (a bearer), is answered 409 LOGIN_CHANGED before anything
 // runs - before its Idempotency-Key is read, so its key is untouched. A caller that resolves to
-// nobody (a lapsed cookie) is left to the route's own refusal, a 401, so a write a session lapsed
-// under waits for the sign-in that follows. A request without the header - the dispatch command,
-// an agent, a script - is not checked. Logins are compared as model.CanonicalLogin compares them.
+// nobody (a lapsed cookie) is passed on to the 401 written further in - the keyed layer's for a
+// keyed write, the handler's for any other - so a write a session lapsed under waits for the
+// sign-in that follows. A request without the header - the dispatch command, an agent, a script -
+// is not checked. Logins are compared as model.CanonicalLogin compares them.
 func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pressed := r.Header.Values(contracts.DispatchLoginHeader)
@@ -1436,10 +1521,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // when the body names the session the credential proved; a session the body alone names is not
 // proven.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
-// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
-// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+// Only those routes read it: decodeJSON ignores a member the route's input struct does not
+// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
+// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
+// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
+// ignored here as it always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
@@ -1715,21 +1801,27 @@ func (s *server) readyPool() (*store.Pool, error) {
 	return s.deps.Store.Pool, nil
 }
 
-// lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
-// lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
-// still takes: a message, its deliveries and the agent's reply to one.
+// lockIssue takes the issue's owner lock and returns its lifecycle status, closed or not. It is
+// the lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed
+// issue still takes: a message, its deliveries and the agent's reply to one. The read is the
+// statement after the lock, sent with it, so it sees a close the lock's previous holder
+// committed while this one waited (store.LockOwnerAndRead).
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	status, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
 	return status, err
 }
 
-// issueStatus reads an issue's lifecycle status, and whether it is open, through q under
-// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
-func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
+// issueStatusRead reads an issue's lifecycle status and whether it is open.
+const issueStatusRead = `select status, closed_at is null from issues where key = $1`
+
+// issueStatus is that read made through read: under the issue's owner lock for the check that
+// decides (lockIssue, ownerStatus), and through the pool for the check a comment makes before
+// its transaction opens, which reads exactly what the locked check will. It refuses nothing:
+// each write that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
+	if err := read(ctx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil
@@ -1779,24 +1871,45 @@ func artifactCreatedEventPayload(artifact model.Artifact, changes model.Referenc
 	return payload
 }
 
-func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
+// namedVersionDiff is the diff a named version's event carries: from the version before it to it.
+// Either may be the version this transaction has just queued (ledger), which the table holds only
+// once Commit has run its insert, so each is taken from the ledger when it is that version, and
+// read from the table otherwise (transactionVersionMarkdown).
+func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
 	}
-	var previous, current string
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number-1).Scan(&previous); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
+	previous, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number-1)
+	if err != nil {
 		return nil, fmt.Errorf("load previous artifact version: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number).Scan(&current); err != nil {
+	if !found {
+		return nil, nil
+	}
+	current, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number)
+	if err == nil && !found {
+		err = pgx.ErrNoRows
+	}
+	if err != nil {
 		return nil, fmt.Errorf("load current artifact version: %w", err)
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
+}
+
+// transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
+// queue has run: the ledger's, when it is the version this transaction queued
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
+	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
+		return markdown, true, nil
+	}
+	var markdown string
+	err := tx.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, number).Scan(&markdown)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return markdown, err == nil, err
 }

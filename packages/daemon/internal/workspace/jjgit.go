@@ -86,22 +86,11 @@ func OutputLines(out string) []string {
 	return kept
 }
 
-// Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,
-// and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
-// exited child it does not hold, so it passes one that holds the child out of that reaper until
-// its own wait has read the exit (internal/launcher's pidGuard). nil starts cmd with cmd.Start.
-type Starter func(cmd *exec.Cmd) (done func(), err error)
-
-// startCommand is the Starter of a caller with no reaper to keep a child from: cmd.Start, and
-// nothing to do once the wait has read the exit.
-func startCommand(cmd *exec.Cmd) (func(), error) {
-	return func() {}, cmd.Start()
-}
-
 // RunCommand runs one jj or git command of the workspace within the caller's budget and returns
-// its trimmed standard output. start starts the command (Starter); nil is cmd.Start. dir is the
-// directory the command runs in, which is the workspace its -R or --git-dir names: jj searches
-// upward from the directory it runs in for the closest .jj and reads that repository's
+// its trimmed standard output. start starts the command (procgroup.Starter, never nil: the shim's
+// is procgroup.NoReaper, the pod's launcher's its pidGuard's).
+// dir is the directory the command runs in, which is the workspace its -R or --git-dir names: jj
+// searches upward from the directory it runs in for the closest .jj and reads that repository's
 // configuration before it applies -R, so a command left standing wherever the caller's process
 // stands would read a repository nobody named (docs/testing.md). stdin is fed to the command, and
 // nil is an empty standard input. started is when the caller's budget began, which a timeout's
@@ -110,14 +99,14 @@ func startCommand(cmd *exec.Cmd) (func(), error) {
 // exited on its own, procgroup.WaitDelay can hold the wait open past the budget for a child still
 // holding the command's pipes, and the command's own exit is then its answer. A command that
 // never started because an earlier one on the same budget spent it timed out too, while a command
-// the caller stopped by cancelling its context, rather than the budget ending it, reports its
-// exit, not a timeout.
+// the caller stopped by cancelling its context, rather than the budget ending it, reports the
+// signal its stop sent (procgroup.Err), not a timeout.
 //
 // The save (internal/shim) and the restore (internal/launcher) both run here: they run the same
 // two tools over the same workspace, and a restore wedged on a stale index.lock or on a git
 // child that holds the pipe past the budget needs the same note and the same stop and wait the
 // save has.
-func RunCommand(ctx context.Context, start Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
+func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
@@ -132,16 +121,9 @@ func RunCommand(ctx context.Context, start Starter, budget time.Duration, starte
 	// bound on the wait for a child that still holds the pipes once the command itself has gone
 	// (procgroup.Configure, which also answers whether that stop is what ended the command).
 	killed := procgroup.Configure(cmd)
-	if start == nil {
-		start = startCommand
-	}
-	// cmd.Run, with the start the caller chose. A start that failed leaves cmd.Process nil, as
-	// Run's own does, so a budget already spent before the start still reads as a timeout below.
-	done, err := start(cmd)
-	if err == nil {
-		err = cmd.Wait()
-		done()
-	}
+	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
+	// the start still reads as a timeout below.
+	err := procgroup.Run(cmd, start)
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time the wait returned) and the budget is what ended
@@ -151,15 +133,16 @@ func RunCommand(ctx context.Context, start Starter, budget time.Duration, starte
 	// inside the grace does.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
-		return "", fmt.Errorf("run %s: %w", command, runErr)
-	}
-	if !timedOut && cmd.ProcessState.ExitCode() == 0 {
+	runErr := procgroup.Err(err)
+	if runErr == nil && !timedOut && cmd.ProcessState.ExitCode() == 0 {
 		return strings.TrimSpace(stdout.String()), nil
 	}
 	report := strings.TrimSpace(stderr.String())
 	if note := StaleGitLockNote(report, time.Now()); note != "" {
 		report += "\n" + note
+	}
+	if runErr != nil && !timedOut {
+		return "", fmt.Errorf("run %s: %w", command, procgroup.Said(runErr, report))
 	}
 	if timedOut {
 		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",

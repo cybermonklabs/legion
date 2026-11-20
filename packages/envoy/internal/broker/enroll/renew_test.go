@@ -69,7 +69,11 @@ func (r podRenewalRig) lease(t *testing.T) time.Time {
 
 // TestARenewalCarryingThePodsCurrentTokenExtendsTheLease: a pod enrollment's renewal that carries a
 // projected token for the pod UID and service account the enrollment recorded extends the lease by
-// a full Lease.
+// a full Lease, and answers the lease end the row holds, to the microsecond Postgres keeps, as
+// Create does, so the end Carried answers for a live row is the end the renewal answered.
+//
+// The control (the pull request records the run): Renew answering its lease end to the
+// nanosecond again fails the comparison with the row's own.
 func TestARenewalCarryingThePodsCurrentTokenExtendsTheLease(t *testing.T) {
 	r := newPodRenewalRig(t)
 	renewal, err := r.svc.Renew(context.Background(), r.id, mintPodToken(t, r.issuer, r.key, renewAccount, renewPodUID))
@@ -79,8 +83,13 @@ func TestARenewalCarryingThePodsCurrentTokenExtendsTheLease(t *testing.T) {
 	if renewal.WithoutPodToken {
 		t.Fatal("a renewal carrying the pod's token reports it carried none")
 	}
-	if lease := r.lease(t); lease.Before(time.Now().Add(50 * time.Minute)) {
+	lease := r.lease(t)
+	if lease.Before(time.Now().Add(50 * time.Minute)) {
 		t.Fatalf("lease after the renewal = %v (answered %v), want about an hour out", lease, renewal.LeaseExpires)
+	}
+	if !renewal.LeaseExpires.Equal(lease) {
+		t.Fatalf("the renewal answered the lease ending %s, and the row holds %s: want one time, the row's own",
+			renewal.LeaseExpires.Format(time.RFC3339Nano), lease.Format(time.RFC3339Nano))
 	}
 }
 
