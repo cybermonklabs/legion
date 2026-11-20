@@ -183,3 +183,35 @@ func TestARevocationEndsOnlyGrantsOfLowerGenerations(t *testing.T) {
 	redeems(operator, nil)
 	redeems(worker, nil)
 }
+
+// A controller session's grant is decided on a read of the controller record, and a confirmed
+// mint's revocation can land between that read and the grant: the mint's commit was still landing
+// when the route read the record, so the record still named the replaced session, and the store
+// said it committed only after. Such a grant is refused, since the revocation that ends every
+// grant of the replaced generation has already run. The control mints the same grant before the
+// revocation, which then ends it, and a grant of the confirmed generation stands.
+func TestASessionGrantOfAGenerationAConfirmedMintReplacedIsRefused(t *testing.T) {
+	grants := New(nil)
+	before, err := grants.MintController("ses_replaced", 1)
+	if err != nil {
+		t.Fatalf("the replaced session's grant before the revocation: %v", err)
+	}
+	grants.RevokeControllersBelow(2)
+	if _, err := grants.Redeem(before.ID); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("Redeem of the grant minted before the revocation = %v, want ErrUnavailable", err)
+	}
+	after, err := grants.MintController("ses_replaced", 1)
+	if !errors.Is(err, ErrReplaced) {
+		t.Errorf("the replaced session's grant after the revocation = %v, want ErrReplaced", err)
+	}
+	if _, redeemErr := grants.Redeem(after.ID); err == nil && redeemErr == nil {
+		t.Errorf("the grant of generation 1 minted after the confirmation of 2 redeems as generation %d", after.generation)
+	}
+	current, err := grants.MintController("ses_current", 2)
+	if err != nil {
+		t.Fatalf("the confirmed generation's grant: %v", err)
+	}
+	if _, err := grants.Redeem(current.ID); err != nil {
+		t.Errorf("Redeem of the confirmed generation's grant = %v, want it to stand", err)
+	}
+}

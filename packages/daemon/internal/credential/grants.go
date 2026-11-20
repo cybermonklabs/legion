@@ -27,6 +27,10 @@ var (
 	// ErrUnavailable is deliberately the one answer for an unknown id and for a pruned one: a
 	// bearer must not become an oracle.
 	ErrUnavailable = errors.New("grant is unavailable")
+	// ErrReplaced means MintController was asked for a session's grant under a controller
+	// generation a confirmed mint has replaced (RevokeControllersBelow): the route read the
+	// session's registration before that mint's commit, and its revocation ran since.
+	ErrReplaced = errors.New("the controller capability that registered the session was replaced")
 )
 
 // Grant is the in-memory capability returned by Mint, MintController or MintOperatorController. ID
@@ -104,7 +108,12 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 // MintController records a sixty-second controller grant for session under generation, the
 // controller capability that registered it. Authorization happens at the route: the service keeps
 // no secret and cannot accidentally copy one into a grant record. A blank session is refused,
-// since a controller grant that names no session would read as nobody's.
+// since a controller grant that names no session would read as nobody's. A generation below the
+// one a confirmed mint named is refused with ErrReplaced: the route read the registration before
+// that mint committed, and the mint's revocation (RevokeControllersBelow), which has run, ends
+// every grant of a lower generation. The check and the record are one step under the grants'
+// lock, which the revocation takes too, so a grant of a replaced generation is either recorded
+// before the revocation and ended by it, or refused.
 func (g *Grants) MintController(session string, generation uint64) (Grant, error) {
 	if session == "" {
 		return Grant{}, ErrUnauthenticated
@@ -120,6 +129,8 @@ func (g *Grants) MintOperatorController(generation uint64) (Grant, error) {
 }
 
 // mintController records grant, which names who minted it, as a controller grant under generation.
+// A session's grant of a generation below the confirmed one is refused (MintController); the
+// operator's is raised to it (MintOperatorController).
 func (g *Grants) mintController(grant Grant, generation uint64) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
@@ -128,6 +139,9 @@ func (g *Grants) mintController(grant Grant, generation uint64) (Grant, error) {
 	grant.ID, grant.ExpiresAt, grant.Controller = id, g.now().Add(ttl), true
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if grant.Session != "" && generation < g.confirmed {
+		return Grant{}, ErrReplaced
+	}
 	grant.generation = max(generation, g.confirmed)
 	g.recordLocked(grant)
 	return grant, nil

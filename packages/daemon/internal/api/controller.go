@@ -412,6 +412,12 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	grant, err := s.grants.MintController(req.SessionID, stored.Generation)
+	if errors.Is(err, credential.ErrReplaced) {
+		// A mint confirmed since the read above replaced the session's capability: the session
+		// is no longer registered, as the next read of the record says.
+		writeFailure(w, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
+		return
+	}
 	s.writeControllerGrant(w, grant, err)
 }
 

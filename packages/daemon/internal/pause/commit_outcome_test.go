@@ -180,6 +180,75 @@ func TestAPauseWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 	})
 }
 
+// refreshReadHold is how long the treatment below holds a Refresh between its read of the open
+// pause and its act on that reading: long enough for the pause's commit on the direct store and its
+// hook's record to land inside it.
+const refreshReadHold = 3 * time.Second
+
+// A pause's commit hook that lands while a Refresh is between its read of the open pause and its
+// act on that reading keeps the pause's Effects owed. The reading was taken before the pause
+// committed, so it says nothing of the pause, and the Refresh after it, whose read holds the pause,
+// runs Effects.Paused once. The treatment holds the Refresh's read at its commit's reply
+// (testdb.CommitFault.HoldReply), commits the pause on the direct store while it waits, as a
+// commit that landed late does, and makes the record the pause's commit hook makes
+// (owedEffects.pauseCommitted). The control makes the same commit and record before the Refresh.
+func TestAPauseHookThatLandsInsideARefreshKeepsThePausesEffectsOwed(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		inside bool
+	}{{"control_hook_before_the_refresh", false}, {"hook_between_the_refresh_read_and_its_act", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFaultedRig(t)
+			commit := func() (store.Pause, []store.PauseStopClaim) {
+				t.Helper()
+				pause, asked, err := r.direct.Pause(ctx, store.PauseRequest{Project: "LEGION", By: operator,
+					Reason: "the model provider is down", At: pausedAt, StopRow: StopRow})
+				if err != nil {
+					t.Fatalf("commit the pause on the direct store: %v", err)
+				}
+				return pause, asked
+			}
+			if tc.inside {
+				fired := r.fault.HoldReply("ended_at is null", refreshReadHold)
+				refreshed := make(chan error, 1)
+				go func() { refreshed <- r.svc.Refresh(ctx) }()
+				testdb.Met(t, fired)
+				pause, asked := commit()
+				select {
+				case err := <-refreshed:
+					t.Fatalf("the Refresh returned (%v) before the pause committed: nothing landed between its read and its act", err)
+				default:
+				}
+				recorded := make(chan struct{})
+				go func() {
+					defer close(recorded)
+					r.svc.owed.pauseCommitted(pause, asked)
+				}()
+				if err := <-refreshed; err != nil {
+					t.Fatalf("the held Refresh: %v", err)
+				}
+				<-recorded
+			} else {
+				pause, asked := commit()
+				r.svc.owed.pauseCommitted(pause, asked)
+			}
+			for range 2 {
+				if err := r.svc.Refresh(ctx); err != nil {
+					t.Fatalf("Refresh: %v", err)
+				}
+			}
+			flag, _ := r.svc.Paused()
+			if open := r.openPause(t); open == 0 || flag != open {
+				t.Fatalf("the flag after two Refreshes = %d, want the open pause %d", flag, open)
+			}
+			if got := len(r.effects.pausedCalls()); got != 1 {
+				t.Errorf("Effects.Paused calls after two Refreshes = %d, want 1: the committed pause's owed catch-up never runs", got)
+			}
+		})
+	}
+}
+
 // resumeWork counts a resume's success work: its line, a line for each of the two rows the pause
 // held (counted as one set), the daemon's Effects.Resumed, and a flag that holds no pause.
 func (r *faultedRig) resumeWork(t *testing.T) map[string]int {
