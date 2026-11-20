@@ -99,10 +99,11 @@ Go's `GOROOT`, and the newer `go` refuses that older compiler.
 ## Fix
 
 Never delete a stream name in a place a later test creates it again. `testnats.URL(t)` hands each
-test the shared server as the user of a JetStream account no earlier test used, and nats-server keeps
-each account's streams in a directory of its own (`<store>/jetstream/<account>/streams`), so one
-test's deletes cannot reach another's creates under the same name. An account is never handed out
-twice. The race is unchanged inside one account, so each subtest gets an account of its own too.
+test one of the package's shared servers as the user of a JetStream account no earlier test used,
+and nats-server keeps each account's streams in a directory of its own
+(`<store>/jetstream/<account>/streams`), so one test's deletes cannot reach another's creates under
+the same name. An account is never handed out twice. The race is unchanged inside one account, so
+each subtest gets an account of its own too.
 Every package whose tests share a server takes it through `testnats.URL`: the session, interest and
 CI registries, the listener, `internal/bus`, `internal/kvwatch`, `internal/dispatch/redeliver` and
 `internal/integration`. A delete a test makes of its own stream is the first of that name in its

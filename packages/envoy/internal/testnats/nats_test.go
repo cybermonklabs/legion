@@ -206,21 +206,21 @@ type namedTB struct {
 
 func (n namedTB) Name() string { return n.name }
 
-// ownAccountServer starts an account server of the test's own, declaring accounts accounts, which
-// is shut down and removed when the test ends.
+// ownAccountServer returns an account server of the test's own, whose servers declare accounts
+// accounts each and are shut down and removed when the test ends.
 func ownAccountServer(t *testing.T, accounts int) *accountServer {
 	t.Helper()
-	return startAccountServer(t, accounts)
+	return newAccountServer(t, accounts)
 }
 
-// A server whose accounts are all handed out declares twice as many by a reload and hands out the
-// next, and an account a test is still using keeps its connection and its watcher across the
-// reload.
-func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) {
+// A server whose accounts are all handed out hands out no more: the next test's account is the
+// first of a new server, and an account a test is still using keeps its connection and its streams.
+func TestTheAccountPastAServersLastIsTheFirstOfANewServer(t *testing.T) {
 	server := ownAccountServer(t, 2)
-	live := Connect(t, server.url(namedTB{t, "live"}))
-	defer live.Close()
-	js, err := live.JetStream()
+	live := server.url(namedTB{t, "live"})
+	conn := Connect(t, live)
+	defer conn.Close()
+	js, err := conn.JetStream()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,36 +228,120 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
-	watcher, err := kv.WatchAll()
-	if err != nil {
-		t.Fatalf("watch: %v", err)
-	}
-	defer func() { _ = watcher.Stop() }()
-	if entry := <-watcher.Updates(); entry != nil {
-		t.Fatalf("the empty bucket's scan delivered %v before its marker", entry)
-	}
 
-	server.url(namedTB{t, "second"})
+	second := server.url(namedTB{t, "second"})
 	third := server.url(namedTB{t, "third"})
-	if server.declared != 4 {
-		t.Fatalf("the server declares %d accounts after handing out its third, want 4", server.declared)
-	}
-	if want := fmt.Sprintf("nats://t3:t3@%s", server.host); third != want {
-		t.Fatalf("the third test's URL is %q, want %q", third, want)
-	}
-	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
-		t.Fatalf("put after the reload: %v", err)
-	}
-	select {
-	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-reload" {
-			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
+	host := func(uri string) string {
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the reload")
+		return parsed.Host
 	}
-	if status := live.Status(); status != natsgo.CONNECTED {
-		t.Fatalf("the connection of an account in use is %v after the reload, want CONNECTED", status)
+	if want := fmt.Sprintf("nats://t2:t2@%s", host(live)); second != want {
+		t.Fatalf("the second test's URL is %q, want the first server's second account, %q", second, want)
+	}
+	if host(third) == host(live) || third != fmt.Sprintf("nats://t1:t1@%s", host(third)) {
+		t.Fatalf("the third test's URL is %q, want the first account of a server other than the full one at %s", third, host(live))
+	}
+	if _, err := kv.Put("after-the-third", []byte("1")); err != nil {
+		t.Fatalf("put after the third account was handed out: %v", err)
+	}
+	if status := conn.Status(); status != natsgo.CONNECTED {
+		t.Fatalf("the connection of an account in use is %v after the third account was handed out, want CONNECTED", status)
+	}
+}
+
+// Reload refuses a server an account server started, whose accounts other tests hold, and fails
+// the test that asked before it touches the server.
+func TestReloadRefusesAServerTestsShare(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	Connect(t, server.url(namedTB{t, "holder"})).Close()
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.newest.Reload(refused, accountsConfig(2))
+	}()
+	<-done
+	if !strings.Contains(refused.message, "Reload of a server the package's tests share") {
+		t.Fatalf("the reload of a shared server ended with %q, want its refusal", refused.message)
+	}
+	if reloads := strings.Count(server.newest.Log(), "Reloaded server configuration"); reloads != 0 {
+		t.Fatalf("the shared server was reloaded %d times", reloads)
+	}
+}
+
+// An account server whose accounts are all handed out hands out the next while a stream in an
+// account another test holds has just served a direct get, as a KV get is, and reloads no server
+// to do it. nats-server v2.15.1 reads its options without their lock as it serves a direct get
+// (getDirectRequest, server/stream.go:6365), and a reload replaces them under that lock (setOpts,
+// server/server.go:1224): so a reload of a server other tests use meets their direct gets. The
+// race detector reports that pair in some runs and not in others, so the test reads the server's
+// log for the reload itself.
+func TestTheNextAccountMeetsNoStreamThatServedADirectGet(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	uri := server.url(namedTB{t, "serving"})
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "served"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("key", []byte("1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, err := kv.Get("key"); err != nil {
+		t.Fatalf("the direct get: %v", err)
+	}
+	server.url(namedTB{t, "next"})
+	if _, err := kv.Get("key"); err != nil {
+		t.Fatalf("the direct get after the next account was handed out: %v", err)
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serversMu.Lock()
+	serving := servers[parsed.Host]
+	serversMu.Unlock()
+	if reloads := strings.Count(serving.Log(), "Reloaded server configuration"); reloads != 0 {
+		t.Errorf("the server holding the serving test's account was reloaded %d times to hand out the next account", reloads)
+	}
+}
+
+// A test that reloads its own server right after a direct get on it, as a KV get is, meets no
+// data race. nats-server v2.15.1 reads its options without their lock as it serves the get
+// (getDirectRequest, server/stream.go:6365) and the reload replaces them under that lock (setOpts,
+// server/server.go:1224); the relay's barrier orders the two (Server.Reload). Each round is one
+// more chance for the race detector to find them unordered.
+func TestAReloadRightAfterADirectGetOnTheSameServerIsNoRace(t *testing.T) {
+	const rounds = 50
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "served"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("key", []byte("1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	for round := range rounds {
+		if _, err := kv.Get("key"); err != nil {
+			t.Fatalf("the direct get of round %d: %v", round, err)
+		}
+		if err := server.Reload(t, hostOnlyConfig); err != nil {
+			t.Fatalf("the reload of round %d: %v", round, err)
+		}
 	}
 }
 
