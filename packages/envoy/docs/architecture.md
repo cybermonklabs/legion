@@ -532,12 +532,15 @@ a number, or a value nested deeper than the 10,000 levels `encoding/json` reads 
 what it is. The envelope is then read field by field, a field whose value its type does not take
 left unset, so the message is still copied whatever the listener's wire rules or the envelope's
 own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the
-holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer.
+holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer,
+while one written as a JSON string is left out, as `encoding/json` leaves it.
 An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy
 leaves it out, and the holder reads the message with no `expects_reply`. A message
 that is not a JSON object, or whose topic or `role` is not a string and names no role, is not
 copied: it stays for the previous holder's own consumer, as a message that is no role message
-does. The kept lane's walk ends a copy of that kind, which no listener copies there. The copy
+does. The kept lane's walk ends a copy of that kind, which no listener copies there. The keep that
+meets a copy as a duplicate and the sweep's wake scan read a kept copy the same way as the walk, so
+a copy the walk forwards is held by the one and wakes its role in the other. The copy
 is the envelope without the forward mark, with the message's event id and a dedupe key of its own
 in the minted form (32 hex digits of the SHA-256 of the message's key and the frame's stream
 sequence, after `publish.` when the message's key has it, as the publish route's keys do, and after

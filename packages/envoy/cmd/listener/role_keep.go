@@ -608,8 +608,10 @@ func keptRoleCopyUntil(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // clock (cfg.now) against its store time (keptCopyEnded), the walk's own test of a copy it may
 // still forward (judgeKeptRoleCopy). A copy a walk has claimed is judged by the same two tests.
 // Every other copy has ended and reports false: one past its hour, one the cursor has moved past,
-// one the stream no longer holds at seq (the read answers another sequence, or none), and one no
-// read can decode, which no walk forwards. A read that did not answer is its error.
+// one the stream no longer holds at seq (the read answers another sequence, or none), and one whose
+// role no read can tell (readRoleFrame), which the walk ends. A copy is read field by field, as the
+// walk reads it (roleFrame.envelope), so a copy the walk forwards is held here too, an expects_reply
+// word this build does not know among it. A read that did not answer is its error.
 func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, seq uint64) (keptRoleCopy, bool, error) {
 	stored, err := cfg.client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
 	if errors.Is(err, nats.ErrMsgNotFound) {
@@ -624,10 +626,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	if keptCopyEnded(cfg.now(), stored.Time) {
 		return keptRoleCopy{}, false, nil
 	}
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptRoleCopy{}, false, nil
 	}
+	item := frame.envelope()
 	cursor, err := cfg.client.ReadKeptRoleCursor(ctx, role)
 	if err != nil {
 		return keptRoleCopy{}, false, err

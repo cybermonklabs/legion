@@ -73,12 +73,13 @@ func readRoleFrame(data []byte) (roleFrame, error) {
 // keeps them. It finds each value's end by its brackets and strings alone, at any depth:
 // encoding/json refuses a document nested deeper than 10,000 and JSON.parse does not, so a reader
 // with that limit would tell a role message with a value nested that deep a message whose role
-// cannot be read, and the session's plugin would read it as the role message it is. It refuses
-// only what JSON.parse refuses too: a document that is not an object, a string with no end, a key
-// that is no string or holds a bad escape, a missing colon or comma, a value that is missing, an
-// object or array with no end, and text after the object. It checks no more of a value than where
-// it ends, so a value JSON.parse would refuse is kept as its raw text, which the field's own read
-// (roleFrame.text, roleFrame.envelope) refuses in turn.
+// cannot be read, and the session's plugin would read it as the role message it is. It refuses a
+// document that is not a JSON object, such as `null` or an array, which JSON.parse reads but which
+// holds no topic or role mark to tell, and otherwise only what JSON.parse refuses too: a string
+// with no end, a key that is no string or holds a bad escape, a missing colon or comma, a value
+// that is missing, an object or array with no end, and text after the object. It checks no more of
+// a value than where it ends, so a value JSON.parse would refuse is kept as its raw text, which the
+// field's own read (roleFrame.text, roleFrame.envelope) refuses in turn.
 func topLevelFields(data []byte) (map[string]json.RawMessage, error) {
 	i := skipJSONSpace(data, 0)
 	if i == len(data) || data[i] != '{' {
@@ -229,8 +230,9 @@ func (f roleFrame) text(key string) (string, error) {
 
 // envelope is the frame's envelope read field by field, each by its exact key: a field whose value
 // the envelope's type for it does not take is left unset, rather than refusing the whole message
-// as a decode into the envelope would, and an integer field written as a JSON number with no
-// fraction, such as 1795191371979.0, is read as that integer. Nothing here applies the wire rules
+// as a decode into the envelope would, and an integer field written as a JSON number with a zero
+// fraction, such as 1795191371979.0, is read as that integer, while one written as a JSON string is
+// left unset, as encoding/json leaves it (wholeNumber). Nothing here applies the wire rules
 // or the envelope's own (decodeStoredEnvelope), so a message is copied and forwarded whatever they
 // would say of it: an urgency or a source a newer build adds is a string the envelope holds, and
 // the copy keeps it for the holder's reader to judge; an expects_reply word ExpectsReply does not
@@ -267,8 +269,12 @@ func (f roleFrame) envelope() contracts.Envelope {
 }
 
 // wholeNumber is raw read as a JSON number with no fraction that an int64 holds, and whether it is
-// one.
+// one. A JSON string that holds a number is none: encoding/json refuses it for an integer, and the
+// envelope's schema types such a field as an integer.
 func wholeNumber(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 || raw[0] == '"' {
+		return 0, false
+	}
 	var number json.Number
 	if err := json.Unmarshal(raw, &number); err != nil {
 		return 0, false

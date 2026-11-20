@@ -3,14 +3,16 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// readRoleFrame refuses each document the plugins' JSON.parse refuses at the object's own level,
-// as its doc comment says (topLevelFields), and tells the role of each object JSON.parse reads,
-// however its top level is written. A refused document is no role message, so the relay sends it
-// to the session whose subject holds it, as it sends every frame that is no role message.
+// readRoleFrame refuses a document that is not a JSON object, and each object the plugins'
+// JSON.parse refuses at the object's own level, as its doc comment says (topLevelFields), and tells
+// the role of each object JSON.parse reads, however its top level is written. A refused document is
+// no role message, so the relay sends it to the session whose subject holds it, as it sends every
+// frame that is no role message.
 func TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel(t *testing.T) {
 	const role = `"topic":"notifications.role.reader"`
 	refused := []struct{ name, data string }{
@@ -41,7 +43,7 @@ func TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel(t *testing.T) {
 		t.Run("refused: "+c.name, func(t *testing.T) {
 			var parsed map[string]json.RawMessage
 			if json.Unmarshal([]byte(c.data), &parsed) == nil && parsed != nil {
-				t.Fatalf("encoding/json reads %q as an object; the case must be one JSON.parse refuses too", c.data)
+				t.Fatalf("encoding/json reads %q as an object; each case must be no JSON object, or an object JSON.parse refuses too", c.data)
 			}
 			if _, err := readRoleFrame([]byte(c.data)); !errors.Is(err, errRoleFrameUnreadable) {
 				t.Errorf("readRoleFrame(%q) answers %v; want errRoleFrameUnreadable", c.data, err)
@@ -67,4 +69,36 @@ func TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// envelope reads an integer field written as a JSON number, with or without a zero fraction, and
+// leaves out one written as a JSON string that holds a number: encoding/json refuses such a string
+// for an integer, and the envelope's schema types the field as an integer, so a copy that took it
+// would carry a time the original does not.
+func TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne(t *testing.T) {
+	read := func(t *testing.T, data string) (int64, string) {
+		t.Helper()
+		frame, err := readRoleFrame([]byte(data))
+		if err != nil {
+			t.Fatalf("readRoleFrame(%q): %v", data, err)
+		}
+		item := frame.envelope()
+		expires := "none"
+		if item.ExpiresAt != nil {
+			expires = strconv.FormatInt(*item.ExpiresAt, 10)
+		}
+		return item.IssuedAt, expires
+	}
+	t.Run("a whole number, and one written with a zero fraction, is read", func(t *testing.T) {
+		issued, expires := read(t, `{"topic":"notifications.role.reader","issued_at":1795191371979.0,"expires_at":7}`)
+		if issued != 1795191371979 || expires != "7" {
+			t.Errorf("envelope reads issued_at %d and expires_at %s; want 1795191371979 and 7", issued, expires)
+		}
+	})
+	t.Run("a string that holds a number is left out", func(t *testing.T) {
+		issued, expires := read(t, `{"topic":"notifications.role.reader","issued_at":"1795191371979","expires_at":"7"}`)
+		if issued != 0 || expires != "none" {
+			t.Errorf("envelope reads issued_at %d and expires_at %s; want 0 and none, as encoding/json reads neither", issued, expires)
+		}
+	})
 }
