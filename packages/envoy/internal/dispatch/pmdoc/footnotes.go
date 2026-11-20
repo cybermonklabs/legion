@@ -13,16 +13,16 @@ import (
 )
 
 // footnoteReferenceParser is goldmark's footnote reference parser, with a reference whose label
-// matches a definition's only up to case (footnoteLabelKey) resolved to that definition, as the
+// matches a definition's only up to case (FootnoteLabelKey) resolved to that definition, as the
 // browser editor's parser resolves it: goldmark matches a label byte for byte, and read `[^A]` as
 // text beside `[^a]: `. Such a reference carries its label as written (referenceLabelAttr), which
 // the browser editor keeps on it.
 type footnoteReferenceParser struct{ parser.InlineParser }
 
-// footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
+// FootnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
 // folding keeps apart.
-func footnoteLabelKey(label string) string {
+func FootnoteLabelKey(label string) string {
 	return cases.Upper(language.Und).String(cases.Lower(language.Und).String(label))
 }
 
@@ -48,7 +48,7 @@ func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc 
 		return nil
 	}
 	label := line[start+1 : start+1+closure]
-	definition := footnoteDefinitionsByKey(pc)[footnoteLabelKey(string(label))]
+	definition := footnoteDefinitionsByKey(pc)[FootnoteLabelKey(string(label))]
 	if definition == nil {
 		return nil
 	}
@@ -70,7 +70,7 @@ func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc 
 var footnoteKeysKey = parser.NewContextKey()
 
 // footnoteDefinitionsByKey is each footnote definition in goldmark's list by its label's key
-// (footnoteLabelKey), the first in the document where two share one. It is built once per parse,
+// (FootnoteLabelKey), the first in the document where two share one. It is built once per parse,
 // on the first reference goldmark's parser leaves unresolved: inline text is parsed after every
 // block has closed, so each definition has its slot by then.
 func footnoteDefinitionsByKey(pc parser.Context) map[string]*extensionast.Footnote {
@@ -87,7 +87,7 @@ func footnoteDefinitionsByKey(pc parser.Context) map[string]*extensionast.Footno
 		if _, listed := definition.Parent().(*extensionast.FootnoteList); !listed {
 			continue
 		}
-		key := footnoteLabelKey(string(definition.Ref))
+		key := FootnoteLabelKey(string(definition.Ref))
 		if _, first := byKey[key]; !first {
 			byKey[key] = definition
 		}

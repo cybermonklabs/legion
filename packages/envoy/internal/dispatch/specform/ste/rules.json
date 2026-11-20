@@ -1,0 +1,47 @@
+{
+  "max_words": 25,
+  "phrasal_verbs": [
+    "spin(?:ning|s)? up",
+    "spun up",
+    "reach(?:ing|es|ed)? out",
+    "div(?:e|es|ing|ed) into",
+    "dove into",
+    "kick(?:ing|s|ed)? off",
+    "circl(?:e|es|ing|ed) back",
+    "touch(?:ing|es|ed)? base"
+  ],
+  "marketing_adjectives": [
+    "seamless(?:ly)?",
+    "robust(?:ly)?",
+    "cutting-edge",
+    "effortless(?:ly)?",
+    "blazing[- ]fast",
+    "world-class",
+    "state-of-the-art",
+    "game-chang(?:ing|er)"
+  ],
+  "nominalization_verbs": [
+    "perform",
+    "performs",
+    "performed",
+    "conduct",
+    "conducts",
+    "conducted",
+    "carry out",
+    "carries out",
+    "carried out"
+  ],
+  "nominalization_suffixes": ["tion", "sion", "ment", "ance", "ence", "ysis"],
+  "synonym_groups": [
+    ["check", "verify", "confirm", "validate"],
+    ["delete", "remove", "erase"],
+    ["start", "launch", "begin", "initiate"],
+    ["stop", "halt", "terminate"],
+    ["show", "display"],
+    ["use", "utilize", "employ"],
+    ["fix", "repair", "correct"],
+    ["send", "transmit"],
+    ["get", "retrieve", "fetch", "obtain"],
+    ["change", "modify", "alter"]
+  ]
+}

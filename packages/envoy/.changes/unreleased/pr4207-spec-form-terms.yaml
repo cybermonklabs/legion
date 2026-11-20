@@ -1,0 +1,42 @@
+kind: Added
+body: |-
+  Dispatch refuses an approval request and a person's approval that hold a second definition of a
+  term of The Spec. A definition is a term line "- **<term>**: <definition>" under a heading Terms.
+  A reopen and the repair pass leave such a request resolved, with the finding as its reason. The
+  list of terms of a root holds the term lines of the versions that a person approved. These are
+  the root's terms.md and each covered spec and Verification document under the root. The list
+  holds one definition of each term. The root's terms.md comes first. Of the definitions of one
+  term in other documents, the list holds the one that joined first, and each definition has its
+  own time. A definition joins at the later of two events: the move that last brought its issue
+  under the root, and an approval. That approval is the first one of the earliest approved version
+  of its document from which each later approved version holds the term. Dispatch reads that move
+  from the events of the issues, which each release writes for each move. So a move into the root,
+  or inside it, changes no definition that the list holds, whichever release made the move. The
+  read of the other document names the listed one. When the document that the list keeps a term
+  from leaves the root, the list holds the definition that joined next. The name of a term is its
+  bold text as the page shows it, so code font makes no second name. Dispatch compares the names
+  of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run
+  of spaces as one space. After that form, a name holds only the letters a to z, the digits 0 to 9,
+  spaces and hyphens. It holds at least one letter or digit. A name with another character, or with
+  no letter and no digit, breaks the form. A person's approval and a move into a root take the lock
+  of the root's list. So two writes at one time cannot both add a definition of one term. The
+  finding names the term and the document that defines it. A definition with no sentence, or with
+  more than one, also breaks the form, and a sentence holds a word with a letter. A footnote of a
+  definition is part of it, and the finding of such a definition names the footnote. When Dispatch
+  cannot read the latest approved version of a document under the root, a request that holds a
+  definition is refused, naming that document. An older approved version that Dispatch cannot read
+  only orders the list, as a version with no term, so it refuses nothing. Each answer names both
+  kinds in unread, also an answer about the document of that version. When such an older version
+  moves a term to another document, Dispatch refuses a new version of the first document with its
+  definition. That holds until the person approves a version of the other document without the
+  term. A line under a heading Terms that is no term line breaks it too. So does a
+  heading whose text reads as Terms in another form, such as "## TERMS" or "## Terms:". Emphasis
+  is no part of that text, so
+  "## **Terms**" is the heading Terms. A line of the term-line form in another place is no
+  definition, and it adds no term. That holds also in a block quote, a list item, a callout, a
+  decision block or a footnote. A line in code or in a table cell is no such line. It breaks the form when a
+  definition defines its name. That is a term of the list, or a term line under Terms of any
+  document of the request. Two such lines of one name that nothing defines break nothing. GET
+  /api/v1/artifacts/{id}/spec-form answers the list of terms of the document's root.
+custom:
+    Issue: pr4207

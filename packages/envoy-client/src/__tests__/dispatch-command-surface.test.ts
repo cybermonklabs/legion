@@ -231,6 +231,32 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "text") return response({ markdown: "# Spec\n", version: 1 });
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
+    // The issue's spec, covered by a root of The Spec and holding no text that breaks its form,
+    // as `getArtifactSpecForm` answers it.
+    if (rest === "spec-form") {
+      return response({
+        artifact_id: ARTIFACT_ID,
+        name: "spec.md",
+        version: 1,
+        in_scope: true,
+        scope: "covered",
+        plays: "spec",
+        root: "DSP-100",
+        texts: {
+          statement: 2,
+          claim: 0,
+          procedure: 0,
+          failing_example: 0,
+          name: 0,
+          purpose: 1,
+          definition: 0,
+        },
+        findings: [],
+        findings_total: 0,
+        terms: [],
+        refuses_approval: false,
+      });
+    }
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
     if (rest === "versions/2/reviews" && method === "POST") return response(reviewBody(), 201);
     if (rest === "suggestions") {

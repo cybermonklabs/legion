@@ -252,7 +252,7 @@ func holdsAContainerTheBrowserDrops(doc *Node) bool {
 }
 
 // footnoteLabelSet is every label a document's footnote definitions carry, wherever they stand,
-// kept two ways: as the browser editor's parser compares labels (footnoteLabelKey), since it
+// kept two ways: as the browser editor's parser compares labels (FootnoteLabelKey), since it
 // matches a reference to its definition whatever the case, and lowercased, as this renderer
 // compared them before it did, since text escaped then must be escaped still.
 type footnoteLabelSet struct {
@@ -265,7 +265,7 @@ type footnoteLabelSet struct {
 // reference to a defined label, or this renderer escaped it when it lowercased labels. An escape
 // the parser does not need reads back as the same text.
 func (labels footnoteLabelSet) refersTo(label string) bool {
-	return labels.keys[footnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
+	return labels.keys[FootnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
 }
 
 func definedFootnoteLabels(doc *Node) footnoteLabelSet {
@@ -274,7 +274,7 @@ func definedFootnoteLabels(doc *Node) footnoteLabelSet {
 	walk = func(node *Node) {
 		if node.Type == "footnote_definition" {
 			if label, ok := node.Attrs["label"].(string); ok {
-				labels.keys[footnoteLabelKey(label)] = true
+				labels.keys[FootnoteLabelKey(label)] = true
 				labels.lowered[strings.ToLower(label)] = true
 				runeCount := 0
 				for range label {

@@ -432,6 +432,13 @@ chooses each, so two instances never collide; set, the port is used as given, an
 fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.ts`), and a Ctrl-C
 ends a psql in flight too.
 
+`DISPATCH_E2E_SPEC_ROOTS` names the roots of The Spec for the server, which `e2e/run-server.sh`
+passes on as `DISPATCH_SPEC_ROOTS`.
+Unset, the root is `STE-1`, which the seeded workspace does not hold.
+Empty, the server names no root.
+To try the refusal of an approval request here, set it to the key of an issue that you make.
+Then give a child of that issue a spec.
+
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
 database and the

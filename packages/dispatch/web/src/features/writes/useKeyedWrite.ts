@@ -32,8 +32,9 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
   readonly label: (variables: TVariables) => string;
   /** Whether this surface shows a refusal itself (a form the reader is in front of): the
-   *  indicator then shows the write only while it is out. A function decides it per write. */
-  readonly inline?: boolean | ((variables: TVariables) => boolean);
+   *  indicator then shows the write only while it is out. A function decides it per write, from
+   *  its variables and the refusal, when Dispatch refuses it. */
+  readonly inline?: boolean | ((variables: TVariables, refusal: Error) => boolean);
   /** An upload's file, kept across a reload with the write. */
   readonly file?: (variables: TVariables) => File | undefined;
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
@@ -314,7 +315,8 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         detail: null,
         endsWithSession,
         file: file?.(variables),
-        inline: typeof inline === "function" ? inline(variables) : inline,
+        inline:
+          typeof inline === "function" ? (refusal: Error) => inline(variables, refusal) : inline,
         key,
         keyed,
         kind: plainWrite,

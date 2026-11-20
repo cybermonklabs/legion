@@ -171,6 +171,7 @@ const validCalls = {
     ops: [{ op: "replace", find: "old", with: "new" }],
   },
   dispatch_doc_read: { issue: "DSP-1" },
+  dispatch_spec_form: { issue: "DSP-1" },
   dispatch_request_approval: {
     issue: "DSP-1",
     summary: "A live sync replaces the nightly export.",
@@ -297,6 +298,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
+      "dispatch_spec_form",
       "dispatch_request_approval",
       "dispatch_plan_approve",
       "dispatch_review",
@@ -1488,6 +1490,47 @@ describe("dispatchToolSpecs", () => {
       schema.safeParse({ issue: "DSP-1", summary: "Proposes a live sync in place of the export." })
         .success
     ).toBe(true);
+  });
+
+  test("dispatch_spec_form reads one owner's documents, or walks a root named alone", () => {
+    const schema = schemaFor("dispatch_spec_form");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rootRule =
+      "root walks every issue under that root: name no issue, project, artifact, version, ref or terms with it.";
+
+    for (const args of [
+      { issue: "DSP-1" },
+      { issue: "DSP-1", artifact: "spec.md", version: 2 },
+      { project: "CORE", artifact: "runbook.md" },
+      { ref: "dispatch://DSP-1/spec@v2" },
+      { root: "DSP-1" },
+      { issue: "DSP-1", terms: true },
+      { issue: "DSP-1", artifact: "spec.md", version: 2, terms: true },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(refusals({ project: "CORE" })).toEqual([
+      "Exactly one of issue and project is required; with project, artifact names the document.",
+    ]);
+    for (const extra of [
+      { issue: "DSP-2" },
+      { project: "CORE" },
+      { artifact: "spec.md" },
+      { version: 2 },
+      { ref: "dispatch://DSP-2/spec" },
+      { terms: true },
+    ]) {
+      expect(refusals({ root: "DSP-1", ...extra }), JSON.stringify(extra)).toEqual([rootRule]);
+    }
+    expect(schema.safeParse({ issue: "DSP-1", version: 0 }).success).toBe(false);
+    expect(schema.safeParse({ issue: "DSP-1", terms: "yes" }).success).toBe(false);
+  });
+
+  test("dispatch_spec_form's description says what it reads, that it writes nothing, and what root and terms list", () => {
+    expect(specFor("dispatch_spec_form").description).toBe(
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers. With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it."
+    );
   });
 
   test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {

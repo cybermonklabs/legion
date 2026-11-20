@@ -222,6 +222,41 @@ export function pathKeepsBytesOf(name: string): boolean {
 
 const artifactOwner = documentOwnerValidation(false);
 
+/** What dispatch_spec_form says of root beside any argument of a read of one document. */
+const SPEC_FORM_ROOT_RULE =
+  "root walks every issue under that root: name no issue, project, artifact, version, ref or terms with it.";
+
+/** The arguments of a read of one document, which a walk of a root takes none of. */
+const SPEC_FORM_DOCUMENT_ARGUMENTS = [
+  "issue",
+  "project",
+  "artifact",
+  "version",
+  "ref",
+  "terms",
+] as const;
+
+const specFormDocumentOwner = documentOwnerValidation(true);
+
+/**
+ * dispatch_spec_form reads one document, or the spec and the Verification document of one issue,
+ * under the document-owner rule. With root, it walks the issues under that root, which names them
+ * all, so no argument of a read of one document (terms among them) goes beside it. The schema hands
+ * each callback the parsed arguments object.
+ */
+const specFormValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const input = value as Readonly<Record<string, unknown>>;
+    if (input["root"] === undefined) return specFormDocumentOwner.check(value);
+    return SPEC_FORM_DOCUMENT_ARGUMENTS.every((name) => input[name] === undefined);
+  },
+  message: `${specFormDocumentOwner.message} ${SPEC_FORM_ROOT_RULE}`,
+  refusal: (value) => {
+    const input = value as Readonly<Record<string, unknown>>;
+    return input["root"] === undefined ? specFormDocumentOwner.message : SPEC_FORM_ROOT_RULE;
+  },
+};
+
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
  *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
  *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
@@ -1566,6 +1601,47 @@ export const dispatchToolSpecs = [
         .optional(),
     }),
     validation: documentOwnerValidation(true),
+  },
+  {
+    name: "dispatch_spec_form",
+    example: { issue: "DSP-1" },
+    description:
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. " +
+      "It lists each statement, check, component purpose and term that breaks the form, with its rule. " +
+      "It writes nothing. " +
+      "It says whether the document is under a root of The Spec, and how many texts it read. " +
+      "With root, it lists each issue under that root and the form of each document that the root covers. " +
+      "With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it.",
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      project: z.string().describe("Project key owning the document.").optional(),
+      artifact: z
+        .string()
+        .describe(
+          "Optional document artifact id, slug, or filename. Without it, the command reads the spec and the Verification document of the issue."
+        )
+        .optional(),
+      version: z
+        .number({ int: true, min: 1 })
+        .describe(
+          "Optional version number. Without it, the command reads the latest settled version, which an approval request would name."
+        )
+        .optional(),
+      root: z
+        .string()
+        .describe(
+          "An issue key. The command lists each issue under that root, with the form of the spec and the Verification document of each issue. Name no other argument with it."
+        )
+        .optional(),
+      ref: z.string().describe("Optional dispatch:// document reference.").optional(),
+      terms: z
+        .boolean()
+        .describe(
+          "List the terms of the document's root, each with its definition and the document that defines it, in place of the findings."
+        )
+        .optional(),
+    }),
+    validation: specFormValidation,
   },
   {
     name: "dispatch_request_approval",

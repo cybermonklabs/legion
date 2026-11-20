@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -142,6 +143,15 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, ledger *d
 // rows as those writes leave them. It answers the restored asks, oldest id first, as the reopen
 // restored them, for recordRestoredAsksTx.
 //
+// An approval request is judged first, at the versions it names, by the form of The Spec
+// (specFormOf, spec_form.go): one a text of whose covered documents breaks the form is not opened
+// again. It is recorded resolved, with kind resolved and the findings as its reason
+// (specform.ActRestore), naming actor, and recordRestoredAsksTx queues one ask.resolved event for
+// it after the ask.opened events. It has no block, so no document write changes, and the
+// resolution takes it out of withdrawnAsk, so no later restore or repair finds it again. Its
+// author reads the findings. It answers those requests too, oldest id first, beside the restored
+// asks.
+//
 // It also marks owing a settlement each document of the issue whose ask blocks a settlement after
 // the reopen has to reconcile (docs.MarkReopenOwedAskDocuments), reading the rows as the restore
 // leaves them, open: one that holds an ask block no settlement has indexed, which a settlement
@@ -153,7 +163,7 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, ledger *d
 // to its recorded author, retracts a restored ask whose block left, and restores the retracted
 // ask. Its pending rows are queued after the ask-state write and before the first event, and no
 // copy lock comes after them (docs.lockProjectCopies).
-func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, error) {
+func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) (restored, leftResolved []model.Ask, err error) {
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
@@ -161,30 +171,60 @@ func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey str
 		order by a.id
 	`, issueKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	restored := make([]model.Ask, 0, len(withdrawn))
+	type brokenRequest struct {
+		ask    model.Ask
+		reason string
+	}
+	var broken []brokenRequest
+	reopening := make([]model.Ask, 0, len(withdrawn))
 	for _, ask := range withdrawn {
+		if ask.Kind == "approval" && ask.Approval != nil {
+			form, err := s.specFormOf(ctx, tx, ask.Approval.Documents, specform.ActRestore)
+			if err != nil {
+				return nil, nil, err
+			}
+			if refusal := form.refusal(specform.ActRestore); refusal != nil {
+				broken = append(broken, brokenRequest{ask: ask, reason: refusal.Error()})
+				continue
+			}
+		}
+		reopening = append(reopening, ask)
+	}
+	restored = make([]model.Ask, 0, len(reopening))
+	for _, ask := range reopening {
 		ask.State = "open"
 		ask.Answer = nil
 		ask.Resolution = nil
 		restored = append(restored, ask)
 	}
 	if err := docs.WriteRestoredAsks(ctx, tx, restored); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	leftResolved = make([]model.Ask, 0, len(broken))
+	for _, request := range broken {
+		ask, err := docs.WriteAskResolution(ctx, tx, request.ask, specFormRestoreResolution, request.reason, actor)
+		if err != nil {
+			return nil, nil, err
+		}
+		leftResolved = append(leftResolved, ask)
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return restored, nil
+	return restored, leftResolved, nil
 }
 
 // recordRestoredAsksTx is the reopen's second half: it indexes the parts of each of restored, the
 // asks prepareRestoration wrote back open, and queues one ask.opened event for each, whose actor
-// is actor, the reopener, as settlement's own restoration of an ask appends.
+// is actor, the reopener, as settlement's own restoration of an ask appends. Then it queues one
+// ask.resolved event, whose actor is actor too, for each of leftResolved, the approval requests
+// prepareRestoration left resolved for the form of The Spec, so a request is never seen to reopen
+// before its resolution.
 //
 // Once those events are queued, it does for each document of the issue what a settlement while
 // the issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open
@@ -193,17 +233,20 @@ func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey str
 // version, as the version's own write does on an open issue. A document with updates its latest
 // version does not hold, this reopen's ask-state write among them, is left to the settlement that
 // saves them, whose version's own write does both. The move and the carry are queued after the
-// ask.opened events, so a restored request reopens before it moves or a carry answers it, and they
-// take no copy lock and write no pending row. It then forgets the editor a settlement while the
-// issue was closed kept for each document that owes no settlement (doc_closed_edit_sources); a
-// document that owes one keeps it until that settlement deletes it (docs.clearSettlementPending).
-// The follow reads the versions, the requests and the asks' events and renders each version it
-// carries over, so its caller runs this in the transaction's read phase; the events it appends
-// reach the ledger, which publishes them as Commit ends, ahead of the ones this answers.
+// ask.opened events and after the ask.resolved events of the requests left resolved, so a
+// restored request reopens before it moves or a carry answers it, and a request left resolved is
+// not moved, and they take no copy lock and write no pending row. It then forgets the editor a
+// settlement while the issue was closed kept for each document that owes no settlement
+// (doc_closed_edit_sources); a document that owes one keeps it until that settlement deletes it
+// (docs.clearSettlementPending). The follow reads the versions, the requests and the asks' events
+// and renders each version it carries over, so its caller runs this in the transaction's read
+// phase; the events it appends reach the ledger, which publishes them as Commit ends, ahead of the
+// ones this answers.
 //
-// It answers the ask.opened events, filled in once Commit has run the write phase.
-func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, issueKey string, restored []model.Ask, actor model.Actor) ([]*model.Event, error) {
-	appended := make([]*model.Event, 0, len(restored))
+// It answers the ask.opened and ask.resolved events, filled in once Commit has run the write
+// phase.
+func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, issueKey string, restored, leftResolved []model.Ask, actor model.Actor) ([]*model.Event, error) {
+	appended := make([]*model.Event, 0, len(restored)+len(leftResolved))
 	restoredAt := time.Now().UTC()
 	for _, ask := range restored {
 		// The restore took each ask's answer off, which removes its answer part: the index is
@@ -222,11 +265,24 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		}
 		appended = append(appended, event)
 	}
+	for _, ask := range leftResolved {
+		event, err := s.queueLoggedEvent(ledger, issueOwner(issueKey).event(
+			"ask.resolved", actor, model.NewAskEventPayload(ask, model.ReferenceChanges{}),
+		), events.ThreadLoginsOf(ask.ID), "", "")
+		if err != nil {
+			return nil, err
+		}
+		appended = append(appended, event)
+	}
 	if err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey); err != nil {
 		return nil, err
 	}
 	return appended, nil
 }
+
+// specFormRestoreResolution is the resolution kind of an approval request a restore leaves
+// resolved for the form of The Spec: resolved, not withdrawn, so withdrawnAsk no longer holds for it.
+const specFormRestoreResolution = "resolved"
 
 // sweepClosedIssueAsks is the close's last pass over its issue's documents, run once the close
 // has committed. The commit's notification (migration 20261101181500's trigger) closes the issue's

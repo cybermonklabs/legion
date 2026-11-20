@@ -114,6 +114,8 @@ var settings = []setting{
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
 		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+	{Name: "DISPATCH_SPEC_ROOTS", Default: "no document is judged for the form of The Spec", Required: "no",
+		Description: "Issue keys of the roots of The Spec, separated by commas. Dispatch judges the spec and Verification documents under each root, and the root's terms.md. It refuses an approval request or an approval when one of their texts breaks the form of The Spec."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",

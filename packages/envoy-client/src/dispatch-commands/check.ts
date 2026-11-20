@@ -537,6 +537,11 @@ export async function resolveOwnerArguments(
   if (tool === "dispatch_result" && typeof args["retract"] === "string") {
     return { args, ref, owner: null };
   }
+  // A walk of a root names the issues it reads by the root alone. LEGION_ISSUE must not fill an
+  // issue in here: the schema refuses any argument that names a document beside root.
+  if (tool === "dispatch_spec_form" && typeof args["root"] === "string") {
+    return { args, ref, owner: null };
+  }
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);

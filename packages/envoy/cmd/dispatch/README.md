@@ -1893,10 +1893,14 @@ an open issue holding `withdrawn` asks gets them restored, attributed to the act
 and a closed issue that holds open asks, or whose documents owe a settlement marked since the last pass (at boot, the last 10 minutes;
 on the first interval pass, any), gets the close's final sweep in the same write of each document, which writes block `state` attributes only, never an ask row or a record.
 The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
+A restore leaves an approval request `resolved` when its covered document breaks the form of The Spec, as a reopen does (`PATCH /api/v1/issues/{key}`, below).
+Its reason names the findings.
 A document whose stored history does not load is logged and left as it is, as the close leaves it.
 Each record is dated when the pass writes it.
+Both passes run on the dependencies that the routes run on (`routes.AppContext.APIDeps`).
+So a pass reads the roots of The Spec (`DISPATCH_SPEC_ROOTS`) as a reopen does.
 A pass logs `dispatch: repaired the asks of closed and reopened issues` with `withdrawn=<n> restored=<n>
-swept=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
+swept=<n> left_resolved=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
 each interval pass that listed its candidates moves the bound to one interval before its own start, and carries every issue it did not repair, failed or not reached, into the next pass.
 The bound and the carried issues live in the memory of the process that ran the pass, not in the database:
 when the lease moves to another process, that process's pass starts from its own bound and its own carried issues (on its first interval pass, no bound, so it sweeps every closed issue whose documents owe a settlement), and never sees the issues the other process carried.
@@ -4432,7 +4436,10 @@ Each item below names a path with its method and identity, then its purpose.
   it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
   An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
-  A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
+  it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
+  The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
   For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
   A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
@@ -4495,6 +4502,9 @@ Each item below names a path with its method and identity, then its purpose.
   A stale value, or one sent for an open ask, is `409 ASK_ANSWER_CHANGED`; a different person is `403 NOT_ANSWERER`; an approval is `409 ASK_APPROVAL_REVIEW`.
   A change appends another `ask.answered` with `previous_answer`.
   An approval ask is moved to each document version before the human sees it, and an `ASK_EDITED` response means the question changed after the human reviewed it, so they reload and answer the moved request.
+  `Approve` of a request is `409 SPEC_FORM` with nothing written when a text of a covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below).
+  Its `changes_reason` is the text that `Request changes` sends to the author.
+  `Request changes` is never refused.
   On a block ask the answer is written into its block, and a changed answer without text removes the block's old `answer`.
   Its words and the options it chooses, whose labels are the asker's text, are weighed:
   where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when.
@@ -4931,11 +4941,32 @@ Each item below names a path with its method and identity, then its purpose.
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
   It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-  it is empty for a document that is not a spec.
+  Two parts of the route have items of their own:
 
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+  - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
+    it is empty for a document that is not a spec.
+    It never names a missing plan task, since the plan comes after the approval;
+    a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+
+  - A covered text that breaks the form is `409 SPEC_FORM` (The form of The Spec, below).
+
+- `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
+
+  Read the form of The Spec in one version of a document, with no side effect.
+  The version is `?version=N`, or else the latest settled version, which an approval request would name.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, unread, refuses_approval}`.
+  `scope` is `covered` or `list` when the document is in scope.
+  `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
+  `outside` means that no named root holds the issue, or that the document has no issue.
+  `not_spec` is a document under a root that is not the spec or the Verification document.
+  `plays` is `spec`, `verification` or empty, and `root` is the nearest named root above the document, or `null`.
+  The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
+  `terms` is the list of terms of the root, sorted by term, each `{term, definition, document, version, issue}`.
+  It is empty when no root holds the document.
+  `unread` is each approved version under the root that Dispatch cannot read, also a version of this document (When Dispatch cannot read a version, below).
+  A version that the document does not have is `404 VERSION_NOT_FOUND`.
+  A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
+  Without `version`, a document with no settled version is `409 NO_VERSION`.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 
@@ -5075,6 +5106,228 @@ an edit of an ask's question or a comment's body that changes the head of its te
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
 An issue write that adds or removes a `blocked_by` entry names each blocker it added or removed, whose `referenced_by_count` counts the edge, and an `issue.created` names every blocker the new issue holds.
 Each field is absent from an event written before it existed.
+
+## The form of The Spec
+
+`DISPATCH_SPEC_ROOTS` names the roots of The Spec, issue keys separated by commas.
+A document is covered when its issue has a root as its nearest named ancestor and the document is the issue's spec or Verification document.
+The `terms.md` (slug `terms-md`) of a root is covered too.
+No other document of a root is covered, and an issue that is a root inside another root covers its own subtree.
+
+`POST /api/v1/artifacts/{id}/approval-requests` judges each covered document at the version that the request hands the person.
+With no request open, these are the documents that the request names.
+With a request open, they are the documents that the open request names.
+These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
+Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
+The reviewer of R25 reads each text for what these rules cannot refuse.
+
+- Which texts Dispatch judges: a statement, the claim and the procedure of a check, the purpose of a component and the definition of a term.
+  A statement is a `requirement` block or an entry line, and a check is a `check` block with its `run` and its `negative_control`.
+  A component is a heading of a component or an interface with the paragraph under it.
+  It is also a row of the components table, by its Name and Purpose cells.
+  A term is a term line under a heading `Terms`.
+  Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
+  The reviewer of R25 reads the page for that prose.
+
+- How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
+  A block in a code block or in a table cell is no block.
+  Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
+  A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
+  The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
+  The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
+  So code font hides no name or link, also when it holds the whole name or a part of it.
+  These rules also read each address and title of a link or an image.
+  An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
+  A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
+  A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
+  A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
+
+- How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
+  A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
+  So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
+  A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
+  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word.
+  None of its stops ends a sentence, also the last one before a space.
+  So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
+  Nothing in code font ends a sentence.
+  A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
+  Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+  A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
+  Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
+  A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+  `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
+  Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
+  Code font works only when at most 25 words stay outside it, because nothing in code font ends a sentence or counts as a word.
+  An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
+  A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
+  So write the steps with words.
+  The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
+A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+
+- How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+  The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
+  `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
+  A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+  So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
+  The finding of each rule lists the forms that it reads.
+
+- How the rules read a person and a record: a person's name is the name of one person who signed in.
+  It is the parts of that person's email, in order, each with a capital letter.
+  A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
+  So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+  Each part of a name is a whole word, as the next item says, so `Ada Lovelace2` names no person.
+  Parts of the emails of two people are no name.
+  A part that is a word of an approved component name or term is no part of a name.
+  Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
+  The way out is to write the name of the system as the person approved it.
+  A letter such as `é` can be one character, or a letter and a combining mark.
+  Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
+  The reviewer of R25 reads such a text.
+  An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
+  A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
+  So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
+  A bare key of a project of Dispatch, such as `ACME-12`, names a record of Dispatch, also when no record has that key.
+  A key of another project, such as `UTF-8` or `SHA-256`, names nothing.
+  A bare id such as a UUID names a record of Dispatch too, also when no record has it.
+  Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
+  The rules also read the name of a term (kind `term`).
+
+- When a form is a whole word: each form of a name above, a key and an id among them, is a whole word.
+  A character of a word right before it or right after it makes it part of a longer word, which names nothing.
+  A character of a word is a letter, a mark, a decimal digit or `_`, of any script, so `#12abcd` and `#12é` name no pull request.
+  Some forms also continue with other characters: `@` before a handle, and `/` or `@` after it.
+  So the package `@types/node` names no person.
+  `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
+  A `:` that no white space follows continues an email address, so the SSH address `git@github.com:owner/repo.git` names no person.
+  An email address and a handle take the characters of a word beside them into their own parts.
+  So `xada@example.com` is an email address too.
+  A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
+  So a letter of another script in one of them makes it no form.
+  A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
+  So write such a colour in words.
+  A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
+  So it names nothing, and the reviewer of R25 reads such a text.
+
+A definition of a term has one sentence, and a term has one definition.
+A footnote of a definition is part of it, so the sentences of the footnote count.
+The finding of such a definition names the footnote.
+It tells the writer to put what the footnote says in the one sentence, or to remove the footnote.
+An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
+So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
+A definition is a term line: `- **<term>**: <definition>` under a heading `Terms`, at any level.
+The list of terms holds these definitions, and no approval adds a second definition of a listed term.
+Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
+So a decision block under that heading breaks the form at its question line.
+A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
+The finding names the line by its text, and it names two ways out.
+A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
+A decision block goes above the heading.
+A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
+Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
+Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.
+A line of the term-line form in another place is no definition, and it adds no term to the list.
+That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
+A list item in a footnote is one too, because a footnote stands in no part of `Terms`.
+A line in a code block or in a table cell is no such line.
+A reader takes such a line for a second definition when it names a defined term.
+So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
+That definition is a term of the list, or a term line under `Terms` of any document of the request, its own document included.
+The order of the documents in a request changes no answer.
+Its finding names the definition.
+It tells the writer to change the form of the line.
+If the line is a definition, it tells the writer to use the definition there or to change it.
+Two such lines of one name that no definition defines are prose, and they break nothing.
+This refusal helps an honest writer, and it has a limit.
+Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.
+So a later definition of that name under `Terms` is approved, and the document with the line is refused at its next request.
+No program refuses a definition in prose, so the reviewer reads each statement for a term that it uses with another meaning.
+The name of a term is its bold text as the page shows it, so code font makes no second name: `` `lease` `` and `lease` are one term.
+After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
+It holds at least one letter or digit.
+A name with another character, or with no letter and no digit, breaks the form (rule `term-name`).
+The finding names each such character with its code point.
+So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
+A full-width letter or a ligature folds to its plain letters.
+
+- When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
+  An earlier release can store one too.
+  Settlement stores the markdown of the editor's tree, and it does not read that markdown back.
+  An example is a footnote that the editor moves into a callout in a list item.
+  A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
+  So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
+  Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
+  Each answer names it in `unread`, one line for each, also an answer about that document itself.
+  A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
+  Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
+  No rule compares the texts of that version, so its component names are no nouns of the system.
+  Its terms are no part of the list either, and its line in `unread` says that the list can lack them.
+  The way out of both is a new version of that document, and for the approved document its approval.
+  Under a root, Dispatch refuses the approval of such a version.
+  So such an approved version comes from an approval outside a root or from an earlier release.
+  The page shows the `unread` lines only in a refusal, because the header and the cards of a request do not read the form.
+  When two such approved documents hold definitions, each one refuses the new version of the other that holds a definition.
+  So write the new version of one of them first with no definition, and the finding says so.
+  When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
+  So the definition of another document can govern the term then, and no person approved that change.
+  Then Dispatch refuses a new version of that document with its definition, until the person approves a version of the other document without the term.
+  The list reads no older version, so such a version refuses no request, and a new version changes nothing of it.
+  Each answer names that version in `unread`, with a line that says that it changes the order alone.
+
+The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
+Dispatch reads the latest version of each that a person approved.
+A judgment compares a document with that list less the documents that it judges, and each answer gives the whole list.
+Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
+That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
+The list holds one definition of each term.
+The root's `terms.md` comes first.
+Of the definitions of one term in other documents, the list holds the one that joined it first, and each definition has its own time.
+A definition joins the list at the later of two events.
+The first is the move that last brought its issue under the root.
+The second is the first approval of the earliest approved version of its document from which each later approved version holds the term.
+So a term that a later version adds joins at the approval of that version.
+A definition that a later version changes keeps its time.
+Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
+So the release that made a move changes no order, and a rollback to an earlier release changes none.
+The setting decides which issues are roots at each move, also at a move from before the setting named that root.
+Dispatch orders these by its events.
+Two definitions that joined at one move come in the order of their approvals.
+So a move into the root or inside it changes no definition that the list holds.
+An approval from before the setting named the root changes none either.
+The read of the other document names the definition that the list holds as a finding.
+When the document that the list keeps a term from leaves the root, the list holds the definition that joined next.
+A move changes no text.
+A definition of a term of the list also breaks the form.
+So does a second definition of a term in the documents that one request names.
+The finding names the term and the document that defines it.
+To change a definition, change the document that defines it, and request approval of that document.
+A person's approval takes the lock of the root's list before it reads the list.
+A move into the root takes that lock before it writes its event.
+So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
+While an earlier release serves beside this one, its move takes no lock.
+So its move and an approval at one time can join the list in either order.
+An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
+
+A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+`findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
+A person's approval of a covered document gets the same refusal through three routes.
+These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
+That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
+A request for changes is never refused.
+When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+`texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+A refusal writes each `unread` line before its last line.
+`terms` counts the terms of the root's list.
+A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.
+These are the carried version and each other document of the open request, at the version that the request names.
+So Dispatch carries no approval to a version whose text breaks the form.
+It answers no request that names a document whose text breaks the form either.
+The person's own Approve then gets the refusal.
+A document service that has no gate, such as the one that a backfill command builds, carries no approval.
+An approval given outside a root was never judged, and it stays when its issue moves under the root.
+`GET /api/v1/artifacts/{id}/spec-form` shows the findings and the list of terms with no side effect.
 
 ## Dispatch topics
 

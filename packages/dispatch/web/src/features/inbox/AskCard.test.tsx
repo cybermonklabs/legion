@@ -21,6 +21,8 @@ import type {
   Comment,
   CreateCommentInput,
 } from "../../api/types";
+import { growingField } from "../../theme/classes";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
@@ -476,6 +478,31 @@ for (const variant of ["full", "compact"] as const) {
     }
   });
 }
+
+// The reason Dispatch writes after a form refusal fills the card's answer field. Inside
+// `NoTooltips` that field grows with its text up to half the window (`growingField`), and an
+// empty one stays two lines tall (`min-h-16!`), so Answer stays on the screen; outside it keeps
+// main's fixed field. happy-dom lays nothing out, so this reads the classes that ask the browser
+// for that sizing, on both sides of `NoTooltips`.
+test("inside NoTooltips an approval card's answer field grows with its text, and outside it keeps main's fixed field", async () => {
+  const growth = [...growingField.split(" "), "min-h-16!"];
+  for (const inside of [true, false]) {
+    const ask = approvalAsk();
+    const card = <AskCard ask={ask} initialThread={thread(ask)} />;
+    const { view } = renderCard(inside ? <NoTooltips>{card}</NoTooltips> : card);
+    try {
+      await within(view.container).findByRole("radio", { name: "Approve" });
+      const field = view.container.querySelector<HTMLTextAreaElement>("textarea[data-ask-answer]");
+      expect(field, "the card's answer field").not.toBeNull();
+      const classes = field?.className.split(/\s+/) ?? [];
+      for (const token of growth) {
+        expect(classes.includes(token), `${inside ? "inside" : "outside"}: ${token}`).toBe(inside);
+      }
+    } finally {
+      view.unmount();
+    }
+  }
+});
 
 test("a first approval request shows no earlier approval and no diff control", async () => {
   const ask = approvalAsk();

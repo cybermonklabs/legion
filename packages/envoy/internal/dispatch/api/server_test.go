@@ -60,7 +60,10 @@ type testServerOptions struct {
 	// empty is the deployment that configured neither.
 	newIssueLabel   string
 	newIssueSession string
-	testHooks       bool
+	// specRoots names the roots of The Spec (DISPATCH_SPEC_ROOTS), issue keys separated by commas;
+	// empty is the deployment that names none, whose form gate covers no document.
+	specRoots string
+	testHooks bool
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -95,6 +98,10 @@ type testServerOptions struct {
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
+	// documentSocket gives the document service the header identity, so a browser peer
+	// (connectBrowserPeer) can open a document's socket as alice, as a person's editor does; false
+	// is every test that edits no document through its socket.
+	documentSocket bool
 	// agentStream is the live agent conversation relay; nil is the deployment with no NATS,
 	// where an agent view is refused STREAM_UNAVAILABLE.
 	agentStream agentstream.Source
@@ -254,7 +261,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	var socketIdentity identity.Identity
+	if options.documentSocket {
+		socketIdentity = headerIdentity(database)
+	}
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: socketIdentity})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -279,6 +290,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		DefaultProject:         options.defaultProject,
 		NewIssueLabel:          options.newIssueLabel,
 		NewIssueSession:        options.newIssueSession,
+		SpecRoots:              options.specRoots,
 		ServerURL:              testServerURL,
 		Docs:                   documentService,
 		Events:                 broker,

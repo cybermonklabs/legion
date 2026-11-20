@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `dispatch spec-form --terms` prints the list of terms of the document's root in place of the
+  findings. Each line is a term, its definition, and the document, the version and the issue that
+  define it. Each approved version under the root that Dispatch cannot read gets its line before
+  the list, since the list can lack its terms, also when the document read is that document. The
+  details carry the list and those versions in `unread`, as Dispatch answers them. With no
+  `--artifact`, the command reads the list from the spec, or from the Verification document while
+  the spec has no version. For a key that names no issue, it prints what `dispatch read` prints and
+  exits 1.
+custom:
+    Issue: pr4207

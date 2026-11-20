@@ -88,6 +88,7 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  changes_reason?: string;
 }
 
 export class ApiError extends Error {
@@ -102,6 +103,9 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** The reason a request for changes sends to the author once Dispatch refused the person's
+   *  approval for the form of The Spec (`SPEC_FORM`); undefined on every other refusal. */
+  readonly changesReason: string | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -111,6 +115,7 @@ export class ApiError extends Error {
     this.state = payload.state;
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
+    this.changesReason = payload.changes_reason;
   }
 }
 
@@ -381,6 +386,13 @@ export function isAnchorMissing(error: unknown): boolean {
 // names what passed which bound, so a page shows those words rather than wording of its own.
 export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
+}
+
+// The server refusing an approval request, or a person's approval, because a text of The Spec in
+// the document breaks its form (409 `SPEC_FORM`). The refusal names each text and the rule it
+// breaks, so a page shows those words; the same document is refused again until it changes.
+export function isSpecFormRefusal(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "SPEC_FORM";
 }
 
 // The server refusing a write because its text holds a decision block, which nobody can answer

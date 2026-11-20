@@ -11,7 +11,9 @@
 # license file the nearest one whose license it can identify. It fails, writing nothing, when a
 # module has none, or when go-licenses classes its license as forbidden or of an unknown type. The
 # repository's own modules (every module `go list -m` names from here) are left out: they are this
-# repository's code.
+# repository's code. One package of that code is a port under another license, the hard rules of
+# ste-lint in internal/dispatch/specform/ste, so its MIT notice is written when the packages
+# compile it in.
 #
 # POSIX sh, so it runs in the golang:*-alpine build stages as well as on a runner.
 set -eu
@@ -109,11 +111,21 @@ section() {
   done
 }
 
+# The port of ste-lint's hard rules (internal/dispatch/specform/ste) is code of this repository
+# under ste-lint's MIT License, which go-licenses, reading modules, does not see. Its directory,
+# when the packages compile it in, holds that license.
+# shellcheck disable=SC2086
+ste_dir="$("$go_cmd" list -deps -f '{{if eq .ImportPath "github.com/sjawhar/envoy/internal/dispatch/specform/ste"}}{{.Dir}}{{end}}' $packages | awk 'NF')"
+
 {
   echo "Third-party software compiled into the Go programs these notices ship with, with each module's license."
   echo "Each module's source is published at the version shown under its module path, or, where a"
   echo "Source line names a replacement, under that path instead."
   section "Go standard library and runtime $go_version" "BSD-3-Clause" "$goroot/LICENSE"
+  if [ -n "$ste_dir" ]; then
+    section "ste-lint hard rules, ported into internal/dispatch/specform/ste" "MIT" "$ste_dir/LICENSE" \
+      "github.com/danyuchn/asd-ste100-skill@32511c6992ecb5f1971e46a2943f2e6adceedafe"
+  fi
   while IFS="$tab" read -r name version licenses path replaced; do
     section "$name@$version" "$licenses" "$path" "$replaced"
   done <"$scratch/modules.tsv"
