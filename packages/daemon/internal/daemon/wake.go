@@ -284,7 +284,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
 	// meets the open resume the take recorded and resumes the claim (the refused branch below).
 	var taken bool
-	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if taken, err = r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC()); err != nil || !taken {
 			return err

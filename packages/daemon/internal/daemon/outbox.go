@@ -74,7 +74,8 @@ type outbox struct {
 	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
 	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
 	// connection while its transaction holds one is refused at that call
-	// (store.ErrNestedAcquire).
+	// (store.ErrNestedAcquire). A transaction whose body calls a transaction-owning trees method
+	// opens on trees.Pool(), so that method joins it even in a rig whose tree store is separate.
 	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
@@ -176,10 +177,10 @@ type outbox struct {
 	wg      sync.WaitGroup
 }
 
-// outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, and a workflow tree close's cleanup.
+// stored claim's machine, a workflow tree close's cleanup, and the pool its transaction-owning
+// methods use.
 type outboxTrees interface {
+	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
@@ -3115,7 +3116,7 @@ func (r *outbox) issueSandboxName(issue string) string {
 // the commit's hook, so a cancel whose reply is lost and that the store says committed still says
 // so.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	return store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// The second answer is whether the release that was cancelled suspended no role: such a
 		// release resumes nothing, so the empty set of resumed roles is the whole story rather
 		// than a release whose claims another path took over, and the line must not say that the
