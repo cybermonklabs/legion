@@ -49,10 +49,14 @@ const (
 
 // client is the proxy-free transport this package's reason for being rests on; the package
 // comment says why it may never be http.DefaultClient. Its dial, name resolution included, is
-// bounded by ProbeTimeout: a machine that has a metadata server reaches it on its own link at
-// once, and a laptop whose resolver or network holds the metadata server's name learns within
+// bounded by ProbeTimeout (dialer): a machine that has a metadata server reaches it on its own link
+// at once, and a laptop whose resolver or network holds the metadata server's name learns within
 // that bound that it has none, whichever read asked.
-var client = &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: ProbeTimeout}).DialContext}}
+var client = &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}
+
+// dialer is client's dialer. It is named so that this package's test can read the deadline each
+// dial runs under, through its ControlContext, which nothing else here sets.
+var dialer = &net.Dialer{Timeout: ProbeTimeout}
 
 // tokenURL is the identity-token URL for audience, honouring MetadataHostVar.
 func tokenURL(audience string) string {

@@ -148,18 +148,15 @@ func (r *failedReads) record(room string) {
 	r.at[room] = append(r.at[room], time.Now())
 }
 
-// attempts is when the reconciliation tried to read room: the failed reads, with the reads one
-// attempt makes (a stamp, then a load) taken together.
+// attempts is when the reconciliation tried to read room: one attempt per failed read. A read of a
+// document stops at its first failure - the cold read (coldRead) reads the stamp first and returns
+// its error before it loads - so an attempt fails one read, whichever read it is, and two failed
+// reads are two attempts however close together a fast machine makes them or however far apart a
+// loaded one does.
 func (r *failedReads) attempts(room string) []time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var attempts []time.Time
-	for _, at := range r.at[room] {
-		if len(attempts) == 0 || at.Sub(attempts[len(attempts)-1]) > 100*time.Millisecond {
-			attempts = append(attempts, at)
-		}
-	}
-	return attempts
+	return slices.Clone(r.at[room])
 }
 
 // owedDocuments commits n project documents, each with one mention owed an excerpt, and returns

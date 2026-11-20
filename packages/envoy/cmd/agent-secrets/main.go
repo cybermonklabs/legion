@@ -1039,6 +1039,19 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 // NAME... -- <command> [args...]
 // ---------------------------------------------------------------------------
 
+// execWaitBackoffNote is a test-only build seam. It is unexported, and only a test build sets
+// it, with `-ldflags "-X main.execWaitBackoffNote=1"`: no release or image build sets it, so
+// every shipped binary carries it empty and prints nothing more. When it is set, the exec form's
+// wait prints execWaitBackoffNoteLine on stderr each time it sleeps its backoff. A test runs
+// this form as a process of its own, since it ends in syscall.Exec, and no test clock reaches
+// that process: seen from the broker, a read sent after that sleep looks the same as a read a
+// loaded machine sent late. The line lets such a test tell the two apart without timing either.
+var execWaitBackoffNote string
+
+// execWaitBackoffNoteLine is the line a test build prints each time the exec form's wait sleeps
+// its backoff (execWaitBackoffNote).
+const execWaitBackoffNoteLine = "agent-secrets: test build: the wait sleeps its backoff"
+
 // cmdExec implements the default "agent-secrets NAME... [--reason TEXT]
 // [--wait DURATION] -- <command> [args...]" form: it requests the named secrets, waits out a
 // pending decision, and syscall.Execs the command with the granted values in its environment.
@@ -1173,6 +1186,9 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+				if execWaitBackoffNote != "" {
+					fmt.Fprintln(stderr, execWaitBackoffNoteLine)
+				}
 				time.Sleep(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}

@@ -55,15 +55,15 @@ func (h countingHandler) WithGroup(name string) slog.Handler {
 func TestAStalledLogHoldsOneWriteAndCountsTheRest(t *testing.T) {
 	withLiveness(t, 10*time.Millisecond, 10*time.Second)
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	server, url := startDebugCalloutServer(t, keys)
 	log := newStalledLog()
 	handler := newCountingHandler(slog.NewTextHandler(log, nil))
 	service := startService(t, url, keys, Deps{Log: slog.New(handler)}, Decide)
 	t.Cleanup(log.release)
-	stallWithALine(t, url, log)
+	stallWithALine(t, server, log)
 
 	for range 50 {
-		requireRefusedAtOnce(t, url, "next")
+		requireRefusedByTheService(t, server, "next")
 	}
 	time.Sleep(100 * time.Millisecond)
 	require.LessOrEqual(t, handler.most.Load(), int32(1), "more than the reporter's one record was logged at once on the stalled log")

@@ -83,55 +83,95 @@ func grantedClient(t *testing.T, allow ...string) (*nats.Conn, nats.JetStreamCon
 	return client.Conn, js
 }
 
+// refusedRequestWait is the JetStream wait the rows below give a request the grant refuses: longer
+// than any test runs, so a request that ends, ends at the server's refusal, which the client reads
+// as it arrives (refusedBy), and never at its own wait. A call that read the refusal only once
+// that wait ran out would end at its start's hang guard, with an error that names the guard and
+// not the grant, or, where no guard bounds it, not end at all (endOf).
+const refusedRequestWait = time.Hour
+
+// withJetStreamWait opens the client's own JetStream context, which its start ensures the stream
+// through, with wait in place of its ten seconds (Client.jetStreamWait).
+func withJetStreamWait(wait time.Duration) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.jetStreamWait = wait })
+}
+
+// refusalJetStream is a JetStream context on conn whose requests wait refusedRequestWait.
+func refusalJetStream(t *testing.T, conn *nats.Conn) nats.JetStreamContext {
+	t.Helper()
+	js, err := conn.JetStream(nats.MaxWait(refusedRequestWait))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return js
+}
+
+// endOf is call's error, the call made on a goroutine of its own and waited for as long as the
+// repository's wait for a fact lasts (testwait.Bounded), which only a call that waits for its
+// request's own wait outlasts: such a call fails the row, naming what, rather than hanging the
+// test binary.
+func endOf(t *testing.T, what string, call func() error) error {
+	t.Helper()
+	ended := make(chan error, 1)
+	go func() { ended <- call() }()
+	select {
+	case err := <-ended:
+		return err
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("%s did not end: it waits for its request's own wait, %s, rather than end at the server's refusal", what, refusedRequestWait)
+		return nil
+	}
+}
+
 // A start that raises a bucket the grant does not let it update ends at once, with the server's
-// refusal of the update and the setting it asked for, rather than after the update's own ten
-// second wait with a bare "context deadline exceeded" that names neither.
+// refusal of the update and the setting it asked for, rather than after the update's own wait with
+// a bare "context deadline exceeded" that names neither. The update waits refusedRequestWait, so
+// only the refusal can end it.
 func TestARaiseTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	const bucket = "envoy_denied_raise"
 	stream := "KV_" + bucket
-	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket))
+	conn, _ := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket))
+	js := refusalJetStream(t, conn)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	started := time.Now()
-	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
-	took := time.Since(started)
+	err := endOf(t, "the refused raise", func() error {
+		_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+		return err
+	})
 	if !errors.Is(err, ErrPublishDenied) {
-		t.Fatalf("a raise the grant refuses = %v (after %s), want ErrPublishDenied", err, took)
+		t.Fatalf("a raise the grant refuses = %v, want ErrPublishDenied as the refusal arrives: the update waits %s, so a raise that read the refusal only at the end of that wait ends at its hang guard instead", err, refusedRequestWait)
 	}
 	for _, want := range []string{"raise " + stream + ": " + ReplicasEnvVar + "=3: ", `Permissions Violation for Publish to "$JS.API.STREAM.UPDATE.` + stream + `"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refused raise = %v, want it to name %q", err, want)
 		}
 	}
-	if took > refusalAnswerBound {
-		t.Fatalf("the refused raise ended after %s, want within %s", took, refusalAnswerBound)
-	}
 }
 
 // A start that creates a bucket the grant does not let it create ends at once, with the server's
-// refusal of the create, rather than after the create's own wait.
+// refusal of the create, rather than after the create's own wait, refusedRequestWait here.
 func TestACreateTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	const bucket = "envoy_denied_create"
-	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket))
-	started := time.Now()
-	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
-	took := time.Since(started)
+	conn, _ := grantedClient(t, accountInfoSubject(), openSubject(bucket))
+	js := refusalJetStream(t, conn)
+	err := endOf(t, "the refused create", func() error {
+		_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+		return err
+	})
 	if !errors.Is(err, ErrPublishDenied) {
-		t.Fatalf("a create the grant refuses = %v (after %s), want ErrPublishDenied", err, took)
+		t.Fatalf("a create the grant refuses = %v, want ErrPublishDenied as the refusal arrives: the create waits %s, so a create that read the refusal only at the end of that wait ends at its hang guard instead", err, refusedRequestWait)
 	}
 	if want := `Permissions Violation for Publish to "` + createSubject(bucket) + `"`; !strings.Contains(err.Error(), want) {
 		t.Fatalf("the refused create = %v, want it to name %q", err, want)
 	}
-	if took > refusalAnswerBound {
-		t.Fatalf("the refused create ended after %s, want within %s", took, refusalAnswerBound)
-	}
 }
 
 // A durable consumer's create and delete that the grant refuses end at once, naming the refusal,
-// rather than after the request's own ten second wait with a bare "context deadline exceeded":
-// the listener's start creates its durable, and Dispatch's take-over of a held durable deletes
-// and creates one, through the client's own JetStream context (readsRefusals). The create's read
+// rather than after the request's own wait with a bare "context deadline exceeded": the listener's
+// start creates its durable, and Dispatch's take-over of a held durable deletes and creates one,
+// through the client's own JetStream context (readsRefusals), whose wait is refusedRequestWait
+// here, so a request that waited for it would not end within the row (endOf). The create's read
 // of the consumer, which nats.go sends first, is granted, so the refusal the create ends on is its
 // own; no stream is needed, since the read answers "stream not found" and nats.go goes on to the
 // create.
@@ -140,7 +180,7 @@ func TestAConsumerCreateAndDeleteTheGrantRefusesEndAtOnceNamingTheRefusal(t *tes
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "_INBOX.>", jsAPI("CONSUMER.INFO", stream, consumer))
 	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := Connect([]string{grant.URL})
+	client, err := Connect([]string{grant.URL}, withJetStreamWait(refusedRequestWait))
 	if err != nil {
 		t.Fatalf("connect the granted client: %v", err)
 	}
@@ -156,17 +196,12 @@ func TestAConsumerCreateAndDeleteTheGrantRefusesEndAtOnceNamingTheRefusal(t *tes
 		{"delete", jsAPI("CONSUMER.DELETE", stream, consumer), func() error { return client.JS().DeleteConsumer(stream, consumer) }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			started := time.Now()
-			err := row.call()
-			took := time.Since(started)
+			err := endOf(t, "the refused "+row.name, row.call)
 			if !errors.Is(err, ErrPublishDenied) {
-				t.Fatalf("a %s the grant refuses = %v (after %s), want ErrPublishDenied", row.name, err, took)
+				t.Fatalf("a %s the grant refuses = %v, want ErrPublishDenied", row.name, err)
 			}
 			if want := `Permissions Violation for Publish to "` + row.subject + `"`; !strings.Contains(err.Error(), want) {
 				t.Fatalf("the refused %s = %v, want it to name %q", row.name, err, want)
-			}
-			if took > refusalAnswerBound {
-				t.Fatalf("the refused %s ended after %s, want within %s", row.name, took, refusalAnswerBound)
 			}
 		})
 	}
@@ -295,7 +330,8 @@ func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
 // A client that owns the notification stream, on a grant that does not let it read the stream or
 // does not let it create the stream, fails its start at once with the server's refusal, rather than
 // sending the request until the start's hang guard passes and ending with an error that names the
-// guard and not the grant.
+// guard and not the grant. Each request of the ensure waits refusedRequestWait, so a start that
+// read the refusal only at the end of that wait ends at its hang guard too.
 func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -309,21 +345,21 @@ func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 			seed, public := testnats.User(t)
 			grant := testnats.StartNkeyGranted(t, public, append([]string{"_INBOX.>"}, row.allow...)...)
 			t.Setenv("NATS_NKEY_SEED", seed)
-			started := time.Now()
-			client, err := ConnectOwningStream([]string{grant.URL})
-			took := time.Since(started)
+			err := endOf(t, "the refused ensure", func() error {
+				client, err := ConnectOwningStream([]string{grant.URL}, withJetStreamWait(refusedRequestWait))
+				if err == nil {
+					client.Close()
+				}
+				return err
+			})
 			if err == nil {
-				client.Close()
 				t.Fatal("a client whose grant refuses the stream's ensure started")
 			}
 			if !errors.Is(err, ErrPublishDenied) {
-				t.Fatalf("the refused ensure = %v (after %s), want ErrPublishDenied", err, took)
+				t.Fatalf("the refused ensure = %v, want ErrPublishDenied as the refusal arrives", err)
 			}
 			if want := `Permissions Violation for Publish to "` + row.refused + `"`; !strings.Contains(err.Error(), want) {
 				t.Fatalf("the refused ensure = %v, want it to name %q", err, want)
-			}
-			if took > refusalAnswerBound {
-				t.Fatalf("the refused ensure ended after %s, want within %s", took, refusalAnswerBound)
 			}
 		})
 	}

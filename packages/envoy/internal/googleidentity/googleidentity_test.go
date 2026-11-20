@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -245,7 +247,9 @@ func TestProbeRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
 
 // TestAccessTokenSourceReadsTheMetadataToken: the token source asks the default service
 // account's token path with the header Google requires, and answers the token the metadata
-// server handed out, expiring when that answer's expires_in says.
+// server handed out, expiring when that answer's expires_in says, counted from the request. The
+// request left between the two clock reads around the call, so the expiry is 600 s after a moment
+// between them, however long the call took.
 func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
 	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Metadata-Flavor", "Google")
@@ -255,14 +259,16 @@ func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
 
 	started := time.Now()
 	token, err := AccessTokenSource().Token()
+	finished := time.Now()
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
 	if token.AccessToken != "metadata-not-a-secret" || token.TokenType != "Bearer" {
 		t.Fatalf("token %q of type %q, want the metadata server's metadata-not-a-secret, Bearer", token.AccessToken, token.TokenType)
 	}
-	if expiry := token.Expiry.Sub(started); expiry < 590*time.Second || expiry > 610*time.Second {
-		t.Fatalf("the token expires %s from the request, want the 600s its answer gave", expiry)
+	const expiresIn = 600 * time.Second
+	if token.Expiry.Before(started.Add(expiresIn)) || token.Expiry.After(finished.Add(expiresIn)) {
+		t.Fatalf("the token expires %s after the call began and %s after it returned, want the 600s its answer gave, from a moment inside the call", token.Expiry.Sub(started), token.Expiry.Sub(finished))
 	}
 	if len(*asked) != 1 || (*asked)[0].URL.Path != tokenPath || (*asked)[0].Header.Get("Metadata-Flavor") != "Google" {
 		t.Fatalf("the metadata server was asked %d times; want once, at %s, with Metadata-Flavor: Google", len(*asked), tokenPath)
@@ -303,14 +309,41 @@ func TestAccessTokenSourceNamesAGoogleFaultAsAFault(t *testing.T) {
 
 // TestAccessTokenSourceSaysNoMetadataServerWhenNoConnectionComesWithinTheProbeTimeout: a host no
 // connection reaches - here 192.0.2.1, an address no network routes (RFC 5737), as a laptop's
-// resolver or captive network can leave the metadata server's name - is no metadata server within
-// ProbeTimeout plus a margin, not after the token read's whole 10 s.
+// resolver or captive network can leave the metadata server's name - is no metadata server, and
+// the dial to it is bounded by ProbeTimeout, not by the token read's whole 10 s. The test reads
+// the deadline the dial runs under from the dialer's ControlContext, which the dialer calls with
+// the dial's own context before it connects. http.Transport dials under a context that drops the
+// request's deadline, so that deadline is the dialer's own. The test requires it no earlier than
+// ProbeTimeout after the call began and no later than ProbeTimeout after the dial began. Neither
+// bound reads how long anything took, so a loaded machine does not move them, and a dial whose
+// bound grew, or that had none of its own, fails them.
 func TestAccessTokenSourceSaysNoMetadataServerWhenNoConnectionComesWithinTheProbeTimeout(t *testing.T) {
 	t.Setenv(MetadataHostVar, "192.0.2.1")
+	// The transport dials on a goroutine of its own, so what the dial records is read under mu.
+	var mu sync.Mutex
+	var dials int
+	var dialed, deadline time.Time
+	var hasDeadline bool
+	dialer.ControlContext = func(ctx context.Context, _, _ string, _ syscall.RawConn) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dials++
+		dialed = time.Now()
+		deadline, hasDeadline = ctx.Deadline()
+		return nil
+	}
+	t.Cleanup(func() { dialer.ControlContext = nil })
 	started := time.Now()
 	token, err := AccessTokenSource().Token()
-	took := time.Since(started)
-	if !errors.Is(err, ErrNoMetadataServer) || took > ProbeTimeout+2*time.Second {
-		t.Fatalf("Token = %v, %v after %s; want ErrNoMetadataServer within %s", token, err, took, ProbeTimeout+2*time.Second)
+	if !errors.Is(err, ErrNoMetadataServer) {
+		t.Fatalf("Token = %v, %v; want ErrNoMetadataServer", token, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if dials != 1 || !hasDeadline {
+		t.Fatalf("the token read dialled %d times, under a deadline: %v; want one dial, under the dial's own deadline", dials, hasDeadline)
+	}
+	if fromCall, fromDial := deadline.Sub(started), deadline.Sub(dialed); fromCall < ProbeTimeout || fromDial > ProbeTimeout {
+		t.Fatalf("the dial ran under a deadline %s after the call began and %s after the dial began; want at least and at most %s", fromCall, fromDial, ProbeTimeout)
 	}
 }

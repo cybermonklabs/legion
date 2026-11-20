@@ -83,7 +83,9 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // five hundred open session connections is admitted again, each presenting a proof over its new
 // connection's nonce, every decision the service makes is inside its budget, and the server gives
 // up on none of the requests it sends the service: the service answers every one, and each
-// connection it admits is the one its client holds (decidedNonces.unheld).
+// connection it admits is the one its client holds (decidedNonces.unheld). Inside its budget is
+// the service's own reading: a request whose budget ran out, waiting for a slot or deciding, is
+// refused under the budget's label (decideWithin), and the decision counter counts none.
 //
 // Three seconds is not arbitrary: the service is a client of the same server, so a restart drops
 // its own connection too, and every client that comes back before it is refused. A client that is
@@ -133,6 +135,9 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	}
 	var decided, slowest atomic.Int64
 	introspect := introspector(sessions...)
+	// timed keeps how long the slowest decision took, for the log: the test reads whether decisions
+	// kept their budget from the service's own count (labelBudget), not from this span, which also
+	// counts whatever the machine's load does to the decision's goroutine.
 	timed := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		began := time.Now()
 		decision, err := Decide(ctx, deps, services, req)
@@ -143,10 +148,16 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		}
 		return decision, err
 	}
-	deps := Deps{Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
-		decided.Add(1)
-		return introspect(ctx, token)
-	}}
+	// Both services count their decisions here, so the count of those the budget refused covers
+	// every decision before the restart and after it.
+	registry := metrics.New()
+	deps := Deps{
+		Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
+			decided.Add(1)
+			return introspect(ctx, token)
+		},
+		Metrics: NewMetrics(registry),
+	}
 	service := startService(t, url, keys, deps, timed)
 
 	var reconnected atomic.Int64
@@ -193,16 +204,16 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	}
 	require.Zero(t, closed, "%d connections closed for good while the service was away", closed)
 	require.GreaterOrEqual(t, decided.Load(), int64(2*connections), "each reconnect was decided afresh")
-	require.Less(t, time.Duration(slowest.Load()), decideBudget,
-		"the slowest of %d decisions took %s, at or past the %s budget", decided.Load(), time.Duration(slowest.Load()), decideBudget)
 	refusedWhileAway := strings.Count(server.Log()[restarted:], "authentication error")
 	t.Logf("reconnects=%d decided=%d slowest-decision=%s; clients refused while the service was away: %d",
 		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), refusedWhileAway)
 	require.Positive(t, refusedWhileAway, "the server refused no client while the service was away, which is what the storm is for")
 
 	// Every client is connected, so every request the server sent back has been answered or given
-	// up on, and back's Close writes its reporter's last line.
+	// up on, and back's Close counts every answer and writes its reporter's last line.
 	back.Close()
+	require.Zero(t, refusedFor(t, registry, labelBudget),
+		"decisions ran past their %s budget, the slowest of %d taking %s", decideBudget, decided.Load(), time.Duration(slowest.Load()))
 	require.Empty(t, backLog.String(), "back dropped, refused or could not answer requests the server sent it")
 	unheld, held := backDecided.unheld(clients)
 	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestASecretFormSignsItsRereadAsThisProcesssSession: a form run where this process has a broker
@@ -464,10 +465,12 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 // identity the process already holds. A key directory whose launcher is still enrolling (a fresh
 // enrollment.pending and no key.pem) is not waited on, and a machine whose cloud identity the
 // broker would trade for a session is traded for nothing: the broker is asked for its settings and
-// the reread and nothing else, the metadata server is asked nothing, and the form is done well
-// inside the enrollment wait it would otherwise have sat through.
+// the reread and nothing else, the metadata server is asked nothing, and the form returns. The
+// enrollment wait it must not sit through cannot end while the test runs: a day, on a marker dated
+// a day ahead, so it stays fresh that long. A create that sat through that wait would not return,
+// and runSecretBounded fails it; a create that is only slow on a loaded machine still passes.
 func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) {
-	const enrollWait = 30 * time.Second
+	const enrollWait = 24 * time.Hour
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
 			local := secrets.NewLocal()
@@ -476,7 +479,14 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 			withNoBrokerIdentity(t)
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			if row == "a launcher still enrolling" {
-				if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker), nil, 0o600); err != nil {
+				marker := filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker)
+				if err := os.WriteFile(marker, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Dated ahead by the whole wait, the marker is fresh for as long as the wait
+				// lasts, so its age never ends a wait the form should not have begun.
+				ahead := time.Now().Add(enrollWait)
+				if err := os.Chtimes(marker, ahead, ahead); err != nil {
 					t.Fatal(err)
 				}
 				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", enrollWait.String())
@@ -484,9 +494,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 			calls := recordBrokerCalls(t)
 			useAWS(t, local, testAccount, adaSignIn)
 			useStdin(t, "v1")
-			started := time.Now()
-			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-			took := time.Since(started)
+			_, stderr, code := runSecretBounded(t, "create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 			if code != 0 {
 				t.Fatalf("create: exit %d, stderr %q; want 0", code, stderr)
 			}
@@ -496,10 +504,34 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 			if n := metadata.totalRequests(); n != 0 {
 				t.Fatalf("the metadata server was asked %d times; want never", n)
 			}
-			if took >= enrollWait/3 {
-				t.Fatalf("the create took %s; want it done well inside the %s enrollment wait it must not sit through", took, enrollWait)
-			}
 		})
+	}
+}
+
+// runSecretBounded runs `agent-secrets secret <args>` in-process as runSecret does, and fails t
+// when it has not returned within the repository's wait for a fact (testwait.Bounded of a
+// minute). A test whose wrong form would wait on something the test holds until it ends - an
+// answer it never sends, an enrollment that never finishes - fails here rather than at the test
+// binary's timeout, while a form that is only slow on a loaded machine still passes. A form that
+// has not returned is left running when t fails.
+func runSecretBounded(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	type result struct {
+		stdout, stderr string
+		code           int
+	}
+	done := make(chan result, 1)
+	go func() {
+		stdout, stderr, code := runSecret(args...)
+		done <- result{stdout, stderr, code}
+	}()
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	select {
+	case got := <-done:
+		return got.stdout, got.stderr, got.code
+	case <-time.After(bound):
+		t.Fatalf("`agent-secrets secret %s` had not returned after %s", strings.Join(args, " "), bound)
+		return "", "", 0
 	}
 }
 

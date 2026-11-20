@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -67,22 +69,54 @@ func TestEveryUploadAtTheCapStaysWithinTheMemoryBound(t *testing.T) {
 				t.Run(mode, func(t *testing.T) {
 					server := memory.start(t)
 					var upload uploadResult
+					var uploadCPU time.Duration
 					peak := server.peakAboveIdle(t, func() {
+						before := server.cpuTime(t)
 						upload = server.upload(t, mode, memory.issue, markdown)
+						uploadCPU = server.cpuTime(t) - before
 						memory.waitForSettlement(t, upload)
 					})
 					requireAnswered(t, upload)
-					t.Logf("%s %s: %d, %d MiB above idle in %s", shape.name, mode, upload.status, peak>>20, upload.elapsed)
+					t.Logf("%s %s: %d, %d MiB above idle in %s, %s of the server's CPU", shape.name, mode, upload.status, peak>>20, upload.elapsed, uploadCPU)
 					if peak > requestMemoryBound {
 						t.Errorf("upload of %s (%s) held %d MiB above idle, want at most %d MiB", shape.name, mode, peak>>20, requestMemoryBound>>20)
 					}
-					if within, bounded := capShapeAnswersWithin[shape.name]; bounded && upload.elapsed > within {
-						t.Errorf("upload of %s (%s) answered in %s, want at most %s", shape.name, mode, upload.elapsed, within)
+					if within, bounded := capShapeCPUWithin[shape.name]; bounded && uploadCPU > within {
+						t.Errorf("upload of %s (%s) took %s of the server's CPU, want at most %s", shape.name, mode, uploadCPU, within)
 					}
 				})
 			}
 		})
 	}
+}
+
+// clockTicksPerSecond is the unit /proc/<pid>/stat counts CPU time in, USER_HZ: 100 on the Linux
+// kernels of CI's runner and of these hosts.
+const clockTicksPerSecond = 100
+
+// cpuTime is the CPU time the server has spent since it started, user and system, over every
+// thread it has run: utime and stime of /proc/<pid>/stat. It moves in steps of a clock tick, 10 ms.
+func (p *memoryServer) cpuTime(t *testing.T) time.Duration {
+	t.Helper()
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", p.command.Process.Pid))
+	if err != nil {
+		t.Fatalf("read the server's CPU time (has it died?): %v\n%s", err, p.outputTail())
+	}
+	// The command name, the second field, is in parentheses and may hold a space, so the fields
+	// are counted from its closing parenthesis: utime and stime are the 12th and 13th after it.
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	if len(fields) < 13 {
+		t.Fatalf("the server's /proc stat has %d fields after its name, want at least 13: %q", len(fields), stat)
+	}
+	var ticks int64
+	for _, field := range fields[11:13] {
+		value, err := strconv.ParseInt(field, 10, 64)
+		if err != nil {
+			t.Fatalf("read the server's CPU time from %q: %v", stat, err)
+		}
+		ticks += value
+	}
+	return time.Duration(ticks) * time.Second / clockTicksPerSecond
 }
 
 // The heaviest documents the element limit admits are stored, and storing one - upload and

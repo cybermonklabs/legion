@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ type connectOpts struct {
 	keepInterval                time.Duration
 	keptBuckets                 []string
 	publishAcknowledgementClock AcknowledgementClock
+	jetStreamWait               time.Duration
 	reconnectErrClock           func() time.Time
 	environment                 func(string) (string, bool)
 	streamSubjectsRefresh       time.Duration
@@ -287,6 +289,12 @@ type Client struct {
 	// (WithReconnectWaitTick, export_test.go) to know a publish is inside that wait, or to act at
 	// the moment the wait ends.
 	reconnectWaitTick func()
+	// jetStreamWait, when not zero, is the JetStream wait of the context install opens on the
+	// constructor's connection, the client's own (JS) and the one its start ensures the stream
+	// through, in place of ten seconds. It is zero outside tests: a test sets it
+	// (withJetStreamWait, kv_denied_test.go) to a wait no test reaches, so a request the grant
+	// refuses can end only at the server's refusal and never at its own wait.
+	jetStreamWait time.Duration
 	// beforeRequestFlush, when not nil, runs on the goroutine that flushes a Request's publish,
 	// right before that flush begins, while the wait for the request's answer runs beside it
 	// (window.request). It is nil outside tests: a test sets it (WithBeforeRequestFlush,
@@ -504,6 +512,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		jetStreamWait:               opts.jetStreamWait,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -583,7 +592,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
-	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+	js, err := nc.JetStream(nats.MaxWait(cmp.Or(c.jetStreamWait, 10*time.Second)), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}

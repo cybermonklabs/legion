@@ -159,6 +159,10 @@ export interface NatsDialHooks {
   readonly stopped?: () => boolean;
   /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. */
   readonly onRetry?: (error: unknown, delayMs: number, attempt: number) => void;
+  /** The clock, in ms, the plan's budget is spent on: `performance.now()` unless a test holds the
+   *  budget on a clock of its own. Only the budget reads it; each dial's bound and each wait still
+   *  run on real timers. */
+  readonly now?: () => number;
 }
 
 /**
@@ -232,8 +236,9 @@ export async function connectNats(
   plan: NatsDialPlan,
   hooks: NatsDialHooks = {}
 ): Promise<NatsConnection> {
-  const started = performance.now();
-  const elapsed = () => performance.now() - started;
+  const now = hooks.now ?? (() => performance.now());
+  const started = now();
+  const elapsed = () => now() - started;
   const timeout = options.timeout ?? NATS_DIAL_TIMEOUT_MS;
   const servers = Array.isArray(options.servers) ? Math.max(1, options.servers.length) : 1;
   let delayMs = plan.firstDelayMs;

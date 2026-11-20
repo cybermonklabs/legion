@@ -322,6 +322,13 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 	return firstReadLimit
 }
 
+// readSendKey is the context key a test that reads the limit each read of a stream's state was sent
+// under sets a function under (sentReads, in this package's tests): limitedRead calls it with the
+// context it sends the read under, whose deadline is that read's limit, just before the read goes
+// out, so the test reads the bound the code put on the read and not the time a loaded machine took
+// over it. Nothing outside the tests sets it.
+type readSendKey struct{}
+
 // readLimit is the limit of the next read of a stream's state in a run of reads: every read of one
 // bucket's open (EnsureKeyValue), of one ensure of the notification stream (ensureStreamWithConfig)
 // or of one setting of the session bucket's age (SetKeyValueMaxAge), each of which carries its run
@@ -375,6 +382,9 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	if sending, ok := ctx.Value(readSendKey{}).(func(context.Context)); ok {
+		sending(readCtx)
+	}
 	sent := time.Now()
 	value, answered, err = Bounded(readCtx, read)
 	if !answered || unanswered(err) {

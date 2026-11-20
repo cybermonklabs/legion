@@ -37,6 +37,12 @@ const (
 	writeAHostName = "write a host name of letters, digits and hyphens between single dots, with at most one leading \"*.\""
 )
 
+// readHost, when it is set, is told the length of every host the grammar reads whole: each host
+// why and resolverReads are asked about. It is nil in every binary. This package's test of the
+// grammar's linear reading sets it, to count the characters a Refusal reads, a measure of the
+// grammar's work that no load on the machine moves.
+var readHost func(length int)
+
 // Refusal is why h is no rules host the broker serves, or "" for one it serves. The grammar is
 // the one spelling every request for a host is compared in. airlock.HostBound compares an entry's
 // hosts with a request's host as text, folding ASCII case; the proxy reads that host after
@@ -85,6 +91,9 @@ func Refusal(h string) string {
 // names no scheme and no IP address: Refusal refuses those first, dotReason asks of a name the
 // resolver reads, which is neither, and canonicalForm asks only whether its form is read.
 func why(h string) string {
+	if readHost != nil {
+		readHost(len(h))
+	}
 	if airlock.HostShapeOK(h) {
 		return beyondShape(fold.ASCII(h))
 	}
@@ -218,6 +227,9 @@ func dotReason(h string) string {
 // CONNECT writes is one of those names: *.216.34 matches a.216.34, which the resolver reads, and
 // a suffix of 252 characters matches no name of 253 or fewer.
 func resolverReads(name string) bool {
+	if readHost != nil {
+		readHost(len(name))
+	}
 	if suffix, ok := strings.CutPrefix(name, "*."); ok {
 		name = "a." + suffix
 	}

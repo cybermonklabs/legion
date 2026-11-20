@@ -3,12 +3,15 @@ package bus
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countedReads is ctx with the first read limit at the caller's whole wait (firstReadLimitKey),
@@ -18,20 +21,70 @@ func countedReads(ctx context.Context) context.Context {
 	return context.WithValue(ctx, firstReadLimitKey{}, RequestTimeout)
 }
 
+// sentReads records each read of a stream's state sent under the context under returns
+// (readSendKey): when it went out and how long the context it was sent under had left then, which
+// is the read limit the code put on it. A row reads that bound rather than the time the whole start
+// took, which a loaded machine stretches.
+type sentReads struct {
+	mu    sync.Mutex
+	reads []sentRead
+}
+
+// sentRead is one read a run sent: at is when, left what its context had left then, and -1 when
+// that context had no deadline at all.
+type sentRead struct {
+	at   time.Time
+	left time.Duration
+}
+
+// under is ctx with s recording each read sent under it.
+func (s *sentReads) under(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readSendKey{}, func(read context.Context) {
+		at, left := time.Now(), time.Duration(-1)
+		if deadline, ok := read.Deadline(); ok {
+			left = deadline.Sub(at)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.reads = append(s.reads, sentRead{at: at, left: left})
+	})
+}
+
+// latest is the index of the read s recorded last. Asked from inside a read, it is that read's
+// own: limitedRead records a read before it sends it, and a run sends its reads one at a time.
+func (s *sentReads) latest() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.reads) - 1
+}
+
+// read is the read s recorded at index i.
+func (s *sentReads) read(i int) sentRead {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads[i]
+}
+
 // heldReplyJetStream answers its first read of a stream as a read of a stream with no leader yet,
-// and holds the reply of its second read for RequestTimeout before answering nats.ErrTimeout, as
-// nats.go answers a read the server never answered within the caller's wait; every later read is
-// the cluster's own. Its counts are atomic, because a read the start abandons at its read limit
-// runs on beside the start's next read.
+// and holds the reply of its second read until release is closed, at the row's cleanup, before
+// answering nats.ErrTimeout: the server never answers that read while the row runs, so a start
+// that waited for its answer, rather than abandon it at its read limit, would not answer at all.
+// Every later read is the cluster's own. It notes which of sent's reads the first two are
+// (sentReads.latest), and its counts are atomic, because a read the start abandons at its read
+// limit runs on beside the start's next read.
 type heldReplyJetStream struct {
 	nats.JetStreamContext
-	reads  atomic.Int32
-	heldAt atomic.Int64
+	sent     *sentReads
+	release  <-chan struct{}
+	reads    atomic.Int32
+	noLeader atomic.Int32
+	lost     atomic.Int32
 }
 
 func (js *heldReplyJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	switch js.reads.Add(1) {
 	case 1:
+		js.noLeader.Store(int32(js.sent.latest()))
 		info, err := js.JetStreamContext.StreamInfo(stream, opts...)
 		if err != nil || info.Cluster == nil {
 			return info, err
@@ -42,24 +95,21 @@ func (js *heldReplyJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*na
 		leaderless.Cluster = &cluster
 		return &leaderless, nil
 	case 2:
-		js.heldAt.Store(time.Now().UnixNano())
-		time.Sleep(RequestTimeout)
+		js.lost.Store(int32(js.sent.latest()))
+		<-js.release
 		return nil, nats.ErrTimeout
 	}
 	return js.JetStreamContext.StreamInfo(stream, opts...)
 }
 
-// heldReadBound is how long after a lost read began a start that waits for a stream's leader may
-// answer, when that leader is already there: the read's limit (firstReadLimit), after which the
-// read is taken as lost, and one second more for the read after it on a loaded machine. A start
-// that waited out the caller's whole wait for the lost read answered RequestTimeout, ten seconds,
-// after it.
-const heldReadBound = firstReadLimit + time.Second
-
 // A start that finds a bucket whose stream reads as having no leader yet waits for the leader,
 // and a read of that wait the server never answers costs it its read limit and not the caller's
-// whole ten second wait: the leader is there all along, so the start answers within the limit of
-// the lost read, and one more read, after it.
+// whole ten second wait: the leader is there all along, so the start answers once the lost read
+// is abandoned at its limit and read again. The row reads that limit where the code put it, on
+// the lost read's context (sentReads): the limit after the read that found no leader, three times
+// that read's time and never under firstReadLimit (readLimit.answered). The read's time is at most
+// the span from that read's send to the lost read's send, so the bound holds however slow the
+// machine; a read held to the caller's whole wait is sent under RequestTimeout.
 func TestAStartWhoseReadOfTheLeaderIsLostAnswersWithinTheReadLimit(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -67,18 +117,38 @@ func TestAStartWhoseReadOfTheLeaderIsLostAnswersWithinTheReadLimit(t *testing.T)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
-	held := &heldReplyJetStream{JetStreamContext: js}
-	if _, err := EnsureKeyValue(t.Context(), conn, held, config); err != nil {
-		t.Fatalf("a start whose read of the leader was lost: %v", err)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	sent := &sentReads{}
+	held := &heldReplyJetStream{JetStreamContext: js, sent: sent, release: release}
+	ctx := sent.under(t.Context())
+	answered := make(chan error, 1)
+	go func() {
+		_, err := EnsureKeyValue(ctx, conn, held, config)
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("a start whose read of the leader was lost: %v", err)
+		}
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatal("the start did not answer while its lost read was held: it waits for that read's answer rather than abandon the read at its limit")
 	}
-	answeredAt := time.Now()
 	if reads := held.reads.Load(); reads < 3 {
 		t.Fatalf("the start read the stream %d times, want the leaderless read, the lost one and one after it: this row holds nothing", reads)
 	}
-	if after := answeredAt.Sub(time.Unix(0, held.heldAt.Load())); after > heldReadBound {
-		t.Fatalf("the start answered %s after its lost read began, want within %s: the lost read is abandoned at its limit, %s, and read again",
-			after.Round(time.Millisecond), heldReadBound, firstReadLimit)
+	noLeader, lost := int(held.noLeader.Load()), int(held.lost.Load())
+	if lost != noLeader+1 {
+		t.Fatalf("the lost read was the start's read %d and the read that found no leader its read %d, want the lost read right after that one: this row holds nothing", lost, noLeader)
 	}
+	before, read := sent.read(noLeader), sent.read(lost)
+	limit := max(firstReadLimit, 3*read.at.Sub(before.at))
+	if read.left < 0 || read.left > limit {
+		t.Fatalf("the lost read was sent with %s left to it, want at most %s, its read limit: three times the read before it, which took at most %s, and never under %s; the caller's whole wait is %s",
+			read.left, limit, read.at.Sub(before.at), firstReadLimit, RequestTimeout)
+	}
+	t.Logf("the lost read was sent with %s left to it, within its read limit of at most %s", read.left, limit)
 }
 
 // slowReadsJetStream answers every lookup of a bucket readDelay late: a server that answers, only
@@ -208,20 +278,32 @@ func (s *scriptedReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.Stream
 // a read lost later in the same wait costs the first limit again and not the doubled one: here two
 // lost reads, a read that finds no leader yet, a lost read, and the read that finds the leader. Had
 // the limit stayed doubled, the third lost read would have cost four times firstReadLimit, 2.52 s,
-// and after four such reads the caller's whole ten second wait.
+// and after four such reads the caller's whole ten second wait. The wait runs in a synctest bubble,
+// whose clock moves only while every goroutine in it waits, so the time it reads is the limits and
+// pauses the code waited out and nothing a loaded machine added: the last lost read costs its
+// limit and the pause before the next read (bucketAppliedInterval), exactly.
 func TestAnAnsweredReadSetsTheReadLimitBack(t *testing.T) {
-	reads := &scriptedReads{script: []string{"lost", "lost", "leaderless", "lost"}}
-	if err := awaitStreamLeader(t.Context(), reads, afterOpen, "KV_envoy_limit_back_test"); err != nil {
-		t.Fatalf("a wait whose leader came after lost reads = %v, want nil", err)
-	}
-	answeredAt := time.Now()
-	if got := reads.reads.Load(); got != 5 {
-		t.Fatalf("the wait read the stream %d times, want 5: the script holds nothing otherwise", got)
-	}
-	if after := answeredAt.Sub(time.Unix(0, reads.lostAt.Load())); after > heldReadBound {
-		t.Fatalf("the wait answered %s after its last lost read began, want within %s: an answered read sets the limit back to %s",
-			after.Round(time.Millisecond), heldReadBound, firstReadLimit)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// The lost reads go on waiting out their own RequestTimeout after the wait has abandoned
+		// them, and a bubble may end only once every goroutine in it has: its clock passes that
+		// wait at once.
+		t.Cleanup(func() {
+			time.Sleep(RequestTimeout)
+			synctest.Wait()
+		})
+		reads := &scriptedReads{script: []string{"lost", "lost", "leaderless", "lost"}}
+		if err := awaitStreamLeader(t.Context(), reads, afterOpen, "KV_envoy_limit_back_test"); err != nil {
+			t.Fatalf("a wait whose leader came after lost reads = %v, want nil", err)
+		}
+		answeredAt := time.Now()
+		if got := reads.reads.Load(); got != 5 {
+			t.Fatalf("the wait read the stream %d times, want 5: the script holds nothing otherwise", got)
+		}
+		if after, cost := answeredAt.Sub(time.Unix(0, reads.lostAt.Load())), firstReadLimit+bucketAppliedInterval; after > cost {
+			t.Fatalf("the wait answered %s after its last lost read began, want %s: an answered read sets the limit back to %s, and the lost read after it costs that limit and the pause before the next read",
+				after, cost, firstReadLimit)
+		}
+	})
 }
 
 // A read of the stream answered "stream not found" is a member that has not applied a create yet

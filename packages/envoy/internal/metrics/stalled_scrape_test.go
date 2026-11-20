@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stalledResponse is a scrape's response whose writes stop at the first one that carries at, as a
@@ -72,10 +74,13 @@ func TestAStalledScrapeBlocksNoRecording(t *testing.T) {
 			})
 			select {
 			case <-stalled.entered:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 				t.Fatalf("the scrape never wrote %s", row.at)
 			}
 
+			// The scrape stays stalled until the row's cleanup, so a recording that waited on it
+			// never returns: the bound only ends a run that would otherwise hang, and a slow
+			// machine is no failure.
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -83,7 +88,7 @@ func TestAStalledScrapeBlocksNoRecording(t *testing.T) {
 			}()
 			select {
 			case <-done:
-			case <-time.After(2 * time.Second):
+			case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 				t.Fatalf("recording %s waited on the stalled scrape", row.name)
 			}
 		})

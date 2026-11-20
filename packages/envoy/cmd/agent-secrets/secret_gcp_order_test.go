@@ -502,25 +502,33 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // a token with no answer to the email read signs in, naming the machine's identity generically; a
 // server that answers neither, and an answer that is not Google's, are no metadata server, so the
 // command lists every source; a Google server that answers the token read with an error is
-// present and broken, so that error stops the command.
+// present and broken, so that error stops the command. A read the server holds is held until the
+// test ends, so a command that waited on its answer would not return and runSecretBounded fails
+// it. Each held read the command asks ends on the command's own bound, which its result shows: the
+// email read's probe gives up and the machine is named generically, and the token read's deadline
+// ends it, as the refusal says. No check reads a clock, so a loaded machine that is only slow
+// does not fail the test.
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
+	const emailPath = "/computeMetadata/v1/instance/service-accounts/default/email"
 	for _, row := range []struct {
 		name         string
 		token, email metadataAnswer
 		code         int
-		within       time.Duration
 		says         []string
 		saysNot      string
 		onlyCall     string
+		// heldRead is the path of the held read the command asks once and ends on its own
+		// bound, "" where it asks none.
+		heldRead string
 	}{
-		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, 5 * time.Second,
-			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret"},
-		{"answers neither", answerHeld, answerHeld, 1, 15 * time.Second,
-			[]string{"found no Google credential", "the metadata server: no metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1, 5 * time.Second,
-			[]string{"found no Google credential", "not a Google metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1, 5 * time.Second,
-			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", ""},
+		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0,
+			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret", emailPath},
+		{"answers neither", answerHeld, answerHeld, 1,
+			[]string{"found no Google credential", "the metadata server: no metadata server", "context deadline exceeded"}, "ask the metadata server for this machine's access token", "", metadataTokenPath},
+		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1,
+			[]string{"found no Google credential", "not a Google metadata server"}, "ask the metadata server for this machine's access token", "", ""},
+		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1,
+			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", "", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -528,13 +536,11 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			holdScratchTest(fake)
 			useGcloudConfigurations(t, "", nil)
 			t.Setenv("PATH", t.TempDir())
-			startPartialMetadataServer(t, row.token, row.email)
+			metadata := startPartialMetadataServer(t, row.token, row.email)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-			started := time.Now()
-			_, stderr, code := runSecret("show", "SCRATCH_TEST")
-			took := time.Since(started)
-			if code != row.code || took > row.within {
-				t.Fatalf("exit %d after %s, stderr %q; want %d within %s", code, took, stderr, row.code, row.within)
+			_, stderr, code := runSecretBounded(t, "show", "SCRATCH_TEST")
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
 			}
 			for _, said := range row.says {
 				if !strings.Contains(stderr, said) {
@@ -543,6 +549,14 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			}
 			if row.saysNot != "" && strings.Contains(stderr, row.saysNot) {
 				t.Fatalf("stderr %q says %q", stderr, row.saysNot)
+			}
+			if row.heldRead != "" {
+				metadata.mu.Lock()
+				asked := metadata.requests[row.heldRead]
+				metadata.mu.Unlock()
+				if asked != 1 {
+					t.Fatalf("the metadata server saw %d reads of %s, which it holds until the test ends; want the one the command asked and ended on its own bound", asked, row.heldRead)
+				}
 			}
 			got, calls := fake.calledUnder()
 			switch {

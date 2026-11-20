@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // waitRequestID is the one request waitBroker serves, and waitValue the value its grant releases
@@ -123,11 +124,22 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	return b
 }
 
-// runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, failing t unless the
-// child ran with the granted value.
-func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
+// buildNotingBackoff builds agent-secrets with its test-only build seam execWaitBackoffNote set,
+// so the exec form's wait prints execWaitBackoffNoteLine on stderr each time it sleeps its
+// backoff. The form ends in syscall.Exec, so a test drives it as a process of its own, which no
+// test clock reaches; seen from the broker, a read sent after that sleep looks the same as a read
+// a loaded machine sent late, and the line tells the two apart without timing either.
+func buildNotingBackoff(t *testing.T) string {
 	t.Helper()
-	stdout, stderr, exit := runAgentSecrets(t, buildAgentSecrets(t), b.URL, key.keyDir, nil,
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets-noting-backoff",
+		Flags: []string{"-ldflags", "-X main.execWaitBackoffNote=1"}})
+}
+
+// runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …`, the build at binary, against b,
+// failing t unless the child ran with the granted value, and returns its stderr.
+func runWaiting(t *testing.T, binary string, b *waitBroker, key *proofKey) string {
+	t.Helper()
+	stdout, stderr, exit := runAgentSecrets(t, binary, b.URL, key.keyDir, nil,
 		"WAIT_ME", "--wait", "1m", "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
 	b.mu.Lock()
 	badProofs := b.badProofs
@@ -138,25 +150,35 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
 	if exit != 0 || !strings.Contains(stdout, "ran-the-child") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want the child run with the granted value", exit, stdout, stderr)
 	}
+	return stderr
+}
+
+// requireNoBackoffSleep fails t when stderr, from a buildNotingBackoff build, says the exec form's
+// wait slept its backoff: after a read the broker held, the next read goes at once.
+func requireNoBackoffSleep(t *testing.T, stderr string) {
+	t.Helper()
+	if strings.Contains(stderr, execWaitBackoffNoteLine) {
+		t.Errorf("the wait slept its backoff (stderr %q); want each read sent at once after one the broker held", stderr)
+	}
 }
 
 // TestExecLearnsOfTheGrantWithinASecond: against a broker that holds each `wait` read, a request
 // granted 3 s after it was made has its value released, the last broker call before the child
-// runs, less than a second after the grant (R1), in at most 2 status reads, each asking a wait of
-// 1 to record.MaxRequestWaitSeconds seconds. The loop before this change read at 2 s and 6 s, so
-// it released 3 s after the grant.
+// runs, as soon as the client learns of the grant (R1): every status read asks a wait of 1 to
+// record.MaxRequestWaitSeconds seconds, so the read in flight when the grant comes carries it,
+// there are at most 2 of them, and the wait never sleeps its backoff. The loop before this change
+// asked no wait and slept its backoff between reads, at 2 s and 6 s, so it released 3 s after the
+// grant. No check reads a clock: a loaded machine that is slow to send or act on a read changes
+// none of these facts, where a bound on the time from grant to release failed it.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, false, grantAfter)
-	runWaiting(t, b, key)
+	stderr := runWaiting(t, buildNotingBackoff(t), b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	lag := b.released.Sub(b.grantAt)
-	if lag >= time.Second {
-		t.Errorf("the grant was released %s after the request was granted, want under 1 s", lag)
-	}
-	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", lag, len(b.waits), b.waits)
+	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", b.released.Sub(b.grantAt), len(b.waits), b.waits)
+	requireNoBackoffSleep(t, stderr)
 	if len(b.waits) > 2 {
 		t.Errorf("the broker served %d status reads (waits %q), want at most 2", len(b.waits), b.waits)
 	}
@@ -169,25 +191,23 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 
 // TestExecLearnsOfAGrantAfterAFullHold: R1's usual case, a person who decides after the first
 // held read has run its whole wait. The fake holds that read for all record.MaxRequestWaitSeconds
-// and grants 300 ms after it answers pending; the next read, sent with no sleep, is held until the
-// grant, so the value is released less than a second after it, in 2 status reads. A loop that
-// slept its backoff after every pending answer, a held one too, would read again 2 s later and
-// release 1.7 s after the grant.
+// and grants 300 ms after it answers pending; the next read, sent with no sleep, carries the
+// grant, so the value is released after 2 status reads. A loop that slept its backoff after every
+// pending answer, a held one too, would sleep 2 s before that read. Seen from the broker that
+// sleep looks the same as a loaded machine's slow read, so the test runs a build that says each
+// backoff sleep on stderr (buildNotingBackoff) and requires none, rather than timing the release.
 func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
-	runWaiting(t, b, key)
+	stderr := runWaiting(t, buildNotingBackoff(t), b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	full := strconv.Itoa(record.MaxRequestWaitSeconds)
 	if len(b.waits) == 0 || b.waits[0] != full {
 		t.Fatalf("status reads asked waits %q, want the first to ask %s, the whole wait", b.waits, full)
 	}
-	lag := b.released.Sub(b.grantAt)
-	if lag >= time.Second {
-		t.Errorf("the grant, 300 ms after the first full hold ended, was released %s after it, want under 1 s", lag)
-	}
-	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", lag, len(b.waits), b.waits)
+	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", b.released.Sub(b.grantAt), len(b.waits), b.waits)
+	requireNoBackoffSleep(t, stderr)
 	if len(b.waits) != 2 {
 		t.Errorf("the broker served %d status reads (waits %q), want 2: the full hold, then the read the grant ends", len(b.waits), b.waits)
 	}
@@ -208,14 +228,24 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // TestExecBacksOffAgainstABrokerThatIgnoresWait: a broker from before the parameter answers each
 // read at once, pending until 9 s after the request was made. The loop does not read it in a
 // tight loop: an answer that is still pending well before the wait it asked has run out makes it
-// sleep its old backoff, so the child runs after at most 6 reads.
+// sleep its old backoff, so the child runs after at most 6 reads. The build here is made as a
+// release makes it, with no -X of the test-only seam execWaitBackoffNote, so the backoff sleeps
+// it takes pass without the line a build that sets the seam prints.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
-	runWaiting(t, b, key)
+	stderr := runWaiting(t, buildAgentSecrets(t), b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.waits) > 6 {
 		t.Errorf("the broker served %d status reads, want at most 6: the loop must back off from a broker that answers at once", len(b.waits))
+	}
+	switch {
+	case strings.Contains(stderr, execWaitBackoffNoteLine):
+		t.Errorf("a build without -X main.execWaitBackoffNote printed %q (stderr %q); want the seam empty, as in every shipped build", execWaitBackoffNoteLine, stderr)
+	case len(b.waits) < 2:
+		// Each pending answer here is followed by a backoff sleep; with one read, granted, the
+		// loop slept none, so the line's absence shows nothing in this run.
+		t.Logf("UNKNOWN whether this build is silent: the loop read once (waits %q) and slept no backoff", b.waits)
 	}
 }

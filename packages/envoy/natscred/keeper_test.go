@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
 )
 
@@ -41,13 +42,17 @@ func keepUntilEnded(ctx context.Context, keeper natscred.Keeper, nc *nats.Conn) 
 	return kept
 }
 
-// requireEnded fails unless kept closes within two seconds.
+// requireEnded fails unless kept closes within the repository's standard wait for a fact. A keeper
+// that does not end waits for something no row gives it within that wait — a renewal most of an
+// hour away, a renewal loop that returns only once the test's context ends, or the close of a
+// connection the row keeps open — so the bound only ends a run that would otherwise hang, and a
+// slow machine is no failure.
 func requireEnded(t *testing.T, kept <-chan struct{}, why string) {
 	t.Helper()
 	select {
 	case <-kept:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the keeper still runs two seconds after %s", why)
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("the keeper still runs after %s", why)
 	}
 }
 
@@ -56,9 +61,9 @@ func requireEnded(t *testing.T, kept <-chan struct{}, why string) {
 // ensureConnWithContext), and a service's keeper beside it waited for its token's renewal, most of
 // an hour, before it looked at the connection again. A session's keeper closed in the middle of a
 // renewal call returned only at the next reconnect it would make, which a renewal that lands the
-// presented token never makes. Each row closes the connection and requires the keeper to end
-// within two seconds, its status listener given back. The control is each Keep without
-// untilClosed: the service's sleeps on, and the session's waits for a renewal that never comes.
+// presented token never makes. Each row closes the connection and requires the keeper to end,
+// its status listener given back. The control is each Keep without untilClosed: the service's
+// sleeps on, and the session's waits for a renewal that never comes.
 func TestAKeeperEndsWhenItsConnectionCloses(t *testing.T) {
 	_, url := testnats.Start(t)
 

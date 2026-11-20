@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // metadataAudience is the broker audience these reads ask the metadata server to mint for.
@@ -312,22 +313,82 @@ func TestGoogleAccountWithAServiceAccountFollowsNoRedirect(t *testing.T) {
 
 // TestGoogleAccountMintIsBounded: a generateIdToken that holds its answer costs a reader
 // MintTimeout and not the whole hold, and the error names the account, the audience and the
-// deadline.
+// deadline. The stand-in holds its answer until the test ends, so a mint with no bound of its own
+// never returns. The bound is read off the mint request (mintDeadline): its deadline is no earlier
+// than MintTimeout after Read began and no later than MintTimeout after the request left. Neither
+// reads how long anything took, so a loaded machine does not move them, and a bound that grew
+// fails them. Only the repository's minute-long wait bounds how long the test waits for Read.
 func TestGoogleAccountMintIsBounded(t *testing.T) {
 	brokertokentest.NewMetadataStand(t)
 	iam := brokertokentest.NewIAMStand(t)
-	release := iam.Hold(5 * time.Second)
-	defer release()
+	t.Cleanup(iam.Hold(time.Hour))
 	account := mintingAccount(iam)
 	account.MintTimeout = 300 * time.Millisecond
+	recorder := &mintDeadline{next: http.DefaultTransport, sent: make(chan struct{})}
+	account.HTTP = &http.Client{Transport: recorder}
 
+	type outcome struct {
+		token string
+		err   error
+	}
+	answered := make(chan outcome, 1)
 	began := time.Now()
-	token, err := account.Read()
-	took := time.Since(began)
-	if token != "" || err == nil || !strings.HasPrefix(err.Error(), mintPrefix) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Read = %q, %v; want no token and the deadline, naming the account and the audience", token, err)
+	go func() {
+		token, err := account.Read()
+		answered <- outcome{token, err}
+	}()
+	select {
+	case <-recorder.sent:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatal("no mint request left the reader")
 	}
-	if took > 2*time.Second {
-		t.Errorf("Read took %s against a mint held 5s; want it ended near its 300ms bound", took)
+	entered, deadline, ok := recorder.read()
+	if !ok {
+		t.Fatal("the mint request carried no deadline; want MintTimeout's")
 	}
+	if fromRead, fromRequest := deadline.Sub(began), deadline.Sub(entered); fromRead < account.MintTimeout || fromRequest > account.MintTimeout {
+		t.Fatalf("the mint request's deadline is %s after Read began and %s after the request left; want at least and at most %s", fromRead, fromRequest, account.MintTimeout)
+	}
+	var got outcome
+	select {
+	case got = <-answered:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("Read did not return while the mint was held; want it ended by its %s bound", account.MintTimeout)
+	}
+	if got.token != "" || got.err == nil || !strings.HasPrefix(got.err.Error(), mintPrefix) || !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("Read = %q, %v; want no token and the deadline, naming the account and the audience", got.token, got.err)
+	}
+}
+
+// mintDeadline is an http.RoundTripper that records when the first request left and the deadline
+// its context carried, closes sent, and then sends every request on next. It records under a lock,
+// since the test reads it while the reader's own goroutine is still in the call.
+type mintDeadline struct {
+	next http.RoundTripper
+	sent chan struct{}
+
+	mu          sync.Mutex
+	entered     time.Time
+	deadline    time.Time
+	hasDeadline bool
+	calls       int
+}
+
+func (m *mintDeadline) RoundTrip(req *http.Request) (*http.Response, error) {
+	m.mu.Lock()
+	m.calls++
+	if m.calls == 1 {
+		m.entered = time.Now()
+		m.deadline, m.hasDeadline = req.Context().Deadline()
+		close(m.sent)
+	}
+	m.mu.Unlock()
+	return m.next.RoundTrip(req)
+}
+
+// read is when the first request left, the deadline it carried, and whether it carried one.
+func (m *mintDeadline) read() (entered, deadline time.Time, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.entered, m.deadline, m.hasDeadline
 }

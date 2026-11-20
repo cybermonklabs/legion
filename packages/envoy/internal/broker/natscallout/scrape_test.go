@@ -36,10 +36,12 @@ func (s *stalledScrape) Write(p []byte) (int, error) {
 
 // stallScrape starts one scrape of registry and holds it at the decision counter's first series
 // line, once a first decision has made that series. It releases the scrape before the service's
-// own cleanup closes the service, which waits for every request.
-func stallScrape(t *testing.T, url string, registry *metrics.Registry) {
+// own cleanup closes the service, which waits for every request. server is the hub the service
+// answers, started with its debug log on (startDebugCalloutServer), as requireRefusedByTheService
+// reads.
+func stallScrape(t *testing.T, server *testnats.Server, registry *metrics.Registry) {
 	t.Helper()
-	requireRefusedAtOnce(t, url, "first")
+	requireRefusedByTheService(t, server, "first")
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the first refusal recorded", func() bool {
 		return strings.Contains(scrape(t, registry), "broker_nats_callout_decisions_total{")
 	})
@@ -55,38 +57,38 @@ func stallScrape(t *testing.T, url string, registry *metrics.Registry) {
 // once did, a stopped scrape would hold every request recording behind it in its slot.
 // metrics.Registry.Handler renders the text under its locks and writes it holding none. With one
 // slot and a scrape stopped on the decision counter's line, a connection holding no credential is
-// refused in the slot, and a live session connecting after it must be admitted inside half a
-// second, with the replica then holding nothing.
+// refused in the slot, and a live session connecting after it must be admitted, with the replica
+// then holding nothing.
 func TestAStalledScrapeHoldsNoDecisionSlot(t *testing.T) {
 	withDecisionSlots(t, 1)
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	server, url := startDebugCalloutServer(t, keys)
 	live := newSession(t, "ses_live", 15*time.Minute)
 	registry := metrics.New()
 	service := startService(t, url, keys, Deps{Introspect: introspector(live), Metrics: NewMetrics(registry)}, Decide)
-	stallScrape(t, url, registry)
+	stallScrape(t, server, registry)
 
-	requireRefusedAtOnce(t, url, "second")
-	requireLiveAdmittedAtOnce(t, url, live, "a refusal recording behind the stopped scrape")
+	requireRefusedByTheService(t, server, "second")
+	requireLiveAdmitted(t, url, live, "a refusal recording behind the stopped scrape")
 	requireHoldsNothing(t, service)
 }
 
 // The same at the deployed number of slots: once concurrentDecisions requests were held recording
 // behind a stopped scrape, no caller, however live its credential, would be decided. More than
-// concurrentDecisions connections holding no credential are each refused at once in a slot while a
-// scrape is stopped on the decision counter's line, and then a live session is admitted inside half
-// a second, with the replica holding nothing.
+// concurrentDecisions connections holding no credential are each refused by the service in a slot
+// while a scrape is stopped on the decision counter's line, and then a live session is admitted,
+// with the replica holding nothing.
 func TestAStalledScrapeHoldsNoneOfTheDeployedSlots(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	server, url := startDebugCalloutServer(t, keys)
 	live := newSession(t, "ses_live", 15*time.Minute)
 	registry := metrics.New()
 	service := startService(t, url, keys, Deps{Introspect: introspector(live), Metrics: NewMetrics(registry)}, Decide)
-	stallScrape(t, url, registry)
+	stallScrape(t, server, registry)
 
 	for i := range concurrentDecisions + 6 {
-		requireRefusedAtOnce(t, url, fmt.Sprintf("#%d", i+1))
+		requireRefusedByTheService(t, server, fmt.Sprintf("#%d", i+1))
 	}
-	requireLiveAdmittedAtOnce(t, url, live, "refusals recording behind the stopped scrape")
+	requireLiveAdmitted(t, url, live, "refusals recording behind the stopped scrape")
 	requireHoldsNothing(t, service)
 }

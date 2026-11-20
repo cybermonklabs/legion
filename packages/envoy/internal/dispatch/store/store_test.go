@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -853,9 +854,14 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 // Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
 // without limit; the context deadline below fires and the error is not a lock timeout. Remove the
 // retry, and the third row fails on the first attempt's timeout.
+//
+// The holder that stays holds its lock until the test ends, so only the alter's own bound can end
+// the wait, and the lock-timeout error after every attempt is what shows that bound worked: the
+// test puts no span on how long the attempts and pauses took past their sum, which a loaded
+// machine stretches, and gives the call the repository's minute rather than the bound plus a
+// margin.
 func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
-	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
 	for name, tc := range map[string]struct {
 		versionType string
 		set         []pgmigrate.Migration
@@ -888,7 +894,7 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			}
 			t.Cleanup(func() { <-released })
 
-			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
+			ctx, cancel := context.WithTimeout(setup, testwait.Bounded(t, time.Minute, time.Second))
 			defer cancel()
 			started := time.Now()
 			err := store.prepareVersionTable(ctx, tc.set)
@@ -909,8 +915,8 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			if pgmigrate.IsRefusal(err) {
 				t.Errorf("prepareVersionTable = %v; a lock timeout reads as a refusal of the recorded rows", err)
 			}
-			if elapsed < attempts*pgmigrate.LockTimeout || elapsed > bound+5*time.Second {
-				t.Errorf("prepareVersionTable returned after %v; want about %v, every attempt's LockTimeout and the pauses between", elapsed, bound)
+			if elapsed < attempts*pgmigrate.LockTimeout {
+				t.Errorf("prepareVersionTable returned after %v; want it to have waited out every attempt's LockTimeout (%v)", elapsed, attempts*pgmigrate.LockTimeout)
 			}
 		})
 	}

@@ -306,8 +306,11 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 // guard for an election that run did not cause (atReconnect): those hooks rewatch the program's
 // state, and a run that ended at the ensure would leave every cache it rewatches stale. It once
 // waited the 36 s guard, failed the run with "the stream had no leader when the wait ended", and
-// ran no hook after the ensure. Here two of the stream's three members are stopped, so the one the
-// client is connected to answers the stream's read with no leader for as long as the row runs.
+// ran no hook after the ensure. Here two of the stream's three members are stopped until the
+// row's cleanup, so the one the client is connected to answers the stream's read with no leader
+// for as long as the row runs, and no election can end while it does: a run that waited for one
+// ends at its hang guard with that error, or, waiting with no guard, does not end within the
+// repository's wait for a fact (testwait.Bounded).
 func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	cluster.AwaitReady(t)
@@ -331,14 +334,15 @@ func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testi
 		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
 	}
 
-	started := time.Now()
-	err = client.runReconnectHooks(client.Conn)
-	took := time.Since(started)
-	if err != nil || !after.Load() {
-		t.Fatalf("a run that found the stream with no leader = %v after %s, the hook after the ensure ran: %t; want nil and the hook run",
-			err, took.Round(time.Millisecond), after.Load())
+	conn := client.Conn
+	ran := make(chan error, 1)
+	go func() { ran <- client.runReconnectHooks(conn) }()
+	select {
+	case err = <-ran:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatal("the run did not end: it waits for an election it did not cause, which cannot end while two of the stream's three members are stopped")
 	}
-	if took > 10*time.Second {
-		t.Fatalf("the run took %s, want it to wait for no election it did not cause", took.Round(time.Millisecond))
+	if err != nil || !after.Load() {
+		t.Fatalf("a run that found the stream with no leader = %v, the hook after the ensure ran: %t; want nil and the hook run", err, after.Load())
 	}
 }

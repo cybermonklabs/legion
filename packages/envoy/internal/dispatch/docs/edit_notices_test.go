@@ -58,12 +58,29 @@ func readEditNotice(t *testing.T, service *Service, artifactID string) (editNoti
 	return row, true
 }
 
-// requireDueWithin requires the notice to be due quiet after the database's now() at the read,
-// within slack: the settlement that wrote it set due_at to now() + quiet a moment before.
-func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duration) {
+// databaseClock is the database's clock now (clock_timestamp()), the clock a settlement stamps a
+// notice's due time on.
+func databaseClock(t *testing.T, service *Service) time.Time {
 	t.Helper()
-	if gap := row.dueAt.Sub(row.now); gap > quiet || gap < quiet-slack {
-		t.Fatalf("the notice is due %v after the read, want within %v of %v", gap, slack, quiet)
+	var now time.Time
+	if err := service.store.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
+// requireDueQuietAfterItsWrite requires the notice to be due quiet after the settlement wrote it.
+// The settlement sets due_at to clock_timestamp() + quiet as it writes the row, so due_at less
+// quiet is the moment of the write, which falls between before, the database's clock read before
+// the write could start, and the database's now() at the read that found the notice. Both are
+// readings of the clock the settlement stamps with, so a loaded machine that takes long over the
+// settlement or the read only moves them apart; a due time that is not quiet after the write - a
+// shorter quiet or a longer one - falls outside them.
+func requireDueQuietAfterItsWrite(t *testing.T, row editNoticeRow, before time.Time, quiet time.Duration) {
+	t.Helper()
+	if written := row.dueAt.Add(-quiet); written.Before(before) || written.After(row.now) {
+		t.Fatalf("the notice is due at %v, %v after %v, want that between %v, before the write, and %v, the read",
+			row.dueAt, quiet, written, before, row.now)
 	}
 }
 
@@ -84,6 +101,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
+	settling := databaseClock(t, service)
 	settleCurrentGeneration(t, service, artifactID)
 	first := latestVersionNumber(t, service, artifactID)
 	if first != before+1 {
@@ -96,10 +114,11 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if row.from != first-1 || row.to != first || !slices.Equal(row.editors, []string{alice.ID}) || row.lastEditor != alice {
 		t.Fatalf("notice after alice = from %d to %d editors %v last %+v, want from %d to %d naming alice", row.from, row.to, row.editors, row.lastEditor, first-1, first)
 	}
-	requireDueWithin(t, row, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, row, settling, 30*time.Second)
 
 	bob := model.Actor{Kind: "user", ID: "bob@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 2, bob, replaceRun("Second.", "Second, edited."))
+	settling = databaseClock(t, service)
 	settleCurrentGeneration(t, service, artifactID)
 	second := latestVersionNumber(t, service, artifactID)
 	if second != first+1 {
@@ -112,7 +131,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if extended.from != first-1 || extended.to != second || !slices.Equal(extended.editors, []string{alice.ID, bob.ID}) || extended.lastEditor != bob {
 		t.Fatalf("notice after bob = from %d to %d editors %v last %+v, want from %d to %d naming alice and bob, bob last", extended.from, extended.to, extended.editors, extended.lastEditor, first-1, second)
 	}
-	requireDueWithin(t, extended, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, extended, settling, 30*time.Second)
 	if !extended.dueAt.After(row.dueAt) {
 		t.Fatalf("bob's edit left the notice due at %v, want after alice's %v", extended.dueAt, row.dueAt)
 	}

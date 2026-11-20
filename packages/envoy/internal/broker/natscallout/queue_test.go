@@ -96,56 +96,124 @@ func sessionsNamed(t *testing.T, prefix string, n int) []*session {
 }
 
 // The budget counts from when the request arrives, not from when a decision slot frees up: a
-// request that waited for a slot gets what is left of its budget, and one already past it is
-// refused at once, so every client hears inside the budget, admitted or refused, and none waits
-// out the server's own timeout. With one slot and a 700 ms broker, the third request of three
-// waits 1.4 s for its slot: counted from its slot it would be answered at 2.1 s, after the server
-// had given up on it.
+// request that waited for a slot is decided under what is left of its budget, so every client
+// hears inside the budget, admitted or refused, and none waits out the server's own timeout.
+// Counted from its slot instead, the budget of a request behind slow decisions outlasts the
+// server: with one slot and a 700 ms broker, the third request of three waits 1.4 s for its slot
+// and would be answered at 2.1 s, after the server had given up on it.
+//
+// The deadline is read from the decision's own context. One slot is held by a first decision until
+// a second request is seen waiting behind it, and that request is then decided under the deadline
+// it was given as it arrived: one budget after a moment between its client starting to connect and
+// the test seeing it wait. A budget counted from its slot ends one budget after the slot freed,
+// which is after the test saw it wait, since the slot frees only then.
 func TestTheBudgetCountsTheTimeARequestWaitsForASlot(t *testing.T) {
 	withDecisionSlots(t, 1)
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
-	sessions := sessionsNamed(t, "ses_queued", 3)
-	startService(t, url, keys, slowIntrospect(700*time.Millisecond, sessions...), Decide)
-
-	errs, took := connectAll(t, url, sessions)
-	admitted := 0
-	for index := range sessions {
-		require.Less(t, took[index], decideBudget+400*time.Millisecond,
-			"session %d heard after %s (err %v): its budget was counted from its slot, not from its arrival", index, took[index], errs[index])
-		if errs[index] == nil {
-			admitted++
-		}
-	}
-	require.GreaterOrEqual(t, admitted, 2, "the requests that fit their budget were not admitted: %v", errs)
-}
-
-// A request waiting for a decision slot is refused when its own budget is spent, whatever the
-// slot's holder is doing: one slot is held by a decision that ignores its context and runs three
-// seconds, as a broker call that does not honour cancellation would, and a request arriving behind
-// it is refused inside the budget instead of waiting for the slot. Without the wait's deadline it
-// would wait the three seconds, past the two its client's connect allows.
-func TestAWaitingRequestIsRefusedWhenItsBudgetIsSpent(t *testing.T) {
-	withDecisionSlots(t, 1)
-	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
-	stuck, waiting := newSession(t, "ses_stuck", 15*time.Minute), newSession(t, "ses_waiting", 15*time.Minute)
-	deps := Deps{Introspect: introspector(stuck, waiting)}
-	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
-		if req.Token == stuck.token {
-			time.Sleep(3 * time.Second)
+	holder, queued := newSession(t, "ses_holder", 15*time.Minute), newSession(t, "ses_queued", 15*time.Minute)
+	holding, release := make(chan struct{}), make(chan struct{})
+	decidedUnder := make(chan time.Time, 1)
+	service := startService(t, url, keys, Deps{Introspect: introspector(holder, queued)}, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		switch req.Token {
+		case holder.token:
+			// The slot stays held, whatever the holder's own budget, until the test releases it.
+			close(holding)
+			<-release
+		case queued.token:
+			deadline, _ := ctx.Deadline()
+			decidedUnder <- deadline
 		}
 		return Decide(ctx, deps, services, req)
 	})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	// Registered after the service, so it runs before the service's own Close, which waits for the
+	// holder's decision.
+	t.Cleanup(free)
 
-	go func() { _, _ = connectSession(t, url, stuck, nil) }()
-	time.Sleep(200 * time.Millisecond)
-	began := time.Now()
+	held := make(chan error, 1)
+	go func() {
+		nc, err := connectSession(t, url, holder, nil)
+		if err == nil {
+			nc.Close()
+		}
+		held <- err
+	}()
+	<-holding
+	connecting := time.Now()
+	heard := make(chan error, 1)
+	go func() {
+		nc, err := connectSession(t, url, queued, nil)
+		if err == nil {
+			nc.Close()
+		}
+		heard <- err
+	}()
+	testwait.Eventually(t, "the second request waiting for the slot", func() bool {
+		return service.waiting.Load() == 1
+	})
+	seen := time.Now()
+	free()
+	err := <-heard
+	// The holder's answer, whatever it is, went out before the slot freed; its client is waited
+	// for so that its connection is not left to a test that has ended.
+	<-held
+	var deadline time.Time
+	select {
+	case deadline = <-decidedUnder:
+	default:
+		t.Fatalf("the request that waited for the slot was never decided (its client heard %v)", err)
+	}
+	require.False(t, deadline.Before(connecting.Add(decideBudget)) || deadline.After(seen.Add(decideBudget)),
+		"the request that waited for the slot was decided under a deadline %s after its client began to connect, where its %s budget runs from its arrival, which came before it was seen waiting %s after that: its budget was counted from its slot, not from its arrival",
+		deadline.Sub(connecting), decideBudget, seen.Sub(connecting))
+	require.NoError(t, err, "the request that waited for the slot was not admitted inside what was left of its budget")
+}
+
+// A request waiting for a decision slot is refused when its own budget is spent, whatever the
+// slot's holder is doing: one slot is held by a decision that ignores its context, as a broker call
+// that does not honour cancellation would, and keeps it until the test ends, and a request arriving
+// behind it is refused for its budget instead of waiting for the slot. Without the wait's deadline
+// it would wait for the slot as long as the holder keeps it, past the two seconds its client's
+// connect allows, and the server would give up on it at its authorization timeout as it gives up on
+// the holder's own request. So the service counts the waiting request's refusal under the budget's
+// label, and the server gives up on one request, the holder's: it writes each give-up to its log
+// (hubGaveUp) before it refuses that client, so once both clients have heard, its log names every
+// request it gave up on.
+func TestAWaitingRequestIsRefusedWhenItsBudgetIsSpent(t *testing.T) {
+	withDecisionSlots(t, 1)
+	keys := testnats.NewCalloutKeys(t)
+	server, url := startDebugCalloutServer(t, keys)
+	stuck, waiting := newSession(t, "ses_stuck", 15*time.Minute), newSession(t, "ses_waiting", 15*time.Minute)
+	registry := metrics.New()
+	deps := Deps{Introspect: introspector(stuck, waiting), Metrics: NewMetrics(registry)}
+	holding, release := make(chan struct{}), make(chan struct{})
+	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		if req.Token == stuck.token {
+			close(holding)
+			<-release
+		}
+		return Decide(ctx, deps, services, req)
+	})
+	// Registered after the service, so it runs before the service's own Close, which waits for the
+	// stuck decision.
+	t.Cleanup(func() { close(release) })
+
+	stuckHeard := make(chan error, 1)
+	go func() {
+		_, err := connectSession(t, url, stuck, nil)
+		stuckHeard <- err
+	}()
+	<-holding
 	_, err := connectSession(t, url, waiting, nil)
-	took := time.Since(began)
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request behind a stuck slot was not refused")
-	require.Less(t, took, decideBudget+400*time.Millisecond,
-		"the request behind a stuck slot was heard after %s: it waited for the slot past its own budget", took)
+	require.ErrorIs(t, <-stuckHeard, nats.ErrAuthorization, "the stuck request's client was not refused at the server's timeout")
+	require.Equal(t, 1, strings.Count(server.Log(), hubGaveUp),
+		"the server gave up on the request behind the stuck slot too: it waited for the slot past its own budget")
+	testwait.Eventually(t, "the refusal of the request behind the stuck slot counted under the budget's label", func() bool {
+		return refusedFor(t, registry, labelBudget) == 1
+	})
 }
 
 // A request whose wait for a slot spent its budget is refused naming the wait, not the step its
@@ -199,12 +267,16 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 // A replica holds at most maxWaiting requests waiting for a decision slot, and refuses the one past
 // the bound at once, naming the bound, while the ones it holds wait on and are decided. One slot is
 // held by a decision until that refusal is heard; two requests, the bound, wait behind it; a third
-// is refused within half a second rather than waiting, and the holder and the two held are then
-// admitted. With no bound the third waits behind the slot too, past half a second.
+// is refused under the bound's label rather than waiting, and the holder and the two held are then
+// admitted. With no bound the third waits behind the slot too, and is refused for its budget or
+// decided, never under the bound's label: the bound's refusal is made as the request arrives
+// (deliver), so the label tells a refusal at once from one that waited, where how long the client
+// took would also count whatever slowed the client or the hub.
 //
-// The refusal's reason is read after Close, whose last report writes whatever is still counted
-// (report), so it is in the log whether a tick's line or that last one carried it, and the test
-// waits on no tick of the reporter.
+// The counter is read after Close, which returns once every request has been answered and counted,
+// and so is the refusal's reason: Close's last report writes whatever is still counted (report), so
+// it is in the log whether a tick's line or that last one carried it, and the test waits on no tick
+// of the reporter.
 func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 2)
@@ -245,18 +317,16 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 		return service.waiting.Load() == int64(len(waiters))
 	})
 
-	began := time.Now()
 	_, err := connectSession(t, url, extra, nil)
-	took := time.Since(began)
 	close(release)
-	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
-	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted")
+	service.Close()
+	require.Equal(t, 1, refusedFor(t, registry, labelWaitingBound),
+		"the request past the waiting bound was not refused under the bound's label: it waited behind the slot rather than being refused at once")
 	require.NoError(t, <-held, "the slot's holder was refused")
 	for index, err := range <-results {
 		require.NoError(t, err, "waiter %d of the bound was refused", index)
 	}
-	service.Close()
-	require.Equal(t, 1, refusedFor(t, registry, labelWaitingBound), "the refusal was not counted under its label")
 	require.Contains(t, log.String(), labelWaitingBound+"=1", "the refusal was not in the broker's log:\n%s", log.String())
 	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 }
@@ -374,9 +444,10 @@ func TestAClosingReplicaAnswersTheRequestsItHolds(t *testing.T) {
 // once the hold is released after the hub returns. A replica that drained there would leave its
 // subscription among the connection's own, which nats.go sends again on the reconnect, and drop
 // it on the client's side only once the held request is delivered: for the second its decision
-// then takes, the hub routes requests to a replica with no subscriber. One that unsubscribes is
-// out of the group before the hub returns, so every connection after the release is admitted at
-// once by the other replica.
+// then takes, the hub routes requests to a replica with no subscriber, and refuses each of those
+// clients at its authorization timeout. One that unsubscribes is out of the group before the hub
+// returns, so every connection after the release is admitted, and by the other replica: the
+// closing replica, whose decisions take a second, decides none of them.
 func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 	target, entered, release := holdDeliveries(t)
 	keys := testnats.NewCalloutKeys(t)
@@ -384,7 +455,15 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 	probes := sessionsNamed(t, "ses_probe", 20)
 	sessions := sessionsNamed(t, "ses_after", 20)
 	deps := Deps{Introspect: introspector(append(probes, sessions...)...)}
+	after := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		after[s.token] = true
+	}
+	var decidedAfter atomic.Int32
 	slow := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		if after[req.Token] {
+			decidedAfter.Add(1)
+		}
 		time.Sleep(time.Second)
 		return Decide(ctx, deps, services, req)
 	}
@@ -424,11 +503,10 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 	release()
 
 	for _, s := range sessions {
-		began := time.Now()
 		_, err := connectSession(t, url, s, nil)
 		require.NoError(t, err, "%s was refused after the hub returned: the closing replica took its request", s.id)
-		require.Less(t, time.Since(began), time.Second, "%s waited %s to be admitted", s.id, time.Since(began))
 	}
+	require.Zero(t, decidedAfter.Load(), "the closing replica decided %d of the connections made after the hub returned: it came back into the group", decidedAfter.Load())
 	select {
 	case <-closed:
 	case <-time.After(10 * time.Second):
@@ -443,10 +521,11 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 // removes the subscription on the client's side only (nats.go:5504-5554, checkDrained). A Close that then
 // waited out its decisions on that connection left the hub routing requests to a replica with no
 // subscriber for as long as the longest of them ran, and each of those clients waited out the
-// hub's whole authorization timeout. Here the closing replica holds a decision of five seconds,
-// started before anything else, and a request at the hold keeps its drain from ending until the
-// hub has restarted and the replica has reconnected; once the drain ends, every connection is
-// admitted at once by the other replica.
+// hub's whole authorization timeout and was refused. Here the closing replica holds a decision of
+// five seconds, started before anything else, and a request at the hold keeps its drain from
+// ending until the hub has restarted and the replica has reconnected; once the drain ends, every
+// connection is admitted by the other replica, since a request the hub routed to the closing one
+// would reach no subscriber.
 func TestAReplicaThatReconnectsWhileItDrainsLeavesTheGroup(t *testing.T) {
 	target, entered, release := holdDeliveries(t)
 	keys := testnats.NewCalloutKeys(t)
@@ -507,10 +586,8 @@ func TestAReplicaThatReconnectsWhileItDrainsLeavesTheGroup(t *testing.T) {
 	})
 
 	for _, s := range sessions {
-		began := time.Now()
 		_, err := connectSession(t, url, s, nil)
 		require.NoError(t, err, "%s was refused after the drain ended: the hub routed its request to the closing replica", s.id)
-		require.Less(t, time.Since(began), time.Second, "%s waited %s to be admitted", s.id, time.Since(began))
 	}
 	select {
 	case <-closed:

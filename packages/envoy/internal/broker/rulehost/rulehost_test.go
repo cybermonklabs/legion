@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 )
@@ -292,18 +291,37 @@ func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
 }
 
 // TestARulesHostOfManyDotsIsReadInLinearTime: the grammar takes every trailing dot off at once and
-// reads the rest once, so a host of 100,000 dots, or a name followed by them, is refused as no
-// host name in well under a second, and its reason says it binds nothing. Reading one dot at a
-// time, as the grammar once did, took 2.76 s for such a host.
+// reads the rest once, so a host of many dots, or a name followed by them, is refused as no host
+// name, and its reason says it binds nothing. The test counts the grammar's work and does not time
+// it: readHost adds up the characters of every host the grammar reads whole, and a host with twice
+// the dots must cost under three times the characters of the shorter one. A linear reading costs
+// twice as many. A grammar that reads the rest again after each dot, as this grammar once did
+// (2.76 s for a host of 100,000 dots), costs four times as many. A count does not change with the
+// load on the machine, as a time does, and the ratio is the same at any length, so the hosts are
+// of 10,000 and 20,000 dots: long enough that the grammar's few fixed reads do not move it, and
+// short enough that a grammar which reads them one dot at a time still ends in seconds.
 func TestARulesHostOfManyDotsIsReadInLinearTime(t *testing.T) {
-	for _, host := range []string{strings.Repeat(".", 100000), "api.github.com" + strings.Repeat(".", 100000)} {
-		start := time.Now()
+	read := 0
+	readHost = func(length int) { read += length }
+	t.Cleanup(func() { readHost = nil })
+	// readOf is the count of characters the grammar read to refuse host, which it checks.
+	readOf := func(host string) int {
+		read = 0
 		why := Refusal(host)
-		if took := time.Since(start); took > time.Second {
-			t.Errorf("reading a host of %d characters took %v; want well under a second", len(host), took)
-		}
 		if !strings.Contains(why, "ends in a dot") || !strings.Contains(why, "binds nothing") {
 			t.Errorf("a host of %d characters that end in dots is refused %q; want that it ends in a dot and binds nothing", len(host), why)
 		}
+		return read
+	}
+	for _, name := range []string{"", "api.github.com"} {
+		short, long := name+strings.Repeat(".", 10000), name+strings.Repeat(".", 20000)
+		once, twice := readOf(short), readOf(long)
+		if once < len(short) {
+			t.Fatalf("refusing a host of %d characters read %d characters as readHost counts them; want the host read at least once: the count does not see the grammar read", len(short), once)
+		}
+		if twice >= 3*once {
+			t.Errorf("refusing a host of %d characters read %d characters, and one of %d characters with twice the dots read %d; want under three times as many for twice the dots, as a reading linear in the host gives", len(short), once, len(long), twice)
+		}
+		t.Logf("refusing a host of %d characters read %d characters, and one of %d characters %d", len(short), once, len(long), twice)
 	}
 }

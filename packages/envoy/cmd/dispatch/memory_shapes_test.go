@@ -42,9 +42,11 @@ type memoryShape struct {
 	markdown func() string
 }
 
-// capShapeAnswersWithin is how long the upload of a cap shape that once took far longer may take
-// to answer, by the shape's name.
-var capShapeAnswersWithin = map[string]time.Duration{"link reference definitions": 10 * time.Second}
+// capShapeCPUWithin is how much of the server's CPU time the upload of a cap shape that once took
+// far longer may take, by the shape's name. It is CPU time and not the upload's wall time, as every
+// growth test in this module is timed (internal/cputest): a loaded machine stretches the wall time
+// by every moment it leaves the server off a core, without the parse doing more work.
+var capShapeCPUWithin = map[string]time.Duration{"link reference definitions": 10 * time.Second}
 
 // capShapes are the shapes LEGION-481 names, each exactly at the 1 MiB cap: the ones LEGION-465's
 // pull requests (#1670, #1669) found quadratic or deep, a table of a mebibyte of cells, and the
@@ -53,8 +55,9 @@ var capShapeAnswersWithin = map[string]time.Duration{"link reference definitions
 // bound refuses it as soon as it nests past 100. Flat list items, empty or not, are where the
 // guard has to close a list to stop, and hard breaks weigh as blocks. A paragraph of link
 // reference definitions cost goldmark time quadratic in its lines: a mebibyte of them took a
-// minute to refuse, so it answers within ten seconds. Escaped syntax weighed four elements a
-// mebibyte, and its upload held 265 to 323 MiB before its rendering was refused by its bytes.
+// minute to refuse, so its upload takes at most ten seconds of the server's CPU. Escaped syntax
+// weighed four elements a mebibyte, and its upload held 265 to 323 MiB before its rendering was
+// refused by its bytes.
 func capShapes() []memoryShape {
 	repeated := func(unit string) func() string { return func() string { return fill(unit) } }
 	return []memoryShape{

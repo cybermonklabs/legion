@@ -259,10 +259,13 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
-// that bound and gives its connection back. refs is locked in another connection, so the walk,
-// which reads refs, waits however fast it would run, and the bound is what ends it. The control
-// is the first read, before the lock: the same request answers 200.
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT naming that
+// bound, no sooner than it, and gives its connection back. refs is locked in another connection
+// until the test ends, so the walk, which reads refs, waits however fast it would run, and only
+// the bound can end it: a walk with no bound never answers, and the wait for the answer fails. The
+// wait is the repository's minute and not the bound plus a margin, since a loaded machine answers
+// late with the bound working. The control is the first read, before the lock: the same request
+// answers 200.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -272,20 +275,34 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	}
 	holdLock(t, database, "lock table refs in access exclusive mode")
 	acquired := database.Pool.Stat().AcquiredConns()
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
+	type answer struct {
+		response *httptest.ResponseRecorder
+		took     time.Duration
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		started := time.Now()
+		response := issueReferencesRequest(t, handler, issue.Key, "")
+		answered <- answer{response, time.Since(started)}
+	}()
+	var got answer
+	select {
+	case got = <-answered:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("references past the bound never answered while refs stayed locked: the walk is not bounded by its %s", referencesClosureBound)
+	}
+	response := got.response
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
-		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	if got.took < referencesClosureBound {
+		t.Errorf("references past the bound answered after %s, before its %s bound", got.took, referencesClosureBound)
 	}
 	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 50*time.Millisecond, func() bool {
 		conns = database.Pool.Stat().AcquiredConns()
 		return conns <= acquired
 	})

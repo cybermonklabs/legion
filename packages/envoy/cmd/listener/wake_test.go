@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The wake report's wire shape is what the Legion daemon's decoder reads
@@ -209,22 +210,40 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 // A wake report the server refuses under the listener's grant is given up at its first attempt,
 // naming the refusal, rather than published again until its five-minute budget runs out with one
 // of the reports in flight held all that time: the grant refuses it again however often it is
-// sent.
+// sent. The listener's lifetime lasts until the test ends, so the report ends only by giving up on
+// the refusal or, retried, at its budget. The test waits, within the repository's minute, for it
+// to return or to log a retry, and reads the attempt count its last line names; it puts no span on
+// how long the one attempt took, which a loaded machine stretches.
 func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
 	client := deniedGrantClient(t, bus.LegionWakeTopic)
 	logs := &lockedBuffer{}
-	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	started := time.Now()
-	publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied"})
-	elapsed := time.Since(started)
+	lifetime, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied"})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-returned
+	})
+	testwait.Eventually(t, "the refused report to be given up or retried", func() bool {
+		select {
+		case <-returned:
+			return true
+		default:
+			return strings.Contains(logs.String(), "retrying until the bus takes it")
+		}
+	})
 	output := logs.String()
+	if strings.Contains(output, "retrying until the bus takes it") {
+		t.Fatalf("the refused report was retried, want it given up at its first attempt:\n%s", output)
+	}
 	if !strings.Contains(output, "legion wake report not published") || !strings.Contains(output, `bus: NATS denied the publish to \"`+bus.LegionWakeTopic) {
 		t.Fatalf("the refused report's log names no refusal:\n%s", output)
 	}
-	if strings.Contains(output, "retrying until the bus takes it") || elapsed > wakeReportAttempt+3*time.Second {
-		t.Fatalf("the refused report was retried, or ended after %s, want one attempt within %s:\n%s",
-			elapsed.Round(time.Millisecond), wakeReportAttempt+3*time.Second, output)
+	if !strings.Contains(output, `"attempts":1,`) {
+		t.Fatalf("the refused report's log names no first attempt, want it given up at attempt 1:\n%s", output)
 	}
 }
 

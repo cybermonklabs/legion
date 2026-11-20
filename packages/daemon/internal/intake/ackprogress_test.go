@@ -3,9 +3,11 @@ package intake
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -479,17 +481,22 @@ func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
 	}
 }
 
-// progressSignal is the acknowledgement-protocol payload a progress signal carries, the
-// ackProgress of nats.go v1.55.0.
-const progressSignal = "+WPI"
+// progressSignal, nakSignal and ackSignal are the acknowledgement-protocol payloads of a progress
+// signal, a nak and an acknowledgement: nats.go v1.55.0's ackProgress, ackNak, which a nak's delay
+// follows as JSON, and ackAck.
+const (
+	progressSignal = "+WPI"
+	nakSignal      = "-NAK"
+	ackSignal      = "+ACK"
+)
 
 // watchProgressSignals answers how many messages the daemon's client reported in progress within a
 // span, by watching the subject every acknowledgement of this server is published on. The wire is
 // the only place a tick shows: nothing in the daemon's log says one was made, the consumer's info
 // keeps no count of them, and the message's own state is the same either way. Every consumer of
 // the server shares the subject, so what this counts is the daemon's client whole; that costs the
-// two rows using it nothing, because each asks over a span in which the daemon has one message of
-// the row's in hand and nothing else to work.
+// row using it nothing, because it asks over a span in which the daemon has one message of the
+// row's in hand and nothing else to work.
 func watchProgressSignals(t *testing.T, js jetstream.JetStream) func(from, until time.Time) int {
 	t.Helper()
 	var mu sync.Mutex
@@ -521,28 +528,92 @@ func watchProgressSignals(t *testing.T, js jetstream.JetStream) func(from, until
 	}
 }
 
+// heard is one message published on the acknowledgement subject: the subject it went to, a
+// delivery's reply subject or one of heldNak's marks, and what it said.
+type heard struct {
+	subject string
+	body    string
+}
+
+// watchAcknowledgements answers every message published on the subject every acknowledgement of
+// this server goes to, in the order it was heard. NATS hands one connection's messages to a
+// subscriber in the order that connection published them, and the daemon's client and heldNak's
+// marks share the test's one connection, so this order is the order the daemon reported, naked,
+// acknowledged and was marked in, which is also the order the server's consumer takes the
+// signals in. No clock decides it, so a loaded machine cannot change what it says.
+func watchAcknowledgements(t *testing.T, js jetstream.JetStream) func() []heard {
+	t.Helper()
+	var mu sync.Mutex
+	var all []heard
+	subscription, err := js.Conn().Subscribe("$JS.ACK.>", func(message *nats.Msg) {
+		mu.Lock()
+		all = append(all, heard{subject: message.Subject, body: string(message.Data)})
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("watch the acknowledgement subject: %v", err)
+	}
+	// The connection this subscription is on is the test server's, which testJetStream closes when
+	// the test ends, so a failure to unsubscribe here is that close and not the row's business.
+	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	return func() []heard {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(all)
+	}
+}
+
+// nakDelay is the delay a nak's payload asks the server to wait before it delivers the message
+// again, as nats.go v1.55.0's NakWithDelay writes it (`-NAK {"delay": <nanoseconds>}`), and false
+// for a payload that asks for no delay.
+func nakDelay(body string) (time.Duration, bool) {
+	options, ok := strings.CutPrefix(body, nakSignal+" ")
+	if !ok {
+		return 0, false
+	}
+	var asked struct {
+		Delay time.Duration `json:"delay"`
+	}
+	if err := json.Unmarshal([]byte(options), &asked); err != nil {
+		return 0, false
+	}
+	return asked.Delay, true
+}
+
 // nakFailure is the line nakResolve writes at warn just before it naks a message whose handler
 // returned an error (handleMessage's "retryable intake processing failure").
 const nakFailure = "retryable intake processing failure"
+
+// heldNakFrom and heldNakUntil are the subjects of heldNak's marks. They sit under the
+// acknowledgement subject so that watchAcknowledgements hears them in their place among the
+// daemon's signals, and they name no stream and no consumer, so no JetStream consumer reads them.
+const (
+	heldNakFrom  = "$JS.ACK.held-nak.from"
+	heldNakUntil = "$JS.ACK.held-nak.until"
+)
 
 // heldNak is the daemon's log with that one line held, which is how the row below widens the
 // window between a handler's end and its message's nak. In the daemon that window is microseconds
 // wide, so a keeper that outlived its handler would have to be caught inside it by luck; held for
 // longer than the keeper's own interval, the window holds a tick of such a keeper with certainty,
-// and holds none of a keeper stopped before the terminal call. It holds the nak named by holdsNak
-// and no other, so the row's other retry measures the delay the nak asked for with nothing of the
-// row's own added to it.
+// and holds none of a keeper stopped before the terminal call. The hold publishes a mark as it
+// begins and another as it ends, on conn, the connection the daemon's client publishes on. The
+// line is written on the daemon's own goroutine after stop() has returned, and stop() returns
+// only once the keeper's last signal has been published, so every signal of a keeper that
+// stopped is heard before the first mark, and one heard between the two marks is a keeper still
+// running. It holds the nak named by holdsNak and no other.
 type heldNak struct {
 	buffer lockedBuffer
 	hold   time.Duration
+	conn   *nats.Conn
 
-	mu    sync.Mutex
-	naks  int
-	from  time.Time
-	until time.Time
+	mu      sync.Mutex
+	naks    int
+	marking error
 }
 
-// holdsNak is which of the row's naks is held: the second, so the first retry is the one measured.
+// holdsNak is which of the row's naks is held: the second, so the first is made as the daemon
+// makes it, with nothing of the row's between its handler's end and its nak.
 const holdsNak = 2
 
 func (h *heldNak) Write(p []byte) (int, error) {
@@ -553,25 +624,32 @@ func (h *heldNak) Write(p []byte) (int, error) {
 	h.mu.Lock()
 	h.naks++
 	holding := h.naks == holdsNak
-	if holding {
-		h.from = time.Now()
-	}
 	h.mu.Unlock()
 	if !holding {
 		return written, err
 	}
+	h.mark(heldNakFrom)
 	time.Sleep(h.hold)
-	h.mu.Lock()
-	h.until = time.Now()
-	h.mu.Unlock()
+	h.mark(heldNakUntil)
 	return written, err
 }
 
-// window is when the held nak's line was held from and until; both are zero until it has been.
-func (h *heldNak) window() (time.Time, time.Time) {
+// mark publishes one of the hold's marks, keeping the first failure for the row to report.
+func (h *heldNak) mark(subject string) {
+	if err := h.conn.Publish(subject, nil); err != nil {
+		h.mu.Lock()
+		if h.marking == nil {
+			h.marking = fmt.Errorf("publish the mark %s: %w", subject, err)
+		}
+		h.mu.Unlock()
+	}
+}
+
+// marked is the first failure to publish a mark, nil while every mark has gone out.
+func (h *heldNak) marked() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.from, h.until
+	return h.marking
 }
 
 // The second claim, end to end: the keeper stops before the message's one terminal call, so the
@@ -580,18 +658,25 @@ func (h *heldNak) window() (time.Time, time.Time) {
 // expires after the nak's delay, and progressUpdate resets it to now — and the retry the nak asked
 // for would become a whole AckWait.
 //
-// So the row measures that retry. It also watches the signals themselves, because the retry alone
-// would not catch the fault this row is here for: a stop() left to a defer after the terminal
-// call. nats.go marks a message acknowledged for a nak and refuses every later signal for it
-// (ErrMsgAlreadyAckd, nats.go v1.55.0's `(*jetStreamMsg).ackReply`), so a keeper that outlives the
-// nak publishes nothing and the retry stands anyway — on that client. What such a keeper does do
-// is report the message in progress between its handler's end and the nak, which is where the row
-// looks, and the one thing between the two the row can hold is the line nakResolve writes there
-// (heldNak).
+// So the row reads the order of the signals on the wire (watchAcknowledgements), not the time the
+// retry took. Each nak the daemon made must ask for the delay it was given, and nothing may follow
+// it for its delivery: the server delivers the message again when its pending entry falls due,
+// and of what a client sends only a later signal for the message moves that entry, so the two
+// facts together are the retry the nak asked for. How long that retry took is the machine's
+// business: a loaded runner stretches it with the keeper right, and a reset only stretches it
+// further.
+//
+// The order after the nak alone would not catch the fault this row is here for: a stop() left to
+// a defer after the terminal call. nats.go marks a message acknowledged for a nak and refuses
+// every later signal for it (ErrMsgAlreadyAckd, nats.go v1.55.0's `(*jetStreamMsg).ackReply`), so
+// a keeper that outlives the nak publishes nothing after it — on that client. What such a keeper
+// does do is report the message in progress between its handler's end and the nak, which is
+// where the row looks too, and the one thing between the two the row can hold is the line
+// nakResolve writes there (heldNak), whose marks bound that span in the same order.
 func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
-	progress := watchProgressSignals(t, js)
+	acknowledgements := watchAcknowledgements(t, js)
 
 	// The keeper ticks every third of AckWait, so a hold of a third and a bit covers a whole
 	// interval whenever it starts.
@@ -599,7 +684,7 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 	spec.AckWait, spec.NakDelay = 2*time.Second, 50*time.Millisecond
 	// The row is the nak's, not the limit's: no handler here runs long enough to be cut.
 	spec.HandlerLimit = time.Minute
-	held := &heldNak{hold: spec.AckWait/3 + 100*time.Millisecond}
+	held := &heldNak{hold: spec.AckWait/3 + 100*time.Millisecond, conn: js.Conn()}
 	spec.Logger = slog.New(slog.NewTextHandler(held, nil))
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
@@ -627,26 +712,60 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 		defer mu.Unlock()
 		return len(entered) > holdsNak
 	})
-	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+	consumer := dispatchConsumerName(spec.Project)
+	assertNoAckPending(t, stream, consumer)
+	if err := held.marked(); err != nil {
+		t.Fatalf("mark the held nak: %v", err)
+	}
 
+	ours := func(signal heard) bool { return strings.Contains(signal.subject, "."+consumer+".") }
+	// The acknowledgement of the applied fact is the last thing the daemon sends for it, so once
+	// it has been heard everything the daemon sent before it has been heard too.
+	var signals []heard
+	testwait.Eventually(t, "the acknowledgement of the applied fact on the acknowledgement subject", func() bool {
+		signals = acknowledgements()
+		return slices.ContainsFunc(signals, func(signal heard) bool { return ours(signal) && signal.body == ackSignal })
+	})
+	// retries[k] is how long the fact waited between its delivery k+1 and the next one.
 	mu.Lock()
-	retry := entered[1].Sub(entered[0])
+	var retries []time.Duration
+	for k, next := range entered[1:] {
+		retries = append(retries, next.Sub(entered[k]))
+	}
 	mu.Unlock()
-	// The margin: the delay the nak asked for is a fortieth of AckWait, 50 ms of 2 seconds, and a
-	// late tick would make this retry a whole AckWait. The guard is a quarter of AckWait, 500 ms,
-	// which is ten times the delay, so a loaded runner's scheduling does not cross it, and a
-	// quarter of the 2 seconds a late tick would cost.
-	if retry > spec.AckWait/4 {
-		t.Errorf("the naked fact was delivered again after %s, want nearer its %s nak delay than its %s acknowledgement window: a progress signal after the nak reset the server's redelivery timer",
-			retry, spec.NakDelay, spec.AckWait)
+
+	naked := 0
+	for i, signal := range signals {
+		if !ours(signal) || !strings.HasPrefix(signal.body, nakSignal) {
+			continue
+		}
+		nak := naked
+		naked++
+		if delay, ok := nakDelay(signal.body); !ok || delay != spec.NakDelay {
+			t.Errorf("the daemon naked delivery %d with %q, want a nak that asks for its %s delay", naked, signal.body, spec.NakDelay)
+		}
+		if later := slices.IndexFunc(signals[i+1:], func(next heard) bool { return next.subject == signal.subject }); later >= 0 {
+			// How long the retry took decides nothing here; it is printed so a reader of the
+			// failure sees what the signal after the nak cost.
+			retry := "no delivery after it"
+			if nak < len(retries) {
+				retry = retries[nak].String()
+			}
+			t.Errorf("after it naked delivery %d the daemon sent %q for it, want nothing: the nak is its one terminal call, and a progress signal after it resets the server's redelivery timer to a whole %s acknowledgement window (the nak asked for %s; the retry took %s)",
+				naked, signals[i+1+later].body, spec.AckWait, spec.NakDelay, retry)
+		}
 	}
-	from, until := held.window()
-	if from.IsZero() || until.IsZero() {
-		t.Fatalf("the row held no nak line, so nothing widened the window a keeper that outlived its handler would tick in")
+	if naked != holdsNak {
+		t.Errorf("the daemon naked %d deliveries of the fact, want %d: one for each its handler refused", naked, holdsNak)
 	}
-	if signals := progress(from, until); signals != 0 {
-		t.Errorf("the daemon reported the message in progress %d times between its handler's end and its nak, want none: the keeper has to stop before the terminal call, not in a defer after it",
-			signals)
+
+	from := slices.IndexFunc(signals, func(signal heard) bool { return signal.subject == heldNakFrom })
+	until := slices.IndexFunc(signals, func(signal heard) bool { return signal.subject == heldNakUntil })
+	if from < 0 || until < from {
+		t.Fatalf("the row heard the held nak's marks at positions %d and %d of the acknowledgement subject, want both, the first before the second: nothing widened the window a keeper that outlived its handler would tick in", from, until)
+	}
+	if reported := slices.ContainsFunc(signals[from+1:until], func(signal heard) bool { return ours(signal) && signal.body == progressSignal }); reported {
+		t.Errorf("the daemon reported the message in progress between its handler's end and its nak, want never: the keeper has to stop before the terminal call, not in a defer after it")
 	}
 }
 

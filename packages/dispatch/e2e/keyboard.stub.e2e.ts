@@ -43,15 +43,32 @@ chordTest(
   }
 );
 
+// The keymap's chord window, `CHORD_TIMEOUT_MS` in `web/src/features/shell/keymap.ts`, which
+// exports nothing a spec can import.
+const CHORD_WINDOW_MS = 1_000;
+
 chordTest(
   "an unfinished chord expires after a second and the next key stands alone @pr",
   async ({ page, scene }) => {
+    // The window is a page timer, so the page's own clock spends it, held still from before the
+    // chord: on the wall clock a loaded runner fires that timer late, and a wait of a fixed span
+    // read a late expiry as none. Held still, the clock moves only when the row moves it, so a
+    // chord kept past its second, or let go before it, fails here however slow the runner.
+    await page.clock.install();
     await openAgents(page);
+    // `pauseAt` takes a time on the page's own clock, a second ahead so that it never asks to go
+    // back; the timers it runs inside that jump are the page's own, armed before any chord.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
 
     const indicator = page.getByTestId("chord-indicator");
     await page.keyboard.press("g");
     await expect(indicator).toBeVisible();
-    await expect(indicator).toHaveCount(0, { timeout: 2000 });
+    await page.clock.runFor(CHORD_WINDOW_MS - 1);
+    await expect(indicator).toBeVisible();
+    await page.clock.runFor(1);
+    await expect(indicator).toHaveCount(0);
+    // The clock runs on its own again for the rest of the row, as it did before the chord.
+    await page.clock.resume();
     await page.keyboard.press("i");
     // No window before this: a `g i` the chord had kept alive navigates in the task of the
     // keypress, which the press above has already awaited, and `toHaveURL` retries to its

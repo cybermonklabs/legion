@@ -11,13 +11,17 @@ import (
 	"crypto/ecdsa"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -137,29 +141,170 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 	t.Logf("GET /v1/requests/{id}?wait=2 answered pending after %s", took)
 }
 
-// TestReadRequestWaitEndsAtTheJudgesHandOver: a read with ?wait=4 of a request the model judge
-// holds (judge_until about a second ahead) answers once the hold runs out, still pending and no
-// longer judge_deciding, well before its wait ends: the request is its person's now, and the
-// agent learns so at once rather than at the end of its wait.
+// TestReadRequestWaitEndsAtTheJudgesHandOver: a held read of a request the model judge holds
+// answers at the first step that finds the hold has run out, still pending and no longer
+// judge_deciding, and not at its wait's end: the request is its person's now, and the agent learns
+// so at once. The judge's hold lasts until the test ends it, after the read's first step has seen
+// it, by moving judge_until into the past, as a hold runs out. The broker's pool is traced
+// (readSteps): the read reads the whole request only after the test began to end the hold, and
+// makes at most one step that starts once the end is committed. That step finds the hold ended,
+// and the whole read follows it. A read that waited for its wait's end would step every half
+// second until then. A count of steps does not read how long anything took, so a loaded machine
+// does not move it. The wait is the longest the broker takes, record.MaxRequestWaitSeconds, so
+// the read's first step comes inside it.
 func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
-	ts := newTestServer(t)
+	steps := &readSteps{firstStepEnded: make(chan struct{})}
+	ts := newTestServerWith(t, func(deps *api.Deps) { steps.trace(t, deps.Machine) })
 	enrollmentID, key, asked := ts.pendingRequest(t)
-	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '1 second' where id=$1`, asked.RequestID); err != nil {
+	ctx := context.Background()
+	if _, err := ts.Store.Pool.Exec(ctx, `update requests set judge_until = now() + interval '1 hour' where id=$1`, asked.RequestID); err != nil {
 		t.Fatalf("hold the request for the judge: %v", err)
 	}
-	start := time.Now()
-	status, body := ts.session(t, key, enrollmentID, http.MethodGet, "/v1/requests/"+asked.RequestID+"?wait=4", nil)
-	took := time.Since(start)
+	steps.watch(asked.RequestID)
+
+	// The hold runs out once the read's first step has seen it, as another process ends it.
+	type holdEnd struct {
+		stepSeen bool
+		err      error
+	}
+	ended := make(chan holdEnd, 1)
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	go func() {
+		select {
+		case <-steps.firstStepEnded:
+		case <-time.After(bound):
+			ended <- holdEnd{}
+			return
+		}
+		steps.mark(readEnding)
+		_, err := ts.Store.Pool.Exec(ctx, `update requests set judge_until = now() - interval '1 second' where id=$1`, asked.RequestID)
+		steps.mark(readEnded)
+		ended <- holdEnd{stepSeen: true, err: err}
+	}()
+	path := "/v1/requests/" + asked.RequestID + "?wait=" + strconv.Itoa(record.MaxRequestWaitSeconds)
+	status, body := ts.session(t, key, enrollmentID, http.MethodGet, path, nil)
 	if status != http.StatusOK {
-		t.Fatalf("GET /v1/requests/{id}?wait=4 = %d: %s", status, body)
+		t.Fatalf("GET %s = %d: %s", path, status, body)
+	}
+	switch end := <-ended; {
+	case !end.stepSeen:
+		t.Fatalf("GET %s made no step the trace saw, so the judge's hold was never ended (the read's statements: %v)", path, steps.statements())
+	case end.err != nil:
+		t.Fatalf("end the judge's hold: %v", end.err)
 	}
 	if read := decode[wireRequestStatus](t, body); read.State != "pending" || strings.Contains(string(body), `"judge_deciding":true`) {
-		t.Fatalf("GET /v1/requests/{id}?wait=4 = %s, want pending and no longer judge_deciding: the judge's hold ran out", body)
+		t.Fatalf("GET %s = %s, want pending and no longer judge_deciding: the judge's hold ran out", path, body)
 	}
-	if took < 500*time.Millisecond || took >= 3*time.Second {
-		t.Fatalf("GET /v1/requests/{id}?wait=4 answered after %s, want once the hold ran out (about 1 s), not at the wait's end (4 s)", took)
+	after, whole := steps.handOver()
+	if !whole || after > 1 {
+		t.Fatalf("GET %s read the whole request after the test began to end the judge's hold: %t, and made %d steps once the end was committed (the read's statements: %v); want the whole read then, and at most one step, the one that found the hold ended, not a step every half second until the wait's end", path, whole, after, steps.statements())
 	}
-	t.Logf("GET /v1/requests/{id}?wait=4 answered at the hand-over after %s", took)
+	t.Logf("GET %s answered at the hand-over; steps begun once the hold's end was committed: %d", path, after)
+}
+
+// readSteps is a pgx tracer on the broker's own pool that keeps, in order, the statements a held
+// read makes of one request: each step (requests.Machine.OwnerAndState, the one statement that
+// reads the request's enrollment) and the statements of the whole read that ends it
+// (requests.Machine.Get), with a mark where the test began to end the judge's hold and one where
+// that end was committed. A statement logged after the second mark started after the commit, so
+// it sees the hold ended; one logged between the two may see it either way.
+type readSteps struct {
+	// firstStepEnded is closed once the read's first step has read its row, so the hold the test
+	// set before the read is the one it saw.
+	firstStepEnded chan struct{}
+
+	mu            sync.Mutex
+	requestID     string
+	log           []string
+	firstStepSeen bool
+}
+
+// The kinds of entry a readSteps logs.
+const (
+	readStep   = "step"
+	readWhole  = "whole read"
+	readEnding = "the hold's end sent"
+	readEnded  = "the hold's end committed"
+)
+
+// readKind is the context key under which TraceQueryStart hands TraceQueryEnd the kind it logged.
+type readKind struct{}
+
+// trace points machine, the broker's requests.Machine, at a store of its own on the same schema,
+// whose pool steps traces, closed when t ends.
+func (steps *readSteps) trace(t *testing.T, machine *requests.Machine) {
+	t.Helper()
+	traced, err := store.Open(context.Background(), machine.Store.Pool.Config().ConnString(), func(config *pgxpool.Config) { config.ConnConfig.Tracer = steps })
+	if err != nil {
+		t.Fatalf("open the traced store: %v", err)
+	}
+	t.Cleanup(traced.Close)
+	machine.Store = traced
+}
+
+// watch starts the log, of the statements whose first argument is requestID.
+func (steps *readSteps) watch(requestID string) {
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	steps.requestID = requestID
+}
+
+// mark logs where the test's end of the judge's hold stands: readEnding or readEnded.
+func (steps *readSteps) mark(kind string) {
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	steps.log = append(steps.log, kind)
+}
+
+// handOver is how many steps were logged after readEnded, and whether a statement of the whole
+// read was logged after readEnding.
+func (steps *readSteps) handOver() (after int, whole bool) {
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	if ending := slices.Index(steps.log, readEnding); ending >= 0 {
+		whole = slices.Contains(steps.log[ending+1:], readWhole)
+	}
+	if ended := slices.Index(steps.log, readEnded); ended >= 0 {
+		for _, kind := range steps.log[ended+1:] {
+			if kind == readStep {
+				after++
+			}
+		}
+	}
+	return after, whole
+}
+
+// statements is the whole log, for a failure to print.
+func (steps *readSteps) statements() []string {
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	return slices.Clone(steps.log)
+}
+
+func (steps *readSteps) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	if steps.requestID == "" || len(data.Args) == 0 || data.Args[0] != steps.requestID {
+		return ctx
+	}
+	kind := readWhole
+	if strings.Contains(data.SQL, "join enrollments") {
+		kind = readStep
+	}
+	steps.log = append(steps.log, kind)
+	return context.WithValue(ctx, readKind{}, kind)
+}
+
+func (steps *readSteps) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if ctx.Value(readKind{}) != readStep {
+		return
+	}
+	steps.mu.Lock()
+	defer steps.mu.Unlock()
+	if !steps.firstStepSeen {
+		steps.firstStepSeen = true
+		close(steps.firstStepEnded)
+	}
 }
 
 // TestReadRequestWaitRefusesBadInput: a wait that is not a whole number of seconds from 1 to

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -30,24 +31,46 @@ const (
 )
 
 // standInAssignees answers every issue's assignee as answer, or err, recording each key it was
-// asked for. With block set it answers only once block is closed, which the row that sets it does
-// when it ends. It ignores its context on purpose, as a Dispatch that never answers does, so a row
-// that waits on it proves the caller's own bound and not the stand-in's courtesy.
+// asked for, and when each read came and the deadline its context carried. With block set it
+// answers only once block is closed, which the row that sets it does when it ends, or once
+// holdAtMost has passed, which it records (heldOut): the row sets that to the repository's
+// minute-long wait for a fact, so a caller with no bound of its own fails the row rather than
+// holding it until go test's -timeout. It ignores its context on purpose, as a Dispatch that never
+// answers does, so a row that waits on it proves the caller's own bound and not the stand-in's
+// courtesy.
 type standInAssignees struct {
-	answer string
-	err    error
-	block  chan struct{}
+	answer     string
+	err        error
+	block      chan struct{}
+	holdAtMost time.Duration
 
-	mu    sync.Mutex
-	asked []string
+	mu      sync.Mutex
+	asked   []string
+	reads   []assigneeRead
+	heldOut bool
 }
 
-func (s *standInAssignees) Assignee(_ context.Context, issueKey string) (string, error) {
+// assigneeRead is one read a standInAssignees got: when it came, and the deadline of its context.
+type assigneeRead struct {
+	at          time.Time
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (s *standInAssignees) Assignee(ctx context.Context, issueKey string) (string, error) {
+	deadline, hasDeadline := ctx.Deadline()
 	s.mu.Lock()
 	s.asked = append(s.asked, issueKey)
+	s.reads = append(s.reads, assigneeRead{at: time.Now(), deadline: deadline, hasDeadline: hasDeadline})
 	s.mu.Unlock()
 	if s.block != nil {
-		<-s.block
+		select {
+		case <-s.block:
+		case <-time.After(s.holdAtMost):
+			s.mu.Lock()
+			s.heldOut = true
+			s.mu.Unlock()
+		}
 	}
 	return s.answer, s.err
 }
@@ -56,6 +79,13 @@ func (s *standInAssignees) keys() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.asked)
+}
+
+// readsSoFar is every read the stand-in got, and whether it let a held answer go at holdAtMost.
+func (s *standInAssignees) readsSoFar() ([]assigneeRead, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.reads), s.heldOut
 }
 
 // newClaimPod inserts a live pod enrollment with no operator whose launcher stated claim, as B4's
@@ -165,10 +195,14 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // TestASharedRequestWithNoResponsiblePersonIsListedForEveryone is case 4: wherever no step names
 // a person, the request is everyone's to see, as it was before, so no request waits where nobody
 // sees it. A Dispatch that does not answer in time names nobody too, and Create does not wait for
-// it much past its bound. A read that failed or ran out of its bound logs one
-// AssigneeUnreadMessage WARN naming the issue, the enrollment, the error and whether the bound was
-// reached, so an operator sees that the step is off; a row that read nothing, or read an issue
-// nobody is assigned to, logs none.
+// it past its bound: the read Create hands Dispatch carries a deadline assigneeBound from when
+// Create began it, no earlier than assigneeBound after the call and no later than assigneeBound
+// after the read came, and a Dispatch held until the row ends still has Create back. Neither
+// bound reads how long anything took, so a loaded machine does not move them; only the
+// repository's minute-long wait bounds how long the row waits for Create. A read that failed or
+// ran out of its bound logs one AssigneeUnreadMessage WARN naming the issue, the enrollment, the
+// error and whether the bound was reached, so an operator sees that the step is off; a row that
+// read nothing, or read an issue nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -198,6 +232,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 			if !c.noReader && c.assignees != nil {
 				m.Assignees = c.assignees
 				if c.assignees.block != nil {
+					c.assignees.holdAtMost = testwait.Bounded(t, time.Minute, time.Second)
 					t.Cleanup(func() { close(c.assignees.block) })
 				}
 			}
@@ -211,8 +246,19 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 			}
 			start := time.Now()
 			req := askShared(t, m, enrollment, key)
-			if took, most := time.Since(start), assigneeBound+3*time.Second; took > most {
-				t.Errorf("Create took %s; want it back within %s, whatever Dispatch does", took, most)
+			if c.assignees != nil {
+				reads, heldOut := c.assignees.readsSoFar()
+				if heldOut {
+					t.Errorf("Create came back only once the stand-in let Dispatch's held answer go, %s in; want it back by its %s bound, whatever Dispatch does", c.assignees.holdAtMost, assigneeBound)
+				}
+				for _, read := range reads {
+					switch {
+					case !read.hasDeadline:
+						t.Errorf("Dispatch was asked under no deadline; want one %s from when Create began the read", assigneeBound)
+					case read.deadline.Before(start.Add(assigneeBound)) || read.deadline.After(read.at.Add(assigneeBound)):
+						t.Errorf("Dispatch was asked under a deadline %s after Create began and %s after the read came; want at least and at most %s", read.deadline.Sub(start), read.deadline.Sub(read.at), assigneeBound)
+					}
+				}
 			}
 			requireListedFor(t, m, *req.RecordID, "", []string{alice, bob}, alice, bob)
 			if c.assignees != nil && (c.claim == "" || c.claim == "legion-acme-controller") {

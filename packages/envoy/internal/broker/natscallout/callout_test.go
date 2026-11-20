@@ -273,9 +273,12 @@ func TestASessionCannotSubscribeTheAuthSubject(t *testing.T) {
 
 // Two replicas answer in one queue group, so the server sends each request to one of them: with
 // both up, every connection is decided once. With one of them closed, every connection is
-// admitted within a second: the closed replica left the group, so the server sends it nothing.
-// The control is a replica that stops answering but keeps its place in the group, which the
-// server keeps sending requests to: some connection then waits out the authorization timeout.
+// admitted: the closed replica left the group, so the server sends it nothing. A request the
+// server sends to a replica that does not answer is not admitted late but refused: the server waits
+// out its authorization timeout for the answer and then refuses the client itself, which is the
+// delay a stopped replica would cause, and the connect reports it. The control is a replica that
+// stops answering but keeps its place in the group, which the server keeps sending requests to:
+// some connection is then refused.
 func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
@@ -301,10 +304,8 @@ func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	stopped.Close()
 
 	for _, s := range sessions {
-		began := time.Now()
 		_, err := connectSession(t, url, s, nil)
-		require.NoError(t, err, "%s was not admitted", s.id)
-		require.Less(t, time.Since(began), time.Second, "%s waited %s to be admitted", s.id, time.Since(began))
+		require.NoError(t, err, "%s was not admitted: the server sent its request to the closed replica and refused it at its authorization timeout", s.id)
 	}
 
 	t.Run("control: a replica that keeps its place and stops answering", func(t *testing.T) {
@@ -314,24 +315,24 @@ func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 		_, err = hung.QueueSubscribe(authSubject, queueGroup, func(*nats.Msg) {})
 		require.NoError(t, err)
 		require.NoError(t, hung.Flush())
-		var slow atomic.Int32
+		// The server sends each request to one of the two members of the group at random, so of
+		// fifty at once some reach the hung replica in every run but one in 2^50.
+		var refused atomic.Int32
 		var wait sync.WaitGroup
-		for _, s := range sessions[:10] {
+		for _, s := range sessions {
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
-				began := time.Now()
 				nc, err := connectSession(t, url, s, nil)
-				if err == nil {
-					nc.Close()
+				if err != nil {
+					refused.Add(1)
+					return
 				}
-				if err != nil || time.Since(began) >= time.Second {
-					slow.Add(1)
-				}
+				nc.Close()
 			}()
 		}
 		wait.Wait()
-		require.Positive(t, slow.Load(), "no connection waited on the replica that stopped answering: the test cannot see a delay")
+		require.Positive(t, refused.Load(), "no connection was refused behind the replica that stopped answering: the test cannot see a delay")
 	})
 }
 

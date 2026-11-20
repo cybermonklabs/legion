@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // View never waits on a decision in flight, where Claim does: while a relaunch waits in the
@@ -80,9 +81,12 @@ func TestHoldsItsSessionAnswersWhileARelaunchWaitsInTheRuntime(t *testing.T) {
 	}()
 	select {
 	case <-gated.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the relaunch never reached the runtime")
 	}
+	// The gate stays shut until both answers are read, so a HoldsItsSession that waited on the
+	// relaunch never answers: the bound only ends a run that would otherwise hang, and a slow
+	// machine is no failure.
 	for _, from := range []string{"the admitted session", "the store"} {
 		if from == "the store" {
 			h.m.admitted.Store(nil)
@@ -94,7 +98,7 @@ func TestHoldsItsSessionAnswersWhileARelaunchWaitsInTheRuntime(t *testing.T) {
 			if err != nil {
 				t.Errorf("HoldsItsSession from %s answered %v, want nil: the claim holds its own session", from, err)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			close(gated.release)
 			t.Fatalf("HoldsItsSession from %s waited on the relaunch in the runtime", from)
 		}

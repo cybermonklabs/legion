@@ -2,6 +2,7 @@ package natscallout
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,36 +90,42 @@ func startWithStalledLog(t *testing.T, url string, keys testnats.CalloutKeys, de
 
 // stallWithALine stalls log and puts the reporter's write on it: one refusal, which the reporter
 // owes a line, and then a wait until that line's write is stuck. What the test does next it does
-// with the reporter blocked in its write.
-func stallWithALine(t *testing.T, url string, log *stalledLog) {
+// with the reporter blocked in its write. server is the hub the service answers, started with its
+// debug log on (startDebugCalloutServer), as requireRefusedByTheService reads.
+func stallWithALine(t *testing.T, server *testnats.Server, log *stalledLog) {
 	t.Helper()
 	log.stalled.Store(true)
-	requireRefusedAtOnce(t, url, "first")
+	requireRefusedByTheService(t, server, "first")
 	log.awaitStuck(t)
 }
 
-// requireRefusedAtOnce connects once with no credential and a client that would wait five
-// seconds, and requires the refusal inside half a second.
-func requireRefusedAtOnce(t *testing.T, url, which string) {
+// requireRefusedByTheService connects once to server with no credential and a client that would
+// wait five seconds, and requires the refusal to be the service's answer, not the hub's own: a
+// request nothing answered is refused by the hub at its authorization timeout, which the client
+// reads as the same authorization error, and the hub writes each give-up to its log (hubGaveUp)
+// before it refuses that client. So once the client has heard, the hub's log names a give-up for
+// its request when, and only when, the service did not answer it inside the hub's timeout. server
+// logs at debug (startDebugCalloutServer), where nats-server writes that line.
+func requireRefusedByTheService(t *testing.T, server *testnats.Server, which string) {
 	t.Helper()
-	began := time.Now()
-	nc, err := nats.Connect(url, nats.NoReconnect(), nats.Timeout(5*time.Second))
-	took := time.Since(began)
+	gaveUp := strings.Count(server.Log(), hubGaveUp)
+	nc, err := nats.Connect(server.URL(), nats.NoReconnect(), nats.Timeout(5*time.Second))
 	if err == nil {
 		nc.Close()
 	}
-	require.ErrorIs(t, err, nats.ErrAuthorization, "the %s connection holding no credential was not refused (after %s)", which, took)
-	require.Less(t, took, 500*time.Millisecond,
-		"the %s refusal was heard after %s: nothing answered it, and the hub refused the client at its own timeout", which, took)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the %s connection holding no credential was not refused", which)
+	require.Equal(t, gaveUp, strings.Count(server.Log(), hubGaveUp),
+		"the %s refusal was the hub's own: nothing answered it, and the hub refused the client at its own timeout", which)
 }
 
-// requireHoldsNothing requires that, within half a second, the replica holds no request: none
-// waiting for a decision slot, none counted against the refusing bound and no slot taken. The
-// heartbeat takes a slot for an instant each tick, so the slots are read until they read empty. A
-// refusal whose goroutine waits on the log holds one of these for as long as the log stalls.
+// requireHoldsNothing waits until the replica holds no request: none waiting for a decision slot,
+// none counted against the refusing bound and no slot taken. The heartbeat takes a slot for an
+// instant each tick, so the slots are read until they read empty. A refusal whose goroutine waits
+// on the log or on a stopped scrape holds one of these for as long as that stalls, which is until
+// the test ends, so such a replica fails the wait at its bound.
 func requireHoldsNothing(t *testing.T, service *Service) {
 	t.Helper()
-	testwait.WithinPolling(t, 500*time.Millisecond, 5*time.Millisecond, "the replica holding no request", func() bool {
+	testwait.Eventually(t, "the replica holding no request", func() bool {
 		return service.waiting.Load() == 0 && service.refusing.Load() == 0 && len(service.slots) == 0
 	})
 }
@@ -138,9 +145,10 @@ func requireHoldsNothing(t *testing.T, service *Service) {
 // counted (answer).
 //
 // Each row stalls the log, puts the reporter's write on it (stallWithALine), and then connects
-// with no credential while that write is stuck: the refusal must be heard at once, and its
-// goroutine must end, holding neither a decision slot nor the refusing bound's place. The last
-// row's bound is one refusal, which a refusal still waiting on the log would fill.
+// with no credential while that write is stuck: the refusal must be the service's, answered before
+// the hub gave up on it, and its goroutine must end, holding neither a decision slot nor the
+// refusing bound's place. The last row's bound is one refusal, which a refusal still waiting on the
+// log would fill.
 func TestARefusalIsAnsweredWhileTheLogCannotBeWritten(t *testing.T) {
 	for name, row := range map[string]struct {
 		waitingBound, refusingBound int
@@ -156,10 +164,10 @@ func TestARefusalIsAnsweredWhileTheLogCannotBeWritten(t *testing.T) {
 			withWaitingBound(t, row.waitingBound)
 			withRefusingBound(t, row.refusingBound)
 			keys := testnats.NewCalloutKeys(t)
-			url := testnats.StartWithCallout(t, keys)
+			server, url := startDebugCalloutServer(t, keys)
 			log, service := startWithStalledLog(t, url, keys, Deps{})
-			stallWithALine(t, url, log)
-			requireRefusedAtOnce(t, url, "second")
+			stallWithALine(t, server, log)
+			requireRefusedByTheService(t, server, "second")
 			requireHoldsNothing(t, service)
 		})
 	}
@@ -171,27 +179,27 @@ func TestARefusalIsAnsweredWhileTheLogCannotBeWritten(t *testing.T) {
 // was stalled every refusal made in a slot took that slot out of the replica for good, and once the
 // slots were gone no caller, however live its credential, was decided. With one slot and the
 // reporter's write stuck on the log: a connection holding no credential is refused in the slot, and
-// a live session connecting after it must be admitted inside half a second.
+// a live session connecting after it must be admitted. Were the slot still held by the refusal, the
+// live session's request would wait for it until its budget ran out, and be refused.
 func TestARefusalStuckOnTheLogHoldsNoDecisionSlot(t *testing.T) {
 	withDecisionSlots(t, 1)
 	keys := testnats.NewCalloutKeys(t)
-	url := testnats.StartWithCallout(t, keys)
+	server, url := startDebugCalloutServer(t, keys)
 	live := newSession(t, "ses_live", 15*time.Minute)
 	log, _ := startWithStalledLog(t, url, keys, Deps{Introspect: introspector(live)})
-	stallWithALine(t, url, log)
+	stallWithALine(t, server, log)
 
-	requireRefusedAtOnce(t, url, "second")
-	requireLiveAdmittedAtOnce(t, url, live, "a refusal stuck on the log")
+	requireRefusedByTheService(t, server, "second")
+	requireLiveAdmitted(t, url, live, "a refusal stuck on the log")
 }
 
-// requireLiveAdmittedAtOnce requires live's connection admitted inside half a second; behind
-// names what would hold the slot it needs, for the failure's message.
-func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session, behind string) {
+// requireLiveAdmitted requires live's connection admitted; behind names what would hold the slot
+// it needs, for the failure's message. What holds a slot in these tests holds it until the test
+// ends, so a request waiting for that slot is refused when its budget runs out, never admitted
+// late: the admission itself shows the slot was free.
+func requireLiveAdmitted(t *testing.T, url string, live *session, behind string) {
 	t.Helper()
-	began := time.Now()
 	nc, err := connectSession(t, url, live, nil)
-	took := time.Since(began)
-	require.NoError(t, err, "the live session was not admitted (after %s): the slot it needed was held by %s", took, behind)
+	require.NoError(t, err, "the live session was not admitted: the slot it needed was held by %s", behind)
 	nc.Close()
-	require.Less(t, took, 500*time.Millisecond, "the live session was admitted after %s, behind %s", took, behind)
 }

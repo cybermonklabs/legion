@@ -4,7 +4,6 @@ import { LoggableError } from "../errors";
 import {
   connectNats,
   NATS_DIAL_PLAN,
-  NATS_MIN_REDIAL_BOUND_MS,
   type NatsDialPlan,
   natsConnectionOptions,
   natsDialBudget,
@@ -12,9 +11,15 @@ import {
 import { noAuthService } from "../nats-credential";
 import { type FakeNatsBehaviour, type FakeNatsServer, startFakeNats } from "./fake-nats-server";
 
-// Real nats.js against a local server, on the real clock on purpose: each row holds how long
-// `connectNats` waits between dials and how it bounds them, which only real time shows; the
-// plans are scaled down so a row takes about a second.
+// Real nats.js against a local server. The waits between dials run on the real clock on purpose,
+// since only real time shows them, and are held only from below, which a late timer cannot break.
+// A dial's bound is read from the dial instead of timed: the `timeout` it hands nats.js, and the
+// error the bound ends it with. The bound starts before nats.js's own timer for the server, which
+// starts only once the server's name is looked up, so a dial the server leaves silent ends with
+// the bound's error. A row whose plan has a short budget runs the budget on a clock of its own
+// (`rowClock`), so a busy machine cannot spend it; the row on a blocked event loop keeps the real
+// clock, since its block is what spends the budget. The plans are scaled down so a row takes about
+// a second.
 
 const servers: FakeNatsServer[] = [];
 const connections: NatsConnection[] = [];
@@ -43,24 +48,38 @@ async function dialWith(
   plan: NatsDialPlan,
   extra: {
     readonly timeout?: number;
+    readonly firstBoundMs?: number;
     readonly stopAfterFirstFailure?: boolean;
     readonly stoppedFromStart?: boolean;
     /** The token of a broker credential is renewed between dials, and it sets this. */
     readonly ignoreAuthErrorAbort?: boolean;
     /** How long the event loop is blocked as the first wait begins. */
     readonly blockOnRetryMs?: number;
+    /**
+     * Runs the budget on the row's own clock (`now`) instead of the real one, so a busy machine
+     * cannot spend it. The clock starts at 0 and moves by each announced wait, and by the bound of
+     * each dial `silent` names (from 0) as that dial starts, since only its bound ends a dial the
+     * server leaves silent and the code reads no clock while a dial runs. Any other dial takes no
+     * time on it. With one server, a dial's `timeout` is its bound.
+     */
+    readonly rowClock?: { readonly silent?: (n: number) => boolean };
   } = {}
 ) {
   const delays: number[] = [];
   const bounds: number[] = [];
+  // The row's clock as each dial began, read when the budget runs on it (`rowClock`).
+  const clockAtDial: number[] = [];
+  let clock = 0;
   // When each dial began, and when each wait began: the wait a dial really had is the gap from
   // the failure before it to its start, not the delay announced to `onRetry`.
   const dialStarts: number[] = [];
   const waitStarts: number[] = [];
   let stopped = extra.stoppedFromStart === true;
-  const started = performance.now();
   const recording = (dialOptions: ConnectionOptions) => {
-    bounds.push(dialOptions.timeout ?? Number.NaN);
+    const bound = dialOptions.timeout ?? Number.NaN;
+    clockAtDial.push(clock);
+    if (extra.rowClock?.silent?.(bounds.length) === true) clock += bound;
+    bounds.push(bound);
     dialStarts.push(performance.now());
     return connect(dialOptions);
   };
@@ -75,9 +94,12 @@ async function dialWith(
       },
       plan,
       {
+        ...(extra.firstBoundMs === undefined ? {} : { firstBoundMs: extra.firstBoundMs }),
+        ...(extra.rowClock === undefined ? {} : { now: () => clock }),
         stopped: () => stopped,
         onRetry: (_error, delayMs) => {
           delays.push(delayMs);
+          clock += delayMs;
           waitStarts.push(performance.now());
           if (extra.stopAfterFirstFailure === true) stopped = true;
           if (extra.blockOnRetryMs !== undefined && delays.length === 1) {
@@ -89,21 +111,21 @@ async function dialWith(
     );
     connections.push(nc);
     return {
-      ms: performance.now() - started,
       delays,
       waited: waited(),
       bounds,
+      clockAtDial,
       nc,
       error: undefined,
     };
   } catch (error) {
     return {
-      ms: performance.now() - started,
       delays,
       waited: waited(),
       bounds,
+      clockAtDial,
       nc: undefined,
-      error: error as { code?: unknown },
+      error: error as { code?: unknown; message?: unknown },
     };
   }
 }
@@ -129,7 +151,11 @@ describe("connectNats", () => {
 
   test("doubles each wait up to the plan's cap", async () => {
     const server = fake(() => "refuse");
-    const dial = await dialWith(server.url, { firstDelayMs: 20, maxDelayMs: 80, budgetMs: 1_000 });
+    const dial = await dialWith(
+      server.url,
+      { firstDelayMs: 20, maxDelayMs: 80, budgetMs: 1_000 },
+      { rowClock: {} }
+    );
     expect(dial.error?.code).toBe("AUTHENTICATION_TIMEOUT");
     expect(dial.delays.slice(0, 4)).toEqual([20, 40, 80, 80]);
     waitedAtLeast(dial.waited, [20, 40, 80, 80]);
@@ -137,29 +163,29 @@ describe("connectNats", () => {
   }, 30_000);
 
   // A refusal, a server that says nothing for the second dial's whole 1 000 ms, then a third dial
-  // that starts at least 1 100 ms in (two 50 ms waits and the second dial's bound), so at most
-  // 900 ms of the 2 000 ms budget are left for it, less than its 1 000 ms `timeout`. It still
-  // starts while 500 ms are left as long as it starts within 1 500 ms: about 400 ms of slack.
+  // that starts 1 100 ms in (two 50 ms waits and the second dial's bound), so 900 ms of the
+  // 2 000 ms budget are left for it, less than its 1 000 ms `timeout`, and its bound ends it there.
   test("gives a later dial only the budget it has left", async () => {
     const server = fake((n) => (n === 0 ? "refuse" : "silent"));
     const dial = await dialWith(
       server.url,
       { firstDelayMs: 50, maxDelayMs: 50, budgetMs: 2_000 },
-      { timeout: 1_000 }
+      { timeout: 1_000, rowClock: { silent: (n) => n > 0 } }
     );
-    expect(dial.error).toBeDefined();
-    if (dial.ms >= 2_100)
-      throw new Error(`the dials took ${Math.round(dial.ms)} ms, past the 2 000 ms budget`);
-    expect(dial.bounds).toHaveLength(3);
-    expect(dial.bounds.at(-1)).toBeGreaterThanOrEqual(NATS_MIN_REDIAL_BOUND_MS);
-    expect(dial.bounds.at(-1)).toBeLessThanOrEqual(900);
+    expect(dial.clockAtDial).toEqual([0, 50, 1_100]);
+    expect(dial.bounds).toEqual([1_000, 1_000, 900]);
+    expect(dial.error?.message).toBe("the NATS dial did not complete within 900 ms");
   }, 30_000);
 
   // The client writes its CONNECT into the closing socket, so a plain close fails a dial with the
   // socket's own error, or DISCONNECT when it carries none.
   test("ends with the last dial's own error", async () => {
     const server = fake((n) => (n === 0 ? "refuse" : "close"));
-    const dial = await dialWith(server.url, { firstDelayMs: 10, maxDelayMs: 10, budgetMs: 1_000 });
+    const dial = await dialWith(
+      server.url,
+      { firstDelayMs: 10, maxDelayMs: 10, budgetMs: 1_000 },
+      { rowClock: {} }
+    );
     expect(["DISCONNECT", "EPIPE", "ECONNRESET"]).toContain(String(dial.error?.code));
     expect(server.connections()).toBeGreaterThanOrEqual(2);
   }, 30_000);
@@ -212,7 +238,7 @@ describe("connectNats", () => {
     const dial = await dialWith(
       server.url,
       { firstDelayMs: 20, maxDelayMs: 20, budgetMs: 2_000 },
-      { ignoreAuthErrorAbort: true }
+      { ignoreAuthErrorAbort: true, rowClock: {} }
     );
     expect(dial.error).toBeUndefined();
     expect(dial.delays).toEqual([20]);
@@ -235,19 +261,13 @@ describe("connectNats", () => {
 
   test("bounds the first dial by the caller's time", async () => {
     const server = fake(() => "silent");
-    const started = performance.now();
-    const error = await connectNats(
-      connect,
-      options(server.url),
+    const dial = await dialWith(
+      server.url,
       { ...NATS_DIAL_PLAN, budgetMs: 0 },
-      {
-        firstBoundMs: 300,
-      }
-    ).catch((e) => e);
-    const ms = performance.now() - started;
-    expect(error).toBeDefined();
-    if (ms >= 600)
-      throw new Error(`the first dial took ${Math.round(ms)} ms, past its 300 ms bound`);
+      { firstBoundMs: 300 }
+    );
+    expect(dial.bounds).toEqual([300]);
+    expect(dial.error?.message).toBe("the NATS dial did not complete within 300 ms");
   }, 30_000);
 });
 

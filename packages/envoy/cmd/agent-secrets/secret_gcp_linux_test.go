@@ -76,11 +76,13 @@ func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 
 // cleanUp kills the child where it still runs (kill). Only a failed run finds no pid written,
 // since callEnds sees the child named: a child that started late, once the stub was killed, still
-// names itself, so it is waited for, and t fails where none comes.
+// names itself, so it is waited for, up to the repository's wait for a fact (testwait.Bounded of a
+// minute), and t fails where none comes. A loaded machine can make the child late by more than any
+// shorter span, and a child given up on too soon is left running for its hour.
 func (c gcloudChild) cleanUp(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
-	if pid == 0 && !testwait.Holds(2*time.Second, testwait.Poll, func() bool { pid = c.pid(); return pid != 0 }) {
+	if pid == 0 && !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { pid = c.pid(); return pid != 0 }) {
 		t.Errorf("the stub gcloud's child never named itself in %s: where it started, it may still run", c.pidFile)
 		return
 	}
@@ -103,7 +105,7 @@ func (c gcloudChild) pid() int {
 // runs reports whether pid names a running process: not where /proc no longer names it or names
 // a dead one (Z, a zombie its reaper has not collected yet, or X). A read of /proc that fails in
 // any other way is an error, never an answer that the process is gone. From the child's naming
-// itself to the two seconds after the call, pid is the child's: Linux hands pids out in turn, so
+// itself until requireGone sees it gone, pid is the child's: Linux hands pids out in turn, so
 // it gives one out again only once its allocator has gone round all the others.
 func (c gcloudChild) runs(pid int) (bool, error) {
 	stat, err := readProcStat(pid)
@@ -117,24 +119,30 @@ func (c gcloudChild) runs(pid int) (bool, error) {
 }
 
 // ours reports whether pid's environment holds this child's pid file, so that no process the
-// kernel has given the pid since is killed for the child. A process that is exiting can refuse a
-// read of its environment for a moment (permission denied, seen once in twenty runs), so ours
-// asks again for up to two seconds before it answers that error.
-func (c gcloudChild) ours(pid int) (bool, error) {
+// kernel has given the pid since is killed for the child. Two answers come at once: a read that
+// holds the file, and a process that is gone. Any other read is asked again, up to the repository's
+// wait for a fact (testwait.Bounded of a minute). A process that is exiting can refuse a read of
+// its environment for a moment (permission denied, seen once in twenty runs). A process in the
+// middle of its exec, as the child is right after it names itself, can answer an empty
+// environment or one without the file: on 2026-11-20, 87 of 300 reads at that moment were empty,
+// and one lacked the file. A loaded machine can make either moment long. Once the wait is over, a
+// refusal is ours' error, and an environment without the file says the process is not the child.
+func (c gcloudChild) ours(t *testing.T, pid int) (bool, error) {
+	t.Helper()
 	var answer bool
 	var readErr error
-	testwait.Holds(2*time.Second, testwait.Poll, func() bool {
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 		switch {
 		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH):
 			answer, readErr = false, nil
+			return true
 		case err != nil:
 			readErr = err
 			return false
-		default:
-			answer, readErr = slices.Contains(strings.Split(string(environ), "\x00"), gcloudChildFile+"="+c.pidFile), nil
 		}
-		return true
+		answer, readErr = slices.Contains(strings.Split(string(environ), "\x00"), gcloudChildFile+"="+c.pidFile), nil
+		return answer
 	})
 	return answer, readErr
 }
@@ -153,7 +161,7 @@ func (c gcloudChild) kill(t *testing.T, pid int) {
 	running, err := c.runs(pid)
 	if err == nil && running {
 		var mine bool
-		if mine, err = c.ours(pid); err == nil && mine {
+		if mine, err = c.ours(t, pid); err == nil && mine {
 			if err := process.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				t.Errorf("kill the stub gcloud's child, pid %d: %v", pid, err)
 			}
@@ -216,14 +224,18 @@ func (c gcloudChild) callEnds(t *testing.T, what string, call func() error) erro
 	}
 }
 
-// requireGone fails t unless the child, seen running while the call ran (callEnds), is gone
-// within two seconds of the call's end: the kill at the deadline reached it, not the stub gcloud
-// alone.
+// requireGone fails t unless the child, seen running while the call ran (callEnds), is gone once
+// the call has ended: the kill at the deadline reached it, not the stub gcloud alone. The child
+// sleeps an hour, so one that kill missed runs past any wait here; requireGone waits for it to be
+// gone, up to the repository's wait for a fact (testwait.Bounded of a minute), and fails where it
+// still runs then. A child the kill reached that a loaded machine is slow to let die is not a
+// failure.
 func (c gcloudChild) requireGone(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
 	var readErr error
-	gone := testwait.Holds(2*time.Second, testwait.Poll, func() bool {
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	gone := testwait.Holds(bound, testwait.Poll, func() bool {
 		running, err := c.runs(pid)
 		readErr = err
 		return err != nil || !running
@@ -232,7 +244,7 @@ func (c gcloudChild) requireGone(t *testing.T) {
 		t.Fatalf("reading the stub gcloud's child, pid %d: %v", pid, readErr)
 	}
 	if !gone {
-		t.Fatalf("the stub gcloud's child, pid %d, still runs 2s after the call that started it ended", pid)
+		t.Fatalf("the stub gcloud's child, pid %d, still runs %s after the call that started it ended", pid, bound)
 	}
 }
 

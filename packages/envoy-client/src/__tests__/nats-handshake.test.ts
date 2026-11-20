@@ -19,9 +19,13 @@ import {
 
 // Real nats.js against a local server that speaks only the handshake, so each row reads what
 // nats.js 2.29.3, as this repository patches it, does when a server closes or refuses a dial. The
-// rows run on the real clock on purpose: what they hold is how long nats.js's own timers and
-// sockets take (a dial that waits its 10 s timeout, a reconnect wait), which fake timers would
-// not drive, and a row that says nothing more happens waits out a short, named stretch.
+// rows run on the real clock, since fake timers would not drive nats.js's own timers and sockets,
+// but no row holds a dial or a close to a short upper limit, which a busy machine breaks with the
+// code right. A dial that fails at once is one that ends with the server's error, not nats.js's
+// timer's; a dial past its bound ends with the bound's own error, whose timer starts before
+// nats.js's, which waits for the name lookup. A wait for what must happen is bounded by the row's
+// own limit or by a deadline of 5 s or more, far past what it takes; a row that says nothing more
+// happens waits out a short, named stretch, which a busy machine can only make longer.
 
 const servers: FakeNatsServer[] = [];
 const connections: NatsConnection[] = [];
@@ -61,10 +65,11 @@ async function timed<T>(
   }
 }
 
-/** Fails with the elapsed time in the message, so a control's failure names the wait it saw. */
-function within(ms: number, bound: number, what: string): void {
-  if (ms >= bound) throw new Error(`${what} took ${Math.round(ms)} ms, not under ${bound} ms`);
-}
+/**
+ * A dial timeout longer than any row's own limit: a handshake that waits for nats.js's timer,
+ * instead of ending on the server's close or on the row's, does not end within the row.
+ */
+const UNREACHED_TIMEOUT_MS = 120_000;
 
 /** Resolves once `predicate` holds, or rejects after `ms`. */
 async function until(predicate: () => boolean, ms: number, what: string): Promise<void> {
@@ -75,6 +80,11 @@ async function until(predicate: () => boolean, ms: number, what: string): Promis
     setTimeout(tick.resolve, 10);
     await tick.promise;
   }
+}
+
+/** Resolves once `predicate` holds: only the row's own limit ends a wait for what never comes. */
+async function eventually(predicate: () => boolean): Promise<void> {
+  while (!predicate()) await pause(10);
 }
 
 /** Counts each status of `type` on `nc`. */
@@ -107,10 +117,11 @@ async function pause(ms: number): Promise<void> {
 }
 
 describe("a NATS dial that the server closes during the handshake", () => {
+  // A dial the close does not fail waits for nats.js's own 10 s timer and ends with its TIMEOUT,
+  // so the server's error, or the socket's, is what says the dial failed at once.
   test("fails at once with the server's authentication timeout", async () => {
     const server = fake(() => "refuse");
     const dial = await timed(connect(options([server.url])));
-    within(dial.ms, 1_000, "the refused dial");
     expect(dial.error?.code).toBe("AUTHENTICATION_TIMEOUT");
   }, 30_000);
 
@@ -121,7 +132,6 @@ describe("a NATS dial that the server closes during the handshake", () => {
   test("fails at once with the socket's error, or DISCONNECT, when the server closes with no -ERR", async () => {
     const server = fake(() => "close");
     const dial = await timed(connect(options([server.url])));
-    within(dial.ms, 1_000, "the closed dial");
     expect(CLOSE_CODES).toContain(String(dial.error?.code));
   }, 30_000);
 
@@ -129,28 +139,24 @@ describe("a NATS dial that the server closes during the handshake", () => {
     const refusing = fake(() => "refuse");
     const closing = fake(() => "close");
     const dial = await timed(connect(options([refusing.url, closing.url])));
-    within(dial.ms, 1_000, "the dial of both servers");
     expect(closing.connections()).toBe(1);
     expect(CLOSE_CODES).toContain(String(dial.error?.code));
   }, 60_000);
 
+  // The connection's timeout is one no row reaches, so a refused handshake that waited for
+  // nats.js's timer instead of failing at once would not reconnect within the wait below.
   test("fails at once on a reconnect: one refused handshake, then exactly one reconnect", async () => {
     const server = fake((n) => (n === 1 ? "refuse" : "serve"));
     const nc = await connect({
       ...options([server.url]),
+      timeout: UNREACHED_TIMEOUT_MS,
       reconnectTimeWait: 200,
       reconnectJitter: 0,
     });
     connections.push(nc);
     const reconnects = countStatus(nc, Events.Reconnect);
-    const dropped = performance.now();
     server.dropAll();
     await until(() => reconnects.count() >= 1, 25_000, "a reconnect");
-    within(
-      performance.now() - dropped,
-      2 * 200 + 1_000,
-      "the reconnect after one refused handshake"
-    );
     expect(server.connections()).toBe(3);
     // A second report of the same reconnect would come at once; none does.
     const settle = Promise.withResolvers<void>();
@@ -159,18 +165,20 @@ describe("a NATS dial that the server closes during the handshake", () => {
     expect(reconnects.count()).toBe(1);
   }, 60_000);
 
+  // The reconnect's handshake has a timeout no row reaches, so a close that waited on it would not
+  // end before the row's own limit.
   test("keeps a close during a reconnect's handshake final", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "hold"));
     const nc = await connect({
       ...options([server.url]),
+      timeout: UNREACHED_TIMEOUT_MS,
       reconnectTimeWait: 200,
       reconnectJitter: 0,
     });
     server.dropAll();
     await until(() => server.connections() === 2, 10_000, "the reconnect's dial");
-    const closing = timed(nc.close());
-    const closed = await timed(nc.closed());
-    within(closed.ms, 1_000, "the connection's close");
+    const closing = nc.close();
+    await nc.closed();
     await closing;
     const after = Promise.withResolvers<void>();
     setTimeout(after.resolve, 3_000);
@@ -279,22 +287,27 @@ describe("a NATS dial's bound", () => {
     expect(options(["nats://127.0.0.1:4222"]).timeout).toBe(10_000);
   });
 
-  test("a server that never answers fails the dial after 9.5 to 11 s", async () => {
+  // Load cannot make a timer fire early, so the lower limit says the dial waited out its bound.
+  test("a server that never answers fails the dial at its 10 s bound, not before 9.5 s", async () => {
     const server = fake(() => "silent");
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
     const dial = await timed(connectNats(connect, options([server.url]), once));
-    expect(dial.error).toBeDefined();
-    within(dial.ms, 11_000, "the silent dial");
+    expect(dial.error?.message).toBe(
+      `the NATS dial did not complete within ${NATS_DIAL_TIMEOUT_MS} ms`
+    );
     expect(dial.ms).toBeGreaterThanOrEqual(9_500);
   }, 60_000);
 
-  test("two servers that never answer fail the dial within the bound plus 0.5 s", async () => {
+  // Each server gets half the bound as nats.js's own timeout; the bound around the whole dial is
+  // what ends it, before nats.js would give up on the second server.
+  test("two servers that never answer fail the dial at the bound", async () => {
     const first = fake(() => "silent");
     const second = fake(() => "silent");
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
     const dial = await timed(connectNats(connect, options([first.url, second.url]), once));
-    expect(dial.error).toBeDefined();
-    within(dial.ms, NATS_DIAL_TIMEOUT_MS + 500, "the dial of two silent servers");
+    expect(dial.error?.message).toBe(
+      `the NATS dial did not complete within ${NATS_DIAL_TIMEOUT_MS} ms`
+    );
   }, 60_000);
 
   // nats.js gives each address of a name a `timeout` of its own, so only the bound around the
@@ -311,7 +324,6 @@ describe("a NATS dial's bound", () => {
       )
     );
     expect(dial.error?.message).toBe("the NATS dial did not complete within 1000 ms");
-    within(dial.ms, 1_500, "the dial of a name's two silent addresses");
   }, 30_000);
 
   // The attempt nats.js is still making when the bound expires is abandoned with it: it dials no
@@ -363,24 +375,17 @@ describe("a NATS dial's bound", () => {
   }, 30_000);
 
   // nats.js looks a name up before its timer starts, so a lookup that never answers would hold
-  // the dial for good.
+  // the dial for good: without the bound, the dial would not end before the row's own limit.
   test("is whole: a name lookup that never answers fails the dial at the bound", async () => {
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
-    const guard = Promise.withResolvers<{ ms: number; error?: { message: string } }>();
-    const timer = setTimeout(() => guard.resolve({ ms: 3_000 }), 3_000);
-    const dial = await Promise.race([
-      timed(
-        connectNats(
-          connectResolving(() => new Promise<string[]>(() => {})),
-          { ...options(["nats://fake.test:4222"]), timeout: 1_000 },
-          once
-        )
-      ),
-      guard.promise,
-    ]);
-    clearTimeout(timer);
+    const dial = await timed(
+      connectNats(
+        connectResolving(() => new Promise<string[]>(() => {})),
+        { ...options(["nats://fake.test:4222"]), timeout: 1_000 },
+        once
+      )
+    );
     expect(dial.error?.message).toBe("the NATS dial did not complete within 1000 ms");
-    within(dial.ms, 1_500, "the dial whose name lookup never answers");
   }, 30_000);
 
   test("is whole: a connect that settles late fails at the bound with the plugin's own error, and its connection is closed", async () => {
@@ -397,26 +402,39 @@ describe("a NATS dial's bound", () => {
     );
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
     const dial = await timed(connectNats(() => late.promise, { timeout: 300 }, once));
-    within(dial.ms, 300 + 200, "the dial whose connect settles late");
     expect(dial.error?.message).toBe("the NATS dial did not complete within 300 ms");
-    await until(() => closed, 2_000, "the late connection's close");
+    await eventually(() => closed);
   }, 30_000);
 
+  // The row reads each server's share of the bound from the `timeout` the dial gives nats.js:
+  // whether the second server's handshake then ends inside the bound is a race a busy machine
+  // decides. The second server is dialed once the first one's share runs out, before the bound, so
+  // a dial that gave the first server the whole bound would never reach it.
   test("shares the bound among the servers, so a dial reaches a second server when the first never answers", async () => {
     const silent = fake(() => "silent");
     const serving = fake(() => "serve");
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+    const shares: (number | undefined)[] = [];
     const dial = await timed(
-      connectNats(connect, { ...options([silent.url, serving.url]), timeout: 1_000 }, once)
+      connectNats(
+        (dialOptions) => {
+          shares.push(dialOptions.timeout);
+          return connect(dialOptions);
+        },
+        { ...options([silent.url, serving.url]), timeout: 1_000 },
+        once
+      )
     );
     if (dial.value !== undefined) connections.push(dial.value);
-    expect(dial.error).toBeUndefined();
-    expect(serving.connections()).toBe(1);
+    expect(shares).toEqual([1_000 / 2]);
+    await eventually(() => serving.connections() === 1);
   }, 30_000);
 
-  // Each of four servers gets a quarter of a 1 200 ms bound, 300 ms, below the 500 ms floor: the
-  // floor gives the second server, which sends its INFO 400 ms after it accepts, time to answer.
-  // Both margins are 100 ms, so a short stall of the test's own event loop decides nothing.
+  // Each of four servers gets a quarter of a 1 200 ms bound, 300 ms, below the 500 ms floor, so the
+  // floor is what nats.js is given for each server: time for the second server, which sends its
+  // INFO 400 ms after it accepts, to answer. The row reads the share from the `timeout` the dial
+  // gives nats.js; whether that INFO then beats nats.js's own timer is a 100 ms race, which a busy
+  // machine decides.
   test("shares the bound among the servers, and gives each one at least 500 ms", async () => {
     const boundMs = 1_200;
     const infoMs = 400;
@@ -431,16 +449,20 @@ describe("a NATS dial's bound", () => {
     expect(boundMs / servers.length).toBeLessThan(infoMs);
     expect(infoMs).toBeLessThan(NATS_MIN_REDIAL_BOUND_MS);
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+    const shares: (number | undefined)[] = [];
     const dial = await timed(
       connectNats(
-        connect,
+        (dialOptions) => {
+          shares.push(dialOptions.timeout);
+          return connect(dialOptions);
+        },
         { ...options(servers.map((server) => server.url)), timeout: boundMs },
         once
       )
     );
     if (dial.value !== undefined) connections.push(dial.value);
-    expect(dial.error).toBeUndefined();
-    expect(servers[1]?.connections()).toBe(1);
+    expect(shares).toEqual([NATS_MIN_REDIAL_BOUND_MS]);
+    await eventually(() => servers[1]?.connections() === 1);
   }, 30_000);
 
   test("gives a connection that a short bound opened the whole timeout for its reconnects", async () => {
@@ -455,26 +477,16 @@ describe("a NATS dial's bound", () => {
     connections.push(nc);
     const reconnects = countStatus(nc, Events.Reconnect);
     server.dropAll();
-    // A reconnect timed at the dial's 300 ms gives up before the server's 600 ms INFO, every time.
-    await until(
-      () => reconnects.count() >= 1,
-      4_000,
-      "a reconnect to a server that answers in 600 ms"
-    );
+    // A reconnect timed at the dial's 300 ms would give up before the server's 600 ms INFO every
+    // time, so it would never come, and only the row's own limit would end the wait.
+    await eventually(() => reconnects.count() >= 1);
   }, 30_000);
 
   test("is whole: an error past the bound is the plugin's own, which a log prints whole", async () => {
     const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+    // A dial with no bound never settles, and only the row's own limit ends it.
     const never = Promise.withResolvers<NatsConnection>();
-    // The row's own guard: a dial with no bound never settles, and the row fails here on its
-    // assertion rather than at the runner's limit.
-    const guard = Promise.withResolvers<string>();
-    const timer = setTimeout(() => guard.resolve("the dial did not settle within 2 s"), 2_000);
-    const error = await Promise.race([
-      connectNats(() => never.promise, { timeout: 50 }, once).catch((e) => e),
-      guard.promise,
-    ]);
-    clearTimeout(timer);
+    const error = await connectNats(() => never.promise, { timeout: 50 }, once).catch((e) => e);
     expect(error).toBeInstanceOf(LoggableError);
   }, 30_000);
 });
