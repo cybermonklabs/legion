@@ -357,7 +357,7 @@ for you again; every access token it already minted, so the sessions running the
 within seconds; and the machine login that sign-in held, so every session it enrolled ends as
 [ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to five
 seconds: it asks the broker whether a token is live and reuses that answer for five seconds
-(`AffirmativeCacheTTL`, `packages/envoy/internal/brokertoken/brokertoken.go`) rather than asking
+(`AffirmativeCacheTTL`, `packages/envoy/internal/ciphertoken/brokertoken.go`) rather than asking
 once per request. Your sign-ins on other machines, and the fleet's own
 machine login, are untouched — the machine goes on reading what its service owns. Nobody sees or
 revokes anyone else's sign-ins: Dispatch names the person from its own session, so another

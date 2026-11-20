@@ -128,7 +128,8 @@ here saves either one.
 ## What the binaries build writes, and why it is static
 
 One `go build -o <directory>/` writes one binary per package, each named after it:
-dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
+dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, from
+./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
