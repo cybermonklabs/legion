@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -55,16 +56,10 @@ func probeCommand(home string) *exec.Cmd {
 
 // binary is the path variable names. A run without one skips, except on GitHub Actions, where
 // ci.yaml's daemon-go job installs every pin and a skip would hide the only check of the code a
-// real binary exercises.
+// real binary exercises (testprereq.Require).
 func binary(t *testing.T, variable, name string) string {
 	t.Helper()
 	path := os.Getenv(variable)
-	switch {
-	case path != "":
-		return path
-	case os.Getenv("GITHUB_ACTIONS") == "true":
-		t.Fatalf("%s is unset on GitHub Actions: name the pinned %s binary (ci.yaml's daemon-go job installs it)", variable, name)
-	}
-	t.Skipf("%s names no %s binary", variable, name)
-	return ""
+	testprereq.Require(t, path != "", "daemon-go", "%s names no pinned %s binary", variable, name)
+	return path
 }

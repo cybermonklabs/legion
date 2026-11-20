@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -17,10 +18,8 @@ const ROOT_TRANSCRIPT =
 const ROOT_ID = "01a050c7-b4a9-7000-a539-240e20271441";
 /** Another session's id, for a commit that already carries that session's pair. */
 const OTHER_ID = ROOT_ID.replace("b4a9", "dead");
-/** The real jj on PATH, if any, and whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not
- * `CI`, which agent harnesses on the devbox export), as `ompNatsGuard` reads them. */
+/** The real jj on PATH, if any. */
 const JJ = Bun.which("jj");
-const ON_ACTIONS = process.env.GITHUB_ACTIONS === "true";
 
 describe("sessionIdFromTranscript", () => {
   it("extracts the resumable id from a top-level transcript", () => {
@@ -446,11 +445,12 @@ describe("exportJjSessionAttribution", () => {
 
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide
-  // the only run of the check (as `ompNatsGuard` does for Oh My Pi, `test/omp-harness.ts`).
-  it.skipIf(JJ === null && !ON_ACTIONS)(
+  // the only run of the check.
+  const withoutJj = skipWithout(["jj"], "pi-shared");
+  it.skipIf(withoutJj)(
     "the overlay's three templates give each jj command the running pair",
     async () => {
-      if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
+      if (JJ === null) throw new Error("no jj on PATH");
       const root = await stateDir("jj-attribution-jj-");
       // A base chain and a home of the test's own, so no jj or git configuration of the host
       // reaches the repository, and the identity jj needs comes from JJ_USER and JJ_EMAIL.

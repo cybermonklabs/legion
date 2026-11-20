@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - runs real Oh My Pi agents on skill scenarios and scores and judges what they wrote, for a person who changes a skill and compares two versions of it to choose one.
 # Skill scenarios: fresh Oh My Pi agents, each running one checkout's packed plugins (and so that
 # checkout's skills), each given one task a skill rule governs, scored afterwards from what the
 # agent actually wrote. Two checkouts under the same scenario compare two versions of a skill.
@@ -341,8 +342,7 @@ install_model_route() {
     local base=()
     # An Anthropic-compatible gateway, whose key the file holds, in place of Anthropic itself:
     # the installer's own --base-url, which this route did not pass, so a batch on a gateway had
-    # to be written as a provider block by hand (scripts/e2e/claude-backend-tmux.sh takes the
-    # same variable for the same reason).
+    # to be written as a provider block by hand.
     [ -z "${LEGION_E2E_MODEL_BASE_URL:-}" ] || base=(--base-url "$LEGION_E2E_MODEL_BASE_URL")
     bash "$co/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$dir/home" --dest "$dir/key" \
       --key-dir "$dir/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" "${base[@]}" || {

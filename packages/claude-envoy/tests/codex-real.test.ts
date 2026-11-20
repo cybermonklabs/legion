@@ -1,24 +1,43 @@
 // The Codex plugin on the real Codex CLI binary: a fresh `scripts/build.ts
 // --codex-out` build of this tree, the `@sjawhar/codex-envoy` package, installed from a local
 // marketplace into a Codex home of the test's own, run with `codex exec` against a stand-in for
-// OpenAI's Responses API. It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
+// OpenAI's Responses API, whose turns scripts/e2e/lib/responses-stream.ts streams, as it streams
+// the proofs' model stand-in's (scripts/e2e/lib/messages-standin.ts).
+// It proves what no other test can: that Codex runs the plugin's SessionStart and PostToolUse hooks with the input this package
 // reads, that the session record lands where the MCP server looks for it, that a message waiting
 // in the inbox reaches the model in the very next request of the running turn, and that a side
 // question runs in an ephemeral fork with the plugin off.
 //
-// `LEGION_TEST_CODEX` names the binary (`~/.local/bin/codex` on a dev box); without it the file
-// skips, and nothing in CI installs Codex. Measured on Codex CLI 0.154.0.
+// `LEGION_TEST_CODEX` names the binary: the native `codex` of the release `/.codex-pin` pins, which
+// CI installs (.github/actions/install-codex), or `~/.local/bin/codex` on a dev box. It must be the
+// native binary and not the npm package's `bin/codex.js`, a Node process that runs the native one as
+// its child: the session record lands under the hooks' parent, which would then not be the process
+// this test starts. A run without one skips, except on GitHub Actions, where a skip would hide the
+// only run of the check (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
+// Measured on Codex CLI 0.154.0.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { requireOrSkip } from "@legion/test-fixtures/host-tools"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
+import {
+  type ResponsesItem,
+  responsesCall,
+  responsesMessage,
+  responsesStream,
+} from "../../../scripts/e2e/lib/responses-stream"
 import { askSideQuestion } from "../src/codex/codex-cli"
 import { codexInboxDirectory, putInbox, takenBy } from "../src/codex/codex-inbox"
 import { codexSessionRecordFile, readCodexSessionRecord } from "../src/codex/codex-session-record"
 
 const codex = process.env["LEGION_TEST_CODEX"]
+const skipped = requireOrSkip(
+  "LEGION_TEST_CODEX, naming the native Codex binary",
+  codex !== undefined,
+  "claude-envoy",
+)
 const packageRoot = resolve(import.meta.dir, "..")
 const root = temporaryDirectory("codex-real")
 const WAIT_MS = 60_000
@@ -27,38 +46,32 @@ interface ModelRequest {
   readonly input: readonly Record<string, unknown>[]
 }
 
-describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary", () => {
+describe.skipIf(skipped)("the Codex plugin on the real Codex binary", () => {
   const requests: ModelRequest[] = []
   let model: Server<undefined> | undefined
   let codexHome = ""
   let work = ""
   let pluginData = ""
-  /** Answers each request: a tool call for a prompt holding `RUN: <command>`, else an echo. */
-  const answer = (input: readonly Record<string, unknown>[]): Record<string, unknown>[] => {
-    const last = input.at(-1)
+  /** What a test does before the stand-in answers a request of a turn, given how many of the
+   *  turn's tool calls have their output in it. */
+  let beforeAnswer: (outputs: number) => Promise<void> = async () => {}
+  /** Answers each request: a tool call for a prompt holding `RUN: <command>`, a second one for its
+   *  `THEN: <command>` once the first call's output is back (`outputs`), else an echo. */
+  const answer = (input: readonly Record<string, unknown>[], outputs: number): ResponsesItem[] => {
     const user = [...input].reverse().find((item) => item["role"] === "user")
     const text = JSON.stringify(user?.["content"] ?? "")
-    const run = /RUN: ([^"\\]*)/.exec(text)
-    if (run !== null && last?.["type"] !== "function_call_output") {
+    const command = /RUN: ([^"\\]*?)(?: THEN: ([^"\\]*))?"/.exec(text)?.[outputs + 1]
+    if (command !== undefined) {
       return [
-        {
-          arguments: JSON.stringify({ cmd: run[1] }),
-          call_id: `call_${requests.length}`,
-          id: `fc_${requests.length}`,
-          name: "exec_command",
-          type: "function_call",
-        },
+        responsesCall(
+          `fc_${requests.length}`,
+          `call_${requests.length}`,
+          "exec_command",
+          JSON.stringify({ cmd: command }),
+        ),
       ]
     }
-    return [
-      {
-        content: [{ annotations: [], text: `ECHO ${requests.length}`, type: "output_text" }],
-        id: `msg_${requests.length}`,
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
-    ]
+    return [responsesMessage(`msg_${requests.length}`, `ECHO ${requests.length}`)]
   }
 
   beforeAll(async () => {
@@ -66,29 +79,12 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
       async fetch(request) {
         const body = (await request.json()) as ModelRequest
         requests.push(body)
-        const id = `resp_${requests.length}`
-        const events: Record<string, unknown>[] = [{ response: { id }, type: "response.created" }]
-        for (const item of answer(body.input ?? []))
-          events.push({ item, type: "response.output_item.done" })
-        events.push({
-          response: {
-            id,
-            usage: {
-              input_tokens: 1,
-              input_tokens_details: { cached_tokens: 0 },
-              output_tokens: 1,
-              output_tokens_details: { reasoning_tokens: 0 },
-              total_tokens: 2,
-            },
-          },
-          type: "response.completed",
+        const input = body.input ?? []
+        const outputs = input.filter((item) => item["type"] === "function_call_output").length
+        await beforeAnswer(outputs)
+        return new Response(responsesStream(`resp_${requests.length}`, answer(input, outputs)), {
+          headers: { "content-type": "text/event-stream" },
         })
-        return new Response(
-          events
-            .map((event) => `event: ${event["type"]}\ndata: ${JSON.stringify(event)}\n\n`)
-            .join(""),
-          { headers: { "content-type": "text/event-stream" } },
-        )
       },
       port: 0,
     })
@@ -173,7 +169,7 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
           "exec",
           "--skip-git-repo-check",
           "--dangerously-bypass-hook-trust",
-          "RUN: sleep 4; echo slept",
+          "RUN: sleep 4; echo slept THEN: echo again",
         ],
         { cwd: work, env: environment(), stderr: "pipe", stdout: "pipe" },
       )
@@ -189,20 +185,33 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
       if (record === undefined) return
       expect(record.transcript_path).toContain(record.session_id)
       const inbox = codexInboxDirectory(pluginData, record.session_id)
-      const name = await putInbox(inbox, { content: "INBOX LINE FOR THE RUNNING TURN" })
+      // The line goes into the inbox once the first call's output is back, before the answer that
+      // makes the second call, so it waits there while a call of the running turn runs. Not as
+      // soon as the record is there: the plugin's MCP server, once it reads the record (it polls
+      // it every 250 ms, src/codex/codex-server.ts), discards every line already waiting, as lines
+      // an earlier owner of the session left, and the first call's four seconds are past that read.
+      let name: string | undefined
+      beforeAnswer = async (outputs) => {
+        if (outputs === 1 && name === undefined)
+          name = await putInbox(inbox, { content: "INBOX LINE FOR THE RUNNING TURN" })
+      }
       expect(await exec.exited).toBe(0)
+      beforeAnswer = async () => {}
+      expect(name).toBeDefined()
+      if (name === undefined) return
       expect(await takenBy(inbox, name)).toBe("hook")
       const turn = requests.slice(before)
       const carried = turn.findIndex((request) =>
         JSON.stringify(request.input).includes("INBOX LINE FOR THE RUNNING TURN"),
       )
-      // The request after the tool call, not a later turn: it also carries the call's output,
-      // which is the command's own and not the prompt's text.
       expect(carried).toBeGreaterThan(0)
+      // The request after the second tool call, not a later turn: it carries both calls' outputs,
+      // the second's last, which is that command's own output and not the prompt's text.
       const outputs = (turn[carried]?.input ?? []).filter(
         (item) => item["type"] === "function_call_output",
       )
-      expect(JSON.stringify(outputs)).toMatch(/exited with code 0[\s\S]*slept/)
+      expect(outputs).toHaveLength(2)
+      expect(JSON.stringify(outputs.at(-1))).toMatch(/exited with code 0[\s\S]*again/)
       // The dispatch-first skill and the session note reach the model only with Dispatch on; this
       // home has none, so the record is all the session-start hook was asked for.
       expect(readFileSync(record.transcript_path ?? "", "utf8")).toContain("task_complete")

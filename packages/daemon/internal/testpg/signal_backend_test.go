@@ -1,10 +1,11 @@
 package testpg_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // Every test of this module that makes a database of its own drops it with `with (force)`, which
@@ -19,10 +20,7 @@ import (
 // Legion issue pod goes red. This holds the right the drop needs on whatever server
 // LEGION_TEST_PG_DSN names, which is the one the tests will use.
 func TestTheDSNRoleMayTerminateAnotherRolesBackend(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no server whose login to read")
-	}
+	dsn := testdb.DSN(t)
 	conn, err := pgx.Connect(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("connect to the test server: %v", err)

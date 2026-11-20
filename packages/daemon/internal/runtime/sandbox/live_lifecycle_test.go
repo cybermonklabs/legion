@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The Stage 4a harness's lifecycle checks: every claim's launches, suspends, resumes, deaths,
 // re-adoption, the orphan sweep, and the release that leaves the namespace as it was. The rig is
 // live_test.go.
@@ -10,13 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -24,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -32,8 +29,8 @@ import (
 
 // root-ready: the root claim spawns, provisions its workspace, and registers at generation 1. The
 // root is the run's first issue pod, so its launch is also where the run's repository gets its
-// cache: there is none before (its Sandbox recorded for the teardown first), the launch makes it,
-// and the root's fetch fills its feed from that cache alone, asking GitHub only for the delta.
+// cache: there is none before, the launch makes it, and the root's fetch fills its feed from that
+// cache alone, asking GitHub only for the delta.
 func (r *liveRig) checkRootReady() error {
 	if err := r.startRuntimeOnce(); err != nil {
 		return err
@@ -41,9 +38,6 @@ func (r *liveRig) checkRootReady() error {
 	cache := CacheSandboxName(r.env.project, r.env.repo)
 	if _, found := r.rt.RepositoryCache(r.env.repo); found {
 		return fmt.Errorf("the repository cache %s exists before the run's first issue pod launched", cache)
-	}
-	if err := r.recordSandbox(cache); err != nil {
-		return err
 	}
 	r.mapRepository(r.env.repo)
 	root := r.claim("root")
@@ -126,20 +120,10 @@ func (r *liveRig) checkGVisor() error {
 	return nil
 }
 
-// resources: every container of the root's pod, its init containers included, reserves cpu and
-// memory with the request equal to the limit and equal to the issue pod's reservation the rig
-// configured (liveResources: liveIssueOverride over config.DefaultResources()), so the pod is
-// Guaranteed; carries the ephemeral-storage limit and request configured for it, equal, so GKE's
-// clamp of a limit to its request changes nothing (gkeEphemeralStorageClamped). And carries no
-// affinity but GKE Autopilot's own extended-duration one (isGKEExtendedDurationAffinity's doc
-// comment) under LEGION_E2E_PLATFORM=gke-autopilot. Inside the pod, gVisor sizes the sandbox from
-// the pod's cgroup, which the kubelet sets to the one container's limits once the init containers
-// are done: nproc is max(2, ceil(cpu limit)) and /proc/meminfo's MemTotal is within 3% of the
-// memory limit — except on GKE Autopilot's container-optimized compute platform, where a
-// sandboxed pod reads nproc 2 whatever it reserves and whatever its host holds, so the cgroup's
-// own cpu.cfs_quota_us/cpu.cfs_period_us are read directly there instead: they tracked the
-// containers' summed cpu limits exactly at every size measured on 2026-11-05 (2, 2.5, 3, 4 and 6
-// CPU, each on an 8-vCPU node, dispatch://INFRA-928/artifact/measurements-2026-11-05-md).
+// resources: every container of the root's pod, its init containers included, reserves cpu,
+// memory and ephemeral storage with the request equal to the limit and equal to the issue pod's
+// reservation the rig configured (liveResources: liveIssueOverride over
+// config.DefaultResources()), so the pod is Guaranteed, and carries no affinity.
 func (r *liveRig) checkResources() error {
 	root := r.claim("root")
 	if err := r.ensureRunning(root); err != nil {
@@ -152,271 +136,13 @@ func (r *liveRig) checkResources() error {
 	}
 	want := r.liveResources().Issue
 	byContainer := map[string]corev1.ResourceRequirements{runtime.IssuePodContainer: want}
-	if err := guaranteedPod(pod, byContainer, &want, resource.Quantity{}, r.gkeEphemeralStorageClamped(), r.gke()); err != nil {
+	if err := guaranteedPod(pod, byContainer, &want, resource.Quantity{}, false, false); err != nil {
 		return fmt.Errorf("pod %s: %w", name, err)
 	}
-	var cpuSum, memorySum resource.Quantity
 	for _, c := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
 		note("runtime", "container %s: cpu %s, memory %s, request = limit; ephemeral-storage %s under a limit of %s, the issue pod's reservation", c.Name, c.Resources.Limits.Cpu().String(), c.Resources.Limits.Memory().String(), c.Resources.Requests.StorageEphemeral().String(), c.Resources.Limits.StorageEphemeral().String())
 	}
-	for _, c := range pod.Spec.Containers {
-		cpuSum.Add(*c.Resources.Limits.Cpu())
-		memorySum.Add(*c.Resources.Limits.Memory())
-	}
-	note("operator", "pod %s: qosClass %s, no affinity but GKE Autopilot's own extended-duration one under LEGION_E2E_PLATFORM=gke-autopilot; one container carrying runtime.kubernetes.resources.issue", name, pod.Status.QOSClass)
-
-	wantCPUs := max(2, int(math.Ceil(cpuSum.AsApproximateFloat64())))
-	wantMemory := memorySum.AsApproximateFloat64()
-
-	var memTotalKB int64
-	checkMemory := func() error {
-		meminfo, err := r.execPod(root, "sh", "-c", "grep '^MemTotal:' /proc/meminfo")
-		if err != nil {
-			return err
-		}
-		fields := strings.Fields(meminfo)
-		if len(fields) != 3 || fields[2] != "kB" {
-			return fmt.Errorf("/proc/meminfo's MemTotal line is %q, want `MemTotal: <n> kB`", meminfo)
-		}
-		memTotalKB, err = strconv.ParseInt(fields[1], 10, 64)
-		if err != nil {
-			return fmt.Errorf("/proc/meminfo's MemTotal %q is not a number", fields[1])
-		}
-		if memTotal := float64(memTotalKB) * 1024; math.Abs(memTotal-wantMemory) > 0.03*wantMemory {
-			return fmt.Errorf("MemTotal in the pod is %d kB (%.2f GiB), not within 3%% of the containers' summed memory limits %s, the pod cgroup's limit as gVisor sizes the sandbox", memTotalKB, memTotal/(1<<30), memorySum.String())
-		}
-		return nil
-	}
-
-	if r.gke() {
-		// gVisor on GKE Autopilot's container-optimized compute platform: a sandboxed pod reads
-		// nproc 2 whatever it reserves and whatever its host holds. Measured 2026-11-05
-		// (dispatch://INFRA-928/artifact/measurements-2026-11-05-md): probe pods at 2, 2.5, 3, 4
-		// and 6 CPU, each on an 8-vCPU node, all read nproc 2, while the pod's cgroup cpu quota —
-		// read from `/sys/fs/cgroup/cpu/cpu.cfs_quota_us` and `cpu.cfs_period_us`, identically
-		// presented by every container in the pod, since one gVisor sandbox covers the whole pod —
-		// read the containers' summed cpu limits exactly at each of those sizes; the probe pods
-		// that requested 2, 3, 4 and 6 CPU also read sched_getaffinity 2 and cpuset.cpus 0-1. A pod
-		// of the same cluster placed on a node of a named machine series
-		// (cloud.google.com/machine-family) read nproc 3 at a 3-CPU limit, its whole reservation,
-		// where the nproc rule in this method's doc comment holds. The earlier reading,
-		// 2026-10-17, says the same: two debug pods summing to 2.5 and to exactly 3.0 cores (one
-		// container each at 1 and 2 cores) both reported nproc=2 on an 8-vCPU node with 7.91
-		// allocatable, while the quota tracked the configured sum exactly in both (300000/100000 =
-		// 3.0 cores; 250000/100000 = 2.5 cores). So the quota is what this check asserts here, and
-		// nproc is only logged. AWS keeps nproc below; it is proven reliable there.
-		quotaOut, err := r.execPod(root, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-		if err != nil {
-			return err
-		}
-		periodOut, err := r.execPod(root, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_period_us")
-		if err != nil {
-			return err
-		}
-		quota, err := strconv.ParseFloat(strings.TrimSpace(quotaOut), 64)
-		if err != nil {
-			return fmt.Errorf("cpu.cfs_quota_us printed %q, not a number", quotaOut)
-		}
-		period, err := strconv.ParseFloat(strings.TrimSpace(periodOut), 64)
-		if err != nil || period <= 0 {
-			return fmt.Errorf("cpu.cfs_period_us printed %q, not a positive number", periodOut)
-		}
-		gotCPUs, wantCPUFloat := quota/period, cpuSum.AsApproximateFloat64()
-		if math.Abs(gotCPUs-wantCPUFloat) > 0.01 {
-			return fmt.Errorf("the pod's cgroup cpu quota is %.3f cores (cfs_quota_us=%s, cfs_period_us=%s), not the containers' summed cpu limits %s", gotCPUs, strings.TrimSpace(quotaOut), strings.TrimSpace(periodOut), cpuSum.String())
-		}
-		if err := checkMemory(); err != nil {
-			return err
-		}
-		nprocOut, nprocErr := r.execPod(root, "nproc")
-		if nprocErr != nil {
-			nprocOut = fmt.Sprintf("(exec failed: %v)", nprocErr)
-		}
-		note("operator", "pod cgroup cpu quota %.3f cores (cfs_quota_us=%s/cfs_period_us=%s) matches the containers' summed cpu limits %s; nproc reports %s, not asserted (a sandboxed pod on GKE Autopilot's container-optimized compute platform reads 2 whatever it reserves); MemTotal %d kB, within 3%% of the summed memory limits %s",
-			gotCPUs, strings.TrimSpace(quotaOut), strings.TrimSpace(periodOut), cpuSum.String(), strings.TrimSpace(nprocOut), memTotalKB, memorySum.String())
-		return nil
-	}
-
-	nprocOut, err := r.execPod(root, "nproc")
-	if err != nil {
-		return err
-	}
-	cpus, err := strconv.Atoi(strings.TrimSpace(nprocOut))
-	if err != nil {
-		return fmt.Errorf("nproc in the pod printed %q, not a number", nprocOut)
-	}
-	if cpus != wantCPUs {
-		return fmt.Errorf("nproc in the pod is %d, want max(2, ceil(%s cpu)) = %d, the pod cgroup's quota as gVisor sizes the sandbox", cpus, cpuSum.String(), wantCPUs)
-	}
-	if err := checkMemory(); err != nil {
-		return err
-	}
-	note("operator", "exec %s -- nproc: %d = max(2, ceil(%s)); MemTotal %d kB, within 3%% of the summed memory limits %s", name, cpus, cpuSum.String(), memTotalKB, memorySum.String())
-	return nil
-}
-
-// gvisorCPUFloor is the cpu reservation a lone, small Sandbox container is admitted at on GKE,
-// never under: confirmed live, 2026-10-17, against the production GKE cluster, only for the
-// single-container probe Sandbox (its one container's cpu, 250m then, was the pod's whole cpu
-// sum) — every multi-container issue pod in this same cluster, already summing well past it, was
-// admitted at exactly its configured per-container cpu unchanged (checked directly against a real
-// production issue pod of the layout before one container, whose six containers summed past it),
-// and an issue pod's one container reserves more than the floor. So only checkImageProbe passes
-// this; checkResources passes a zero Quantity, asking for no floor. The probe's own 500m is the
-// floor itself, so guaranteedPod raises nothing for it now. AWS carries no such floor either
-// way. guaranteedPod folds it into its comparison, not the daemon's own reservation
-// (config.Reservation, config.DefaultResources(), probeReservation): those stay the production values
-// on every runtime; only this live GKE check expects what the cluster will actually admit.
-func (r *liveRig) gvisorCPUFloor() resource.Quantity {
-	if r.env.runtimeIdentityKind == "kubernetes-service-account" {
-		return resource.MustParse("500m")
-	}
-	return resource.Quantity{}
-}
-
-// gke reports whether this run's cluster is GKE Autopilot (LEGION_E2E_PLATFORM=gke-autopilot, an
-// explicit input independent of runtimeIdentityKind and podReachability: a cluster authenticating
-// with a ServiceAccount, or unreachable from pods directly, is not necessarily GKE — a
-// self-managed cluster or an EKS cluster with IRSA could do either), the platform
-// gkeEphemeralStorageClamped's and isGKEExtendedDurationAffinity's doc comments give the live
-// evidence for. False means eks, which neither clamps ephemeral storage nor adds a NodeAffinity to
-// any pod here.
-func (r *liveRig) gke() bool {
-	return r.env.platform == "gke-autopilot"
-}
-
-// gkeEphemeralStorageClamped reports whether this run's cluster admits a container's ephemeral-
-// storage limit equal to its request, discarding whatever limit was configured: confirmed live,
-// 2026-10-17, on both a bare debug pod and every container of a real, already-running production
-// issue pod in this namespace (each carried request = limit = its configured
-// EphemeralStorageRequest, though its configured limit was higher) — a gVisor-sandboxed pod's
-// ephemeral storage is never burstable on this cluster, cpu and memory floors notwithstanding. AWS
-// admits the configured limit unchanged. checkImageProbe and checkResources both pass this to
-// guaranteedPod: checkImageProbe's reservation (probeReservation, manifest_test.go) is the
-// daemon's own fixed value, whose limit the rig cannot raise its request to, so the clamp is the
-// admitted bound to assert there; checkResources' is liveIssueOverride, whose request already
-// equals its limit, so guaranteedPod's clamp (it replaces a container's wantLimit with its
-// wantRequest) changes nothing for it.
-func (r *liveRig) gkeEphemeralStorageClamped() bool {
-	return r.gke()
-}
-
-// isGKEExtendedDurationAffinity reports whether a carries exactly the NodeAffinity GKE Autopilot
-// adds on its own to a pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`
-// (manifest.go's safeToEvictAnnotation, every issue pod's, never the probe's — probeManifest's
-// own doc says why) to protect it from disruption for up to seven days (confirmed live,
-// 2026-10-17: a real root issue pod on the production GKE cluster carried exactly this one
-// required NodeAffinity term, keyed `cloud.google.com/extended-duration-pods`, nothing else —
-// https://docs.cloud.google.com/kubernetes-engine/docs/how-to/extended-duration-pods). It is
-// GKE's own addition, not a pod affinity or anti-affinity the pod spec asks for, and it still
-// admits the pod to any node whose pool carries that label, never a named one — so it does not
-// trip the reservation rule's intent (no pod asks for or keeps off a particular node) even though
-// it is literally a NodeAffinity. AWS adds none; a pod this doesn't match is still refused.
-//
-// The `In` operator's own values are not a fixed, tolerable literal: confirmed live, 2026-10-17,
-// on this round's own six-role root pod, GKE set them to `["2500m", "X"]` — the first exactly the
-// pod's own summed regular-container cpu limit (250+250+500+500+750+250m), the second unexplained
-// — where an earlier run's single-container probe pod case (never exercised here; the probe always
-// passes extendedDurationAffinity=false) might plausibly carry something else again. GKE computes
-// these per pod, not from a fixed set this harness could enumerate, so any non-empty `In` is
-// tolerated; only the key and the operator (`In` with values, or `Exists` with none) decide
-// whether this is the one shape GKE itself would still admit on its own — a `NotIn` or
-// `DoesNotExist` on the same key is a refusal GKE would admit too, but meaning the opposite, and
-// is never tolerated here regardless of its own values.
-func isGKEExtendedDurationAffinity(a *corev1.Affinity) bool {
-	if a == nil || a.PodAffinity != nil || a.PodAntiAffinity != nil || a.NodeAffinity == nil {
-		return false
-	}
-	na := a.NodeAffinity
-	if len(na.PreferredDuringSchedulingIgnoredDuringExecution) != 0 || na.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	terms := na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
-	if len(terms) != 1 || len(terms[0].MatchFields) != 0 || len(terms[0].MatchExpressions) != 1 {
-		return false
-	}
-	expr := terms[0].MatchExpressions[0]
-	if expr.Key != "cloud.google.com/extended-duration-pods" {
-		return false
-	}
-	switch expr.Operator {
-	case corev1.NodeSelectorOpIn:
-		return len(expr.Values) > 0
-	case corev1.NodeSelectorOpExists:
-		return len(expr.Values) == 0
-	default:
-		return false
-	}
-}
-
-// guaranteedPod is the reservation rule the rig's pods are held to, since the rig configures no
-// cpu or memory request below a limit (liveIssueOverride): it carries no affinity but GKE's own
-// extended-duration one when extendedDurationAffinity allows it (isGKEExtendedDurationAffinity's
-// doc has the evidence; the probe never carries it and always passes false), its qosClass is
-// Guaranteed, and every container — the init containers included — reserves cpu and memory with
-// the request equal to the limit and at least the reservation configured for it (cpu floored at
-// cpuFloor, zero off GKE and for every issue pod on it), and carries the
-// ephemeral-storage request and limit configured for it, the request under the limit, except that
-// ephemeralStorageClamped asks for the limit to equal the request instead of the configured limit
-// (GKE's own admission, gkeEphemeralStorageClamped's doc has the evidence): want's entry for each
-// regular container by name, and init for every init container (nil when the pod has none to
-// hold). A container want does not name is a refusal: nothing a Legion pod runs is unreserved.
-func guaranteedPod(pod *corev1.Pod, want map[string]corev1.ResourceRequirements, init *corev1.ResourceRequirements, cpuFloor resource.Quantity, ephemeralStorageClamped, extendedDurationAffinity bool) error {
-	if pod.Spec.Affinity != nil && !(extendedDurationAffinity && isGKEExtendedDurationAffinity(pod.Spec.Affinity)) {
-		return fmt.Errorf("carries an affinity, which no Legion pod asks for: %+v", pod.Spec.Affinity)
-	}
-	if pod.Status.QOSClass != corev1.PodQOSGuaranteed {
-		return fmt.Errorf("is %q, want %s", pod.Status.QOSClass, corev1.PodQOSGuaranteed)
-	}
-	check := func(c corev1.Container, expected corev1.ResourceRequirements, source string) error {
-		for _, resourceName := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
-			request, limit := c.Resources.Requests[resourceName], c.Resources.Limits[resourceName]
-			reserved := expected.Requests[resourceName]
-			if resourceName == corev1.ResourceCPU && reserved.Cmp(cpuFloor) < 0 {
-				reserved = cpuFloor
-			}
-			if request.IsZero() || limit.IsZero() {
-				return fmt.Errorf("container %s reserves no %s: requests %v, limits %v", c.Name, resourceName, c.Resources.Requests, c.Resources.Limits)
-			}
-			if request.Cmp(limit) != 0 {
-				return fmt.Errorf("container %s requests %s %s but is limited to %s; this run configures request = limit", c.Name, resourceName, request.String(), limit.String())
-			}
-			if request.Cmp(reserved) != 0 {
-				return fmt.Errorf("container %s reserves %s %s, not the %s configured for %s", c.Name, resourceName, request.String(), reserved.String(), source)
-			}
-		}
-		request, limit := c.Resources.Requests[corev1.ResourceEphemeralStorage], c.Resources.Limits[corev1.ResourceEphemeralStorage]
-		wantRequest, wantLimit := expected.Requests[corev1.ResourceEphemeralStorage], expected.Limits[corev1.ResourceEphemeralStorage]
-		if ephemeralStorageClamped {
-			wantLimit = wantRequest
-		}
-		switch {
-		case request.IsZero() || limit.IsZero():
-			return fmt.Errorf("container %s bounds no ephemeral-storage: requests %v, limits %v", c.Name, c.Resources.Requests, c.Resources.Limits)
-		case request.Cmp(limit) > 0:
-			return fmt.Errorf("container %s requests ephemeral-storage %s past its limit %s", c.Name, request.String(), limit.String())
-		case request.Cmp(wantRequest) != 0 || limit.Cmp(wantLimit) != 0:
-			return fmt.Errorf("container %s bounds ephemeral-storage at %s under a limit of %s, not the %s under %s configured for %s", c.Name, request.String(), limit.String(), wantRequest.String(), wantLimit.String(), source)
-		}
-		return nil
-	}
-	for _, c := range pod.Spec.InitContainers {
-		if init == nil {
-			return fmt.Errorf("init container %s: the pod is expected to run none", c.Name)
-		}
-		if err := check(c, *init, "the launching role"); err != nil {
-			return fmt.Errorf("init container: %w", err)
-		}
-	}
-	for _, c := range pod.Spec.Containers {
-		expected, ok := want[c.Name]
-		if !ok {
-			return fmt.Errorf("container %s names no role a reservation is configured for", c.Name)
-		}
-		if err := check(c, expected, "the "+c.Name); err != nil {
-			return err
-		}
-	}
+	note("operator", "pod %s: qosClass %s, no affinity; one container carrying runtime.kubernetes.resources.issue", name, pod.Status.QOSClass)
 	return nil
 }
 
@@ -622,7 +348,9 @@ func (r *liveRig) checkRoleIsolation() error {
 			sawInit = true
 		case argv1 == "worker-shim":
 			sawShim = true
-		case args == "sleep infinity ":
+		// The listing's last line has lost its trailing space, since exec's output is trimmed, and
+		// /proc/[0-9]* sorts the pids as text, so the agent's line may be the last.
+		case strings.TrimSpace(args) == "sleep infinity":
 			if sawAgent {
 				return fmt.Errorf("the second role's /proc shows two stub agents: %q", listing)
 			}
@@ -693,18 +421,6 @@ func (r *liveRig) checkResume() error {
 	return nil
 }
 
-// stalePluginBlocked reports why stale-plugin-install cannot run: the script packs the two
-// checkout tarballs and names them in these four variables together, so one set or none. Its
-// negative control needs no tarball of its own: it names the published pi-legion@9.6.1 by exact
-// version, which the install script resolves through the registry inside the pod.
-func stalePluginBlocked(r *liveRig) string {
-	if r.env.piLegionTarball != "" && r.env.piEnvoyTarball != "" && r.env.piLegionVersion != "" &&
-		r.env.piEnvoyVersion != "" {
-		return ""
-	}
-	return "LEGION_E2E_PI_LEGION_TARBALL/PI_ENVOY_TARBALL/PI_LEGION_VERSION/PI_ENVOY_VERSION are unset; an older invocation of scripts/e2e/stage4a-sandbox-runtime.sh packs no plugins"
-}
-
 // pluginPackageInfo reads an installed plugin's package.json through node, as the wrapper's own
 // install check does. version is pkg.version; contract is pkg.legion.daemonApiVersion as a
 // string, or "" when the package names none, as pi-envoy's does.
@@ -747,7 +463,7 @@ func containsConsecutive(haystack, needle []string) bool {
 // installed --extension roots. Its negative control relaunches again naming the published
 // pi-legion@9.6.1 by exact version — the daemon resolves it to @sjawhar/pi-legion@9.6.1 before
 // `bun add` ever sees it (LEGION-164), and bun fetches it from the registry inside the pod, so
-// a devbox run proves the version→package mapping end to end, not just a tarball install. That
+// the run proves the version→package mapping end to end, not just a tarball install. That
 // release declares another contract: the install still lands (so the earlier generation's own
 // directory is gone, replaced by this one's `rm -rf .../g*`) but the wrapper's own check ends the
 // child before `exec`, which the runtime reports Gone, and the pod is still the one this check
@@ -856,8 +572,8 @@ func (r *liveRig) checkStalePluginInstall() error {
 	// (config.readPluginSource) and the release's linked bare versions admit only an exact
 	// version, an absolute tarball path, or an http(s) URL — never a dist-tag or a range — and
 	// installBlock's bunSpec turns that version into @sjawhar/pi-legion@9.6.1 before bun ever
-	// sees it (LEGION-164), so bun fetches it from the registry inside the pod: a devbox run
-	// proves the version→package mapping end to end, not just a tarball install. The install
+	// sees it (LEGION-164), so bun fetches it from the registry inside the pod: the run proves
+	// the version→package mapping end to end, not just a tarball install. The install
 	// still lands — so the earlier generation's own directory is gone once this one's own `rm -rf
 	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
 	// observes it Gone.
@@ -1314,16 +1030,11 @@ func (r *liveRig) checkIndependentProvision() error {
 // owner's repository holds a token that writes another owner's. The run maps both repositories
 // (mapRepository, here and before the root's launch), so this proves reach across owners and
 // nothing about a repository no mapping names.
-// The advertisement is the request a `git push` opens with and writes nothing,
-// where a real push would leave a branch on a repository every run shares and nothing here would
-// delete it. That repository's cache is its own: the issue's launch makes it (its
-// Sandbox recorded for the teardown first), and the issue's feed comes from it alone.
+// The advertisement is the request a `git push` opens with and writes nothing, where a real push
+// would leave a branch nothing here deletes. That repository's cache is its own: the issue's
+// launch makes it, and the issue's feed comes from it alone.
 func (r *liveRig) checkSecondOwner() error {
 	c := r.claim("second-owner")
-	cache := CacheSandboxName(r.env.project, c.repo)
-	if err := r.recordSandbox(cache); err != nil {
-		return err
-	}
 	r.mapRepository(c.repo)
 	since := time.Now()
 	if _, err := r.spawn(c, true); err != nil {
@@ -1409,6 +1120,18 @@ func (r *liveRig) checkSecondOwner() error {
 		return fmt.Errorf("%s's GET %s.git/info/refs?service=git-receive-pack, with the credential its clone's helper gives for %s, answered %q; want 200 and an %s: a role of one owner's repository writes another owner's", c.name, url, r.env.repo, oneLine(answer), advertisement)
 	}
 	note("operator", "%s's agent: GET %s.git/info/refs?service=git-receive-pack with the credential the clone's helper gives for %s: %s (a read: the advertisement writes nothing)", c.name, url, r.env.repo, answer)
+	// The negative control: the same App's read-only token for that owner, which GitHub refuses
+	// the advertisement with a 403, as it refuses such a token a push, so the 200 above is the
+	// write the helper's credential holds, not an answer every token gets.
+	readOnly, err := r.tokens.apps.ReadToken(r.ctx, appauth.Implement, r.env.repo.Owner())
+	if err != nil {
+		return fmt.Errorf("mint the implement App's read-only token for %s: %w", r.env.repo.Owner(), err)
+	}
+	refused, err := r.asAgent(c, `curl -sS -o /dev/null -u 'x-access-token:`+readOnly.Token+`' -w '%{http_code}' '`+url+`.git/info/refs?service=git-receive-pack'`)
+	if err != nil || refused != "403" {
+		return fmt.Errorf("%s's GET %s.git/info/refs?service=git-receive-pack with the App's read-only token for %s answered %q (%v); want 403", c.name, url, r.env.repo.Owner(), oneLine(refused), err)
+	}
+	note("operator", "negative control: the same request with the App's read-only token for %s: %s", r.env.repo.Owner(), refused)
 	return nil
 }
 
@@ -1846,107 +1569,4 @@ func (r *liveRig) checkIssueSuspendResume() error {
 	note("operator", "the disk %s is uid %s, owned by %s, not the closed issue's %s; the agent's %s=true, and the marker holds its resumed incarnation alone",
 		fresh.name, short(fresh.uid), fresh.owner, short(disk.uid), launcher.WorkspaceRecreatedVariable)
 	return nil
-}
-
-// TestIsGKEExtendedDurationAffinity covers the matcher's whole class of mistake: checking only the
-// key of the one tolerated NodeAffinity shape, not its operator, would accept a refusal
-// (NotIn/DoesNotExist on the same key) wearing the one shape meant to be tolerated. The `In`
-// operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
-// carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
-func TestIsGKEExtendedDurationAffinity(t *testing.T) {
-	key := "cloud.google.com/extended-duration-pods"
-	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
-		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-				NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: exprs}},
-			},
-		}}
-	}
-	for _, tc := range []struct {
-		name string
-		a    *corev1.Affinity
-		want bool
-	}{
-		{"nil affinity", nil, false},
-		{"In [true], an earlier observed GKE shape", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}), true},
-		{"In [2500m, X], this round's own live GKE shape, the pod's summed cpu beside an unexplained token", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{"2500m", "X"}}), true},
-		{"Exists, no values", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpExists}), true},
-		{"NotIn [true] on the same key is a refusal, not a tolerance", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpNotIn, Values: []string{"true"}}), false},
-		{"DoesNotExist on the same key is a refusal, not a tolerance", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpDoesNotExist}), false},
-		{"In with no values at all is not GKE's own shape", required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpIn}), false},
-		{"a different key entirely", required(corev1.NodeSelectorRequirement{Key: "some.other/key", Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}), false},
-		{"a second term is not the one tolerated shape", &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{
-				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}}},
-				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}}},
-			}},
-		}}, false},
-		{"a pod affinity alongside is not the one tolerated shape", &corev1.Affinity{
-			NodeAffinity: required(corev1.NodeSelectorRequirement{Key: key, Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}}).NodeAffinity,
-			PodAffinity:  &corev1.PodAffinity{},
-		}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isGKEExtendedDurationAffinity(tc.a); got != tc.want {
-				t.Errorf("isGKEExtendedDurationAffinity(%+v) = %v, want %v", tc.a, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestGuaranteedPodAffinity covers guaranteedPod's own use of the matcher above: the
-// extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
-// whether the pod carries any NodeAffinity at all.
-func TestGuaranteedPodAffinity(t *testing.T) {
-	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
-		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
-				{Key: "cloud.google.com/extended-duration-pods", Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}},
-			}}},
-		},
-	}}
-	refusal := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
-		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
-				{Key: "cloud.google.com/extended-duration-pods", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"true"}},
-			}}},
-		},
-	}}
-	quantity := resource.MustParse("1")
-	podWith := func(affinity *corev1.Affinity) *corev1.Pod {
-		return &corev1.Pod{
-			Spec: corev1.PodSpec{
-				Affinity: affinity,
-				Containers: []corev1.Container{{Name: "only", Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceCPU: quantity, corev1.ResourceMemory: quantity, corev1.ResourceEphemeralStorage: quantity},
-					Limits:   corev1.ResourceList{corev1.ResourceCPU: quantity, corev1.ResourceMemory: quantity, corev1.ResourceEphemeralStorage: quantity},
-				}}},
-			},
-			Status: corev1.PodStatus{QOSClass: corev1.PodQOSGuaranteed},
-		}
-	}
-	want := map[string]corev1.ResourceRequirements{"only": {
-		Requests: corev1.ResourceList{corev1.ResourceCPU: quantity, corev1.ResourceMemory: quantity, corev1.ResourceEphemeralStorage: quantity},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: quantity, corev1.ResourceMemory: quantity, corev1.ResourceEphemeralStorage: quantity},
-	}}
-	for _, tc := range []struct {
-		name                     string
-		affinity                 *corev1.Affinity
-		extendedDurationAffinity bool
-		wantErr                  bool
-	}{
-		{"no affinity, flag false: fine", nil, false, false},
-		{"no affinity, flag true: still fine", nil, true, false},
-		{"the real shape, flag true: tolerated", extended, true, false},
-		{"the real shape, flag false: refused — the probe's own call site passes false", extended, false, true},
-		{"a refusal wearing the same key, flag true: still refused, the matcher's own job", refusal, true, true},
-		{"some other affinity entirely, flag true: refused", &corev1.Affinity{PodAffinity: &corev1.PodAffinity{}}, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := guaranteedPod(podWith(tc.affinity), want, nil, resource.Quantity{}, false, tc.extendedDurationAffinity)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("guaranteedPod(affinity=%+v, extendedDurationAffinity=%v) = %v, wantErr %v", tc.affinity, tc.extendedDurationAffinity, err, tc.wantErr)
-			}
-		})
-	}
 }

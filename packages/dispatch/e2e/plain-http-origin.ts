@@ -5,7 +5,7 @@ import { harnessPorts } from "./harness-ports";
  *  `e2e/plain-http-proxy.ts` listens on `PLAIN_HTTP_PORT` and forwards to the server under test.
  *  The page's origin is `http://<name>:<port>` — plain HTTP, not loopback, so not a secure
  *  context: `isSecureContext` is false and `crypto.randomUUID` is undefined, as on a LAN address,
- *  a tailnet name or the phone of the manual check. `.test` is reserved (RFC 6761) and resolves
+ *  a tailnet name or a real phone. `.test` is reserved (RFC 6761) and resolves
  *  nowhere else; `.localhost` would not do, Chromium treats it as loopback. */
 export const plainHttpHost = "dispatch-e2e.test";
 

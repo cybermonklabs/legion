@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # docs/site/media/broker/walkthrough.sh
 #
+# legion: tool - boots the rig and runs walkthrough.record.ts, which records each section of the broker walkthrough into docs/site/media/broker/walkthrough/raw/; a person runs it when the walkthrough's pages change, to record the footage the docs site's video is cut from.
+#
 # Records the broker walkthrough's raw footage: boots the rig (rig.sh), runs
 # walkthrough.record.ts against it, which writes one cast or browser recording per section into
 # docs/site/media/broker/walkthrough/raw/, then stops the rig. Takes rig.sh's input, DATABASE_URL.

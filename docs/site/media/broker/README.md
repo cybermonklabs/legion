@@ -13,7 +13,7 @@ private hostname or production service is involved.
 | `flow.ts` | The flow both specs show, written once: what the rig hands its command, the demo's names and reason, what the agent machine prints, the Dispatch controls a person uses, and the broker's approval page. |
 | `agent.ts` | Drives the agent machine from a script, for the screenshots: a machine login, a secret request. |
 | `agent/` | What the agent machine mounts: its shell prompt and the demo command, `check-demo-key.sh`. |
-| `screenshots.sh`, `screenshots.spec.ts` | Retake the screenshots into `docs/site/public/media/broker/`. |
+| `screenshots.sh`, `screenshots.record.ts` | Retake the screenshots into `docs/site/public/media/broker/`. |
 | `walkthrough.sh`, `walkthrough.record.ts` | Record the walkthrough's raw footage into `walkthrough/raw/`. |
 | `walkthrough/` | The walkthrough's footage, cut, narration and build, which writes `docs/site/public/media/broker/walkthrough.mp4` with its captions and poster. |
 | `playwright.config.ts` | The Playwright config both specs run under; it starts no server, since the rig has. |

@@ -1,5 +1,7 @@
 package main
 
+// legion: tool - plans every request body a replay of a production bundle sends and fails on one over Dispatch's 1 MiB, for a person who picks a bundle for a load run and must know it replays whole; run with LOADTEST_REPLAY_BUNDLE=<bundle dir> go test -count=1 -run '^$' -bench '^BenchmarkRequestBodiesBundle$' -benchtime 1x ./loadtest
+
 import (
 	"encoding/json"
 	"flag"
@@ -17,7 +19,7 @@ const localPlaceholder = "00000000-0000-0000-0000-000000000000"
 // bodySizes keeps the largest JSON body of each kind and the largest document, and the bodies
 // and documents over maxJSONBody.
 type bodySizes struct {
-	t       *testing.T
+	t       testing.TB
 	largest map[string]sizeAt
 	doc     sizeAt
 	over    int
@@ -59,43 +61,45 @@ func (b *bodySizes) document(what, where string, n int) {
 	}
 }
 
-// TestRequestBodiesBundle plans, over the bundle LOADTEST_REPLAY_BUNDLE names (skipped without
-// it), every JSON request body loadgen replay-seed sends with every issue seeded and every one the
-// replay source sends at rate 1 (loadgen replay-plan -replay-rate 1, its other flags at their
-// defaults), and fails on a body over maxJSONBody (Dispatch's 413 REQUEST_TOO_LARGE) or a document
-// over it at any planned version (413 CAP_EXCEEDED). A local id is a uuid-long placeholder. It logs
-// the largest body of each kind: kinds, keys, ids and sizes, never a text.
-func TestRequestBodiesBundle(t *testing.T) {
+// BenchmarkRequestBodiesBundle plans, over the bundle LOADTEST_REPLAY_BUNDLE names (its input: it
+// skips without it), every JSON request body loadgen replay-seed sends with every issue seeded and
+// every one the replay source sends at rate 1 (loadgen replay-plan -replay-rate 1, its other flags
+// at their defaults), and fails on a body over maxJSONBody (Dispatch's 413 REQUEST_TOO_LARGE) or a
+// document over it at any planned version (413 CAP_EXCEEDED). A local id is a uuid-long
+// placeholder. It logs the largest body of each kind: kinds, keys, ids and sizes, never a text. It
+// is a benchmark, not a test, since it reads a production bundle, and no CI step passes -bench;
+// the planner's rules are tested on generated inputs. Run it once, with -benchtime 1x.
+func BenchmarkRequestBodiesBundle(b *testing.B) {
 	dir := os.Getenv("LOADTEST_REPLAY_BUNDLE")
 	if dir == "" {
-		t.Skip("LOADTEST_REPLAY_BUNDLE is not set")
+		b.Skip("LOADTEST_REPLAY_BUNDLE is not set")
 	}
-	b, err := readBundle(dir)
+	bundle, err := readBundle(dir)
 	if err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
-	sizes := &bodySizes{t: t, largest: map[string]sizeAt{}}
-	plans, err := planIssues(b.State, nil)
+	sizes := &bodySizes{t: b, largest: map[string]sizeAt{}}
+	plans, err := planIssues(bundle.State, nil)
 	if err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
-	s := &replaySeeder{b: b, rngSeed: 1}
+	s := &replaySeeder{b: bundle, rngSeed: 1}
 	for _, p := range plans {
-		seedBodies(t, s, p, sizes)
+		seedBodies(b, s, p, sizes)
 	}
 
 	fs := flag.NewFlagSet("replay-plan", flag.ContinueOnError)
 	rf := registerReplayFlags(fs)
 	if err := fs.Parse([]string{"-replay-inputs", dir, "-replay-rate", "1"}); err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
 	o, err := rf.options(1)
 	if err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
-	plan, err := planReplay(b, o)
+	plan, err := planReplay(bundle, o)
 	if err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
 	for _, act := range plan.Actions {
 		local := map[replayRef]string{}
@@ -118,9 +122,9 @@ func TestRequestBodiesBundle(t *testing.T) {
 
 	for _, kind := range slices.Sorted(maps.Keys(sizes.largest)) {
 		l := sizes.largest[kind]
-		t.Logf("largest %-32s %8d bytes (%s)", kind, l.bytes, l.where)
+		b.Logf("largest %-32s %8d bytes (%s)", kind, l.bytes, l.where)
 	}
-	t.Logf("largest document %d bytes (%s); %d seed issues, %d replay actions; %d over %d", sizes.doc.bytes, sizes.doc.where, len(plans), len(plan.Actions), sizes.over, maxJSONBody)
+	b.Logf("largest document %d bytes (%s); %d seed issues, %d replay actions; %d over %d", sizes.doc.bytes, sizes.doc.where, len(plans), len(plan.Actions), sizes.over, maxJSONBody)
 }
 
 // seedBodies measures every JSON body the seed sends for p, as replay_seed.go builds it: the
@@ -128,7 +132,7 @@ func TestRequestBodiesBundle(t *testing.T) {
 // edit before it left, as Dispatch stores the words sent; the restore; the ask steps' answers and
 // resolves), its comments (an anchored one with every quote anchored may try), its asks, their
 // answers and resolves, and its fields and claim.
-func seedBodies(t *testing.T, s *replaySeeder, p seedIssuePlan, sizes *bodySizes) {
+func seedBodies(t testing.TB, s *replaySeeder, p seedIssuePlan, sizes *bodySizes) {
 	_, body, _, err := s.issueBody(p)
 	if err != nil {
 		t.Errorf("%s: %v", p.Key, err)
@@ -272,7 +276,7 @@ func seedBodies(t *testing.T, s *replaySeeder, p seedIssuePlan, sizes *bodySizes
 }
 
 // askBodies measures the answer (a review for an approval) or, with resolve, the resolve of ask a.
-func askBodies(t *testing.T, s *replaySeeder, a replayAsk, docs map[string]*issueDoc, sizes *bodySizes, resolve bool) {
+func askBodies(t testing.TB, s *replaySeeder, a replayAsk, docs map[string]*issueDoc, sizes *bodySizes, resolve bool) {
 	where := a.ID[:8]
 	switch {
 	case resolve && a.Resolution != nil:

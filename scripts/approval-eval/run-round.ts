@@ -1,3 +1,4 @@
+// legion: tool - scores the round's model and recipe arms over one list of corpus cases on real models, for the person who chooses the approval-review recipe and model from the round's report.
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";

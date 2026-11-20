@@ -11,9 +11,11 @@
 # polls GET /v1/sessions, GET /v1/interests/ and /metrics as fast as they answer, and judges each
 # scenario from those polls and the listener's own log lines. Each scenario prints one line:
 #
-#   verdict <scenario> PASS <what it saw>
-#   verdict <scenario> FAIL <reason>
-#   verdict <scenario> INVALID <reason>   the run missed the window it was meant to observe
+#   CHECK <scenario>: PASS                 after a line naming what it saw
+#   CHECK <scenario>: FAIL: <reason>
+#   CHECK <scenario>: FAIL: the run missed the window it was meant to observe: <reason>
+#
+# and a FAIL exits 1. The `envoy-e2e-local` job of `ci.yaml` runs it.
 #
 # The listener's watcher finds a recreated bucket itself: it reads its bucket's stream every 2 s,
 # and a new stream starts a read of the new bucket at once. The reread and interrupt scenarios stop
@@ -60,7 +62,7 @@ Options:
   --after-refuse <command>     the same, once both lists answer complete again
                                (<out>/refuse/after-refuse.log)
 
-Exit status: 0 every verdict PASS, 1 a FAIL, 4 an INVALID and no FAIL, 2 usage, 3 environment.
+Exit status: 0 every check PASS, 1 a FAIL, 2 usage, 3 environment.
 Ports: E2E_REFILL_NATS_PORT (14232), E2E_REFILL_PORT (19030).
 EOF
 }
@@ -205,7 +207,7 @@ cleanup() {
 
 for command in curl flock go jq setsid; do
   command -v "$command" >/dev/null || {
-    printf 'ERR: required command is unavailable: %s\n' "$command" >&2
+    printf 'CHECK setup: FAIL: required command is unavailable: %s\n' "$command"
     exit 3
   }
 done
@@ -225,11 +227,17 @@ rm -rf "$bin_dir" "$nats_store_dir" "${out_dir}/reread" "${out_dir}/interrupt-st
 mkdir -p "$bin_dir"
 
 say "building refillrig, and the listener and natsd unless given"
+# Each go command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
+# reads what a script's go command compiles.
 (
   cd "$envoy_dir"
   go build -o "$rig" ./internal/testnats/cmd/refillrig
-  [[ -n "$listener_bin" ]] || go build -o "${bin_dir}/listener" ./cmd/listener
-  [[ -n "$natsd_bin" ]] || go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  if [[ -z "$listener_bin" ]]; then
+    go build -o "${bin_dir}/listener" ./cmd/listener
+  fi
+  if [[ -z "$natsd_bin" ]]; then
+    go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  fi
 )
 listener_binary="${listener_bin:-${bin_dir}/listener}"
 natsd_binary="${natsd_bin:-${bin_dir}/natsd}"
@@ -408,11 +416,22 @@ log_offset() {
   stat -c %s "$listener_log"
 }
 
-# verdict prints the scenario's verdict line and records it for the exit status.
+# verdict prints the scenario's CHECK line, after the line naming what it saw on a PASS, and
+# records its verdict word for the exit status. A run that missed its window could not make the
+# check, which is a FAIL naming the window rather than a pass.
 verdict() {
-  local name=$1 line=$2
-  printf 'verdict %s %s\n' "$name" "$line"
-  verdicts+=("${line%% *}")
+  local name=$1 line=$2 word=${2%% *} rest
+  rest=${line#"$word"}
+  rest=${rest# }
+  case "$word" in
+    PASS)
+      printf '   %s saw: %s\n' "$name" "$rest"
+      printf 'CHECK %s: PASS\n' "$name"
+      ;;
+    FAIL) printf 'CHECK %s: FAIL: %s\n' "$name" "$rest" ;;
+    *) printf 'CHECK %s: FAIL: the run missed the window it was meant to observe: %s\n' "$name" "$rest" ;;
+  esac
+  verdicts+=("$word")
 }
 
 # combine folds the phase verdict lines given as "phase: line" into one: FAIL naming every phase
@@ -785,10 +804,7 @@ stop_listener
 stop_nats
 status=0
 for result in "${verdicts[@]}"; do
-  case "$result" in
-    FAIL) status=1 ;;
-    INVALID) ((status == 1)) || status=4 ;;
-  esac
+  [[ "$result" == PASS ]] || status=1
 done
 say "evidence: ${out_dir}"
 exit "$status"

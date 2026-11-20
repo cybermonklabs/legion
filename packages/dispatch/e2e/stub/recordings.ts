@@ -10,10 +10,11 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestInfo } from "@playwright/test";
 
-/** Moves the recordings a run reads or writes off the committed set. The nightly's re-record
- *  job sets it, so the fresh recordings land in an empty directory of their own and the
- *  comparison can see a recording the committed set holds and no row writes any more; left
- *  unset, which is every other run, the directory is the committed one. */
+/** Moves the recordings a run reads or writes off the committed set. The full lane's
+ *  `recordings` job sets it, and so does a person re-recording the set, so the fresh recordings
+ *  land in an empty directory of their own and the comparison can see a recording the committed
+ *  set holds and no row writes any more; left unset, which is every other run, the directory is
+ *  the committed one. */
 export const recordingsDirectoryVariable = "DISPATCH_E2E_STUB_RECORDINGS";
 
 /** The committed set, which is this checkout's own `e2e/__recordings__`, with no trailing

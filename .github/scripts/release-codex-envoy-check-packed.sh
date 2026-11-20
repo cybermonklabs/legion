@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: not a test - release.yaml's read-back of the Codex plugin tarball it is about to publish.
 # The packed @sjawhar/codex-envoy tarball, read back before the publish job is handed it: it names
 # the publishing repository, it declares this release's version in both of its manifests, it holds
 # the bundle and the hooks file the installed plugin runs from, and it holds the skills.

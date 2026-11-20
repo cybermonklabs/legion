@@ -19,7 +19,8 @@ import (
 	"testing"
 )
 
-// localRun is how to run the live tests by hand, from the repository root.
+// localRun is what a live test that lacks the image or the plugin fails with: how to give a run on
+// a machine of one's own what the envoy-smoke job's step gives the tests in CI, which runs them.
 const localRun = "From the repository root, build the listener image, then the held-port image the " +
 	"live tests run on top of it, and fetch the docker provider plugin v" + DockerPluginVersion +
 	", whose address and SHA-256 the `pulumi-docker` row of .github/ci-tools.yaml pins. That fetch " +

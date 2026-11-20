@@ -19,24 +19,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
-// The controller orphan sweep's live proof (scripts/e2e/controller-sweep-kind.sh, whose driver is
-// controller_sweep_live_test.go, built with -tags e2e) loads its legion.yaml and builds its Sandbox
-// runtime with the functions here. They are untagged so `go test` holds them to the loader's and
-// the runtime's current contracts on every run: a change that refuses the proof's file or its
-// runtime's options fails this package's tests, not the live proof the next time a kind cluster
-// runs it.
+// The controller orphan sweep's live test (controller_sweep_live_test.go, which the kind job runs)
+// loads its legion.yaml and builds its Sandbox runtime with the functions here. They are compiled
+// and run by `go test` on every run, so the loader's and the runtime's current contracts hold
+// them: a change that refuses the test's file or its runtime's options fails this package's tests,
+// not the live test the next time a kind cluster runs it.
 
-// controllerSweepKindProject is the proof's project. Dispatch maps it no repository.
+// controllerSweepKindProject is the test's project. Dispatch maps it no repository.
 const controllerSweepKindProject = "CSWEEP"
 
 // controllerSweepKindStub is the agent the controller's shim wraps: it sleeps, so the pod stays up
 // and nothing dials a model, Dispatch or NATS.
 var controllerSweepKindStub = []string{"/bin/sh", "-c", "exec sleep infinity", "controller-sweep-stub"}
 
-// writeControllerSweepKindConfig writes the proof's legion.yaml, and the token files it names,
+// writeControllerSweepKindConfig writes the test's legion.yaml, and the token files it names,
 // under dir: `controller: daemon` on runtime.kubernetes, the store at dsn, the worker stream bound
-// at streamHost, the worker image, and the cluster as kubeconfig's kubeContext. The hosts no stub
-// dials are documentation placeholders.
+// at streamHost, the worker image, the cluster as kubeconfig's kubeContext, the rig's stand-in
+// leak check (kindLiveLeakCheck), and the controller's pod a quarter of a CPU and 512Mi, requested
+// in full, rather than the daemon's one CPU and 4Gi: the kind job's node, one runner of four CPUs
+// and 16Gi, holds it beside the cluster's own pods. The hosts no stub dials are documentation
+// placeholders.
 func writeControllerSweepKindConfig(t *testing.T, dir, dsn, streamHost, image, kubeconfig, kubeContext string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -65,7 +67,7 @@ projects:
 github_apps:
   implement: { app_id: "1", private_key_command: "exit 1" }
   review: { app_id: "2", private_key_command: "exit 1" }
-runtime:
+%[8]sruntime:
   kubernetes:
     namespace: legion
     image: %[5]s
@@ -74,7 +76,9 @@ runtime:
     context: %[7]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-`, controllerSweepKindProject, dsn, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext)
+    resources:
+      controller: {cpu: 250m, memory: 512Mi, ephemeral_storage: 2Gi, ephemeral_storage_request: 512Mi}
+`, controllerSweepKindProject, dsn, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, kindLiveLeakCheck(t))
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -84,10 +88,11 @@ runtime:
 
 // controllerSweepKindRuntime builds the Sandbox runtime from cfg as boot does: its cluster client
 // (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
-// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor. What
-// the proof stands in for: the agent is a sleep stub, the App tokens are placeholders
+// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor, and
+// reads the shared public leak check cfg names (leak_check) at githubAPI ("" is GitHub's). What
+// the test stands in for: the agent is a sleep stub, the App tokens are placeholders
 // (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
-func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, log *slog.Logger) (runtime.Runtime, error) {
+func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -103,16 +108,16 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	}
 	opts.Agent = controllerSweepKindStub
 	repos := func() []ghrepo.Repository { return nil }
-	// The proof maps no repository and configures no rename, so the mapping's rule
+	// The test maps no repository and configures no rename, so the mapping's rule
 	// (repositories.serving) answers every provisioning token's repository as it is recorded.
 	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
-	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
+	// The test applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), githubAPI, &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
-// controllerSweepKindSpec is the project controller's launch as the proof makes it: the
+// controllerSweepKindSpec is the project controller's launch as the test makes it: the
 // controller's token and role, no issue, tree or repository, the launch secret the file's
 // envoy_token_file names, and prompt as its role prompt.
 func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpec {
@@ -123,10 +128,10 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 	}
 }
 
-// The live proof's legion.yaml passes the daemon's loader as a `controller: daemon` deployment, the
+// The live test's legion.yaml passes the daemon's loader as a `controller: daemon` deployment, the
 // runtime it configures builds through boot's factory and sandbox.New, against an API server
 // standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
-// step is the one the driver takes before it reaches the cluster.
+// step is the one the live test takes before it reaches the cluster.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
@@ -151,7 +156,7 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, quietLogger()); err != nil {
+	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, "", quietLogger()); err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
 	project, err := claim.ProjectToken(cfg.Project)

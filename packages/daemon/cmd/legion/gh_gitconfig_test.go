@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -130,7 +131,7 @@ func repositoryWith(t *testing.T, settings ...[]string) string {
 // line holds the runtime's pairs and ghForcedGitConfig alone, recursion off among them.
 func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
+		testprereq.Require(t, false, "daemon-go", "no git on this machine")
 	}
 	home := t.TempDir()
 	proxyFile := "[http]\n\tproxy = http://127.0.0.1:1\n\tsslCAInfo = /tmp/example.pem\n[submodule]\n\trecurse = true\n[fetch]\n\trecurseSubmodules = true\n"
@@ -189,7 +190,7 @@ func TestGhChildGitReadsNoConfigurationOfTheCallers(t *testing.T) {
 // a directory that is no repository pass. A configuration git cannot read is refused.
 func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
+		testprereq.Require(t, false, "daemon-go", "no git on this machine")
 	}
 	included := filepath.Join(t.TempDir(), "included.gitconfig")
 	if err := os.WriteFile(included, []byte("[http]\n\tsslCAInfo = /tmp/example.pem\n"), 0o600); err != nil {
@@ -274,7 +275,7 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
-		t.Skip("no git on this machine")
+		testprereq.Require(t, false, "daemon-go", "no git on this machine")
 	}
 	off := repositoryWith(t, []string{"http.https://github.com/.sslVerify", "false"})
 	clean := repositoryWith(t, []string{"user.name", "Legion test"})
@@ -343,7 +344,7 @@ func withoutRecursionOff(env []string) []string {
 func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
-		t.Skip("no git on this machine")
+		testprereq.Require(t, false, "daemon-go", "no git on this machine")
 	}
 	proxy := startCaptureProxy(t)
 	type fixture struct {
@@ -543,7 +544,7 @@ func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
 func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
-		t.Skip("no git on this machine")
+		testprereq.Require(t, false, "daemon-go", "no git on this machine")
 	}
 	proxy := startCaptureProxy(t)
 	scratch := t.TempDir()

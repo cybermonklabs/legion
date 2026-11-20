@@ -327,7 +327,7 @@ cookies with one key the run generates, so a person stays signed in whichever an
 builds from this checkout, and `DISPATCH_E2E_BINARY_B` gives Dispatch B one of its own (the
 harness hands it on as B's `DISPATCH_E2E_SERVER_BIN`), so a run can put two builds of the server
 against the one database as `DISPATCH_E2E_WEB_DIST_B` puts two builds of the dashboard there;
-`scripts/e2e/dispatch-two-builds.sh` and the cross-build spec below are the proofs that use
+the cross-build spec below is the proof that uses
 them. It runs
 the `*.multiprocess.e2e.ts` specs but the sign-in spec below, in Chromium, which the default run
 leaves out; arguments after `--` reach Playwright
@@ -441,391 +441,18 @@ the container, its anonymous data volume and every database in it.
 
 ## Acceptance drivers
 
-`e2e/acceptance/block-graph.sh` drives the block graph end to end against a running server, as an
-agent sees it, through the HTTP API and the real `dispatch` CLI
-(`packages/envoy-client/bin/dispatch.ts`, run in an environment the script builds, so a calling
-shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a comment
-citing a block and the block's backlinks, a deleted and restored block, a pinned block reference
-that changes and is removed, `GET /api/v1/block-links` between the blocks of two documents, each
-block's changed version, every block `part_of` its document, a link in a list item, the six facts
-every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
-for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
-message, a session and a component, read by its own reference, as an edge's other end and on the
-`Node:` line of `dispatch read`, and the older `GET /api/v1/artifacts/{id}/references` route. It
-also covers the blocks of comments and messages: a mention in a comment starts at the comment's
-block holding it, a node of kind `block`, id `comment/<uuid>#b<n>`, whose `parent` is the comment
-(A10);
-a comment or message reply that names a block (`--reply-to <comment>#b-b2`,
-`--in-reply-to <message>#b-b2`) is a `replies_to` edge to that block, and `dispatch read` quotes it
-(A7); the facts of a comment's and a message's block (A11); a block's id kept through a person's
-move, reword, split, deletion and restore over `PATCH /api/v1/comments/{id}` with carried ids, and
-a body holding block HTML read back byte for byte (A13); and a link pinned to a comment's block that
-reads `changed`, then `removed` (A15). It also reads the bounds the server owns and no client
-carries: a comment and a message of 48,000 characters taken and read back whole, a paragraph of
-32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
-longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
-hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
-Each passing check prints `PASS: <section> <what>`; the first
-failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
-
-- `DISPATCH_URL`, the server;
-- `DISPATCH_TOKEN`, an agent bearer, or `DISPATCH_TOKEN_FILE`, a file holding one, which the script
-  reads itself and never prints;
-- `PROJECT`, an existing project key;
-- `COMPONENT_SOURCE`, optional, where the component nodes come from (unset, the script reads no
-  component node and prints one
-  `SKIP: R12 component: COMPONENT_SOURCE is unset, so no component node is read; …` line):
-  - `fixture` seeds the harness's fake GitHub on `FAKE_GITHUB_PORT` (9022 under
-    `bun run dispatch:local`) with a two-component model in `acme/r12-arch` (`web`, part of
-    `platform`), replacing every repository the fake served, adds that repository as an
-    architecture source of `PROJECT`, syncs it, and removes the source on exit, also when a check
-    fails;
-  - `existing` reads the first project whose architecture holds a component with a parent, and
-    writes nothing to it; a server with none is a `FAIL`;
-  - `none` proves `GET /api/v1/settings/architecture-sources` is `[]` and prints
-    `PASS: R12 component: this server has no architecture source, so it holds no component node`;
-    a source present is a `FAIL` naming `COMPONENT_SOURCE=existing`.
-- `DEV_SIGNIN_LOGIN`, optional, a login the server's dev sign-in route (`/auth/_dev/signin`) signs
-  in: `bun run dispatch:local` has the route, a deployed server does not. Editing a comment needs
-  the `person` scope, and is its author's alone, so the A13 and A15 comment sections sign that person in with a
-  cookie jar, write the comments that person edits, and send each edit with the dashboard's origin.
-  Unset, each of those two sections prints one
-  `SKIP: … PATCH /api/v1/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; …`
-  line, and every other section runs.
-
-It writes two issues in `PROJECT`: the first holds the spec, comments, messages and the documents
-`cites.md`, `decisions.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
-ask the script rewords, a comment on a quote of its spec and a reply, a message and a reply, and the
-uploads `notes.txt` and `pixel.png`. It resolves the ask and closes both issues, also when a check
-fails.
-
-Its `A9` section needs a server with an embedder, so the harness is started with
-`DISPATCH_E2E_EMBEDDER=1`, which gives it the development embedder beside its dev sign-in
-(`e2e/run-server.sh`); without one that section prints its `SKIP:` line and every other section
-runs. The harness leaves the embedder off by default, so that a suite whose assertions count
-search hits counts the keyword answers Dispatch gives a deployment with no embedder.
-
-Against `bun run dispatch:local`:
-
-```bash
-DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-  COMPONENT_SOURCE=fixture FAKE_GITHUB_PORT=9022 DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/block-graph.sh
-```
-
-`e2e/acceptance/verification.sh` drives the verification rules the same way, through the HTTP API
-and the same real CLI. It covers a `plan_task` and a `check` that serve a spec's `requirement`, and
-the `serves` and `needs` edges `GET /api/v1/references` lists for them; every attribute a `check`
-carries, read back on the head of `dispatch read --ref`; the refusals a pointer earns — a block no
-document holds, a block of an issue in another tree, a `needs` naming a block outside its own plan
-— and a `when` the schema does not know, each `400 INVALID_MARKDOWN` naming the pointer or the
-attribute; a requirement's id through a `move`; `dispatch result` and `dispatch results`, with a
-check id no Verification document in reach holds refused `400 UNKNOWN_CHECK` and a pass counting a
-skipped case refused `400 RESULT_CONTRADICTS`; a closed issue's result for an `after_merge` check,
-which it takes beside a comment and a message, and the result for a `before_merge` check and the
-document write it still refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
-cleared by a check of the issue and by a check of a child, back when that check is deleted, with
-the missing plan task named only once the issue has a plan document; the gap an approval request's
-answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
-NOT_PLAN_DOCUMENT` on a spec, and `dispatch request-approval`, refused `409
-PLAN_APPROVED_BY_REVIEW` on a plan; the one request that names a spec and its Verification
-document together; and, in the reading section, every result of a check printed with all forty
-characters of its commit, beside a result at a commit that repository does not hold refused
-`400 RESULT_COMMIT_UNKNOWN`. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT`, and two
-optional ones:
-
-- `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
-  `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
-  title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the reading section
-  seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
-  check are then compared with that pull request's head, a result at the further commit — whose
-  first twelve characters are the head's — stands at none of them, and a result at a commit the
-  repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
-  section, which no other way of running has a pull request's head to read.
-- `DEV_SIGNIN_LOGIN`, as `block-graph.sh` takes it. Recording a review is a person's write alone,
-  so the two review sections sign that person in with a cookie jar and answer the approval requests
-  the script opened; unset, each prints one
-  `SKIP: review …: DEV_SIGNIN_LOGIN is unset; POST /api/v1/artifacts/{id}/reviews needs a person's …`
-  line and every other section runs.
-
-One rule governs every result the script records, beside the refusals above.
-The record route takes a result at a 40-character commit the repository of the check's issue holds, or at one a repository the issue links an open or merged pull request in holds (`https://github.com/<owner>/<repo>/pull/<n>`), and refuses any other `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, at most 10 of the linked pull requests whose state it could not read and a count of the rest, and every linked pull request in whose repository it could not read the commit, with how to mend it.
-It asks the issue's own repository first, and reads the links only where GitHub does not say that repository holds the commit: where GitHub proves it does not, and where that read does not answer, which stores the result under the issue's own repository unless a linked repository holds the commit.
-Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
-One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
-The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
-Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
-Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
-A repository `gh` cannot read fails the run, naming it.
-Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
-Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
-
-It writes four issues in `PROJECT` — a root with a spec, a Verification document and a plan, a
-child of it, a sibling in another tree and one more whose spec and Verification document are
-approved together — and closes every one of them, also when a check fails, which withdraws any
-approval request it left open. Nothing it writes is read by a second run. Against
-`bun run dispatch:local`:
-
-```bash
-DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-  FAKE_GITHUB_PORT=9022 DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/verification.sh
-```
-
-`e2e/acceptance/write-guards.sh` drives the three guards on a write the same way, through the
-real CLI and the HTTP API beside it. A person approves an issue's specification and the question
-`dispatch ask` opens on that issue names the review: who gave it, when, that they approved, their
-reason, and the line asking the sender to say what changed since it. An agent uploads a document
-holding a question, the person answers it, and the agent uploads the body it composed again,
-writing the same question with no `#id`: the uploaded block takes the live block's id, so the
-issue still holds that one answered ask and the settlement writes the answer onto the block
-again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
-whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
-non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
-taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
-server, under no setting, so that check runs against the one server the rest of the script
-drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
-required here because the review and the answer are a person's writes. It writes three issues in
-`PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
-
-```bash
-DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/write-guards.sh
-```
-
-`e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
-the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
-proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
-Verification document, and each runs that check's `run` and asserts its `negative_control`:
-
-- `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
-  refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
-  the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
-  `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
-  holds a recorded result. A `ci_check` on a fresh block id is stored, and a new block under the
-  old id is refused again. A check carrying neither `ci_check` nor `run` is stored as before. A
-  document socket that declares schema version 3 is admitted with the scope `readonly`, and one
-  that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`, the Hocuspocus
-  frames the browser sends). The live editor's half of `k1` is the browser row of
-  `e2e/verification.e2e.ts`.
-- `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
-  pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
-  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
-  either block. The head of the merged pull request still answers. Three such checks at one head
-  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
-  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
-  to 2,000.
-- `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
-  holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
-  of one name are decided by the higher id, in both orders of their conclusions.
-- `k4`: a tester's and an implementer's result for a check CI proves are refused `409
-  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
-  recorded and `dispatch results` shows it.
-- `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
-  stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
-  GitHub serves that Dispatch's own head record does not hold yet.
-
-Its inputs are all required: `DISPATCH_URL`, the bearer, `PROJECT`, `FAKE_GITHUB_PORT` (the fake
-GitHub the server reads), `DATABASE_URL` (the server's own database) and `DEV_SIGNIN_LOGIN` (a
-document socket admits a person alone, so the sockets of `k1` sign that person in). The harness
-runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
-each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
-one repository holding the same pull requests and each head's check runs, replacing every
-repository the fake served. That repository is `PROJECT`'s default where it maps one, and
-otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
-every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
-fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
-prints:
-
-```bash
-DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-  FAKE_GITHUB_PORT=9022 DATABASE_URL=<the database it prints> DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/ci-check.sh
-```
-
-`e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
-every project), and only reads. For every document it can list (each project's documents and each
-issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
-lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
+`e2e/acceptance/block-coverage.sh` takes `DISPATCH_URL`, the server; `DISPATCH_TOKEN`, an agent
+bearer, or `DISPATCH_TOKEN_FILE`, a file holding one, which the script reads itself and never
+prints; and an optional `PROJECT` (unset, every project). It only reads. For every document it can
+list (each project's documents and each issue's documents), it counts the document as not indexed
+when `GET /api/v1/artifacts/{id}/blocks` lists blocks while
+`GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
-names blocks: a list written over a paragraph's whole text, a list written over the text of a
-nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
-matched item's own marker, and the markdown each edit answers with. It takes the first three
-inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
-that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
-unowned work lands on: the bearer acts for no person, so the server refuses a project that names
-none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
-`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
-with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
-driver that can start its own server: given `DATABASE_URL`, a
-loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
-its own trap. That command truncates and reseeds the database it is given, so before anything
-starts the run asks the server the connection string reaches, through `psql`, which database it
-is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
-through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
-through, and a database of the same name as the shared one on a server it cannot prove is
-another: two names that differ pass, and two equal names pass only where both servers answered a
-port and the ports differ. It parses neither string itself, so the database it judges is the one
-libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
-set, as the instance reads it.
-The connection string the run is given must carry everything libpq needs to connect — host, port,
-user, password and TLS settings among them — since the run unsets every `PG*` variable before it
-starts the instance, so none survives into it.
-
-```bash
-createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
-DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
-  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
-```
-`e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
-document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
-the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
-acts for no person, so the project it creates must name the person its unowned work lands on
-(`400 INVALID_PROJECT` otherwise). It makes the project and the issue it needs, and runs ten
-assertions:
-`dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
-exits zero and says the document was made, naming its `dispatch://` reference; that reference
-reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
-under `Documents:`; `dispatch doc-edit` writes a line into it and the line reads back; the same
-name a second time with no content is refused, naming the document that holds the title; that
-same create with `--force` is refused too, since a create with no content has no version
-`--force` could ask for; `--name rows.jsonl` with no content is refused by the Markdown-name
-rule, which sends nothing; and `--path` and `--content` each still make a document. Each passing
-assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` and exits 1, and
-a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
-cut short fails a reader that reads that line.
-
-`e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
-has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
-them, runs the command with `DISPATCH_E2E_PORT` and the rest in its environment, and stops the
-stack when the command ends, exiting with the command's own status. From `packages/dispatch`:
-
-```bash
-DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
-  bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
-    DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
-    DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
-```
-
-The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
-who has signed in, so the project may name her.
-
-`e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
-was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
-stacks through Playwright's own global setup now, which no shell driver can reach.
-
-All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
-
-`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
-(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
-were given to Dispatch, to measure which of our listed addresses that device reaches. What it
-measures is TCP connects from that device to the listed addresses and ports, nothing more: it
-cannot see a service the origin itself forwards by path or by Host on its own host and port, and
-it must run on the device itself, not in a VM, a container or a remote shell, whose network is
-another one. It is handed to that person as the one file with its target list, so it sources
-nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
-three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
-probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
-bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
-`sh` of macOS is bash, and runs it. Its inputs:
-
-- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets, its
-  host on the rule a target's host follows;
-- `OUTSIDE_PATH_TARGETS`, a file, or a pipe such as `/dev/stdin`, of `name host port` lines, one
-  per internal target (the hub, the listeners, the secrets broker, the other Dispatch origin),
-  ending in LF or CRLF. `#` starts a comment, and comments are ASCII like the rest of the list.
-  `host` is a name or a literal address; a name has no empty label (`a..b`, `.example`); an IPv4
-  address must be four numbers of 0 to 255 with no leading zero (curl reads `172.020.000.021` in
-  octal, another host); an IPv6 address must be hexadecimal digits and colons alone, so curl reads
-  none as a URL range (it reads `[1-1:1]` as one), and must not be IPv4-mapped however it is
-  written: its text must not start with `ffff:` once its leading zeros and colons are dropped, as
-  `::ffff:a00:1` and `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no
-  mapped address; and a `svc:` selector, which resolves nowhere, is refused. **The list must hold
-  each of our services' addresses on the path as lines of their own, not names alone**: a name
-  line proves only where that name resolves on the person's device, so a name that resolves
-  elsewhere there says nothing of the address behind it. A list of names alone prints a warning.
-  **The list is ASCII**: every byte must be printable ASCII, a tab or LF, but a CR that comes
-  directly before an LF and a UTF-8 byte-order mark at offset 0, which the script drops before
-  anything parses the list. Any other byte, a NUL, a control character or any byte above 0x7E (so
-  any non-ASCII text, in a comment too), refuses the run, naming the byte and its offset counted
-  from 0: `read` splits only on LF, and a reader that split on that byte would put the next target
-  in the line's comment, where it would be lost. The script reads the list once, to its end, with
-  the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
-  the end refuses the run.
-
-Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
-`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
-`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a whole number of seconds from 2 to
-999999, in digits; any other value refuses the run, naming the setting. A curl built with the
-synchronous resolver (neither threaded nor c-ares) gives up before it resolves a name, 127.0.0.1
-included, with under 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed;
-curl reads 0 as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
-bits. They do not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules
-count on. The script's tests set both to twice their longest row's timeout, so a fake Dispatch that
-a loaded host keeps off the CPU makes a read late, never a verdict wrong.
-
-```bash
-OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
-  bash outside-path-reach.sh
-```
-
-It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
-Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
-in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round at once. The
-rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
-WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
-together would all fall inside that.
-Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
-the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
-not by curl's exit code alone, since our services accept a connection and then wait for the
-client:
-
-| curl's answer | Class |
-|---|---|
-| a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
-| no connect, in a round in which the origin did not connect either | `uncounted` |
-| exit 7, refused | `unreachable` |
-| exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
-| exit 28 after a lookup of under a second | `unreachable` |
-| exit 28 after a lookup of a second or more, too little of the 3 s left to connect | `UNKNOWN`, naming the lookup time |
-| exit 6, the name does not resolve | `unresolved` |
-| anything else | `UNKNOWN` |
-
-A target's round counts only when the probe connected to the origin in that same round: a round
-in which the device reached not even the origin proves nothing of a target, which reads
-`uncounted` there unless it connected, so `PASS` needs the origin reached in every round. A
-target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
-counted and were, so a network that loses packets does not hide one easily. Measured with a
-reachable listener whose incoming packets were dropped at random, 120 runs per row: at 70% loss
-no run printed `PASS` under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same
-rig with three rounds printed `PASS` in 8 of 240; at 50% loss three rounds already printed none
-in 240. Heavier or longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
-answers, a connect to the origin itself in every round and every target unreachable; `FAIL`
-(exit 1) names each target reached, or an origin that served a read with no credential; every
-run that proved nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
-`OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and five
-of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
-`PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
-of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
-sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
-`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
-listeners, from four files: `outside-path-reach-input.test.ts` for what it decides before any
-probe (the inputs it refuses, the origin's two answers and its classifier),
-`outside-path-reach.test.ts` for the runs that probe, `outside-path-reach-blackhole.test.ts` for
-the two runs that need a network dropping TEST-NET-1, which skip with the reason printed where the
-network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
-a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
-timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
-zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+It sources `e2e/acceptance/lib.sh`, a preamble that refuses an unset input or a missing command
+with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing
+it, unsetting both so no process the script starts inherits it.
 
 ## Acceptance run against the deployed image
 
@@ -893,20 +520,41 @@ what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves th
 server off 4319, which is what a second checkout on one machine needs, since the server refuses
 to reuse one already listening rather than serve another checkout's build. And
 `DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
-one, which the nightly's re-record job uses so that it can see a committed recording no row
+one, which the full lane's `recordings` job uses so that it can see a committed recording no row
 writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
 the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 
-Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
-(`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
-every recording no row writes any more.
+Re-recording the committed set is a tool a person runs when a stubbed row, or the route it
+reads, changes on purpose: it runs every stubbed row once against the real harness, at one
+worker, and writes what each fetched. Record into a directory of your own and put it in the
+committed one's place, rather than over `e2e/__recordings__`: a run over the committed set
+leaves behind every recording no row writes any more. From this package, with a Postgres
+provider for the stacks (here an issue pod's PostgreSQL 18):
+
+```bash
+fresh=$(mktemp -d)
+DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin DISPATCH_E2E_STUB_RECORDINGS="$fresh" \
+  bun run e2e:stub:record
+bun e2e/tools/compare-recordings.ts "$fresh"
+rm -rf e2e/__recordings__ && cp -R "$fresh" e2e/__recordings__
+```
+
+`compare-recordings.ts` prints one line for each recording either set holds,
+`CHECK <recording>: PASS` or `CHECK <recording>: FAIL: <reason>`, where a FAIL names each route
+whose status moved, a committed recording the run wrote nothing for or a recording the tree does
+not hold, and it exits 1 on any FAIL, so it says what the diff of the replacement will hold
+before you read it.
+The full lane runs the same recording and comparison in every merge group (the `recordings`
+job of `.github/workflows/dispatch-browser.yaml`) and fails on a route that moved; a failed run
+uploads its fresh set as the artifact `dispatch-browser-recordings-<attempt>`, which replaces the
+committed directory the same way.
 
 ## Projects
 
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+four the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
 stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
@@ -959,21 +607,23 @@ tab holds the person's writes for another tab's sign-out on a renewed lease rath
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second)
-and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
+(a card draws without holding the main thread for a second),
+`e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
 back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
 stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
-thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
+thread under 150 ms, the first load inside both of those bounds of up to twenty taken) and
+`e2e/failed-room.e2e.ts` (a writer queued behind a document room that fails is told
+`503 DOC_SERVICE_UNAVAILABLE` before its client gives up at 30 s, and the room recovers), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 52 rows, and each
 caps its own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the three files
+What holds a reading to a quiet machine is the run being one worker wide, and the four files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
 `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
 since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
+`e2e/agent-workspace-timing.e2e.ts` and `e2e/failed-room.e2e.ts`, which read a clock of their
+own, take that one worker from the command that runs them.
 `bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
 beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that

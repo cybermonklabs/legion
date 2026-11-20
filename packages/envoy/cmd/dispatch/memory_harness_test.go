@@ -49,14 +49,14 @@ const memoryTestToken = "memory-test-token"
 
 // memoryHarness is the database and the issue the memory tests' servers share.
 type memoryHarness struct {
-	t        *testing.T
+	t        testing.TB
 	database *store.Store
 	issue    string
 	// env is added to every server's environment.
 	env []string
 }
 
-func newMemoryHarness(t *testing.T) *memoryHarness {
+func newMemoryHarness(t testing.TB) *memoryHarness {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the memory tests read a server's resident memory from /proc")
@@ -82,7 +82,7 @@ func newMemoryHarness(t *testing.T) *memoryHarness {
 }
 
 // waitForSettlement waits until the document a stored upload wrote has settled.
-func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
+func (h *memoryHarness) waitForSettlement(t testing.TB, upload uploadResult) {
 	t.Helper()
 	if upload.status == http.StatusCreated {
 		h.waitForSettled(t, upload.artifactID)
@@ -91,7 +91,7 @@ func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
 
 // waitForSettled waits until a document has settled every write it has had: the settlement that
 // has read every update deletes the document's doc_settlements_pending row as it commits.
-func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
+func (h *memoryHarness) waitForSettled(t testing.TB, artifactID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
@@ -167,7 +167,7 @@ func collectOnSignal() {
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
 // take the port before it serves.
-func (h *memoryHarness) start(t *testing.T) *memoryServer {
+func (h *memoryHarness) start(t testing.TB) *memoryServer {
 	t.Helper()
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
@@ -270,7 +270,7 @@ type owedBeforeStart struct {
 }
 
 // readOwed reads in one statement everything a starting server would find owed.
-func (h *memoryHarness) readOwed(t *testing.T) owedBeforeStart {
+func (h *memoryHarness) readOwed(t testing.TB) owedBeforeStart {
 	t.Helper()
 	var owed owedBeforeStart
 	if err := h.database.Pool.QueryRow(context.Background(), `
@@ -298,7 +298,7 @@ func (h *memoryHarness) readOwed(t *testing.T) owedBeforeStart {
 // server that has since stopped would stand for ever: a guard that waited for such a row to
 // settle would wait out its whole timeout and fail, which is how every memory test of this
 // package went red on CI (INFRA-985, run 42013424869).
-func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
+func (h *memoryHarness) drainBeforeStart(t testing.TB, port string) {
 	t.Helper()
 	owed := h.readOwed(t)
 	if total := owed.settlements + owed.documents + owed.items + owed.itemBlocks + owed.texts; total == 0 {
@@ -336,7 +336,7 @@ func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
 // belongs to: SettleIssueDocuments is the only exported synchronous settle, and it returns when
 // the settlements it ran have committed. A row still owed after it is one nothing here can clear,
 // and the failure names it.
-func (h *memoryHarness) settleOwed(t *testing.T, service *docs.Service) {
+func (h *memoryHarness) settleOwed(t testing.TB, service *docs.Service) {
 	t.Helper()
 	ctx := context.Background()
 	rows, err := h.database.Pool.Query(ctx, `
@@ -373,7 +373,7 @@ func (h *memoryHarness) settleOwed(t *testing.T, service *docs.Service) {
 }
 
 // pendingSettlements names each document owed a settlement, with the marked_at of its row.
-func (h *memoryHarness) pendingSettlements(t *testing.T) []string {
+func (h *memoryHarness) pendingSettlements(t testing.TB) []string {
 	t.Helper()
 	rows, err := h.database.Pool.Query(context.Background(),
 		`select artifact_id::text, marked_at from doc_settlements_pending order by marked_at`)
@@ -398,7 +398,7 @@ func (h *memoryHarness) pendingSettlements(t *testing.T) []string {
 
 // writeOwedBlockIndex writes, through service, the block index the server would have written, and
 // reports what it indexed.
-func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service) (documents, items, itemBlocks, texts int) {
+func (h *memoryHarness) writeOwedBlockIndex(t testing.TB, service *docs.Service) (documents, items, itemBlocks, texts int) {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(120 * time.Second)
@@ -447,7 +447,7 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 
 // owedDocumentNames names each document still owed a block index, with the marked_at of its
 // pending settlement where it has one: a document live ahead owes one.
-func (h *memoryHarness) owedDocumentNames(t *testing.T) []string {
+func (h *memoryHarness) owedDocumentNames(t testing.TB) []string {
 	t.Helper()
 	rows, err := h.database.Pool.Query(context.Background(), `
 		select owed.artifact_id::text, pending.marked_at
@@ -479,7 +479,7 @@ func (h *memoryHarness) owedDocumentNames(t *testing.T) []string {
 	return names
 }
 
-func (p *memoryServer) stop(t *testing.T) {
+func (p *memoryServer) stop(t testing.TB) {
 	t.Helper()
 	select {
 	case <-p.exited:
@@ -498,7 +498,7 @@ func (p *memoryServer) stop(t *testing.T) {
 // collect asks the server for a collection (collectOnSignal), waits until the server has reported
 // it, and returns it with the length of the server's output up to the end of its report, where
 // whatever the server writes after it begins.
-func (p *memoryServer) collect(t *testing.T) (collection, int) {
+func (p *memoryServer) collect(t testing.TB) (collection, int) {
 	t.Helper()
 	offset := p.output.Len()
 	if err := p.command.Process.Signal(syscall.SIGUSR1); err != nil {
@@ -531,7 +531,7 @@ func (p *memoryServer) collect(t *testing.T) (collection, int) {
 }
 
 // resident is the server's resident memory in bytes, VmRSS now or VmHWM its peak.
-func (p *memoryServer) resident(t *testing.T, field string) int64 {
+func (p *memoryServer) resident(t testing.TB, field string) int64 {
 	t.Helper()
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p.command.Process.Pid))
 	if err != nil {
@@ -552,7 +552,7 @@ func (p *memoryServer) resident(t *testing.T, field string) int64 {
 
 // peakAboveIdle runs during and reports the most the server's resident memory rose above what it
 // held idle, freshly started, while it ran.
-func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
+func (p *memoryServer) peakAboveIdle(t testing.TB, during func()) int64 {
 	t.Helper()
 	// Every measured window goes through here, so the lease is taken here: from before the window
 	// begins to after the peak has been read, which is the whole of what the guard below watches.
@@ -581,7 +581,7 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 // stays as the proof that it was. The handler is the slog.NewTextHandler main installs with
 // slog.SetDefault in cmd/dispatch/main.go, which writes the message mid-line as
 // msg="dispatch: block index", so the substring is the match and not a line's prefix.
-func requireNoBlockIndexPass(t *testing.T, window string) {
+func requireNoBlockIndexPass(t testing.TB, window string) {
 	t.Helper()
 	for _, line := range strings.Split(window, "\n") {
 		if strings.Contains(line, "dispatch: block index") {
@@ -611,7 +611,7 @@ const blockIndexLeaseWait = 2 * time.Minute
 // The lock belongs to the session that took it, so one connection of the harness's pool takes it,
 // holds it for the window and gives it back (duty.FreeSessionLock, which destroys rather than
 // returns a connection whose unlock failed, since what such a session holds is unknown).
-func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
+func (p *memoryServer) holdBlockIndexLease(t testing.TB) func() {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := p.database.Pool.Acquire(ctx)
@@ -651,7 +651,7 @@ type response struct {
 	body   []byte
 }
 
-func (p *memoryServer) send(t *testing.T, method, path, contentType string, body io.Reader, header http.Header) response {
+func (p *memoryServer) send(t testing.TB, method, path, contentType string, body io.Reader, header http.Header) response {
 	t.Helper()
 	answer, err := p.trySend(method, path, contentType, body, header)
 	if err != nil {
@@ -682,7 +682,7 @@ func (p *memoryServer) trySend(method, path, contentType string, body io.Reader,
 	return response{status: answer.StatusCode, body: read}, nil
 }
 
-func (p *memoryServer) get(t *testing.T, path string) {
+func (p *memoryServer) get(t testing.TB, path string) {
 	t.Helper()
 	if answer := p.send(t, http.MethodGet, path, "", nil, http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusOK {
 		t.Fatalf("GET %s: status %d body %.300s", path, answer.status, answer.body)
@@ -698,7 +698,7 @@ type uploadResult struct {
 
 // upload sends markdown as a new document of issue through POST /api/v1/issues/{key}/artifacts,
 // as a JSON body or a multipart file, with an agent's bearer token as production's checks do.
-func (p *memoryServer) upload(t *testing.T, mode, issue, markdown string) uploadResult {
+func (p *memoryServer) upload(t testing.TB, mode, issue, markdown string) uploadResult {
 	t.Helper()
 	result, err := p.tryUpload(mode, issue, markdown)
 	if err != nil {
@@ -800,7 +800,7 @@ func (p *memoryServer) uploadBase(issue, name string) (map[string]string, error)
 
 // requireAnswered fails the test unless the upload was stored or refused with a 4xx naming its
 // code and why.
-func requireAnswered(t *testing.T, upload uploadResult) {
+func requireAnswered(t testing.TB, upload uploadResult) {
 	t.Helper()
 	if upload.status == http.StatusCreated {
 		return
@@ -813,7 +813,7 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 
 // loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
 // whole document - and closes once the room has sent it.
-func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
+func (p *memoryServer) loadOverWebsocket(t testing.TB, artifactID string) {
 	t.Helper()
 	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
@@ -877,7 +877,7 @@ func (p *memoryServer) outputFrom(offset int) string {
 
 // coldPeaks reads and edits a document on servers that have not loaded it (coldReads, coldEdit)
 // and fails the test where a read or the edit holds more than the bound above idle.
-func (h *memoryHarness) coldPeaks(t *testing.T, name, artifactID string, edit map[string]any) {
+func (h *memoryHarness) coldPeaks(t testing.TB, name, artifactID string, edit map[string]any) {
 	t.Helper()
 	h.coldReads(t, name, artifactID)
 	if peak := h.coldEdit(t, name, artifactID, edit); peak > requestMemoryBound {
@@ -889,7 +889,7 @@ func (h *memoryHarness) coldPeaks(t *testing.T, name, artifactID string, edit ma
 // its room, each on a fresh server, then four reads of its text at once - and fails the test where
 // one of the first two holds more than the bound above idle. Every peak is logged under name; the
 // four reads at once are logged beside the production task's 4,096 MiB.
-func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
+func (h *memoryHarness) coldReads(t testing.TB, name, artifactID string) {
 	t.Helper()
 	for _, cold := range []struct {
 		name string
@@ -914,7 +914,7 @@ func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
 
 // coldTextReads reads a document's text readers times at once, failing unless every read answers
 // 200. Its caller measures the fresh server's peak around it.
-func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers int) {
+func (p *memoryServer) coldTextReads(t testing.TB, artifactID string, readers int) {
 	t.Helper()
 	failures := make([]error, readers)
 	var group sync.WaitGroup
@@ -935,7 +935,7 @@ func (p *memoryServer) coldTextReads(t *testing.T, artifactID string, readers in
 
 // coldEdit sends edit, a one-word edit, to a document on a server that has not loaded it, fails the
 // test unless it is taken, and logs and returns its peak above the server's idle memory.
-func (h *memoryHarness) coldEdit(t *testing.T, name, artifactID string, edit map[string]any) int64 {
+func (h *memoryHarness) coldEdit(t testing.TB, name, artifactID string, edit map[string]any) int64 {
 	t.Helper()
 	server := h.start(t)
 	var answer response
@@ -950,7 +950,7 @@ func (h *memoryHarness) coldEdit(t *testing.T, name, artifactID string, edit map
 
 // blockAsks are the ids of the asks settlement indexes from the blocks ask-0 to ask-<count-1> of
 // the issue's spec, in that order, once it has indexed every one.
-func (p *memoryServer) blockAsks(t *testing.T, issueKey string, count int) []string {
+func (p *memoryServer) blockAsks(t testing.TB, issueKey string, count int) []string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
@@ -992,7 +992,7 @@ type createdIssue struct {
 
 // createIssue creates an issue of the memory harness's project whose spec is spec, past the
 // near-duplicate check its title would meet beside the others a test creates.
-func (p *memoryServer) createIssue(t *testing.T, title, spec string) createdIssue {
+func (p *memoryServer) createIssue(t testing.TB, title, spec string) createdIssue {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"project": "MEM", "title": title, "spec": spec, "force": true})
 	if err != nil {
@@ -1007,7 +1007,7 @@ func (p *memoryServer) createIssue(t *testing.T, title, spec string) createdIssu
 }
 
 // edit sends one edit operation to a document as a person does.
-func (p *memoryServer) edit(t *testing.T, artifactID string, op map[string]any) response {
+func (p *memoryServer) edit(t testing.TB, artifactID string, op map[string]any) response {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"ops": []map[string]any{op}})
 	if err != nil {
@@ -1017,7 +1017,7 @@ func (p *memoryServer) edit(t *testing.T, artifactID string, op map[string]any) 
 }
 
 // text is a document's markdown, as GET .../text answers it.
-func (p *memoryServer) text(t *testing.T, artifactID string) string {
+func (p *memoryServer) text(t testing.TB, artifactID string) string {
 	t.Helper()
 	answer := p.send(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
 	var text struct{ Markdown string }

@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func createDocument(t *testing.T, database *store.Store, markdown string) string {
+func createDocument(t testing.TB, database *store.Store, markdown string) string {
 	t.Helper()
 	return createIssueDocument(t, database, 1, markdown)
 }
@@ -86,7 +86,7 @@ func createIssueDocument(t testing.TB, database *store.Store, number int, markdo
 	return artifactID
 }
 
-func createProjectDocument(t *testing.T, database *store.Store, markdown string) string {
+func createProjectDocument(t testing.TB, database *store.Store, markdown string) string {
 	t.Helper()
 	tree, err := pmdoc.Parse(markdown)
 	if err != nil {

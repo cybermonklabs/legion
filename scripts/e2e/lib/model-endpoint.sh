@@ -1,11 +1,11 @@
 # shellcheck shell=bash
-# The model endpoint a key file's key is for: Anthropic's own, or the Anthropic-compatible gateway
-# (a LiteLLM proxy, say) LEGION_E2E_MODEL_BASE_URL names. Sourced by claude-backend-tmux.sh and
-# claude-backend-sandbox.sh, whose own note and fail model_key_preflight calls, by
-# parked-decision-devbox.sh, which checks LEGION_E2E_MODEL_BASE_URL with model_base_url_refusal, by
+# The model endpoint a key file's key is for: Anthropic's own, the Anthropic-compatible gateway
+# (a LiteLLM proxy, say) LEGION_E2E_MODEL_BASE_URL names, or a proof's own model stand-in. Sourced
+# by clean-session-stop-tmux.sh, whose own note and fail model_key_preflight calls, by
 # lib/install-key-file-model-route.sh, which checks its --base-url with model_base_url_refusal, and
-# by nats-callout-sessions.sh, which also holds Codex's OpenAI Responses-compatible endpoint to its
-# key with responses_key_preflight.
+# by nats-callout-sessions.sh, which holds its model stand-in to the run's key with both
+# preflights: model_key_preflight for the Anthropic Messages route Oh My Pi and Claude Code call,
+# responses_key_preflight for the OpenAI Responses route Codex calls.
 
 # anthropic_base_url is the endpoint when no base URL is named.
 anthropic_base_url=https://api.anthropic.com

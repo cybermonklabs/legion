@@ -821,8 +821,9 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 // prove less than it seems: a registry that answered the build is no promise that it answers a pod
 // days later. So the image proves it is self-consistent — what a pod installs from is here, exact
 // and checksummed — and the fetch itself is proved where it happens: every Claude launch's start
-// script installs and verifies it and fails that launch loudly when it cannot, and the pod e2e
-// (scripts/e2e/claude-backend-sandbox.sh) watches a worker run the binary that fetch installed.
+// script installs and verifies it and fails that launch loudly when it cannot, and the kind job's
+// issue pod test (TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)
+// watches a worker run the binary that fetch installed.
 //
 // None of the checks is retried, unlike the probes above: they read the image's own filesystem
 // and no network, so a failure is the image's and no further attempt answers differently.

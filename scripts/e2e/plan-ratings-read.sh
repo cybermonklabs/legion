@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads the plan and the ratings of one issue a deployed Legion ran to done from that deployment's Dispatch, with the operator's own credential, for the tester who decides the production check of the release that rates each plan, after the merge.
 # The read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to
 # done: it runs `dispatch plans --project <PROJECT>` once, prints what the command printed, and
 # judges the line of <ISSUE>.

@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	// loadStepsEnv set to 1 runs TestTheOutboxLoadSteps. It takes minutes of load, so CI never
-	// runs it.
+	// loadStepsEnv set to 1 runs TestTheOutboxLoadSteps. It takes minutes of load, so it runs in a
+	// step of its own, dispatch-multiprocess's "The outbox's load steps on two Dispatch server
+	// processes", which sets it, and every other run of this package skips it.
 	loadStepsEnv = "DISPATCH_OUTBOX_LOAD_STEPS"
 	// loadStepsOutEnv names a file TestTheOutboxLoadSteps writes its results to as JSON.
 	loadStepsOutEnv = "DISPATCH_OUTBOX_LOAD_STEPS_OUT"
@@ -67,7 +68,7 @@ var loadStepRates = []int{4, 40}
 // from the first write to the last arrival.
 func TestTheOutboxLoadSteps(t *testing.T) {
 	if os.Getenv(loadStepsEnv) != "1" {
-		t.Skipf("set %s=1 to run the outbox load steps; they take minutes and CI does not run them", loadStepsEnv)
+		t.Skipf("set %s=1 to run the outbox load steps; they take minutes, so a CI step of their own runs them", loadStepsEnv)
 	}
 	report := loadReport{CPUs: runtime.NumCPU()}
 	t.Logf("runtime.NumCPU() = %d", report.CPUs)

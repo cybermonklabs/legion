@@ -48,7 +48,7 @@ var dispatchProcessesRunning atomic.Int64
 // that many. It answers the release that takes the process off the count, which the caller runs
 // once the process has exited; the test's cleanup runs it too, for a start that never ran a
 // process, and only the first call counts.
-func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
+func requireConnectionCeiling(t testing.TB, databaseURL string) (release func()) {
 	t.Helper()
 	processes := int(dispatchProcessesRunning.Add(1))
 	var once sync.Once
@@ -135,7 +135,7 @@ func connectionRefusalCause(refused, databaseURL string) string {
 }
 
 // serverInt is one integer setting of the server this test's database is on.
-func serverInt(t *testing.T, conn *pgx.Conn, name string) int {
+func serverInt(t testing.TB, conn *pgx.Conn, name string) int {
 	t.Helper()
 	var text string
 	if err := conn.QueryRow(context.Background(), "select current_setting($1)", name).Scan(&text); err != nil {

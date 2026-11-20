@@ -407,7 +407,7 @@ let jjTemplate = "";
 // module scope: a call per row would print the warning per row. The environment probe's hook,
 // registered below the cleanup, still runs when the rows do not: this gate skips tests, never a
 // hook.
-const skip = skipWithout("jj");
+const skip = skipWithout(["jj"], "pi-legion");
 
 beforeAll(async () => {
   if (skip) return;

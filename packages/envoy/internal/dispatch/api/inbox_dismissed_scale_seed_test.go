@@ -16,13 +16,13 @@ import (
 // It is a file of its own because none of it is the measurement: a reader checking what a14
 // measures and what it holds each number to reads the one file, and a reader asking what was in
 // the database when it did reads this one. Both run only under LEGION_SCALE_TEST, since nothing
-// here is called unless TestDismissedScaleHoldsTheInboxsReads runs.
+// here is called unless BenchmarkDismissedScaleHoldsTheInboxsReads runs.
 
 // seedDismissedScale builds one shape: a server on a database of its own, the pile it was asked
 // for, the 600 undismissed threads with 300 unread among them, and the 1,000 unread threads the
 // mark-all works over. It asserts every count before the caller times anything, because a
 // measurement over a seed that did not land is worse than none.
-func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismissedScaleShape {
+func seedDismissedScale(t testing.TB, name string, replies, agents int) *dismissedScaleShape {
 	t.Helper()
 	started := time.Now()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -76,7 +76,7 @@ func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismiss
 // generated unread column, which is how e2e/inbox-threads.ts seeds the same rows in bulk. Thread g
 // is olderThan + 2g minutes old. It is written in batches so one statement never holds the whole
 // pile.
-func dismissedScaleCommentPairs(t *testing.T, shape *dismissedScaleShape, label string, count, olderThan int) {
+func dismissedScaleCommentPairs(t testing.TB, shape *dismissedScaleShape, label string, count, olderThan int) {
 	t.Helper()
 	ctx := context.Background()
 	const batch = 10_000
@@ -109,7 +109,7 @@ func dismissedScaleCommentPairs(t *testing.T, shape *dismissedScaleShape, label 
 // dismissedScaleMessagePairs writes count Agent threads: a one-off message to the session and the
 // session's reply under it, which is every row an Agent row is read from (no delivery row, since
 // the Inbox leaves out only a root an attempt was accepted on).
-func dismissedScaleMessagePairs(t *testing.T, shape *dismissedScaleShape, label string, count, olderThan int) {
+func dismissedScaleMessagePairs(t testing.TB, shape *dismissedScaleShape, label string, count, olderThan int) {
 	t.Helper()
 	ctx := context.Background()
 	tag, err := shape.database.Pool.Exec(ctx, `
@@ -140,7 +140,7 @@ func dismissedScaleMessagePairs(t *testing.T, shape *dismissedScaleShape, label 
 // none of the pile counts as unread. The marks are one a minute, newest reply dismissed most
 // recently, so the Dismissed view's order is the index's own and a page 50,000 deep is a real
 // cursor rather than one timestamp's worth of ties.
-func markDismissedScaleThreads(t *testing.T, shape *dismissedScaleShape, count int) {
+func markDismissedScaleThreads(t testing.TB, shape *dismissedScaleShape, count int) {
 	t.Helper()
 	tag, err := shape.database.Pool.Exec(context.Background(), `
 		with ordered as (
@@ -169,7 +169,7 @@ func markDismissedScaleThreads(t *testing.T, shape *dismissedScaleShape, count i
 // by id, which is what a dismissal writes so a dismissed thread counts as unread nowhere. The marks
 // are one every ten minutes, so they interleave with the Reply half's and a Dismissed page holds
 // both kinds.
-func markDismissedScaleAgentThreads(t *testing.T, shape *dismissedScaleShape, count int) {
+func markDismissedScaleAgentThreads(t testing.TB, shape *dismissedScaleShape, count int) {
 	t.Helper()
 	ctx := context.Background()
 	tag, err := shape.database.Pool.Exec(ctx, `
@@ -195,7 +195,7 @@ func markDismissedScaleAgentThreads(t *testing.T, shape *dismissedScaleShape, co
 // readDismissedScaleThreads marks the oldest count threads of one label read, as a person who has
 // read a thread and left it in their Inbox has them: read_through at the newest reply, so the row
 // is no longer unread and still in the Inbox.
-func readDismissedScaleThreads(t *testing.T, shape *dismissedScaleShape, label string, count int) {
+func readDismissedScaleThreads(t testing.TB, shape *dismissedScaleShape, label string, count int) {
 	t.Helper()
 	tag, err := shape.database.Pool.Exec(context.Background(), `
 		update user_threads set read_through = replied_at
@@ -217,7 +217,7 @@ func readDismissedScaleThreads(t *testing.T, shape *dismissedScaleShape, label s
 // readDismissedScaleAgentThreads marks the oldest count Agent threads of one label read the way
 // the Inbox marks one: the session's replies read by id, which is what leaves the root out of the
 // unread set without moving any session's own read mark.
-func readDismissedScaleAgentThreads(t *testing.T, shape *dismissedScaleShape, label string, count int) {
+func readDismissedScaleAgentThreads(t testing.TB, shape *dismissedScaleShape, label string, count int) {
 	t.Helper()
 	tag, err := shape.database.Pool.Exec(context.Background(), `
 		insert into user_agent_reply_read (login, session_id, reply_id)
@@ -239,7 +239,7 @@ func readDismissedScaleAgentThreads(t *testing.T, shape *dismissedScaleShape, la
 
 // assertDismissedScaleSeed holds the seed to its counts, in the tables the triggers keep and
 // through the routes themselves, before anything is timed.
-func assertDismissedScaleSeed(t *testing.T, shape *dismissedScaleShape) {
+func assertDismissedScaleSeed(t testing.TB, shape *dismissedScaleShape) {
 	t.Helper()
 	for _, counted := range []struct {
 		what      string
@@ -286,7 +286,7 @@ func assertDismissedScaleSeed(t *testing.T, shape *dismissedScaleShape) {
 // dismissedScaleDismissTargets is the 120 rows one dismissal names: threads the seed marked read
 // and left in the Inbox, so dismissing and restoring them 20 times moves no read mark and leaves
 // every other operation's answer the same.
-func dismissedScaleDismissTargets(t *testing.T, shape *dismissedScaleShape) []string {
+func dismissedScaleDismissTargets(t testing.TB, shape *dismissedScaleShape) []string {
 	t.Helper()
 	threads := dismissedScaleStrings(t, shape, `
 		select thread_id::text from user_threads
@@ -301,7 +301,7 @@ func dismissedScaleDismissTargets(t *testing.T, shape *dismissedScaleShape) []st
 
 // dismissedScaleUnreadThreads and dismissedScaleUnreadAgentReplies are what one Mark all read
 // marks, which the run after it puts back.
-func dismissedScaleUnreadThreads(t *testing.T, shape *dismissedScaleShape) []string {
+func dismissedScaleUnreadThreads(t testing.TB, shape *dismissedScaleShape) []string {
 	t.Helper()
 	threads := dismissedScaleStrings(t, shape, `
 		select thread_id::text from user_threads where login = $1 and unread order by thread_id
@@ -313,7 +313,7 @@ func dismissedScaleUnreadThreads(t *testing.T, shape *dismissedScaleShape) []str
 	return threads
 }
 
-func dismissedScaleUnreadAgentReplies(t *testing.T, shape *dismissedScaleShape) []string {
+func dismissedScaleUnreadAgentReplies(t testing.TB, shape *dismissedScaleShape) []string {
 	t.Helper()
 	replies := dismissedScaleStrings(t, shape, `
 		select reply.id::text
@@ -335,7 +335,7 @@ func dismissedScaleUnreadAgentReplies(t *testing.T, shape *dismissedScaleShape) 
 // dismissedScaleDeepCursor is the cursor a page 50,000 rows deep resumes from: the row at that
 // depth of the merged order both halves answer in, read the way the route merges them - newest
 // dismissal first, ties by id descending.
-func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
+func dismissedScaleDeepCursor(t testing.TB, shape *dismissedScaleShape) string {
 	t.Helper()
 	var at time.Time
 	var id string
@@ -354,7 +354,7 @@ func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
 	return at.UTC().Format(time.RFC3339Nano) + "," + id
 }
 
-func dismissedScaleStrings(t *testing.T, shape *dismissedScaleShape, statement string, args ...any) []string {
+func dismissedScaleStrings(t testing.TB, shape *dismissedScaleShape, statement string, args ...any) []string {
 	t.Helper()
 	rows, err := shape.database.Pool.Query(context.Background(), statement, args...)
 	if err != nil {

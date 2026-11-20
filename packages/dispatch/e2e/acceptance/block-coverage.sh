@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - counts the documents of a Dispatch server whose blocks are not yet nodes of the block graph, reading only, for a person who decides whether a deployment's block graph needs a backfill.
 # Measures how much of a Dispatch server's documents the block graph covers, reading only. For
 # every document it can list (each project's documents and each issue's documents), a document is
 # not indexed when GET /api/v1/artifacts/{id}/blocks lists blocks while

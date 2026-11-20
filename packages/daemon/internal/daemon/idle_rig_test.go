@@ -632,7 +632,8 @@ func (r *idleWakeRig) toolsDir() string {
 // working copy under that identity before it prompts it, and shimwire refuses an
 // `adopt-working-copy` whose identity has no email ("adopt-working-copy carries no jj identity"),
 // which loses every prompt. A real App's lease carries `<id>+<login>@users.noreply.github.com`
-// (appauth.GitIdentity).
+// (appauth.GitIdentity). The Claude Code backend's live proof (claude_backend_live_test.go), whose
+// implementer adopts its working copy through the real shim, uses it too.
 type idleRigAppTokens struct{ *workflowTokenRecorder }
 
 func (t idleRigAppTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {

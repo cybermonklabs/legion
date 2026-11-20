@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - median wall times of Dispatch's six write routes against one running server seeded by cmd/dispatch-seed, for a person who changes a write path and judges the head's runs against the base's.
 # Times Dispatch's six write routes against one running server, which is INFRA-325's A9: the
 # median wall time of 50 requests to each of POST /api/v1/issues/{key}/comments, .../asks,
 # .../messages, .../artifacts under a name that already exists, that same upload over a document

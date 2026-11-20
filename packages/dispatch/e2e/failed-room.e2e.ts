@@ -4,14 +4,12 @@
 // second half is the recovery: the room reloads, the next write lands, and the browser's own
 // paragraph is still in the document the server serves.
 //
-// It is opt-in, because it takes about 40 s of real time (a trigger holds a durable append for
-// 20 s) and it cancels a Postgres backend, so it is not part of the suite CI runs:
-//
-//   DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test \
-//     --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts
-//
-// Comparing a tree against another is what it is for: run it on this head and on the base, and
-// read the two lines it prints for the queued writer.
+// It runs in `chromium-alone`, one row at a time on a machine of its own, on the full lane of
+// .github/workflows/dispatch-browser.yaml: a trigger holds a durable append for up to 20 s, it
+// cancels a Postgres backend, and what it asserts rests on the clock - the writer is told before
+// its client gives up at 30 s - which three other workers on the machine would move
+// (`clockSpecNames` in e2e/configurations.ts). The lines it prints for the queued writer are what
+// a run on a change and a run on its base are read against.
 
 import {
   baseUrl,
@@ -19,46 +17,91 @@ import {
   createIssue,
   createProject,
   getArtifactText,
+  quiesceDocuments,
   userHeaders,
 } from "./api";
-import { documentEditor } from "./editor";
+import { connectedDot, documentEditor } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-/** Holds the room's next durable append inside its `doc_updates` insert for this long, which is
- * how the probe gets a writer it can cancel while it owns the room. Every `doc_updates` insert
- * on this database sleeps while the trigger is installed, so `releaseTheRoom` runs in a
- * `finally` and again in `test.afterEach`. */
+/** Holds the next `doc_updates` insert on this database inside the insert for this long - the
+ * room's next durable append - which is how the probe gets a writer it can cancel while it owns
+ * the room. That insert alone sleeps: the trigger sleeps on the first value of a sequence, which
+ * the cancelled insert's rollback does not give back, so every later insert - the failed room's
+ * own flush, the writers' appends, the recovery's - runs at once with the trigger still on the
+ * table, and nothing is taken off `doc_updates` while the probe's writers are inside their
+ * transactions (`releaseTheRoom` says why nothing may be). */
 async function holdTheRoomFor(seconds: number): Promise<void> {
+  await releaseTheRoom();
+  await sql("create sequence failed_room_hold_turn");
   await sql(`
-    create or replace function failed_room_hold() returns trigger language plpgsql as $$
+    create function failed_room_hold() returns trigger language plpgsql as $$
     begin
-      perform pg_sleep(${seconds});
+      if nextval('failed_room_hold_turn') = 1 then
+        perform pg_sleep(${seconds});
+      end if;
       return new;
     end $$;
   `);
   await sql(`
-    drop trigger if exists failed_room_hold on doc_updates;
     create trigger failed_room_hold before insert on doc_updates
       for each row execute function failed_room_hold();
   `);
 }
 
+/** Takes the hold off the database: its trigger, its function and its sequence. Dropping the
+ * trigger locks `doc_updates` in ACCESS EXCLUSIVE mode, and while that lock is asked for, every
+ * later read of the table waits behind the request. A document write holds the table from its
+ * read of the head (ACCESS SHARE) to its end, and can wait in the server, where Postgres sees no
+ * wait, for a read of the stored document on another connection (`readFork`, `coldFork` in
+ * packages/envoy/internal/dispatch/docs/livewrite.go). A drop asked for between the two holds that
+ * read until the write's client gives up: the probe's first writer once answered 500 after 30 s
+ * that way, its read of the stored updates cancelled, when this drop ran in the body while that
+ * writer was inside its transaction. So the drop runs before the hold goes on and after the body,
+ * never while the probe's writers are in flight, and waits for its lock 100 ms at a time
+ * (lock_timeout), holding nothing between tries, as the database reset's locks do (e2e/seed.ts)
+ * and every migration's (`LockTimeout` in packages/envoy/internal/pgmigrate/lock.go); a table
+ * still held after 10 s fails it, naming the holders. */
 async function releaseTheRoom(): Promise<void> {
-  await sql("drop trigger if exists failed_room_hold on doc_updates");
-  await sql("drop function if exists failed_room_hold()");
+  await sql(
+    `DO $$
+      DECLARE
+        deadline timestamptz := clock_timestamp() + interval '10 seconds';
+        holders text;
+      BEGIN
+        PERFORM set_config('lock_timeout', '100ms', true);
+        LOOP
+          -- A failed try rolls back this block, releasing every lock it took.
+          BEGIN
+            DROP TRIGGER IF EXISTS failed_room_hold ON doc_updates;
+            DROP FUNCTION IF EXISTS failed_room_hold();
+            DROP SEQUENCE IF EXISTS failed_room_hold_turn;
+            EXIT;
+          EXCEPTION WHEN lock_not_available THEN
+            IF clock_timestamp() >= deadline THEN
+              SELECT string_agg(DISTINCT format('%s (%s, %s)',
+                       left(regexp_replace(a.query, '\\s+', ' ', 'g'), 120), l.mode, a.state), '; ')
+                INTO holders
+                FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+                WHERE l.granted AND l.pid <> pg_backend_pid() AND l.relation = 'doc_updates'::regclass;
+              RAISE EXCEPTION 'could not lock doc_updates to take the hold off within 10 s; held by: %',
+                coalesce(holders, 'a transaction that ended just before this report');
+            END IF;
+          END;
+        END LOOP;
+      END
+    $$`
+  );
 }
 
-// A trigger left behind makes every later `doc_updates` insert on this database sleep, which
-// fails whatever writes a document next - `resetDatabase`'s wait for the tables it truncates
-// included. This runs after a timeout, a Ctrl-C between tests, and a throw inside the body,
-// which the `finally` below covers on its own.
+// A hold left behind keeps its trigger on `doc_updates` and, should no insert have taken its turn,
+// sleeps the next insert on this database, which fails whatever writes a document next -
+// `resetDatabase`'s wait for the tables it empties included. This runs after a timeout, a Ctrl-C
+// between tests, a throw inside the body, and a body that passed.
 test.afterEach(async () => {
-  if (process.env.DISPATCH_FAILED_ROOM_PROBE === "1") {
-    await releaseTheRoom();
-  }
+  await releaseTheRoom();
 });
 
 /** The backend the trigger is holding inside its `doc_updates` insert: the room's own durable
@@ -108,16 +151,11 @@ async function anchoredComment(issueKey: string, body: string, quote: string): P
 test("a writer inside the docs layer when its room fails is told, and the room recovers", async ({
   browser,
 }) => {
-  test.skip(
-    process.env.DISPATCH_FAILED_ROOM_PROBE !== "1",
-    "the failed-room probe is opt-in: it holds a durable append for 20 s and cancels a backend"
-  );
   test.setTimeout(240_000);
   // The `test` of this suite empties the database before every row (e2e/test.ts), so this
-  // repeats it. It is kept because this body is read as one procedure by hand, on two checkouts
-  // at once (the header above), and what the probe starts from is the first thing a reader of
-  // that comparison needs: a row whose 40 s are spent on one append cannot be read against
-  // another tree's run without it.
+  // repeats it. It is kept because what the probe starts from is the first thing a reader needs
+  // who holds its `FAILED-ROOM` lines against another tree's: a row whose time is spent on one
+  // held append cannot be read against another tree's run without it.
   await resetDatabase();
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
@@ -134,23 +172,38 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   await expect(editor).toBeVisible();
   await expect(editor).toContainText("Ship the migration.");
 
-  // The browser's own edit, so the room holds a live paragraph the recovery has to bring back -
-  // and so the room's durable writer has something to append.
+  // The browser's own edit, so the room holds a live paragraph the recovery has to bring back.
   await editor.click();
   await page.keyboard.press("End");
   await page.keyboard.type(" The browser typed this.");
   await expect(editor).toContainText("The browser typed this.");
 
-  // The room's own durable writer is what has to fail, and it is the browser's append: ygo
-  // persists the keystrokes about twelve seconds later, on the connection that holds the room's
-  // advisory lock. The trigger goes in before that flush, so the append sleeps inside its insert
-  // where a cancel can reach it; an anchored comment then queues behind the room, a second one
-  // behind that, and only then is the sleeping append cancelled. The room fails with both
-  // writers already inside the docs layer, waiting for what its recovery needs.
+  // The room stores a browser's keystrokes as they come, about 50 ms after each (roomAppendLinger
+  // in packages/envoy/internal/dispatch/docs/room_appends.go), so a hold put on now could catch an
+  // append of this paragraph itself, and the failed room would lose the rest of it until the
+  // browser reconnects, up to 2 s later (RECONNECT_SPREAD_MS), and sends it again. Closing every
+  // live document stores what each room holds first (quiesceDocuments), so the paragraph is
+  // durable before anything fails, and the editor reconnects to a room loaded from that copy.
+  const reopened = page.waitForEvent("websocket", (socket) =>
+    new URL(socket.url()).pathname.startsWith("/ws/doc/")
+  );
+  await quiesceDocuments();
+  await reopened;
+  await expect(connectedDot(page)).toHaveText("connected");
+
+  // The room's own durable writer is what has to fail, and it is the browser's append: the trigger
+  // goes in, then the browser types once more, so that append sleeps inside its insert where a
+  // cancel can reach it; an anchored comment then queues behind the room, a second one behind
+  // that, and only then is the sleeping append cancelled. The room fails with both writers already
+  // inside the docs layer, waiting for what its recovery needs. What the browser typed after the
+  // paragraph is the failed room's to lose; the paragraph is in the copy it reloads from.
   let holding: Promise<Attempt>;
   let queued: Promise<Attempt>;
   await holdTheRoomFor(20);
   try {
+    await editor.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" Then this.");
     const pid = await heldAppendPid();
     holding = anchoredComment(issue.key, "the writer that arrives after the failure", "migration");
     await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -159,8 +212,11 @@ test("a writer inside the docs layer when its room fails is told, and the room r
     const cancelled = await sql(`select pg_cancel_backend(${pid})`);
     console.log(`FAILED-ROOM cancelled the room's durable append pid=${pid} result=${cancelled}`);
   } finally {
-    // Whatever happened above, no later `doc_updates` insert on this database may sleep.
-    await releaseTheRoom();
+    // Whatever happened above, no later `doc_updates` insert on this database may sleep: this
+    // takes the hold's one turn, should no insert have taken it. It touches the sequence alone,
+    // and nothing of `doc_updates`, whose writers are inside their transactions now; the hold
+    // comes off after the body (`releaseTheRoom`).
+    await sql("select nextval('failed_room_hold_turn')");
   }
 
   const holder = await holding;

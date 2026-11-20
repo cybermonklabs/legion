@@ -488,17 +488,19 @@ func (d *scratchDispatch) start() {
 		}
 	}
 	// The bus is the one difference between the two forms: NATS off, or the test's own server,
-	// whose ENVOY_NOTIFICATIONS stream this process reconciles as it starts.
-	bus := "DISPATCH_NATS_DISABLED=1"
+	// whose ENVOY_NOTIFICATIONS stream this process reconciles as it starts. The kind rig's server
+	// is reached at the kind network's gateway, an address of this host that the bus's own guard
+	// reads as another machine's, so a server the test names is allowed whatever its address.
+	bus := []string{"DISPATCH_NATS_DISABLED=1"}
 	if d.natsURL != "" {
-		bus = "NATS_URLS=" + d.natsURL
+		bus = []string{"NATS_URLS=" + d.natsURL, "ENVOY_ALLOW_REMOTE_NATS=1"}
 	}
+	command.Env = append(command.Env, bus...)
 	command.Env = append(command.Env,
 		"DATABASE_URL="+d.database,
 		"DISPATCH_AGENT_TOKEN="+d.token,
 		"DISPATCH_IDENTITY=header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED=1",
-		bus,
 		// ExtraFiles' first entry is descriptor 3 in Dispatch.
 		"DISPATCH_LISTEN_FD=3",
 		"DISPATCH_LISTEN_HOST=127.0.0.1",

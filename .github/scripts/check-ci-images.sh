@@ -149,7 +149,13 @@
 #     reference. Every string, not only a `const`: nats-stream.test.ts writes its image as one
 #     argument of a `docker("run", …)` call. reads_as_reference says which values are read as
 #     one and which written-alike things (a Go import path, a TypeScript module specifier, a
-#     host and port) are not.
+#     host and port) are not;
+#   * every `image:` of a Kubernetes manifest REACH names (a `.yaml` file of the list that is no
+#     workflow and no action), read from each document of the parsed YAML, never grepped, at any
+#     depth: a Deployment's container and a Pod's init container are both one. The kind rig
+#     applies Agent Sandbox's vendored manifest, whose controller is such an image.
+#     A value that is no string is refused, since an image this check cannot read is an image no
+#     row has to hold.
 # A line this check cannot read is a refusal that names it, never a silent pass.
 #
 # THE EXCEPTION LIST. Besides the reach, this check sweeps every text file of the repository and
@@ -337,12 +343,15 @@ REACH = (
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
+    "packages/envoy/cmd/agent-secrets/secret_moto_test.go",
     "packages/envoy-client/src/__tests__/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
     ".github/scripts/dispatch-browser-visual-suite.sh",
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
+    "scripts/e2e/lib/kind-sandbox.sh",
+    "packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
@@ -352,7 +361,8 @@ IMAGE_FROM = {
     (".github/actions/pull-test-images/action.yml", "image"): (
         "each image is read from a Go string constant the caller's `consts:` input names "
         "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
-        "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go), "
+        "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go, "
+        "packages/envoy/cmd/agent-secrets/secret_moto_test.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
@@ -366,14 +376,20 @@ IMAGE_FROM = {
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
     ),
+    (".github/workflows/worker-image.yaml", "REF"): (
+        "the digest reference of the worker image this same job just built and pushed (its "
+        "`Record digest` step's `ref` output); the image is this repository's own build, whose "
+        "Dockerfile packages/daemon/docker/worker.Dockerfile is in the reach above and whose FROM "
+        "references this check reads, so the run fetches nothing a row must hold"
+    ),
 }
 
 NO_CI_JOB = "no CI job runs it"
 FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 
 # Every file outside the reach that may name mirror.gcr.io, and the one ground that admits it.
-# `no CI job runs it`: the devbox live proofs and their libraries, the compose files, the
-# walkthrough recorder, the corpus copy a developer restores on a devbox, and documentation.
+# `no CI job runs it`: the compose files, the walkthrough recorder, the corpus copy a developer
+# restores on their own machine, and documentation.
 # `a CI job runs it, and it fetches nothing`: a script a CI job runs whose mirror.gcr.io text no
 # job ever hands to a registry — dev-postgres.test.sh, which the envoy-go-checks job runs,
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
@@ -390,22 +406,6 @@ EXCEPTIONS = {
     "packages/envoy/deploy/compose/dispatch.acceptance.compose.yml": NO_CI_JOB,
     "packages/envoy/deploy/compose/single-node.compose.yml": NO_CI_JOB,
     "packages/envoy/scripts/corpus-copy.sh": NO_CI_JOB,
-    "scripts/e2e/README.md": NO_CI_JOB,
-    "scripts/e2e/burstable-kind.sh": NO_CI_JOB,
-    "scripts/e2e/claude-backend-sandbox.sh": NO_CI_JOB,
-    "scripts/e2e/claude-backend-tmux.sh": NO_CI_JOB,
-    "scripts/e2e/controller-start-tmux.sh": NO_CI_JOB,
-    "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
-    "scripts/e2e/dispatch-user-turns.sh": NO_CI_JOB,
-    "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
-    "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
-    "scripts/e2e/parked-decision-devbox.sh": NO_CI_JOB,
-    "scripts/e2e/share-volumes-kind.sh": NO_CI_JOB,
-    "scripts/e2e/stage2-tmux-supervision.sh": NO_CI_JOB,
-    "scripts/e2e/stage3-devbox-workflow.sh": NO_CI_JOB,
-    "scripts/e2e/stage4a-sandbox-runtime.sh": NO_CI_JOB,
-    "scripts/e2e/stage4b-sandbox-tree.sh": NO_CI_JOB,
-    "scripts/e2e/verifiers-staging-token.sh": NO_CI_JOB,
     "packages/daemon/internal/testpg/testdb/testdb.go": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.sh": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.test.sh": FETCHES_NOTHING,
@@ -933,6 +933,7 @@ for stray in sorted(Path(".github/workflows").glob("*.yml")) + sorted(
         f"two globs in this check."
     )
 reach: list[Path] = list(workflows) + list(actions)
+workflow_files = set(reach)
 for name in REACH:
     path = Path(name)
     if not path.is_file():
@@ -1238,6 +1239,37 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
                 scan_shell(path, script, key_line(step, "run"), lines)
 
 
+def scan_manifest(path: Path, lines: list[str]) -> None:
+    """Rules 4, 5 and 6 over a Kubernetes manifest of the reach: every `image:` of every document
+    of it, at any depth, read from the parsed YAML, as a container of a Deployment, a Pod or an
+    init container holds one."""
+    try:
+        documents = list(yaml.load_all("\n".join(lines), Loader=LineLoader))
+    except yaml.YAMLError as error:
+        problems.append(f"{path}:1: this file is not valid YAML: {one_line(error)}")
+        return
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key != "image":
+                    walk(value)
+                elif isinstance(value, str):
+                    note(path, key_line(node, "image"), value, "this manifest's image")
+                else:
+                    problems.append(
+                        f"{path}:{key_line(node, 'image')}: this manifest's image is {one_line(value)}, "
+                        f"which this check cannot read. Write {REGISTRY}@<digest>, naming a digest "
+                        f"{CI_IMAGES} holds."
+                    )
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for document in documents:
+        walk(document)
+
+
 for path in reach:
     text = read_text(path)
     if text is None:
@@ -1245,7 +1277,11 @@ for path in reach:
         continue
     lines = text.splitlines()
     if path.suffix in {".yaml", ".yml"}:
-        scan_workflow(path, lines)
+        # The two globs' files are workflows and actions; a YAML file REACH names is a manifest.
+        if path in workflow_files:
+            scan_workflow(path, lines)
+        else:
+            scan_manifest(path, lines)
     elif path.name == "Dockerfile" or path.name.endswith(".Dockerfile"):
         scan_dockerfile(path, lines)
     elif path.suffix in {".go", ".ts"}:

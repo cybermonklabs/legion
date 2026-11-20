@@ -1,2 +1,2 @@
-# The stage scripts source their shared helpers from lib/ (lib/namespace-rig.sh and the like).
+# The stage scripts source their shared helpers from lib/ (lib/rig.sh and the like).
 external-sources=true

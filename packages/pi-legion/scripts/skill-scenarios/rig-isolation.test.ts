@@ -31,7 +31,7 @@ setDefaultTimeout(120_000);
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
 // in a process group of its own (`runRig` below says why it must). Read once, so one warning names
 // perl for the whole file.
-const withoutPerl = skipWithout("perl");
+const withoutPerl = skipWithout(["perl"], "pi-legion");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });

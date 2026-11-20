@@ -35,7 +35,7 @@ import { readCardLines } from "../test/card-entries";
 // NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-envoy");
 /** The Dispatch token the session is handed. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");
 

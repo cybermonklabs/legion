@@ -1,16 +1,12 @@
-//go:build e2e
-
 // What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
 // listener a run builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
 // log handler those reads of the daemon's own decisions go through. The five are
-// provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
-// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh,
-// role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh,
-// late_completion_live_test.go, the driver of scripts/e2e/late-completion.sh, and
-// busy_relaunch_live_test.go, the driver of scripts/e2e/busy-relaunch-delivery.sh. What belongs
+// provider_error_retry_live_test.go, claim_compaction_live_test.go, role_prompt_rule_live_test.go,
+// late_completion_live_test.go and busy_relaunch_live_test.go, which CI's agent-harness job runs
+// by name (.github/workflows/ci-job-agent-harness.yaml, its pane-drivers part). What belongs
 // to one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh
 // My Pi profile and operator overlay its panes run under.
 //
@@ -48,6 +44,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testprereq"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -57,11 +55,11 @@ import (
 
 // ---- the constants every proof reads -------------------------------------------------------------
 
-// liveOmpPathEnv names the Oh My Pi every pane of every such proof runs. It is the pod's own build,
-// which is the fleet's pin rather than this branch's fetch, so a proof prints which build it
-// ran. Unset, the driver skips rather than guess one, as each proof's script refuses to start
-// without it.
-const liveOmpPathEnv = "LEGION_OMP_PATH"
+// agentHarnessJob is the ci.yaml job that runs the five proofs, and so the job a missing
+// prerequisite of theirs names on GitHub Actions (testprereq.Require): it installs the pinned Oh
+// My Pi, jj and the workspace's Bun dependencies, and gives the proofs the PostgreSQL and the NATS
+// server they run on.
+const agentHarnessJob = "agent-harness"
 
 // providerErroredMessage is the daemon's own line for a turn that ended in a provider error
 // (supervise's providerErrored), the record a step reads the reported fields off.
@@ -215,6 +213,17 @@ func indentOutput(text string) string {
 
 // ---- what the run builds before the daemon boots -------------------------------------------------
 
+// paneOMP is the Oh My Pi every pane of every such proof runs: the binary LEGION_TEST_OMP names
+// (testbin.OMP), which .github/actions/install-omp installs at the pin .omp-pin names. Without one
+// the proof skips, and on GitHub Actions it fails naming agentHarnessJob, the job that installs it.
+// Each proof prints the version it ran.
+func paneOMP(t *testing.T) string {
+	t.Helper()
+	testprereq.Require(t, os.Getenv("LEGION_TEST_OMP") != "", agentHarnessJob,
+		"LEGION_TEST_OMP names no pinned Oh My Pi binary, and every pane of this proof runs one")
+	return testbin.OMP(t)
+}
+
 // takeOwnDatabase points LEGION_TEST_PG_DSN at a database this run makes for itself on the server
 // that variable names, so the fixture migrates into a database of its own rather than into the one
 // the DSN names. The daemon's live proofs share the named database on a CI service, whose role
@@ -226,15 +235,11 @@ func indentOutput(text string) string {
 //
 // The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
 // so a DSN whose rewrite names another server is refused and the run leaves no database behind
-// either. Two frames hold this run to the server its caller named, and that helper's comment and
-// the comment above require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh are where the two
-// are written.
+// either; that helper's comment says what it reads. Without LEGION_TEST_PG_DSN the proof skips,
+// and on GitHub Actions it fails naming agentHarnessJob (testdb.DSNFor).
 func takeOwnDatabase(t *testing.T) {
 	t.Helper()
-	named := os.Getenv("LEGION_TEST_PG_DSN")
-	if named == "" {
-		return // newLiveProof's own testDSN skips the test, naming the variable.
-	}
+	named := testdb.DSNFor(t, agentHarnessJob)
 	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
 	own, err := testdb.DatabaseURL(named, database)
 	if err != nil {
@@ -533,6 +538,22 @@ func anthropicRefusal(message string) string {
 func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 	streamAnthropicBlock(w, provider, "end_turn", `{"type":"text","text":""}`,
 		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
+}
+
+// answerAnthropicText answers one Anthropic Messages request with one text block: streamed
+// (streamAnthropicText) when the request streams, and as one message of model when it does not,
+// which is how Claude Code asks for some of its own side requests.
+func answerAnthropicText(w http.ResponseWriter, streamed bool, provider, model, text string) {
+	if streamed {
+		streamAnthropicText(w, provider, text)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": "answered", "type": "message", "role": "assistant", "model": model,
+		"content": []map[string]string{{"type": "text", "text": text}}, "stop_reason": "end_turn", "stop_sequence": nil,
+		"usage": map[string]int{"input_tokens": 1000, "output_tokens": 16},
+	})
 }
 
 // streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens

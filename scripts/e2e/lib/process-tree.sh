@@ -10,8 +10,8 @@
 # (/proc/<pid>/exe).
 #
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
-# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
-# packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
+# proc_walk_complaint), and by stage2-tmux-supervision.sh, which sources no rig. It needs nothing
+# of its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -535,12 +535,6 @@ procs_naming() {
 # `pane_watcher &`): its /proc/<pid>/environ is the driver's environment at the driver's own exec,
 # which an `export` does not rewrite, so no sweep sees it, and each is stopped by the pid it had
 # when it started, and ends of itself once the driver has gone where its loop reads `kill -0 "$$"`.
-# They are: claude-backend-tmux.sh's, stage3-devbox-workflow.sh's and stage3-4b13b-acceptance.sh's
-# pane_watcher (watcher_pid), stage3-4b13b-acceptance.sh's instructor (instructor_pid),
-# stage4b-sandbox-tree.sh's watch_raw pod and event watches (watch_pid, events_pid), its node-memory
-# and interests samplers (sampler_pid, interests_pid) and its pod_shape_watcher (shape_pid),
-# lib/github-apps.sh's token refresher (app_token_refresher) and lib/bridge-tunnel.sh's watchdog
-# (bridge_watchdog_pid).
 run_marks=(LEGION_E2E_RUN XDG_CONFIG_HOME)
 
 # marked_processes DIR prints `PID START` for every process still alive that carries the mark of the

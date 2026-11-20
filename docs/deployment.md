@@ -37,7 +37,7 @@ The secrets broker holds them as `github-app` secrets, which release installatio
 `LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release under the same live grant reuses it).
 Its `token_command` names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
 without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them.
-A daemon that holds no App key uses both Apps through `token_command`, as the live proofs do for the implement App (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
+A daemon that holds no App key uses both Apps through `token_command`:
 
 ```yaml
 github_apps:
@@ -48,9 +48,6 @@ github_apps:
     app_id: "5341243"
     token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
 ```
-
-The live proofs take the review App's tokens that way no longer.
-They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, into a key file of the run's own, and give the App a `private_key_command` that reads it, while the implement App keeps the `token_command` above (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`).
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
@@ -532,10 +529,11 @@ way an Oh My Pi pane's does: `provider_keys` (for example
 `ANTHROPIC_API_KEY: <secretsd key>`) is exported by the shim into `legion claude-bridge`'s
 environment, which Claude Code inherits, and into every Oh My Pi pane's as well. A key meant for the
 Claude Code roles alone goes in the claim's directory instead, before the claim first launches: a
-`settings.json` there whose `apiKeyHelper` prints the key, as `scripts/e2e/claude-backend-tmux.sh`,
-the live proof, writes it. In a pod the route is the operator's the same way: `provider_keys`
-carries `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL`, which are not
-credentials, go in `runtime.kubernetes.pod.env` (`docs/kubernetes.md`, "Configuration").
+`settings.json` there whose `apiKeyHelper` prints the key, as the live proof on tmux
+(`packages/daemon/internal/daemon/claude_backend_live_test.go`) writes it. In a pod the route is
+the operator's the same way: `provider_keys` carries `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL`
+and `ANTHROPIC_MODEL`, which are not credentials, go in `runtime.kubernetes.pod.env`
+(`docs/kubernetes.md`, "Configuration").
 
 ### How a harness plugs in
 

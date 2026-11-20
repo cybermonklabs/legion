@@ -1,16 +1,14 @@
-//go:build e2e
-
-// The Burstable issue pod live proof's driver (scripts/e2e/burstable-kind.sh, which builds it with
-// `-tags e2e`, owns the throwaway kind cluster it runs on, runs `legion config check` on
-// the files this writes, and reads the pods' QoS class back with kubectl). Two legion.yaml files,
-// one giving the issue pod a memory request below its limit and one with no `resources` block,
-// are each read by the daemon's own loader and translated by the daemon's own sandboxOptions, and
-// the Agent Sandbox runtime they configure launches one issue's root on the cluster, through Agent
-// Sandbox's controller and the gvisor runtime class (burstable_kind_test.go builds both). What the
-// proof stands in for lies outside the reservation path: the agent is a sleep stub (no model, no
-// Dispatch, no NATS), the store answers as the daemon's does for an issue's first launch, the
-// repository is a public one GitHub clones without a credential, and the roles' gh files hold a
-// placeholder token.
+// The Burstable issue pod live test, which the kind job of ci.yaml runs on the rig of
+// internal/kindtest. Two legion.yaml files, one giving the issue pod a memory request below its
+// limit and one requesting its limits in full, are each read by the daemon's own loader and
+// translated by the daemon's own sandboxOptions, and the Agent Sandbox runtime they configure
+// launches one issue's root on the rig's cluster, through Agent Sandbox's controller and the
+// gvisor runtime class (burstable_kind_test.go builds both). Both reservations are small, so both
+// pods fit the runner's one node. What the test stands in for lies outside the reservation path:
+// the agent is a sleep stub (no model, no Dispatch, no NATS), the store answers as the daemon's
+// does for an issue's first launch, the repository is a public one of the rig's fake GitHub, which
+// the pod and its repository cache clone without a credential, the shared public leak check is
+// the rig's stand-in, and the roles' gh files hold a placeholder token.
 package daemon
 
 import (
@@ -19,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -30,36 +27,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/kindtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // TestABurstableIssuePodRendersLive launches an issue pod from each case's configuration
-// and holds it to the case's reservation and QoS class, as the API server recorded them. It writes
-// `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT for the script.
+// and holds it to the case's reservation and QoS class, as the API server recorded them.
 func TestABurstableIssuePodRendersLive(t *testing.T) {
 	fixtureenv.Live(t)
-	env := map[string]string{}
-	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT"} {
-		if env[name] = os.Getenv(name); env[name] == "" {
-			t.Fatalf("%s is unset; scripts/e2e/burstable-kind.sh sets it", name)
-		}
-	}
-	// The proof creates pods, so it runs only on a kind cluster, the one its script made, and
-	// never on whatever the operator's current context is.
-	if !strings.HasPrefix(env["LEGION_E2E_KUBE_CONTEXT"], "kind-") {
-		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
-	}
+	rig := kindtest.Start(t)
+	sessions := rig.StartPostgres(t)
+	rig.GitHub.NewRepository(t, burstableLiveRepository.Owner(), burstableLiveRepository.Name(), true)
+	leakCheck := kindtest.LeakCheck(t)
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	var results []string
+	work := t.TempDir()
 	for _, tc := range burstableLiveCases {
 		started := time.Now()
-		path := writeBurstableLiveConfig(t, filepath.Join(env["LEGION_E2E_WORK"], tc.name), tc.project, env["LEGION_E2E_STREAM_HOST"],
-			env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], tc.resources)
+		kindLiveProviders(t, rig, tc.project, sessions.InCluster)
+		path := writeBurstableLiveConfig(t, filepath.Join(work, tc.name), tc.project, rig.Gateway, rig.Image,
+			rig.Kubeconfig, rig.Context, tc.resources)
 		cfg, err := config.LoadForValidation(path, nil)
 		if err != nil {
 			t.Fatalf("%s: load %s: %v", tc.name, path, err)
@@ -67,7 +58,7 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 		deployment := Deployment(cfg)
 		fmt.Printf("== %s: %s\n", tc.name, path)
 		fmt.Printf("   resource-limits row: %s\n", states(deployment.Report())["resource-limits"].Detail)
-		pod := launchBurstableLiveRoot(ctx, t, cfg, log)
+		pod := launchBurstableLiveRoot(ctx, t, cfg, leakCheck, log)
 		roles := liveContainer(t, pod, runtime.IssuePodContainer)
 		fmt.Printf("   pod %s/%s: qosClass %s, runtimeClassName %s, node %s, PodScheduled %s\n", pod.Namespace, pod.Name,
 			pod.Status.QOSClass, liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName, liveCondition(pod, corev1.PodScheduled))
@@ -88,18 +79,28 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 			t.Errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
 		}
 		fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
-		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
-	}
-	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
 	}
 }
 
+// kindLiveProviders creates, in the rig's legion namespace, the providers Secret the pods of
+// project mount (sandbox.ProvidersSecretName): its key SESSION_DSN, the postgres session store's
+// key every kind test's legion.yaml names (session_dsn_secret), holds dsn, the rig's PostgreSQL as
+// the pods dial it. A pod whose Secret is missing never starts.
+func kindLiveProviders(t *testing.T, rig *kindtest.Rig, project, dsn string) {
+	t.Helper()
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.Apply(t, fmt.Sprintf("apiVersion: v1\nkind: Secret\nmetadata: {name: %s, namespace: legion}\nstringData: {SESSION_DSN: %q}\n",
+		sandbox.ProvidersSecretName(token), dsn))
+}
+
 // launchBurstableLiveRoot runs the cluster check, builds the Agent Sandbox runtime from cfg
-// (burstableLiveRuntime) on a worker stream at cfg's bind, launches the root architect of an issue
-// of cfg's project through the runtime's Spawn, and returns the issue pod as the API server holds
-// it once the launch returned.
-func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
+// (burstableLiveRuntime) on a worker stream at cfg's bind, reading the shared public leak check its
+// pods install from leakCheck, launches the root architect of an issue of cfg's project through the
+// runtime's Spawn, and returns the issue pod as the API server holds it once the launch returned.
+func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, leakCheck sandbox.LeakCheckReader, log *slog.Logger) *corev1.Pod {
 	t.Helper()
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
@@ -133,7 +134,7 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 		for range listener.Events() {
 		}
 	}()
-	rt, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, log)
+	rt, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, leakCheck, log)
 	if err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}

@@ -61,7 +61,7 @@ func testServiceDeps(database *store.Store) Deps {
 // schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
 // shutdown has stopped the service's room, settlement and flush goroutines, which read it.
 // Cleanups run last in first out, so such a test registers its restore before it calls this.
-func newTestServiceOn(t *testing.T, database *store.Store) *Service {
+func newTestServiceOn(t testing.TB, database *store.Store) *Service {
 	t.Helper()
 	service := New(testServiceDeps(database))
 	t.Cleanup(func() {
@@ -72,7 +72,7 @@ func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	return service
 }
 
-func newTestService(t *testing.T) (*Service, string) {
+func newTestService(t testing.TB) (*Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -6050,7 +6050,7 @@ func removeBlockIDs(node *pmdoc.Node) {
 	}
 }
 
-func persistedProofTree(t *testing.T, database *store.Store, artifactID string) *pmdoc.Node {
+func persistedProofTree(t testing.TB, database *store.Store, artifactID string) *pmdoc.Node {
 	t.Helper()
 	loaded, err := NewPgVersioned(database).Load(context.Background(), artifactID)
 	if err != nil {
@@ -6197,7 +6197,7 @@ func waitForRoomFailure(t *testing.T, service *Service, artifactID string) {
 	t.Fatal("document room did not become unavailable after append failure")
 }
 
-func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
+func waitForNoLiveDocument(t testing.TB, service *Service, artifactID string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

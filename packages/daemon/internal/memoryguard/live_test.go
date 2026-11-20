@@ -1,5 +1,7 @@
 //go:build linux
 
+// legion: tool - drives the real memory guard on this machine's own /proc and memory cgroup against one scenario and prints its readings, kills and verdict, for the person who sets the act share's default from runs in gVisor pods of each size; run with LEGION_MEMORY_GUARD_LIVE=1 and the LEGION_MEMORY_GUARD_LIVE_* inputs below: go test -count=1 -v -timeout 30m -run '^$' -bench '^BenchmarkMemoryGuardLiveSandbox$' -benchtime 1x ./internal/memoryguard/
+
 package memoryguard
 
 import (
@@ -9,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -25,9 +28,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// The live test's environment. TestMemoryGuardLiveSandbox runs only where liveEnv is 1, which the
-// measurement Jobs of INFRA-3557 set and CI does not. liveHolderEnv is the test's own: it makes the
-// copy of the test binary the test starts the holder (holdMemory).
+// The live run's environment. BenchmarkMemoryGuardLiveSandbox runs only where liveEnv is 1, which
+// the memory guard's measurement Jobs set and CI does not: no CI step passes -bench. liveHolderEnv
+// is the run's own: it makes the copy of the test binary the run starts the holder (holdMemory).
 const (
 	liveEnv = "LEGION_MEMORY_GUARD_LIVE"
 	// liveGuardEnv is `on`, the guard at its defaults or at liveSettingsEnv's, or `off`, no guard
@@ -86,28 +89,30 @@ const (
 	liveGuardOffReason = "the guard turned off for good; its off line says why"
 )
 
-// TestMemoryGuardLiveSandbox runs the real guard, with the pidfd kill and the wall clock, on this
-// machine's own /proc and memory cgroup, against one scenario (liveRunEnv). INFRA-3557's Jobs run
-// it in gVisor pods of each size, and its lines are the record the act share's default is set
-// from. The guard has no classifier, so it protects the test process alone, as the launcher
-// protects itself.
+// BenchmarkMemoryGuardLiveSandbox runs the real guard, with the pidfd kill and the wall clock, on
+// this machine's own /proc and memory cgroup, against one scenario (liveRunEnv). The memory
+// guard's measurement Jobs run it in gVisor pods of each size, and its lines are the record the
+// act share's default is set from. It is a tool, not a test: the LEGION_MEMORY_GUARD_LIVE_* names
+// are its inputs, and it skips unless liveEnv is 1. The guard has no classifier, so it protects
+// the test process alone, as the launcher protects itself. Run it once, with -benchtime 1x: each
+// run of its body is the whole scenario.
 //
 // Every line goes straight to stdout, one write each and none buffered, starts `live: ` and ends
 // with its time (`at=`), so a pod the kernel ends keeps every line written before the end. The
 // last line is `live: verdict PASS` or `live: verdict FAIL reason=…`, except in a run the kernel
 // ends, which is what the guard off is expected to end in.
-func TestMemoryGuardLiveSandbox(t *testing.T) {
+func BenchmarkMemoryGuardLiveSandbox(b *testing.B) {
 	if os.Getenv(liveHolderEnv) == "1" {
 		holdMemory()
 	}
 	if os.Getenv(liveEnv) != "1" {
-		t.Skip("the live test runs only where " + liveEnv + "=1: it drives the guard on this machine's own memory")
+		b.Skip("the live run runs only where " + liveEnv + "=1: it drives the guard on this machine's own memory")
 	}
 	out := &liveLog{}
-	r := &liveRun{t: t, out: out}
+	r := &liveRun{t: b, out: out}
 	if reason := r.run(); reason != "" {
 		out.printf("verdict FAIL reason=%s", reason)
-		t.Fatal(reason)
+		b.Fatal(reason)
 	}
 	out.printf("verdict PASS")
 }
@@ -228,7 +233,7 @@ func liveMS(d time.Duration) string {
 
 // liveRun is one run of the live test, its steps in the order run takes them.
 type liveRun struct {
-	t   *testing.T
+	t   testing.TB
 	out *liveLog
 	cfg liveConfig
 	ctx context.Context
@@ -254,7 +259,7 @@ func (r *liveRun) run() string {
 		return err.Error()
 	}
 	r.cfg = cfg
-	ctx, cancel := liveDeadline(r.t)
+	ctx, cancel := liveDeadline()
 	defer cancel()
 	r.ctx = ctx
 	defer r.teardown()
@@ -283,10 +288,17 @@ func (r *liveRun) run() string {
 	}
 }
 
-// liveDeadline is a context that ends liveDeadlineMargin before the test binary's own deadline.
-func liveDeadline(t *testing.T) (context.Context, context.CancelFunc) {
-	if deadline, ok := t.Deadline(); ok {
-		return context.WithDeadline(context.Background(), deadline.Add(-liveDeadlineMargin))
+// liveBinaryStart is when the test binary began, no later than the moment its -test.timeout
+// starts counting from.
+var liveBinaryStart = time.Now()
+
+// liveDeadline is a context that ends liveDeadlineMargin before the test binary's own deadline:
+// its -test.timeout counted from liveBinaryStart, read from the flag since a benchmark has no
+// Deadline of its own. That ends a little before the binary's deadline, which counts from a moment
+// after liveBinaryStart.
+func liveDeadline() (context.Context, context.CancelFunc) {
+	if timeout, ok := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration); ok && timeout > 0 {
+		return context.WithDeadline(context.Background(), liveBinaryStart.Add(timeout-liveDeadlineMargin))
 	}
 	return context.WithCancel(context.Background())
 }
@@ -331,7 +343,7 @@ func (r *liveRun) printStart() string {
 func (r *liveRun) startHelpers() string {
 	ready := make(chan struct{})
 	var once sync.Once
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMemoryGuardLiveSandbox$")
+	cmd := exec.Command(os.Args[0], "-test.run=^$", "-test.bench=^BenchmarkMemoryGuardLiveSandbox$", "-test.benchtime=1x")
 	cmd.Env = append(os.Environ(), liveHolderEnv+"=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	holder, err := startLiveChild(r.out, "holder", cmd, func(line string) {

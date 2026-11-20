@@ -81,17 +81,12 @@ export class Omp {
   #lock: Promise<unknown> = Promise.resolve();
   /** The session file `get_state` last named, kept as evidence when the run ends. */
   sessionFile: string | undefined;
-
-  private constructor(
-    rig: Rig,
-    keys: Readonly<Record<string, string>>,
-    label: string,
-    argv: readonly string[]
-  ) {
+  private constructor(rig: Rig, label: string, argv: readonly string[]) {
     this.label = label;
     this.#log = `${rig.evidence}/logs/omp-${label}.rpc.jsonl`;
+    // No provider key: every model of the profile is the stand-in's, keyed by the placeholder its
+    // models.yml names, or none at all.
     const env: Record<string, string> = {
-      ...keys,
       DISPATCH_TOKEN_FILE: rig.dispatchTokenFile,
       DISPATCH_URL: rig.dispatchUrl,
       ENVOY_MACHINE_ID: "legion-e2e-session-settings",
@@ -122,17 +117,16 @@ export class Omp {
     void this.#read();
   }
 
-  /** Starts Oh My Pi with the caller's provider `keys` in its environment, `extension` loaded
-   *  (none for a bare session) and `extra` arguments, and waits for its `ready` line. */
+  /** Starts Oh My Pi with `extension` loaded (none for a bare session) and `extra` arguments, and
+   *  waits for its `ready` line. */
   static async start(
     rig: Rig,
-    keys: Readonly<Record<string, string>>,
     label: string,
     extension: string | null,
     extra: readonly string[] = []
   ): Promise<Omp> {
     const argv = [...(extension === null ? [] : ["--extension", extension]), "--mode", "rpc"];
-    const omp = new Omp(rig, keys, label, [...argv, ...extra]);
+    const omp = new Omp(rig, label, [...argv, ...extra]);
     await until(`Oh My Pi ${label} (pid ${omp.pid}) to print ready`, 120_000, () =>
       omp.#ready ? true : omp.#exited ? fail(`Oh My Pi ${label} exited at startup`) : undefined
     );

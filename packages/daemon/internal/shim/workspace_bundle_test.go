@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -102,9 +103,8 @@ func TestABundleOfNoWorkspaceIsRefusedByName(t *testing.T) {
 func bundledWorkspace(t *testing.T) (workspace, home string) {
 	t.Helper()
 	for _, tool := range []string{"jj", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required: %v", tool, err)
-		}
+		_, err := exec.LookPath(tool)
+		testprereq.Require(t, err == nil, "daemon-go", "%s is required: %v", tool, err)
 	}
 	root := t.TempDir()
 	home = filepath.Join(root, "home")

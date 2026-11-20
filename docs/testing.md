@@ -2,6 +2,18 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## Where a test runs
+
+Every test of this repository runs in a CI job that `ci-ok` needs, before each merge that changes a file it reads, with stand-ins for what is outside the machine.
+A test of real infrastructure that no stand-in can make runs in the deployment's pipeline after each apply of what it checks.
+A check of the operator's own grants and configuration belongs to the deployment's repository, not to this one.
+A check that production already makes at each use, where a failure reaches a role, is not repeated as a test.
+A measurement or a reading is a Go benchmark or a command, not a test, and its first lines carry the `legion: tool - ` line, which the reviewer judges.
+
+`.github/scripts/check-test-reach.sh`, a step of the `lint` job, holds the tree to the first of these: it fails on each test that no step of a job `ci-ok` needs runs, whether a build tag, a `-skip`, a variable gate, a script no such step runs or a step that runs only on a schedule leaves it out, and its header says how it reads each.
+A variable gate holds only where `.github/test-variables.yaml` names its variable with one of five classes, `set`, `selector`, `prerequisite`, `tool` or `opt-out`, and that class holds for the gate.
+A script whose first 15 lines use the words proof, smoke, check or test, and that no such step runs, carries in those lines the tool line (`legion: tool - `, then what it measures or reads, and who runs it for which decision) or the not-a-test line (`legion: not a test - `, then what the script is), and the reviewer judges either line; a Go tool that calls a package's own code is a `Benchmark…` function of its `_test.go` file, run as `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x`.
+
 ## The fixtures a test takes rather than copies
 
 Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
@@ -34,6 +46,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+
+- A test whose prerequisite is missing — a server a variable names, a program on PATH, a capability of the machine or of its Postgres — takes `packages/envoy/testprereq`, one body for both modules: `packages/daemon` imports it through its `replace` of `packages/envoy`, and it imports the standard library alone.
+  `Require(t, present, job, format, args...)` skips the test with the reason it is given, and under `GITHUB_ACTIONS=true` fails it instead, with that reason and the `ci.yaml` job that must give the prerequisite, so no CI job passes with a test skipped for want of what the job is set up to give.
+  It fails at the test that called it and never in a `TestMain`, so the package's other tests still run; the daemon's `testbin` binaries and `testdb.DSN` (which `testdb.Database` and `testpg.Clone` read through) and both modules' `storetest` go through it.
+  It is for a prerequisite and nothing else: a variable that only chooses where a test runs (`DISPATCH_FIRST_ROLLOUT_BUILD`, which `dispatch-two-builds-same` leaves unset on purpose, or `AIRLOCK_MODEL`), the input a tool reads, a platform the code does not run on, a test run as root and a child process's guard keep their plain skip.
 
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
@@ -133,16 +150,22 @@ itself, whose tests import its sources by relative path.
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
   `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
-- A suite that needs a program this host may not have skips with that program's name. Call
-  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
-  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
-  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
-  would print that line per test. A suite that needs a service does the same with the variable that
-  names it, and makes a database of its own rather than reading the one it finds
+- A suite that needs a program this host may not have skips with that program's name, and fails
+  under `GITHUB_ACTIONS=true` instead, as `packages/envoy/testprereq` does for Go: the `ci.yaml`
+  job that runs it must give it what it needs. Call `skipWithout(["docker"], "<job>")` once, at
+  the file's module scope, and hand the answer to every `describe.skipIf` and `test.skipIf` of the
+  file: off GitHub Actions it prints one line naming the missing programs and the file whose tests
+  did not run (`@legion/test-fixtures/host-tools`), and a call per test would print that line per
+  test; on GitHub Actions it throws, naming them, the job and the file. A suite that needs
+  anything else — a variable that names a binary or a service, a free port, a capability of the
+  machine — does the same with `requireOrSkip(what, present, "<job>")`, and one that needs a
+  database server makes a database of its own on it rather than reading the one it finds
   (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  both builds the two halves into a single list and prints one line, rather than calling
-  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+  several builds what it lacks into a single list and hands it to one `requireOrSkip`, rather than
+  calling `skipWithout` beside it, so a host that has none reads one line naming each (`hostTool`
+  with the variable, in that file and in `harness-stacks.test.ts`). A skip that chooses a
+  platform, a browser, a project or a run (`LEGION_E2E_ENVOY_STACK=1`) names no prerequisite and
+  keeps its plain `skipIf`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -391,7 +414,7 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
 detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+and `go vet ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
@@ -399,7 +422,7 @@ plain step still ran it, it took at most 625 s there over the 49 green main `tes
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
+takes longer still (908 s under `-race` on a machine shared with other work), so a command that runs the whole
 package, alone or in a pattern that includes it, passes `-timeout 30m`:
 
 ```sh
@@ -434,7 +457,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is one of the ten slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is one of the twelve slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -479,13 +502,14 @@ composes with the `TestMain` a package already has
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
-apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
+apply part of the migration set themselves and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
 `internal/store`'s own tests take that same `Database`, from the leaf package
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
+imports no package of the module, only `packages/envoy/testprereq`, which imports the standard
+library alone, and so is open to every package of it.
 A package whose tests migrate into the database their DSN names, rather than taking one each,
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
@@ -666,8 +690,8 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
   Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH`: that git puts Legion's leak guard in front of every push, and that jj refuses a push whose git is any other, so a fixture's push to a local bare repository under the test's empty home was refused in a pod and passed on CI, whose `PATH` holds no such directory.
   It is the process's `PATH` that matters, because `exec.Command` and `exec.LookPath` look a bare name up on it whatever `PATH` the command's `Env` holds.
-  Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
-  A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
+  Guard does the same in every build.
+  A kind test, which drives the kind cluster of its rig with the runner's own tools and environment on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
@@ -676,12 +700,12 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
 
 ## Containers a test starts
 
-Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its
+Every container a test or a script starts carries a CPU limit and a memory limit sized to its
 work, and is removed when the test stops, except kind's node containers (`scripts/e2e/README.md`
 says why) and the Pulumi containers of `packages/envoy/infra/host/live_test.go`, whose released
-`Listener` component has no CPU or memory inputs. Tests and the live proofs run on shared dev boxes
-as well as on CI runners, and an unlimited server can take every core and all the memory of a host
-that other work shares.
+`Listener` component has no CPU or memory inputs. A test shares the machine it runs on with other
+work, a CI job's other steps included, and an unlimited server can take every core and all the
+memory of a host that other work shares.
 
 - In Go, set `Resources.NanoCPUs` and `Resources.Memory` in the container's host configuration:
   through `testcontainers.WithHostConfigModifier` for a `Run`, or as the request's
@@ -690,7 +714,7 @@ that other work shares.
   configuration of its own sets the limits in that same modifier.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
-  lists each proof's containers and their limits.
+  lists each script's containers and their limits.
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
   declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
 

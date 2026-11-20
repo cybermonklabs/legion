@@ -32,7 +32,11 @@ env:
 jobs:
   dispatch-multiprocess:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # The two-process step's -timeout 20m, after a minute of setup, is 21; after that step's
+    # measured 15 minutes (14 m 56 s in run 44328388948), the load-steps step's own 15 is 31, and
+    # 35 leaves the dump of either room to print before the runner cancels the job. The load steps
+    # took 280 s on a two-vCPU pod on 2026-11-18, 294 s with their compile.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -57,10 +61,23 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # Every test the multiprocess tag adds, its names read off the source at run time, but the
+      # outbox's load steps, which the step below runs (ci_job_reads.py's OUTBOX_LOAD_TESTS builds
+      # both texts, so the skip and the run cannot come to name different tests).
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
+          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" -skip '^(TestTheOutboxLoadSteps)$' ./cmd/dispatch
+        working-directory: packages/envoy
+      # TestTheOutboxLoadSteps: four one-minute load steps, at production's evening rate and ten
+      # times it, on one Dispatch process and then on two, and a burst; every event must reach
+      # every destination within a minute of its step's last write. It runs only with
+      # DISPATCH_OUTBOX_LOAD_STEPS=1, and takes its minutes in a step of its own, so they do not
+      # come out of the two-process step's -timeout.
+      - name: The outbox's load steps on two Dispatch server processes
+        env:
+          DISPATCH_OUTBOX_LOAD_STEPS: "1"
+        run: go test -tags multiprocess -count=1 -timeout 15m -v -run '^(TestTheOutboxLoadSteps)$' ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // The forms of the claim, from which the test builds its scripts: the command's name, the white
@@ -80,9 +82,7 @@ func bashScripts() []string {
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
-	}
+	testprereq.Require(t, err == nil, "envoy-go-checks", "bash is not on PATH, so no script can run in it: %v", err)
 	began := time.Now()
 	var files []bashFile
 	for _, script := range bashScripts() {
@@ -173,9 +173,7 @@ func bashEarlierScripts() []string {
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
-	}
+	testprereq.Require(t, err == nil, "envoy-go-checks", "bash is not on PATH, so no script can run in it: %v", err)
 	began := time.Now()
 	var files []bashFile
 	for _, script := range bashEarlierScripts() {

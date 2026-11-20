@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for INFRA-252: a labelled root still queued in admission, which a person
 // then makes a child of a live tree, joins that tree and runs there, rather than running as a tree
 // of its own. Its first phase waits for a slot of its own, as every issue the daemon starts does
@@ -15,9 +13,9 @@
 // reads again the chain of every held root it is on); a root that ran as a tree of its own is
 // never held, and keeps queueing as its own; and a child recorded in another tree is refused by
 // name.
-// scripts/e2e/child-adoption.sh builds this driver with `-tags e2e` and owns the nats-server and
-// the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
-// whole-daemon live proof.
+// The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
+// PostgreSQL and the package's test NATS server, with the job's git and jj 0.38 or later, which
+// the daemon's boot refuses to start without.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
@@ -32,20 +30,20 @@
 // the daemon's own tests read and write it. Step 4 reads the outbox table for the rows
 // the old linger queued, which no route shows either.
 //
-// What the proof stands in for lies outside the change. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. Dispatch is liveDispatch, the board the
+// What the proof stands in for lies outside the change. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). Dispatch is liveDispatch, the board the
 // package's whole-daemon live proofs share (live_proof_test.go): it holds each issue's status,
 // parent and labels as Dispatch's board does, answers the issue reads the release (its walk up the
-// parent chain) and the event preparation (its walk up the Dispatch chain to the top) make, 404s
-// an issue it does not hold, and records every status and message the daemon writes. Envoy's
-// listener is the package's noticeListener. GitHub is childAdoptionGitHub, which knows each
-// repository's default branch and takes each issue branch the workflow creates. No agent runs:
-// every claim is launched by the package's fake runtime, which provisions each claim's workspace in
-// its own pod (fake.Runtime.InPod), so no host clone is made; the tree's architect is brought to
-// ready over the daemon's own worker stream and HTTP routes. The live tree, the slots a second and
-// a third tree hold, step 7's parked root, step 9's run of a root of its own, step 10's parked
-// member and step 11's other tree are seeded through the store, as every daemon test seeds its
-// fixture; every issue the change acts on is recorded by the daemon from its own envelopes.
+// parent chain) and the event preparation (its walk up the Dispatch chain to the top) make, 404s an
+// issue it does not hold, and records every status and message the daemon writes. Envoy's listener
+// is the package's noticeListener. GitHub is childAdoptionGitHub, which knows each repository's
+// default branch and takes each issue branch the workflow creates. No agent runs: every claim is
+// launched by the package's fake runtime, which provisions each claim's workspace in its own pod
+// (fake.Runtime.InPod), so no host clone is made; the tree's architect is brought to ready over the
+// daemon's own worker stream and HTTP routes. The live tree, the slots a second and a third tree
+// hold, step 7's parked root, step 9's run of a root of its own, step 10's parked member and step
+// 11's other tree are seeded through the store, as every daemon test seeds its fixture; every issue
+// the change acts on is recorded by the daemon from its own envelopes.
 package daemon
 
 import (
@@ -65,7 +63,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -115,7 +112,6 @@ type childAdoptionLive struct {
 // TestAQueuedRootUnderALiveTreeJoinsItLive drives the eleven steps of the proof against one booted
 // daemon.
 func TestAQueuedRootUnderALiveTreeJoinsItLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newChildAdoptionLive(t)
 	r.step("queued-root-leaves-the-line", r.queuedRootLeavesTheLine)
 	r.step("release-adopts-from-todo", r.releaseAdoptsFromTodo)
@@ -130,11 +126,11 @@ func TestAQueuedRootUnderALiveTreeJoinsItLive(t *testing.T) {
 	r.step("release-refuses", r.releaseRefuses)
 }
 
-// newChildAdoptionLive boots the daemon over the script's broker with the live tree and the two
-// other slotted trees recorded, and registers the live tree's architect.
+// newChildAdoptionLive boots the daemon over the package's test broker with the live tree and the
+// two other slotted trees recorded, and registers the live tree's architect.
 func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/child-adoption.sh")
+	proof := newLiveProof(t)
 	proof.cfg.AdmissionCap = childAdoptionCap
 	proof.cfg.Linger = childAdoptionLinger
 	rt := fake.NewRuntime()

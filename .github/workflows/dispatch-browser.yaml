@@ -273,6 +273,135 @@ jobs:
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
+  # why: .github/ci-notes/dispatch-browser.md#the-bun-rows-that-need-a-postgresql-and-why-they-are-a-job-of-this-file
+  # 120 + 240 + 451 = 811 s, 13 min 31 s, rounded up to 14 minutes.
+  postgres-rows:
+    needs: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      options: --user 1001 --init
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # why: .github/ci-notes/dispatch-browser.md#what-the-bun-rows-and-the-recordings-jobs-download-in-place-of-a-go-build
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Test the dashboard's rows that need a PostgreSQL
+        # 26.6 x 1.15 = 31 s -> the two-minute floor.
+        timeout-minutes: 2
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-postgres-rows.sh" \
+            "${{ needs.binaries.outputs.connections }}"
+        working-directory: packages/dispatch
+
+  # why: .github/ci-notes/dispatch-browser.md#the-recordings-job-the-guard-on-the-stubbed-layers-recordings
+  # 300 + 240 + 491 = 1,031 s, 17 min 11 s, rounded up to 18 minutes.
+  recordings:
+    needs: binaries
+    if: inputs.lane == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      options: --user 1001 --ipc=host --init
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # why: .github/ci-notes/dispatch-browser.md#what-the-bun-rows-and-the-recordings-jobs-download-in-place-of-a-go-build
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
+      # why: .github/ci-notes/dispatch-browser.md#what-the-recordings-jobs-dashboard-build-serves
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      - name: Re-record every stubbed row against the real harness
+        # why: .github/ci-notes/dispatch-browser.md#where-the-recording-step-writes-the-fresh-set
+        # 247 x 1.15 = 284 s -> 5 min.
+        timeout-minutes: 5
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          # This image's own PostgreSQL 18 with pgvector, the binaries job's connection limit and
+          # the binaries job's server and broker, as the shard job's browser step exports them.
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export DISPATCH_E2E_STUB_RECORDINGS="$RUNNER_TEMP/fresh"
+          DISPATCH_E2E_STUB_RECORD=1 bunx playwright test --config e2e/playwright.config.ts \
+            --project=stub --project=stub-phone --workers=1
+        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-comparison-runs-even-where-the-recording-failed
+      - name: Fail where a route no longer answers as its recording holds
+        if: ${{ !cancelled() }}
+        run: bun e2e/tools/compare-recordings.ts "$RUNNER_TEMP/fresh"
+        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-recordings-job-uploads-the-fresh-set-on-failure-alone
+      - name: Upload the re-recorded set
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-browser-recordings-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fresh
+          if-no-files-found: ignore
+
   # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs
   multiprocess:
     if: inputs.lane == 'full'
@@ -505,7 +634,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#what-the-merge-job-reports-and-why-it-is-never-skipped
   merge:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-needs-the-binaries-job
-    needs: [binaries, shard, alone, multiprocess, embedder, visual]
+    needs: [binaries, shard, alone, postgres-rows, recordings, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm
@@ -573,7 +702,9 @@ jobs:
         run: >-
           .github/scripts/dispatch-browser-verdict.sh "${{ needs.binaries.result }}"
           "${{ needs.shard.result }}" "${{ needs.alone.result }}"
-          "${{ needs.multiprocess.result }}" "${{ needs.visual.result }}"
+          "${{ needs.postgres-rows.result }}" "${{ needs.recordings.result }}"
+          "${{ needs.multiprocess.result }}" "${{ needs.embedder.result }}"
+          "${{ needs.visual.result }}"
       # why: .github/ci-notes/dispatch-browser.md#when-the-merge-job-posts-ci-ok
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''

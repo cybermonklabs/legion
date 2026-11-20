@@ -9,18 +9,16 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // engineReadings reads each markdown as the browser editor imports a document, with the fork's
 // headless engine (gen/differential.ts), each short table body row padded as Parse pads it.
 func engineReadings(t *testing.T, markdowns []string) []*Node {
 	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		if os.Getenv("CI") == "" {
-			t.Skip("bun is not on PATH; the engine's reading is required in CI")
-		}
-		t.Fatalf("bun is required in CI: %v", err)
-	}
+	_, err := exec.LookPath("bun")
+	testprereq.Require(t, err == nil, "envoy-go", "bun is not on PATH: the engine's reading runs on it")
 	dir := t.TempDir()
 	var lines []string
 	for index, markdown := range markdowns {

@@ -1,8 +1,6 @@
-//go:build e2e
-
 // The Stage 4a harness's displacement check (LEGION-729): a launch that replaces an issue pod
-// another role still runs in, under the Legion daemon's restricted identity and the cluster's
-// admission policy for it. The rig is live_test.go.
+// another role still runs in, under the Legion daemon's restricted identity. The rig is
+// live_test.go.
 
 package sandbox
 

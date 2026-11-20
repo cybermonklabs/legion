@@ -1,14 +1,21 @@
-// The driver of scripts/e2e/dispatch-session-settings.sh (INFRA-195): it owns every Oh My Pi
-// process of the run, each in `--mode rpc` as a Legion pane runs it, and one held-open Chromium
-// page signed in to Dispatch as alice, and runs the checks in order. Each check prints
-// `== <name>`, what it observed, and `ok <name>`, and keeps a screenshot of the page in
-// <evidence>/checks; the first failure prints `FAIL <name>: <why>` and exits 1.
+// The driver of scripts/e2e/dispatch-session-settings.sh: it owns every Oh My Pi process of the
+// run, each in `--mode rpc` as a Legion pane runs it, and one held-open Chromium page signed in to
+// Dispatch as alice, and runs the checks in order. Each check prints `== <name>`, what it
+// observed, and `CHECK <name>: PASS`, and keeps a screenshot of the page in <evidence>/checks; the
+// first failure prints `CHECK <name>: FAIL: <why>` and exits 1.
 //
 //   bun scripts/e2e/lib/dispatch-session-settings.ts run <rig.json>
-//     the checks; rig.json is the setup the shell script wrote (no secret is in it: the provider
-//     keys reach each Oh My Pi from this process's environment, and nothing else)
+//     the checks; rig.json is the setup the shell script wrote: the stand-in's URL and the file of
+//     its placeholder key, which the profile this driver writes names, and no secret
 //   bun scripts/e2e/lib/dispatch-session-settings.ts free-port
 //     prints a loopback TCP port nothing listens on
+//   bun scripts/e2e/lib/dispatch-session-settings.ts chromium
+//     prints the path of the Chromium Playwright downloaded, which the page runs on
+//
+// Every model is the stand-in's (lib/session-settings-model.ts): A, Anthropic-shaped, and B,
+// OpenAI-shaped, which offer different thinking levels, the broken provider's model, on a port
+// nothing answers on, and a model the profile holds no key for. The profile is written with
+// writeStandinProfile, the one every plugin's Oh My Pi test writes.
 //
 // What the page shows is never its own oracle. The session's model is RPC `get_state`'s; the
 // models it lists are `get_available_models`'; its thinking level and the levels it offers are the
@@ -22,7 +29,8 @@
 // file's entries) and session-settings-common.ts (the rig, the transcript and the waits).
 import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { agentStreamControlSubject } from "../../../packages/contracts/src/agent-stream";
-import { Browser, type Header, headerText } from "./session-settings-browser";
+import { writeStandinProfile } from "../../../packages/pi-shared/test/omp-harness";
+import { Browser, type Header, headerText, playwrightChromium } from "./session-settings-browser";
 import {
   begin,
   CheckFailure,
@@ -35,7 +43,6 @@ import {
   pass,
   type Rig,
   sleep,
-  stage,
   until,
 } from "./session-settings-common";
 import {
@@ -66,31 +73,72 @@ import {
 
 const [command, ...args] = process.argv.slice(2);
 
-// The caller's provider keys, taken off this process's environment at once: Oh My Pi gets them
-// (`Omp.start` is handed them), and nothing else the driver starts inherits them (Chromium,
-// launched by Playwright, inherits `process.env`). The imports above load before this line runs;
-// none of them starts a process when it loads.
-const PROVIDER_KEYS: Readonly<Record<string, string>> = Object.fromEntries(
-  ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].flatMap((key) => {
-    const value = process.env[key];
-    delete process.env[key];
-    return value === undefined || value === "" ? [] : [[key, value]];
-  })
-);
-
 function refuse(message: string): never {
   process.stderr.write(`dispatch-session-settings: ${message}\n`);
   process.exit(2);
 }
 
-const OTHER_PERSON = "bob";
+/** The run's two models, both the stand-in's: A, Anthropic-shaped, the profile's default and the
+ *  fallback target, and B, OpenAI-shaped. B offers `minimal`, which A does not, and A `xhigh`,
+ *  which B does not, so a model pick can show the level changing. */
+const A = "standin-anthropic/standin-claude";
+const B = "standin-openai/standin-gpt";
+/** A model of a provider the profile holds no key for: listed nowhere, and refused when picked. */
+const UNKEYED = "standin-unkeyed/unkeyed-model";
 const BROKEN_MODEL = "rig-broken/broken-model";
-const RESTART_NOTICE =
-  "This session does not report its model and thinking level. Restart it on a newer pi-envoy to show and switch them here.";
+/** The profile's default thinking level (config.yml `defaultThinkingLevel`). */
+const DEFAULT_LEVEL = "low";
+const OTHER_PERSON = "bob";
 const NO_ANSWER =
   "No answer came from the session within 30 seconds. The header shows the model and thinking level the session last reported.";
 /** A1's bound: a change made anywhere but the header shows within this long. */
 const SHOWN_WITHIN_MS = 20_000;
+
+/** Writes the profile every session of the run shares, in the agent directory under the run's
+ *  HOME. Every role is A, so no side request (a title, a summary) reaches another model. The
+ *  broken provider's port is held closed by the shell script for the whole run, so every request
+ *  on its model is refused, and retry.fallbackChains (the key the pin's
+ *  session/retry-fallback-chains.ts reads) sends a failed request on it to A. */
+async function writeProfile(rig: Rig): Promise<void> {
+  const key = readFileSync(rig.standinKeyFile, "utf8").trim();
+  await writeStandinProfile(
+    rig.home,
+    rig.standinUrl,
+    [
+      ...["review", "oracle", "deep"].map((role) => `  ${role}: ${A}`),
+      `defaultThinkingLevel: ${DEFAULT_LEVEL}`,
+      "retry:",
+      "  fallbackChains:",
+      `    ${BROKEN_MODEL}:`,
+      `      - ${A}`,
+    ],
+    {
+      providers: [
+        {
+          provider: "standin-anthropic",
+          models: ["standin-claude"],
+          apiKey: key,
+          efforts: ["low", "medium", "high", "xhigh"],
+        },
+        {
+          provider: "standin-openai",
+          models: ["standin-gpt"],
+          api: "openai-completions",
+          apiKey: key,
+          efforts: ["minimal", "low", "medium", "high"],
+        },
+        {
+          provider: "rig-broken",
+          models: ["broken-model"],
+          api: "openai-completions",
+          baseUrl: `http://127.0.0.1:${rig.brokenPort}/v1`,
+          apiKey: "rig-broken-not-a-secret",
+        },
+        { provider: "standin-unkeyed", models: ["unkeyed-model"], apiKey: null },
+      ],
+    }
+  );
+}
 
 // ---- what the checks share ------------------------------------------------------------------------
 
@@ -115,7 +163,7 @@ interface Context {
   readonly startOmp: StartOmp;
   /** The page held open across the checks, on the main session's live view between them. */
   readonly page: Browser;
-  /** The two models the caller's keys serve: the profile's default and fallback target first. */
+  /** The run's two models: the profile's default and fallback target first. */
   readonly A: string;
   readonly B: string;
   /** What `/effort` offered on A and on B at the preflight. */
@@ -234,22 +282,21 @@ interface Launched {
   browser: Browser | undefined;
 }
 
-/** A bare session's check that both models answer under the caller's keys, the broken model is
- *  listed and the unkeyed one is not; answers what `/effort` offers on each model. */
-async function preflight(rig: Rig, startOmp: StartOmp): Promise<Record<string, Effort>> {
-  const [A, B] = rig.models;
-  stage("preflight");
+/** A bare session's check that both models answer under the run's placeholder key, the broken
+ *  model is listed and the unkeyed one is not; answers what `/effort` offers on each model. */
+async function preflight(startOmp: StartOmp): Promise<Record<string, Effort>> {
+  begin("preflight");
   const omp = await startOmp("preflight", null);
   const available = await omp.models();
   for (const model of [A, B, BROKEN_MODEL]) {
     expect(
       available.includes(model),
-      `${model} is not among the ${available.length} models the session lists as available under the caller's keys`
+      `${model} is not among the ${available.length} models the session lists as available: ${available.join(", ")}`
     );
   }
   expect(
-    !available.includes(rig.unkeyedModel),
-    `${rig.unkeyedModel} is listed as available, so it cannot stand for a model whose key the session cannot read`
+    !available.includes(UNKEYED),
+    `${UNKEYED} is listed as available, so it cannot stand for a model whose key the session cannot read`
   );
   const lists: Record<string, Effort> = {};
   for (const model of [A, B]) {
@@ -272,6 +319,7 @@ async function preflight(rig: Rig, startOmp: StartOmp): Promise<Record<string, E
     `${A} and ${B} offer the same /effort levels, so a model pick cannot show the level changing`
   );
   await omp.stop();
+  pass();
   return lists;
 }
 
@@ -282,9 +330,8 @@ async function setUp(
   startOmp: StartOmp,
   launched: Launched
 ): Promise<Context> {
-  const [A, B] = rig.models;
-  const lists = await preflight(rig, startOmp);
-  stage("sessions");
+  const lists = await preflight(startOmp);
+  begin("sessions");
   const main = await startOmp("main", rig.plugin);
   const other = await startOmp("other", rig.plugin);
   const S = await registers(services, main);
@@ -302,6 +349,7 @@ async function setUp(
     `the first replay of ${S} has no commands frame, so this Oh My Pi (LEGION_TEST_OMP=${rig.omp}) cannot run typed input from Dispatch: ${JSON.stringify(firstReplay.map((frame) => frame.kind))}`
   );
   note(`first replay: ${firstReplay.map((frame) => frame.kind).join(", ")}`);
+  pass();
   return { A, B, lists, main, O, other, otherStart, page, rig, S, services, startOmp };
 }
 
@@ -609,7 +657,7 @@ async function pickerDuringTurn(context: Context): Promise<void> {
 }
 
 async function pickerRefusal(context: Context): Promise<void> {
-  const { main, page, rig, S, services } = context;
+  const { main, page, S, services } = context;
   const before = await oracle(main);
   const replay = await page.replay(S);
   const settings = replay.filter((frame) => frame.kind === "settings").at(-1);
@@ -620,18 +668,18 @@ async function pickerRefusal(context: Context): Promise<void> {
   const top = Math.max(...replay.map((frame) => frame.seq));
   const injected = {
     ...settings,
-    models: [...(settings?.models as string[]), rig.unkeyedModel],
+    models: [...(settings?.models as string[]), UNKEYED],
     seq: top + 1_000_000,
   };
   await services.publishFrame(S, injected);
-  await page.headerUntil(`${rig.unkeyedModel} among the models`, SHOWN_WITHIN_MS, (h) =>
-    h.modelOptions.includes(rig.unkeyedModel)
+  await page.headerUntil(`${UNKEYED} among the models`, SHOWN_WITHIN_MS, (h) =>
+    h.modelOptions.includes(UNKEYED)
   );
   note(
-    `a bare bus client published on agentstream.${S}.frames a reported settings frame at seq ${injected.seq} (the replay's highest is ${top}) listing the session's ${(settings?.models as string[]).length} models and ${rig.unkeyedModel}`
+    `a bare bus client published on agentstream.${S}.frames a reported settings frame at seq ${injected.seq} (the replay's highest is ${top}) listing the session's ${(settings?.models as string[]).length} models and ${UNKEYED}`
   );
-  const want = `Failed to set model: No API key for ${rig.unkeyedModel}`;
-  const picked = await pickAndAnswer(context, S, "model", rig.unkeyedModel, want);
+  const want = `Failed to set model: No API key for ${UNKEYED}`;
+  const picked = await pickAndAnswer(context, S, "model", UNKEYED, want);
   const after = await oracle(main);
   expect(after.model === before.model, `get_state reports ${after.model}, was ${before.model}`);
   expect(
@@ -645,7 +693,7 @@ async function pickerRefusal(context: Context): Promise<void> {
   );
   await page.shot("picker-refusal");
   note(
-    `picked ${rig.unkeyedModel}: the switch line read "${picked.status}"; get_state ${after.model} and /effort ${effortText(after.effort)}, as before; header ${headerText(header)}`
+    `picked ${UNKEYED}: the switch line read "${picked.status}"; get_state ${after.model} and /effort ${effortText(after.effort)}, as before; header ${headerText(header)}`
   );
   await page.reload();
   const listed = await main.models();
@@ -654,7 +702,7 @@ async function pickerRefusal(context: Context): Promise<void> {
     60_000,
     (h) =>
       h.model === before.model &&
-      !h.modelOptions.includes(rig.unkeyedModel) &&
+      !h.modelOptions.includes(UNKEYED) &&
       h.modelOptions.length === listed.length
   );
   note(
@@ -1021,14 +1069,14 @@ async function newSessionDefaults({
   const N = await registers(services, fresh);
   const now = await oracle(fresh);
   expect(
-    now.model === A && effortLevel(now.effort) === rig.defaultLevel,
-    `the new session is at ${now.model}, ${effortText(now.effort)}, want the profile's ${A} and ${rig.defaultLevel}`
+    now.model === A && effortLevel(now.effort) === DEFAULT_LEVEL,
+    `the new session is at ${now.model}, ${effortText(now.effort)}, want the profile's ${A} and ${DEFAULT_LEVEL}`
   );
   await page.live(N);
   const { header } = await page.headerUntil(
-    `${A} and ${rig.defaultLevel}`,
+    `${A} and ${DEFAULT_LEVEL}`,
     60_000,
-    (h) => h.model === A && h.thinking === rig.defaultLevel
+    (h) => h.model === A && h.thinking === DEFAULT_LEVEL
   );
   await page.shot("new-session-defaults");
   const switched = await oracle(main);
@@ -1098,33 +1146,6 @@ async function fallback(context: Context): Promise<void> {
   );
 }
 
-async function olderPluginNotice({ page, rig, S, services, startOmp }: Context): Promise<void> {
-  const older = await startOmp("released", rig.releasedPlugin);
-  const R = await registers(services, older);
-  const prompt = await older.prompt("Reply with the one word: delta");
-  await older.settled(prompt, 180_000);
-  const last = assistantMessages((await older.state()).sessionFile).at(-1);
-  expect(last !== undefined, "the released plugin's session ran no turn");
-  const lastModel = turnModel(last as Entry);
-  await page.live(R);
-  const { header } = await page.headerUntil(
-    "the restart notice",
-    60_000,
-    (h) => h.notice === RESTART_NOTICE && h.model === lastModel
-  );
-  expect(
-    !header.modelPicker && !header.thinkingPicker,
-    `the older session's header offers a picker: ${headerText(header)}`
-  );
-  await page.shot("older-plugin-notice");
-  const version = JSON.parse(readFileSync(`${rig.releasedPlugin}/package.json`, "utf8")).version;
-  note(
-    `session ${R} on the released @sjawhar/pi-envoy ${version}: its last turn ran on ${lastModel}; header ${headerText(header)}`
-  );
-  await older.stop();
-  await page.live(S);
-}
-
 async function attribution({ A, B, main, page, S, services }: Context): Promise<void> {
   await page.headerUntil("the session's pickers", 60_000, (h) => h.modelPicker);
   const target = (await main.state()).model === B ? A : B;
@@ -1154,7 +1175,15 @@ async function attribution({ A, B, main, page, S, services }: Context): Promise<
   );
 }
 
-/** The checks, in the order they run; each prints `== <name>` before it and `ok <name>` after. */
+/** The checks, in the order they run; each prints `== <name>` before it and `CHECK <name>: PASS`
+ *  after.
+ *
+ *  The page's notice for a session that sends no `settings` frame (a pi-envoy older than the
+ *  frame) has no live check here: this checkout's listener refuses every pi-envoy release before
+ *  14.1.0, the first that asks for a session consumer (packages/envoy/cmd/listener/
+ *  session_delivery.go, consumerPluginMinimumVersion), and every release from 14.1.0 on sends the
+ *  frame (packages/pi-envoy/CHANGELOG.md), so no session this stack serves can show it. The
+ *  browser suite's packages/dispatch/e2e/agent-view-settings.e2e.ts holds the page to it. */
 const checks: readonly { name: string; run: (context: Context) => Promise<void> }[] = [
   { name: "header-before-any-turn", run: headerBeforeAnyTurn },
   { name: "terminal-set-model", run: terminalSetModel },
@@ -1174,7 +1203,6 @@ const checks: readonly { name: string; run: (context: Context) => Promise<void> 
   { name: "resume-keeps-switch", run: resumeKeepsSwitch },
   { name: "new-session-defaults", run: newSessionDefaults },
   { name: "fallback", run: fallback },
-  { name: "older-plugin-notice", run: olderPluginNotice },
   { name: "attribution", run: attribution },
 ];
 
@@ -1185,13 +1213,14 @@ async function run(rigFile: string): Promise<void> {
   const services = new Services(rig);
   const launched: Launched = { browser: undefined, omps: [] };
   const startOmp: StartOmp = async (label, extension, extra = []) => {
-    const omp = await Omp.start(rig, PROVIDER_KEYS, label, extension, extra);
+    const omp = await Omp.start(rig, label, extension, extra);
     launched.omps.push(omp);
     return omp;
   };
   const runStarted = Date.now();
 
   try {
+    await writeProfile(rig);
     const context = await setUp(rig, services, startOmp, launched);
     for (const check of checks) {
       begin(check.name);
@@ -1204,7 +1233,7 @@ async function run(rigFile: string): Promise<void> {
   } catch (error) {
     if (launched.browser !== undefined) await launched.browser.shot(`${currentName()}-failed`);
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`FAIL ${currentName()}: ${message}\n`);
+    process.stdout.write(`CHECK ${currentName()}: FAIL: ${message.replaceAll("\n", " ")}\n`);
     if (!(error instanceof CheckFailure) && error instanceof Error && error.stack) {
       process.stderr.write(`${error.stack}\n`);
     }
@@ -1240,4 +1269,5 @@ if (command === "run") {
   // last check.
   process.exit(process.exitCode ?? 0);
 } else if (command === "free-port") freePort();
-else refuse(`unknown command ${command ?? "(none)"}: run or free-port`);
+else if (command === "chromium") process.stdout.write(`${playwrightChromium()}\n`);
+else refuse(`unknown command ${command ?? "(none)"}: run, free-port or chromium`);

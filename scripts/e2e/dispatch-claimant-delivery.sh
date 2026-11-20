@@ -8,9 +8,9 @@
 # reads which `notifications.agent.*` topics carried each event's envelope, `dispatch-<event id>`
 # (dispatch-claimant-delivery.ts beside this script). The mention cases also prove that a person's
 # new comment mentioning a session skips that session's own copy only when the mention's send
-# landed (attempt.leftToMention): the fake listener refuses the send to make it fail. Each case
-# prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; every case runs, and any FAIL
-# exits 1.
+# landed (attempt.leftToMention): the fake listener refuses the send to make it fail. Each step and
+# each case prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>`, a case after what it
+# read; every case runs, and any FAIL exits 1. The `envoy-session-stall` job of `ci.yaml` runs it.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh
@@ -32,8 +32,8 @@ check=setup
 
 begin() { check=$1; echo "== $check"; }
 note() { echo "   $*"; }
-pass() { echo "ok $check"; }
-fail() { echo "FAIL $check: $*" >&2; exit 1; }
+pass() { echo "CHECK $check: PASS"; }
+fail() { echo "CHECK $check: FAIL: $*"; exit 1; }
 # What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs, the
 # work directory's once the build makes it.
 evidence=''
@@ -191,6 +191,6 @@ CLAIMANT_E2E_AGENT_TOKEN=$agent_token \
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;
-  1) fail "a case failed (above)" ;;
+  1) fail "a case failed (its CHECK line is above)" ;;
   *) fail "the driver stopped before its cases (status $status)" ;;
 esac

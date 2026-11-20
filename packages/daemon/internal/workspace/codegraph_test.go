@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -311,9 +312,8 @@ esac
 // same case against the real codegraph CLI (not a stub): `.codegraph/` holding only its own
 // generated `.gitignore`, with no database.
 func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli(t *testing.T) {
-	if _, err := exec.LookPath("codegraph"); err != nil {
-		t.Skip("no codegraph CLI on PATH")
-	}
+	_, err := exec.LookPath("codegraph")
+	testprereq.Require(t, err == nil, "daemon-go", "no codegraph CLI on PATH")
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
 		t.Fatal(err)

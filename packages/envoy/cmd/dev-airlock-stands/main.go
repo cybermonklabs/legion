@@ -17,17 +17,15 @@
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
 //	dev-airlock-stands enroll-pod --url <broker> --token-file <path> --pod-token-file <path>
 //	                   --pod-uid <uid> --thumbprint <thumbprint> [--service <name>] [--session <id>]
-//	dev-airlock-stands probe-private
-//	dev-airlock-stands probe-bound
 //	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy-file <path>] [--header-file <path>]
 //	                   [--host <name>] ...
 //
-// The stack and its checks need five more small things of their own, and they are modes of this
+// The stack and its check need three more small things of their own, and they are modes of this
 // one command rather than commands of their own so that it builds one binary: `front`, one TCP
 // address in front of several (front.go); `enroll-pod`, the two calls that enrol a pod session
-// (enroll.go); and the three Go clients the checks drive, `probe-private` and `probe-bound`
-// (probe.go) and `load` (load.go), which are here so that CI compiles and vets them. With no
-// subcommand it serves the stands, which is what the rest of this comment is about.
+// (enroll.go); and `load` (load.go), the Go client check k9 drives, which is here so that CI
+// compiles and vets it. With no subcommand it serves the stands, which is what the rest of this
+// comment is about.
 //
 // A stand is named s, t, github, google, microsoft, aws, model, dispatch or metadata. Each
 // binds 127.0.0.1 on a port the operating system picks unless --address names one, and each
@@ -259,10 +257,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runFront(ctx, args[1:], stdout, stderr)
 		case "enroll-pod":
 			return runEnrollPod(ctx, args[1:], stdout, stderr)
-		case "probe-private":
-			return runProbePrivate(args[1:], stdout, stderr)
-		case "probe-bound":
-			return runProbeBound(args[1:], stdout, stderr)
 		case "load":
 			return runLoad(ctx, args[1:], stdout, stderr)
 		}

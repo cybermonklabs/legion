@@ -780,3 +780,46 @@ func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 		}
 	}
 }
+
+// The implementer, the tester and the reviewer build from, test against and review against the
+// plan at the newest version the plan review approved, and not at the version the planner's
+// handoff names or at a newer revision no review approved. A one-time run on a real model
+// measured which wording a worker follows (#3108); this holds the wording that run chose in the
+// prompt each of the three roles is launched with. The prompt is composed as a launch composes it
+// (New, then Compose, then the parts read in order from the snapshot), so the rule is read where
+// the role reads it: the role's own part says to read that version first, and the daemon's part
+// every worker shares says how to find it, to build from it rather than from a newer one, and to
+// read it again before each task. The match runs over a body whose whitespace is collapsed to
+// one space, since a part hard-wraps.
+func TestTheWorkersThatBuildFromThePlanAreToldToReadItsNewestApprovedVersion(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rule := []string{
+		"Read the plan first: it is the issue's `plan.md` at the newest version the plan review approved",
+		"The plan you build from is `plan.md` at the newest version the plan review approved",
+		"A newer version that the `Approval:` line does not name is a revision the plan review has not approved: build from the approved version and not from that one",
+		"Read `plan.md` again before each task of the plan you begin and before you write your handoff",
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
+		parts, err := composer.Compose(role, false)
+		if err != nil {
+			t.Fatalf("Compose(%s): %v", role, err)
+		}
+		var prompt strings.Builder
+		for _, path := range parts.RolePromptPaths {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read the %s prompt part %s: %v", role, path, err)
+			}
+			prompt.Write(body)
+		}
+		text := foldWhitespace(prompt.String())
+		for _, sentence := range rule {
+			if !strings.Contains(text, sentence) {
+				t.Errorf("the %s prompt does not carry %q", role, sentence)
+			}
+		}
+	}
+}

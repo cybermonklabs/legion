@@ -24,14 +24,13 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/migrationid"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	databaseURL := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
+	testprereq.Require(t, databaseURL != "", "envoy-go-race", "DISPATCH_TEST_DATABASE_URL must be set to run Postgres store tests")
 	return databaseURL
 }
 

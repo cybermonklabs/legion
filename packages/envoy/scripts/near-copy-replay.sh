@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+# legion: tool - exports one project's history of creates from a Dispatch server, read-only, as the input of BenchmarkNearCopyRefusalReplay, which a person who sets the near-copy bars runs on it.
 # Copies one project's history from a Dispatch server into a JSONL file, for
-# TestNearCopyRefusalReplay (internal/dispatch/api) to replay the near-copy refusal over: it walks
-# the project forward in time, applies every title, spec, status and parent change up to each
-# create, and runs the real gate for that create against the project as it stood then.
+# BenchmarkNearCopyRefusalReplay (internal/dispatch/api) to replay the near-copy refusal over: it
+# walks the project forward in time, applies every title, spec, status and parent change up to each
+# create, and runs the real gate for that create against the project as it stood then. Run the
+# replay with DISPATCH_NEARCOPY_CORPUS=<output.jsonl> go test -count=1 -run '^$'
+# -bench '^BenchmarkNearCopyRefusalReplay$' -benchtime 1x -timeout 60m ./internal/dispatch/api
+# from packages/envoy, beside DISPATCH_TEST_DATABASE_URL.
 #
 # This is its own record set, not related-recall.sh's. That harness is run at main as well as at a
 # head, and main's reader fails on a record kind it does not know, so neither script may read the

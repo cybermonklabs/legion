@@ -8,6 +8,7 @@ import {
   type Cleanup,
   isSummarization,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
@@ -32,23 +33,13 @@ import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 // stand-in gateway, each held until the test answers it.
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
-// supplies both.
+// supplies both (`ompNatsGuard`).
 // This file runs in a Bun process of its own (the package's `test` script): envoy.test.ts's
 // `mock.module("nats", …)` replaces `nats` for the whole process, and a file loaded after it gets
 // the mock's `connect`, which the check below turns into one clear failure.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+const { skip, setup } = ompNatsGuard("pi-envoy");
 /** The Dispatch token the session is handed. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
 
 /** How long a case waits for one thing the session owes it before failing on it. */
 const DEADLINE_MS = 30_000;

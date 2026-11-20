@@ -1,10 +1,22 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/going/goingtest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // azureChatEnvironment is a boot environment (signInEnvironment's) whose answerer is a chat
@@ -214,5 +226,156 @@ func TestNewAnswererBuildsEachPlaceAndLogsTheOneLine(t *testing.T) {
 	want := `level=WARN msg="dispatch: no text model configured, so this server cannot answer questions" setting=DISPATCH_ANSWERER` + "\n"
 	if line := logged.String(); !strings.HasSuffix(line, want) || strings.Count(line, "\n") != 1 {
 		t.Fatalf("logged %q, want the one line %q", line, want)
+	}
+}
+
+// The answerer as a deployment boots it: the built envoy-dispatch reads DISPATCH_ANSWERER=endpoint,
+// its https endpoint, its model and its token file from the environment, and reaches a model
+// served over TLS whose certificate it trusts through SSL_CERT_FILE, as every Go program does,
+// since Dispatch has no setting of its own for one. It logs the one line naming that model, says
+// a model is configured, and a question asked over the API reaches the model on the
+// chat-completions route with the token file's bearer; the answer reaches the reader as text
+// frames, one item frame naming the issue the answer links, and one end frame.
+// TestNewAnswererBuildsEachPlaceAndLogsTheOneLine builds the client inside the test's own process
+// and TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting (api) streams an answer
+// through the routes there; this is the run of the binary itself.
+func TestTheBuiltServerAnswersWithTheModelItsEnvironmentNames(t *testing.T) {
+	database := storetest.Open(t)
+	project := uniqueProjectKey(t, "GO")
+	// The project's first issue, as the create below makes it: the model's reply is written
+	// before the issue exists, and the key the create answers is checked against this one.
+	issueKey := project + "-1"
+	const title = "The pager handover at the end of the night watch"
+	const linkText = "The pager handover"
+	model := goingtest.NewTLSModel(t, goingtest.Reply{
+		Text: "Dispatch holds one issue on this: [" + linkText + "](/issues/" + issueKey + ").",
+	})
+	scratch := t.TempDir()
+	certificate := filepath.Join(scratch, "model.pem")
+	if err := os.WriteFile(certificate, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: model.Certificate.Raw}), 0o600); err != nil {
+		t.Fatalf("write the model's certificate: %v", err)
+	}
+	const token = "answerer-boot-test-token"
+	tokenFile := filepath.Join(scratch, "chat-token")
+	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("write the token file: %v", err)
+	}
+	const chatModel = "answerer-boot-test-model"
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{
+		"SSL_CERT_FILE":            certificate,
+		"DISPATCH_ANSWERER":        placeAnswererEndpoint,
+		"DISPATCH_CHAT_ENDPOINT":   model.URL,
+		"DISPATCH_CHAT_MODEL":      chatModel,
+		"DISPATCH_CHAT_TOKEN_FILE": tokenFile,
+	}})
+	process.waitHealthy(t)
+
+	identity := placeAnswererEndpoint + ":" + strings.TrimPrefix(model.URL, "https://") + "/" + chatModel
+	if !process.logged(`msg="dispatch: answers questions with a configured text model"`, "place="+placeAnswererEndpoint, "identity="+identity) {
+		t.Fatalf("the server logged no line naming its model %s:\n%s", identity, process.Output.String())
+	}
+	if capability := strings.TrimSpace(string(process.call(t, http.MethodGet, "/api/v1/going/capability", "", http.StatusOK))); capability != `{"model_configured":true}` {
+		t.Fatalf("the capability route answered %s, want a configured model", capability)
+	}
+
+	process.createProject(t, project, "Answerer boot")
+	spec := "# The pager handover\n\nThe night watch hands the pager to the morning shift before it leaves, and writes one handover line naming every alarm it silenced.\n"
+	if key, _ := process.createIssueIn(t, project, title, spec); key != issueKey {
+		t.Fatalf("the issue was created as %s, want %s: the model's reply links that key", key, issueKey)
+	}
+	// The question is asked in the title's words: keyword search ands a query's own words, so
+	// that puts the issue among the hits the answerer shows the model.
+	asked := process.call(t, http.MethodPost, "/api/v1/going/requests",
+		fmt.Sprintf(`{"words":%q,"project":%q}`, "What is the pager handover at the end of the night watch?", project), http.StatusCreated)
+	var run struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(asked, &run); err != nil || run.ID == "" {
+		t.Fatalf("the question answered no run id: %v: %s", err, asked)
+	}
+
+	frames := readAnswerStream(t, process, run.ID)
+	var texts, items, ends int
+	for _, frame := range frames {
+		switch frame.name {
+		case contracts.GoingEventText:
+			texts++
+		case contracts.GoingEventItem:
+			items++
+			var item struct {
+				ID   string `json:"id"`
+				Href string `json:"href"`
+			}
+			if err := json.Unmarshal([]byte(frame.data), &item); err != nil || item.ID != issueKey || item.Href != "/issues/"+issueKey {
+				t.Errorf("the item frame is %s, want the issue %s at /issues/%s", frame.data, issueKey, issueKey)
+			}
+		case contracts.GoingEventEnd:
+			ends++
+		}
+	}
+	if texts == 0 || items != 1 || ends != 1 || frames[len(frames)-1].name != contracts.GoingEventEnd {
+		t.Errorf("the stream carried %d text, %d item and %d end frames, ending on %q, want text, one item and one end last: %+v",
+			texts, items, ends, frames[len(frames)-1].name, frames)
+	}
+
+	requests := model.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("the model served %d calls, want the one this answer needed", len(requests))
+	}
+	call := requests[0]
+	if call.Path != "/chat/completions" || call.Authorization != "Bearer "+token || call.Model != chatModel {
+		t.Errorf("the model was called at %s with %q for %q, want /chat/completions with the token file's bearer for %s",
+			call.Path, call.Authorization, call.Model, chatModel)
+	}
+}
+
+// answerFrame is one frame of an answer's stream: its event's name and its data.
+type answerFrame struct {
+	name, data string
+}
+
+// readAnswerStream reads the stream of the run id from the process, frame by frame, until its
+// terminal frame, and fails the test when the stream stops before one.
+func readAnswerStream(t *testing.T, process *dispatchProcess, id string) []answerFrame {
+	t.Helper()
+	// Longer than one run's window, so a stream that never ends fails here rather than hanging.
+	ctx, stop := context.WithTimeout(context.Background(), contracts.GoingRunWindow+30*time.Second)
+	defer stop()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, process.url("/api/v1/going/requests/"+id+"/stream"), nil)
+	if err != nil {
+		t.Fatalf("build the stream request: %v", err)
+	}
+	request.Header.Set("X-Dispatch-User", dispatchTestLogin)
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("open the stream: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the stream answered %d, want 200", response.StatusCode)
+	}
+	var frames []answerFrame
+	var frame answerFrame
+	reader := bufio.NewReader(response.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("the stream stopped after %d frames, with no end or error frame (%v): %+v", len(frames), err, frames)
+		}
+		switch line = strings.TrimSuffix(line, "\n"); {
+		case line == "":
+			if frame.name != "" {
+				frames = append(frames, frame)
+				if frame.name == contracts.GoingEventEnd || frame.name == contracts.GoingEventError {
+					return frames
+				}
+			}
+			frame = answerFrame{}
+		case strings.HasPrefix(line, "event: "):
+			frame.name = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			frame.data = strings.TrimPrefix(line, "data: ")
+		}
 	}
 }

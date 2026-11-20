@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // The two ids of the measured case. `ci-fixes` sorts before `cicd` by the bytes, since `-` is
@@ -38,9 +39,7 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 	if err := database.Pool.QueryRow(ctx, `select count(*) > 0 from pg_collation where collprovider = 'i'`).Scan(&icu); err != nil {
 		t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
 	}
-	if !icu {
-		t.Skip("a PostgreSQL built with ICU must serve this test: ICU is what holds the priority ids under one known collation weighing punctuation last, an order the Go merge of the advances lists does not follow")
-	}
+	testprereq.Require(t, icu, "envoy-go-race-api", "a PostgreSQL built with ICU must serve this test: ICU is what holds the priority ids under one known collation weighing punctuation last, an order the Go merge of the advances lists does not follow")
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
 	// glibc's en_US was measured to follow. The walk orders and groups priority_tuples.to_id and
 	// joins it to priority_nodes.id, so both take the collation: one of them alone would leave the

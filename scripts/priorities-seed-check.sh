@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads the production priorities board back against the table scripts/priorities-seed.ts was pointed at, for the tester who decides that seed's production check after the merge.
 # Reads the priorities board back after scripts/priorities-seed.ts has run, against the table that
 # seed was pointed at: every row of that table whose `Where` cell does not begin with the word DONE
 # stands on the board, the priorities run in the table's order, and every issue a priority's record

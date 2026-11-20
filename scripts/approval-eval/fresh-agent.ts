@@ -1,3 +1,4 @@
+// legion: tool - scores a fresh agent given this checkout's approval-review skill against the same agent given no skill over the report slice, for the person who decides whether a change to that skill helps.
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -83,9 +84,11 @@ import {
  * its numbers carry a wider interval than the round's over the same count of cases.
  *
  * The readout is the two agreements with their intervals, the two error kinds apart, the paired
- * difference with its exact McNemar test, and the verdict: the check passes when the skill arm
+ * difference with its exact McNemar test, and check C6's reading: it passes when the skill arm
  * beats the control by more than the interval of the difference, and fails when it does not. The
- * control's number is reported whatever it is.
+ * control's number is reported whatever it is. That reading is printed and fails no run: the
+ * difference a change to the skill must reach is the decision of the person who runs this, who
+ * passes it as `--least-gain`, and only then does a run whose interval does not clear it exit 1.
  */
 
 /** The model both arms run on, which is the model the round's numbers were measured on. */
@@ -148,11 +151,14 @@ const KIND = "approval";
 const ROUND_SKILL_RECIPE = "many-shot";
 const ROUND_CONTROL_RECIPE = "bare";
 
-/** The check passed: the skill arm beat the control by more than the interval of the difference. */
-const EXIT_PASSES = 0;
+/**
+ * The run finished and printed its reading, and where the runner passed `--least-gain`, the lower
+ * end of the paired difference's interval is above it.
+ */
+const EXIT_READ = 0;
 
-/** The check failed, which is a finished run and a reading, not an error. */
-const EXIT_FAILS = 1;
+/** The runner passed `--least-gain`, and the lower end of the interval is not above it. */
+const EXIT_UNDER_LEAST_GAIN = 1;
 
 /** The run could not be made at all. */
 const EXIT_CANNOT_RUN = 2;
@@ -165,7 +171,7 @@ const EXIT_NO_VERDICT = 3;
 
 const USAGE = `usage: bun scripts/approval-eval/fresh-agent.ts --corpus <dir> --round <dir> \\
   --out <dir> [--cases <n>] [--neighbours <with|without>] [--answers <what>] [--omp <path>] \\
-  [--concurrency <n>]
+  [--concurrency <n>] [--least-gain <difference>]
 
 Options:
   --corpus <dir>       Required. The corpus directory the cases are read from.
@@ -185,9 +191,15 @@ Options:
                        only the cases they do not answer. Default ${DEFAULT_ANSWERS}.
   --omp <path>         The agent binary. Default ${DEFAULT_OMP}.
   --concurrency <n>    How many agent runs at once. Default ${DEFAULT_CONCURRENCY}.
+  --least-gain <d>     A difference from -1 to 1 the runner holds the skill arm to: the run exits
+                       ${EXIT_UNDER_LEAST_GAIN} unless the lower end of the paired difference's interval is above it.
+                       Check C6 is --least-gain 0. Without it the reading is printed and no
+                       difference fails the run.
 
-Exits ${EXIT_PASSES} when the check passes, ${EXIT_FAILS} when it fails, ${EXIT_NO_VERDICT} when answers of the model fault (a run on
-another model than the one asked, or one that reported none) leave it no verdict, and ${EXIT_CANNOT_RUN} when it could not be run.`;
+Exits ${EXIT_READ} when the run read its pairs (and they cleared --least-gain where one was passed),
+${EXIT_UNDER_LEAST_GAIN} when --least-gain was passed and the interval does not clear it, ${EXIT_NO_VERDICT} when answers of
+the model fault (a run on another model than the one asked, or one that reported none) leave it
+no reading, and ${EXIT_CANNOT_RUN} when it could not be run.`;
 
 /** The run cannot be made over these cases, or what it read is not what it needs. */
 export class FreshError extends CannotRunError {
@@ -413,6 +425,8 @@ interface Flags {
   neighbours: Shape;
   omp: string;
   concurrency: number;
+  /** The difference the runner holds the skill arm to, and null where it holds it to none. */
+  leastGain: number | null;
 }
 
 /**
@@ -1259,6 +1273,7 @@ function readFlags(argv: readonly string[]): Flags {
     answers?: string;
     omp?: string;
     concurrency?: string;
+    "least-gain"?: string;
   };
   try {
     ({ values } = parseArgs({
@@ -1272,6 +1287,7 @@ function readFlags(argv: readonly string[]): Flags {
         answers: { type: "string" },
         omp: { type: "string" },
         concurrency: { type: "string" },
+        "least-gain": { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -1293,7 +1309,20 @@ function readFlags(argv: readonly string[]): Flags {
     answers: answersOf(values.answers),
     omp: executableOf(values.omp?.trim() || DEFAULT_OMP, process.env.PATH),
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
+    leastGain: leastGainOf(values["least-gain"]),
   };
+}
+
+/** The difference `--least-gain` names, or null where none was passed; one outside -1 to 1 is refused. */
+function leastGainOf(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const difference = Number(value.trim());
+  if (value.trim() === "" || !Number.isFinite(difference) || difference < -1 || difference > 1) {
+    throw new UsageError(
+      `--least-gain takes a difference from -1 to 1, and not ${value}\n\n${USAGE}`
+    );
+  }
+  return difference;
 }
 
 /**
@@ -1429,7 +1458,14 @@ async function fresh(flags: Flags): Promise<number> {
   // The run wrote the file as it ended; this reads it back for the shape it did not make.
   console.log(reportLines(report, await readShapes(out)).join("\n"));
   if ((report.modelFaults ?? 0) > 0) return EXIT_NO_VERDICT;
-  return report.verdict.passes ? EXIT_PASSES : EXIT_FAILS;
+  if (flags.leastGain === null) return EXIT_READ;
+  const lower = report.paired.interval.lower;
+  const clears = lower > flags.leastGain;
+  console.log(
+    `least gain        the interval's lower end ${signed(lower)} is ${clears ? "" : "not "}above ` +
+      `the runner's ${signed(flags.leastGain)}`
+  );
+  return clears ? EXIT_READ : EXIT_UNDER_LEAST_GAIN;
 }
 
 async function main(argv: readonly string[]): Promise<number> {

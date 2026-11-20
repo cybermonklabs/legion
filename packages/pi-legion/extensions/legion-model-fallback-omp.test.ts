@@ -36,7 +36,7 @@ import { connect, headers, type NatsConnection, StringCodec } from "nats";
 // without one, and its claim boot then ends the session (INFRA-771). A run without both skips,
 // except on GitHub Actions, where a skip would hide the only run of the check on the host that
 // ships it (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-legion");
 
 /** The pane's own models: the one every model role names, the one its chain steps to, and the
  * one in between, for the case whose chain has two steps. */
@@ -55,13 +55,14 @@ const PROVIDERS: readonly StandinProvider[] = [
  * The pane's overlay, in the shape INFRA's own operator overlay carries
  * (deploy/kubernetes/operator-route/overlay.yml, docs/kubernetes.md "Operator configuration"):
  * the model fallback on, the chain the case runs under, and no revert of the host's own — the
- * return is the plugin's.
+ * return is the plugin's. `retry` lines go beside those, as the rate-limited case's do.
  */
-function overlay(chains: readonly string[]): readonly string[] {
+function overlay(chains: readonly string[], retry: readonly string[] = []): readonly string[] {
   return [
     "retry:",
     "  modelFallback: true",
     "  fallbackRevertPolicy: never",
+    ...retry,
     "  fallbackChains:",
     ...chains,
   ];
@@ -91,6 +92,14 @@ const COOLDOWN_MS = 4_000;
  * covered by it and is not meant to be - the case measures the return from the resumed life's
  * first served turn, and reads the restored arming from where that turn went (below). */
 const RESUME_COOLDOWN_MS = 12_000;
+
+/** The cooldown of the rate-limited case: long enough that a return the cooldown timed, rather than
+ *  the host's own suppression, is told apart from one the suppression timed. */
+const RATE_LIMIT_COOLDOWN_MS = 60_000;
+
+/** The seconds the stand-in's 429 asks the host to wait, which is how long the host suppresses the
+ *  model it rate-limited. */
+const RETRY_AFTER_S = 1;
 
 /** The cooldown the background job's case arms. The job's assignment, two requests the stand-in
  * answers at once, has to end inside it for the wait to end while the pane is idle; the case
@@ -128,6 +137,20 @@ function refuses(id: string, refusal: Refusal = {}): Response {
   return new Response(refusalStream(id, refusal), {
     headers: { "content-type": "text/event-stream" },
   });
+}
+
+/** The gateway's answer to one turn: a rate limit, asking the host to wait `RETRY_AFTER_S`. */
+function rateLimited(): Response {
+  return new Response(
+    JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error", message: "Rate limit reached" },
+    }),
+    {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": String(RETRY_AFTER_S) },
+    }
+  );
 }
 
 /** The text of every user message in a Messages request, joined: which assignment the turn that
@@ -208,6 +231,8 @@ async function fallbackPane(options: {
   readonly cooldownMs?: number;
   /** The `fallbackChains` lines of the pane's overlay; `ONE_STEP` by default. */
   readonly chains?: readonly string[];
+  /** Further `retry` lines of the pane's overlay; none by default. */
+  readonly retry?: readonly string[];
   readonly whileUp?: (life: IdleLife) => Promise<void>;
 }): Promise<FallbackPane> {
   const { binary, nats } = setup();
@@ -303,7 +328,7 @@ async function fallbackPane(options: {
       issue: "FALL-1",
       nats,
       prompt: options.prompt,
-      config: overlay(options.chains ?? ONE_STEP),
+      config: overlay(options.chains ?? ONE_STEP, options.retry),
       providers: PROVIDERS,
       env: {
         LEGION_REFUSAL_COOLDOWN_MS: String(options.cooldownMs ?? COOLDOWN_MS),
@@ -468,6 +493,49 @@ test.skipIf(skip)(
     expect(userText(pane.turns()[1] as Request)).toContain("Carry on.");
   },
   180_000
+);
+
+test.skipIf(skip)(
+  "a rate limit with retry-after walks the chain under rateLimitWalksChain, and the session comes back when the host's suppression ends rather than at the cooldown",
+  async () => {
+    /** When the stronger model first answered nothing but 429s and the weaker one took over. */
+    let fellBack = 0;
+    /** When the second assignment's turn must stop pinging the gateway and let the run settle. */
+    let until = 0;
+    const pane = await fallbackPane({
+      cooldownMs: RATE_LIMIT_COOLDOWN_MS,
+      // Off in Oh My Pi: on, a rate limit is admitted to the chain consult once the host has spent
+      // its same-model retries, rather than deferred to another attempt on the same model.
+      retry: ["  rateLimitWalksChain: true"],
+      prompt: ["Start FALL-1.", "Keep working."],
+      answer: (model) => {
+        if (fellBack === 0 && model === "strong-model") return rateLimited();
+        if (fellBack === 0) {
+          fellBack = Date.now();
+          until = fellBack + RETRY_AFTER_S * 1_000 + RATE_LIMIT_COOLDOWN_MS / 4;
+        }
+        return Date.now() < until
+          ? replies([sleeps(1)], `ping_${Date.now()}`)
+          : replies([{ type: "text", text: "Done." }], `msg_${Date.now()}`);
+      },
+    });
+
+    expect(pane.models()[0]).toBe("strong-model");
+    expect(fellBack).toBeGreaterThan(0);
+    expect(pane.models()).toContain("weak-model");
+    // A rate limit is no refusal: the plugin arms the return as any other fallback's, due at once,
+    // and leaves the wait to the host's own suppression of the model it rate-limited.
+    const armed = (await pane.cooldowns()).find((state) => state.arming !== undefined)?.arming;
+    expect(armed).toMatchObject({ restoreTo: STRONG, cause: "other" });
+    const back = pane.served.find((turn) => turn.at >= fellBack && turn.model === "strong-model");
+    expect(back).toBeDefined();
+    // Back on the stronger model on the host's clock, the seconds its 429 asked for, and well
+    // before the cooldown a refusal would have waited out.
+    expect((back?.at ?? Number.POSITIVE_INFINITY) - fellBack).toBeLessThan(
+      RATE_LIMIT_COOLDOWN_MS / 2
+    );
+  },
+  300_000
 );
 
 test.skipIf(skip)(

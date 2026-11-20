@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - turns measured search cases into the hash-checked descriptors cases.json carries, for the person who rebuilds the keyword-search measurement's case set against a new harvest.
 """Turn a set of measured cases into descriptors this repository can carry.
 
 usage: build_cases.py --corpus $TMPDIR/<dir> --cases <cases.json> --out cases.json

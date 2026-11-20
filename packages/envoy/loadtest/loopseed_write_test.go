@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -785,13 +786,13 @@ func TestLoopSeedWriteResumes(t *testing.T) {
 // --- a live Postgres -------------------------------------------------------------------------
 
 // loopTestPG is the Postgres a test that needs one writes to: $LEGION_TEST_PG_DSN, the pod's own
-// test server. A test skips without it, since this package's checks run where there is none.
+// test server. A test skips without it, since this package's checks run where there is none, and
+// fails without it on GitHub Actions, where ci.yaml's envoy-go job must set it
+// (testprereq.Require).
 func loopTestPG(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN must be set to run the loop seed's Postgres tests")
-	}
+	testprereq.Require(t, dsn != "", "envoy-go", "LEGION_TEST_PG_DSN must be set to run the loop seed's Postgres tests")
 	return dsn
 }
 

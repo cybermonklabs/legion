@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for INFRA-3915: every child that starts runs under an architect of its
 // own. A child's first phase start starts that architect beside the child's planner, whichever
 // door brought the child in: its architect's release_children, a person's todo under a live tree,
@@ -13,9 +11,9 @@
 // above it is told, the child's notices go there too, and the child's next phase start retries the
 // claim in the same session with fresh budgets. A parked child's architect is suspended with the
 // child, and the child's rerun resumes that session.
-// scripts/e2e/sub-architect.sh builds this driver with `-tags e2e` and owns the nats-server and
-// the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
-// whole-daemon live proof.
+// The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
+// PostgreSQL and the package's test NATS server, with the job's git and jj 0.38 or later, which
+// the daemon's boot refuses to start without.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
@@ -29,11 +27,11 @@
 // launches the fake runtime was asked for, the daemon's own log records, and, for an issue's
 // recorded parent, which no route shows, the daemon's own record of it in its PostgreSQL.
 //
-// What the proof stands in for lies outside the change. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. Dispatch is liveDispatch, the board the
+// What the proof stands in for lies outside the change. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). Dispatch is liveDispatch, the board the
 // package's whole-daemon live proofs share (dispatch_board_test.go), fronted by linkedDispatch,
-// which adds to each read of an issue the blocked_by links the driver gave it, and Envoy's
-// listener is the package's noticeListener. GitHub is child_adoption_live_test.go's
+// which adds to each read of an issue the blocked_by links the driver gave it, and Envoy's listener
+// is the package's noticeListener. GitHub is child_adoption_live_test.go's
 // childAdoptionGitHub, which knows each repository's default branch and takes each issue branch
 // the workflow creates. No agent runs: every claim is launched by the package's fake runtime
 // (subArchitectRuntime, which refuses the relaunches the failure step names), and the driver plays
@@ -64,7 +62,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -116,7 +113,6 @@ type subArchitectLive struct {
 // TestEveryChildThatStartsRunsUnderItsOwnArchitectLive drives the seven steps of the proof
 // against one booted daemon.
 func TestEveryChildThatStartsRunsUnderItsOwnArchitectLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newSubArchitectLive(t)
 	r.step("release", r.releaseStep)
 	r.step("grandchild", r.grandchildStep)
@@ -127,11 +123,11 @@ func TestEveryChildThatStartsRunsUnderItsOwnArchitectLive(t *testing.T) {
 	r.step("rerun", r.rerunStep)
 }
 
-// newSubArchitectLive boots the daemon over the script's broker with the live tree recorded, and
-// registers and readies the tree's architect.
+// newSubArchitectLive boots the daemon over the package's test broker with the live tree recorded,
+// and registers and readies the tree's architect.
 func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/sub-architect.sh")
+	proof := newLiveProof(t)
 	proof.cfg.AdmissionCap = subArchitectCap
 	links := &linkedDispatch{board: proof.board, links: map[string][]string{}}
 	front := httptest.NewServer(links)

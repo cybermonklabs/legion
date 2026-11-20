@@ -2,8 +2,8 @@
 # packages/envoy/scripts/airlock-lean-axioms.sh
 #
 # Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the one copy
-# of that check: ci.yaml's airlock-lean job runs it, and so does check k15 of airlock-check.sh,
-# so what the model must rest on is written here once.
+# of that check, which ci.yaml's airlock-lean job runs, so what the model must rest on is written
+# here once.
 #
 # `#print axioms` names, per theorem, the axioms its proof rests on. propext, Classical.choice
 # and Quot.sound are Lean's own three, which its kernel admits; any other name is an assumption
@@ -15,24 +15,22 @@
 # that printed to its standard output, so that a reader of either log sees the axioms. What is
 # wrong goes to standard error and exits 1: an axiom outside the three, a sorryAx, a count of
 # printed theorems other than the number of `#print axioms` lines in Axioms.lean, or a
-# `lake env lean` that failed. --axioms-file keeps a copy of the axiom text for a caller that
-# reads it back, which is what k15 does for its result block.
+# `lake env lean` that failed.
 #
-# Usage: airlock-lean-axioms.sh <lean project directory> [--axioms-file <path>]
+# Usage: airlock-lean-axioms.sh <lean project directory>
 #        --help prints this usage. A usage error exits 2. It needs lake from the Lean toolchain
 #        this environment names.
 set -uo pipefail
 
 usage() {
 	cat <<'EOF'
-usage: airlock-lean-axioms.sh <lean project directory> [--axioms-file <path>]
+usage: airlock-lean-axioms.sh <lean project directory>
 
 Runs `lake env lean Axioms.lean` in that directory, prints what it printed, and exits non-zero
 naming any axiom outside propext, Classical.choice and Quot.sound, any sorryAx, and a count of
 printed theorems other than the number of `#print axioms` lines in Axioms.lean.
 
   <lean project directory>  where lakefile.toml and Axioms.lean are
-  --axioms-file <path>      keep a copy of the axiom text here as well
   --help                    print this
 
 It exits 0 when every theorem rests on those three alone, 1 when one does not, and 2 on a usage
@@ -41,18 +39,8 @@ EOF
 }
 
 LEAN_DIR=""
-AXIOMS_FILE=""
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--axioms-file)
-		if [ $# -lt 2 ]; then
-			echo "airlock-lean-axioms: --axioms-file wants a path" >&2
-			usage >&2
-			exit 2
-		fi
-		AXIOMS_FILE="$2"
-		shift
-		;;
 	--help | -h)
 		usage
 		exit 0
@@ -100,9 +88,6 @@ trap 'rm -f "$AXIOMS"' EXIT
 (cd "$LEAN_DIR" && lake env lean Axioms.lean) >"$AXIOMS" 2>&1
 LAKE_STATUS=$?
 cat "$AXIOMS"
-if [ -n "$AXIOMS_FILE" ]; then
-	cat "$AXIOMS" >"$AXIOMS_FILE"
-fi
 
 BAD=0
 if [ "$LAKE_STATUS" -ne 0 ]; then

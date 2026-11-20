@@ -17,21 +17,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
-// The share volumes live proof (scripts/e2e/share-volumes-kind.sh, whose driver is
-// share_volumes_live_test.go, built with -tags e2e) writes its legion.yaml files with the functions
-// here, through writeBurstableLiveConfig, and builds its Sandbox runtime with burstableLiveRuntime.
-// They are untagged so `go test` holds them to the loader's and the runtime's current contracts on
-// every run, as the Burstable proof's are.
+// The share volumes live test (share_volumes_live_test.go, which the kind job runs) writes its
+// legion.yaml files with the functions here, through writeBurstableLiveConfig, and builds its
+// Sandbox runtime with burstableLiveRuntime. They are compiled and run by `go test` on every run,
+// so the loader's and the runtime's current contracts hold them, as the Burstable test's are held.
 
-// shareLiveClaim is the PersistentVolumeClaim the proof's script makes in the legion namespace,
-// bound to a PersistentVolume of its NFS server's `/team` export.
+// shareLiveClaim is the PersistentVolumeClaim the live test makes in the legion namespace, bound
+// to a PersistentVolume of the rig's NFS server's `/team` export.
 const shareLiveClaim = "team-share"
 
-// shareLiveCases are the proof's four deployments, each one `runtime.kubernetes.pod` block over
-// the script's NFS server at server: `shares`, whose issue pod the driver launches, mounting the
+// shareLiveCases are the test's four deployments, each one `runtime.kubernetes.pod` block over
+// the rig's NFS server at server, with the small reservations of every kind test's file
+// (kindLiveIssue, kindLiveCache): `shares`, whose issue pod the test launches, mounting the
 // operator's claim read-only at /mnt/team and the server's `/scratch` export writable at
-// /mnt/scratch; and three the script runs `legion probe-boot` on, each with one share no pod can
-// mount — a claim that does not exist, an export the server does not have, and an export of
+// /mnt/scratch; and three the test runs `legion probe-boot`'s probe on, each with one share no pod
+// can mount — a claim that does not exist, an export the server does not have, and an export of
 // shareLiveSilentServer, an address no server answers.
 func shareLiveCases(server string) []struct{ name, project, pod string } {
 	block := func(claimName, server, exportPath string) string {
@@ -44,7 +44,7 @@ func shareLiveCases(server string) []struct{ name, project, pod string } {
       volume_mounts:
         - {volume: team, mount_path: /mnt/team}
         - {volume: scratch, mount_path: /mnt/scratch, read_only: false}
-`, claimName, server, exportPath)
+`, claimName, server, exportPath) + kindLiveIssue + kindLiveCache
 	}
 	return []struct{ name, project, pod string }{
 		{"shares", "SHARE", block(shareLiveClaim, server, "/scratch")},
@@ -74,10 +74,10 @@ func shareLivePod(claimName, server, exportPath string) config.PodConfig {
 	}
 }
 
-// Each of the share proof's legion.yaml files passes the daemon's loader into the pod block the
-// proof expects, and builds its runtime through sandboxOptions and sandbox.New against an API
+// Each of the share test's legion.yaml files passes the daemon's loader into the pod block the
+// test expects, and builds its runtime through sandboxOptions and sandbox.New against an API
 // server standing in for the kind cluster; the launch passes the spawn-spec checks. Every step is
-// the one the driver takes before it reaches the cluster.
+// the one the live test takes before it reaches the cluster.
 func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
@@ -110,7 +110,7 @@ func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger()); err != nil {
+			if _, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, nil, quietLogger()); err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}
 			project, err := claim.ProjectToken(cfg.Project)

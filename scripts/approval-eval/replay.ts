@@ -1,3 +1,4 @@
+// legion: tool - prints one corpus case as the person saw it when they answered, read from Dispatch at the version the ask named, for a person who reads why an approval-eval arm disagreed with that answer.
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";

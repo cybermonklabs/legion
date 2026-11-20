@@ -5,13 +5,15 @@
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <multiprocess> <visual>
+#   .github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <postgres-rows> \
+#     <recordings> <multiprocess> <embedder> <visual>
 #
-# The five are the results of five of the six jobs the merge job needs, in that order:
+# The eight are the results of the eight jobs the merge job needs, in that order:
 # `${{ needs.binaries.result }}`, `${{ needs.shard.result }}`, `${{ needs.alone.result }}`,
-# `${{ needs.multiprocess.result }}` and `${{ needs.visual.result }}`; the sixth, embedder, is
-# not passed. Each is `success`, `skipped`, `failure` or `cancelled`, and the last two are what
-# this script fails on, by job name.
+# `${{ needs.postgres-rows.result }}`, `${{ needs.recordings.result }}`,
+# `${{ needs.multiprocess.result }}`, `${{ needs.embedder.result }}` and
+# `${{ needs.visual.result }}`. Each is `success`, `skipped`, `failure` or `cancelled`, and the
+# last two are what this script fails on, by job name.
 #
 # They are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
@@ -24,24 +26,25 @@
 # The runner sets $RUNNER_TEMP for every step.
 #
 # Run from anywhere, with $RUNNER_TEMP set:
-#   .github/scripts/dispatch-browser-verdict.sh success success skipped skipped success
+#   .github/scripts/dispatch-browser-verdict.sh success success skipped success skipped skipped success skipped
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Fail when a leg failed or the
 # merged report holds a failed row".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-verdict.sh takes the results of the five jobs it reports on:" \
-    ".github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <multiprocess>" \
-    "<visual>. It was given: $*"
+  echo "::error::dispatch-browser-verdict.sh takes the results of the eight jobs it reports on:" \
+    ".github/scripts/dispatch-browser-verdict.sh <binaries> <shard> <alone> <postgres-rows>" \
+    "<recordings> <multiprocess> <embedder> <visual>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 5 ] || usage "$@"
+[ "$#" -eq 8 ] || usage "$@"
 
 failed=0
 for pair in "binaries:$1" "shard:$2" \
-  "alone:$3" "multiprocess:$4" \
-  "visual:$5"; do
+  "alone:$3" "postgres-rows:$4" \
+  "recordings:$5" "multiprocess:$6" \
+  "embedder:$7" "visual:$8"; do
   case "${pair#*:}" in
     success | skipped) ;;
     *)

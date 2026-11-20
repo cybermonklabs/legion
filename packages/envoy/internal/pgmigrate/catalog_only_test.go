@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // catalogOnlyFixtureSQL is the database the census tests of this file judge their rows against,
@@ -101,14 +102,13 @@ func catalogOnlyFixture(rows int) string {
 
 // catalogOnlyDatabase connects to a database of the test's own, loaded with
 // catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names, and skips the test
-// when that variable is unset, as the store's tests do. It does not call testpg.URL, which starts
-// a container when the variable is unset. The database is dropped when the test ends.
+// when that variable is unset, as the store's tests do, or fails it on GitHub Actions
+// (testprereq.Require). It does not call testpg.URL, which starts a container when the variable
+// is unset. The database is dropped when the test ends.
 func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn {
 	t.Helper()
 	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's catalog tests")
-	}
+	testprereq.Require(t, raw != "", "envoy-go", "DISPATCH_TEST_DATABASE_URL must be set to run the census's catalog tests")
 	adminURL, err := url.Parse(raw)
 	if err != nil {
 		// url.Parse's own error quotes the URL, which carries a credential.

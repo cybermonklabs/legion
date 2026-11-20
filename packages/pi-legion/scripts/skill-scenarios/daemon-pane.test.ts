@@ -8,7 +8,7 @@ import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
-const skip = skipWithout("go");
+const skip = skipWithout(["go"], "pi-legion");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
 // directory under its state directory.

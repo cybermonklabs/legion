@@ -63,6 +63,14 @@ jobs:
       - name: Check every Bun install reads .bun-version
         run: .github/scripts/check-bun-version.sh
 
+      # Every test reaches a job ci-ok needs: no build tag, -skip, variable gate, script or
+      # scheduled step leaves one out (the script's header lists the five). It reads the
+      # workflows, .github/test-variables.yaml and the tree, and runs no go, bun or build command,
+      # so it needs only the checkout; on every change, since a test, a step or a row anywhere
+      # can be the one that leaves a test out.
+      - name: Check every test reaches a job ci-ok needs
+        run: .github/scripts/check-test-reach.sh
+
       # This job runs on every change too, and the gate reads only the tree: bun.lock, the
       # browser image's Dockerfile and that image's row.
       - name: Check the browser image's Playwright is the one bun.lock resolves

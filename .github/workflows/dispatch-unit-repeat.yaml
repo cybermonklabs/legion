@@ -95,8 +95,8 @@ name: Dispatch unit suite repeated
 on:
   schedule:
     # Saturday 09:23 UTC, hours from every other schedule of this repository:
-    # dispatch-browser-nightly.yaml's 02:17 and 13:41 daily, e2e.yaml's 04:41 daily and
-    # codeql.yaml's 04:17 on Tuesdays. Nine legs start at once, and a nightly starting beside them
+    # dispatch-browser-nightly.yaml's 02:17 daily and codeql.yaml's 04:17 on Tuesdays. Nine legs
+    # start at once, and a nightly starting beside them
     # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
     - cron: "23 9 * * 6"
   workflow_dispatch:
@@ -131,11 +131,16 @@ jobs:
     # The test step's budget is the matrix's step_minutes. The steps without one, measured together
     # over every completed leg of the runs the test step's comment names, took at most 37 s in a
     # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
-    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
-    # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
-    # for a harness leg (run 44389203951, round 1).
+    # 151 s in a harness leg (run 44473658176, round 3), 125 s of which was a zsh install the leg
+    # no longer makes, so 1, 1 and 1 minutes. A harness leg adds the five steps that give
+    # second-global-setup.test.ts its stacks: Go's setup (2), the binaries' build (10), the
+    # connections read (2) and the Chromium install (4) carry budgets of their own, and the image's
+    # pull, which has none, counts at the 120 s dispatch-browser.yaml's multiprocess job counts its
+    # pull of the same digest at. So 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold
+    # leg and 40 + 2 + 10 + 2 + 4 minutes plus 26 s and 120 s, 61 minutes, for a harness leg, the
+    # matrix's job_minutes. The slowest whole jobs took 845 s for a web leg (run 44465013263, round
+    # 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s for a harness leg (run
+    # 44389203951, round 1), before the harness leg ran that file.
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -158,31 +163,24 @@ jobs:
             job_minutes: 3
           - lane: harness
             reruns: 20
-            step_minutes: 30
-            job_minutes: 33
+            step_minutes: 40
+            job_minutes: 61
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
-      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
-      # must refuse to run and name bash, and skips that row where zsh is missing. The runner
-      # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
-      - name: Install zsh
-        if: matrix.lane == 'harness'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
-      # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
-      # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
-      # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a
-      # server. Each reads LEGION_TEST_PG_DSN and skips without it. They need a login role that
-      # may create databases: psql-session.test.ts and replace-blocks-guard.test.ts each make a
-      # database of their own and drop it with e2e/psql.ts's dropDatabase, which needs no
-      # superuser (dropDatabase's doc comment says why). They need a database the DSN names:
-      # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
-      # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
-      # head says. psql is on the runner already.
+      # The harness rows that need a PostgreSQL run here, as they run in a pod and in the
+      # postgres-rows job of .github/workflows/dispatch-browser.yaml, which ci-job-dispatch-ui.yaml
+      # leaves them to: on GitHub Actions their gates fail the file rather than skip it
+      # (@legion/test-fixtures/host-tools). e2e/__tests__/psql-session.test.ts and
+      # harness-stacks.test.ts's "psql reads its own stack's database" read LEGION_TEST_PG_DSN.
+      # They need a login role that may create databases: psql-session.test.ts makes a database of
+      # its own and drops it with e2e/psql.ts's dropDatabase, which needs no superuser
+      # (dropDatabase's doc comment says why). They need a database the DSN names:
+      # harness-stacks.test.ts runs `select 1` on it. They need no extension, as
+      # psql-session.test.ts's head says. psql is on the runner already.
       #
       # The runner's own PostgreSQL. GitHub's runner-images readme for Ubuntu 24.04
       # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "#### PostgreSQL", read on
@@ -194,13 +192,6 @@ jobs:
       # `ci` is a throwaway password, the one every `postgres:` service of this repository's
       # workflows uses. It opens a database on this runner that nothing else reaches: the server
       # listens on the loopback alone, and the runner is discarded after the job.
-      #
-      # e2e/__tests__/second-global-setup.test.ts stays skipped, as it is in CI. It starts two
-      # whole stacks, each a Postgres with the pgvector extension that migration 0072 needs
-      # (e2e/harness-postgres.ts), a Go server and the fakes, and the hook it drives refuses a
-      # run without Chromium. It runs only where DISPATCH_E2E_PG_BIN or DISPATCH_E2E_PG_IMAGE
-      # names a Postgres, and this job sets neither: the runner's PostgreSQL has no pgvector, and
-      # the job builds no server and installs no browser.
       - name: Start PostgreSQL for the harness rows that need a database
         if: matrix.lane == 'harness'
         run: |
@@ -211,6 +202,60 @@ jobs:
           LEGION_TEST_PG_DSN='postgres://legion_test:ci@127.0.0.1:5432/legion_test?sslmode=disable'
           echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
+      # e2e/__tests__/second-global-setup.test.ts starts two whole stacks, each a Postgres with the
+      # pgvector extension that migration 0072 needs (e2e/harness-postgres.ts), a Go server and
+      # the fakes, and the hook it drives refuses a run whose Chromium is not downloaded. The
+      # runner's PostgreSQL has no pgvector, so the stacks take theirs from a `docker run` of
+      # DISPATCH_E2E_PG_IMAGE, the digest dispatch-browser.yaml's multiprocess and embedder jobs
+      # run on this same runner. The steps below are theirs, but for the build: the server and
+      # the broker's three commands are built once, as that file's binaries job builds them, into
+      # the one directory run-broker.sh serves, so the row's 20 runs start them rather than build
+      # them. No Go cache is restored: a weekly leg builds cold, inside the 10 minutes
+      # .github/ci-notes/dispatch-browser.md#the-binaries-jobs-budget gives a cold build.
+      - id: setup-go
+        if: matrix.lane == 'harness'
+        timeout-minutes: 2
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - name: Build the binaries the harness leg's stacks run
+        if: matrix.lane == 'harness'
+        timeout-minutes: 10
+        run: |
+          mkdir -p out/dispatch-e2e-broker
+          CGO_ENABLED=0 go build -o out/dispatch-e2e-broker/ ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
+      # As the multiprocess job's step of this name, for the reason and the budget
+      # .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
+      # gives.
+      - name: Install Playwright Chromium
+        if: matrix.lane == 'harness'
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      # Pulled before the test step, so its budget does not pay for it, as
+      # .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
+      # says of the multiprocess job's. The digest is the one the step below hands the stacks.
+      - name: Pull the harness leg's stacks' Postgres image
+        if: matrix.lane == 'harness'
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      # The stacks' connection limit, read once here rather than by e2e/harness-postgres.ts at
+      # each stack's start, and the four values the row hands its child (the test file says why
+      # each travels), written to $GITHUB_ENV so the web lanes' legs never see them.
+      - name: Hand the harness leg's stacks their Postgres, server and broker
+        if: matrix.lane == 'harness'
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          {
+            echo "DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11"
+            echo "DISPATCH_E2E_PG_CONNECTIONS=$connections"
+            echo "DISPATCH_E2E_SERVER_BIN=$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+            echo "DISPATCH_E2E_BROKER_BIN_DIR=$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          } >> "$GITHUB_ENV"
+        working-directory: packages/envoy
       # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
       # rounded up to the next whole minute, with a floor of two minutes. The measurement is every
       # run of this workflow on its pull request, runs 44023917835 to 44473658176 (2026-11-17 to
@@ -222,6 +267,14 @@ jobs:
       # minutes; and 999 to 1,529 s in the 73 completed harness legs, the most in run 44389203951,
       # round 1, so 1,529 x 1.15 = 1,758 s, 30 minutes. The 39 web-cold legs took at most 101 s,
       # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor.
+      #
+      # Those harness legs skipped second-global-setup.test.ts, which now runs: its 20 runs in a
+      # leg are not measured yet. One run of the three files that need a PostgreSQL took 26.6 s in
+      # an issue pod
+      # (.github/ci-notes/dispatch-browser.md#the-bun-rows-that-need-a-postgresql-and-why-they-are-a-job-of-this-file),
+      # so until a leg measures it the harness step's budget takes the row's 20 runs one after the
+      # other, after every other row, at that reading: (1,529 + 20 x 26.6) x 1.15 = 2,370 s, 40
+      # minutes.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no

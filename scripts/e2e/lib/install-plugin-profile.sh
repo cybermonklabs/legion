@@ -5,7 +5,7 @@
 # untouched. A Legion pane needs both: the daemon's boot gate refuses pi-legion without pi-envoy, so
 # every stage installs each in turn, into a --dest of its own.
 #
-#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec>]
+#   scripts/e2e/lib/install-plugin-profile.sh --package <pi-envoy|pi-legion> --profile <name> --home <dir> --dest <dir> [--omp <mise tool spec> | --omp-path <binary>]
 #
 # --home is the HOME Oh My Pi runs under for the profile, made by make_omp_home (lib/omp-home.sh): the
 # profile is <home>/.omp/profiles/<name>, and the caller's own HOME is refused.
@@ -20,9 +20,9 @@
 #   3. verify with OMP_PROFILE=<name> omp plugin list
 # Steps 2 and 3 run the Oh My Pi the daemon pins (.omp-pin) under HOME=<home>, or the build --omp
 # names: a stage proof passes the one build its daemon and panes run, so the profile is never
-# opened by another (under LEGION_E2E_MODEL_ROUTE=box-login the profile's agent.db is the
-# operator's own login database, which only a build with the refresh-race fix may open;
-# lib/install-box-login-route.sh).
+# opened by another. --omp-path names that build as the binary itself instead, for a
+# proof whose daemon runs the Oh My Pi a CI job installed (LEGION_TEST_OMP, by
+# .github/actions/install-omp) by its path, with no mise: it runs by that absolute path alone.
 # Each source is cited by what it runs, never by line number: the lines move with every edit
 # above them. The tarball is written under this run's temp directory, so an interrupted run strands
 # no .tgz in the checkout (the release's `rm -f ./*.tgz` guards the same stale-glob case).
@@ -44,6 +44,7 @@ have_profile=
 have_home=
 have_dest=
 omp_spec=
+omp_path=
 while [ $# -gt 0 ]; do
   case "$1" in
   --package)
@@ -71,9 +72,15 @@ while [ $# -gt 0 ]; do
     omp_spec=$2
     shift 2
     ;;
+  --omp-path)
+    [ $# -ge 2 ] && [ -n "$2" ] || refuse "--omp-path needs a value: the Oh My Pi binary to run"
+    omp_path=$2
+    shift 2
+    ;;
   *) refuse "unknown argument: $1" ;;
   esac
 done
+[ -z "$omp_spec" ] || [ -z "$omp_path" ] || refuse "--omp and --omp-path name the same Oh My Pi two ways; give one"
 [ -n "$have_package" ] || refuse "--package is required: pi-envoy or pi-legion, the plugin to install"
 case "$package" in
 pi-envoy | pi-legion) ;;
@@ -116,16 +123,23 @@ fi
 # tool store, from the unpacked plugin's directory, where no mise config is. It runs as the daemon
 # runs it (packages/daemon/internal/omplaunch): `mise x <pin> --` for the tool's environment, and
 # the install's own bin/omp by its absolute path, never an `omp` looked up on PATH, where an
-# operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile,
-# whose agent.db is the operator's login database under the box-login route).
-pin=${omp_spec:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
-  echo "$me: mise has no executable bin/omp for $pin" >&2
-  exit 1
-}
-mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
-run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+# operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile).
+if [ -n "$omp_path" ]; then
+  omp=$(realpath -e -- "$omp_path" 2>/dev/null) && [ -x "$omp" ] || {
+    echo "$me: --omp-path $omp_path is not an executable file" >&2
+    exit 1
+  }
+  run_omp() { (cd "$dest" && HOME=$home OMP_PROFILE=$profile "$omp" "$@"); }
+else
+  pin=${omp_spec:-$(<"$root/.omp-pin")}
+  mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+  omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
+    echo "$me: mise has no executable bin/omp for $pin" >&2
+    exit 1
+  }
+  mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
+  run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT

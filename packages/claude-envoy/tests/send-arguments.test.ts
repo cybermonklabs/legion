@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools"
 import { resendCommand } from "../src/send-arguments"
 
 test("parses a target session followed by the message words", async () => {
@@ -60,10 +61,10 @@ test("a resend whose URL setting carries user info of any length prints no comma
   })
 })
 
-/** The zsh this row runs the resend command under: `LEGION_TEST_ZSH`, else the one on PATH.
- *  GitHub Actions' claude-envoy job installs one (`ci-job-claude-envoy.yaml`), so there a missing
- *  zsh fails the row rather than skipping it. */
-const zsh = process.env["LEGION_TEST_ZSH"] ?? Bun.which("zsh")
+/** Whether this host lacks the zsh the zsh row runs the resend command under, the one on PATH.
+ *  GitHub Actions' claude-envoy job installs one (`ci-job-claude-envoy.yaml`), and there a missing
+ *  zsh fails the file rather than skipping the row (@legion/test-fixtures/host-tools). */
+const withoutZsh = skipWithout(["zsh"], "claude-envoy")
 
 /** A stand-in `bun` that writes the ENVOY_CONFIG_FILE it was given and then its arguments, each
  *  ended by a NUL, so the row reads back exactly what the shell handed it. */
@@ -130,13 +131,12 @@ test("the resend command gives the same words under bash", async () => {
   await sameWordsUnder("bash", (command) => ["bash", "-c", command])
 }, 20_000)
 
-// Skipped, and reported as skipped, where no zsh is found, except on GitHub Actions
-// (`GITHUB_ACTIONS`), whose job installs one, so there a missing zsh fails the row. `CI` is no
-// such sign: an agent's tool shell sets `CI=true` on a dev box with no zsh.
-test.skipIf(zsh === null && process.env["GITHUB_ACTIONS"] !== "true")(
+// Skipped, and reported as skipped, where no zsh is found, except on GitHub Actions, whose job
+// installs one, so there a missing zsh fails the file (withoutZsh above).
+test.skipIf(withoutZsh)(
   "the resend command gives the same words under zsh",
   async () => {
-    await sameWordsUnder("zsh", (command) => [zsh ?? "zsh", "-f", "-c", command])
+    await sameWordsUnder("zsh", (command) => [hostTool("zsh") ?? "zsh", "-f", "-c", command])
   },
   20_000,
 )

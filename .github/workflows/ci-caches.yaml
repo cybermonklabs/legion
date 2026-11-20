@@ -17,12 +17,16 @@ name: CI caches
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 # of its module files too, for the reason its job gives): go-notices (lint's notices step),
-# go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-# envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
-# go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
-# and the binaries, multiprocess and visual jobs of
-# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
+# go-daemon (typecheck, daemon-go, plugin-pack, pi-legion and daemon-live, the pane-drivers,
+# tmux-scripts, session-scripts and nats-callout-sessions parts of
+# .github/workflows/ci-job-agent-harness.yaml, and the legion_build job of release.yaml), go-envoy
+# (envoy-go-checks, envoy-go-race-docs,
+# envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall, the
+# session-settings and plugin-smokes parts of ci-job-agent-harness.yaml, and the embedder job of
+# .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model, which
+# builds the API's test binary of that set, the nats-callout-sessions part of
+# ci-job-agent-harness.yaml, and the binaries, multiprocess and visual jobs of
+# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those four
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
 # build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
 # the build job of release-envoy-infra.yaml).
@@ -83,7 +87,7 @@ name: CI caches
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and five workflows that run there call it.
+# writes it on main, and the workflows that run there call it (its description names them).
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
@@ -117,12 +121,13 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  # go-daemon. It keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack
-  # and pi-legion set Go up from it. One leg per runner, because typecheck runs on
-  # ubuntu-24.04-arm and the other three on ubuntu-24.04, and the key carries the runner's
-  # architecture. Each leg builds what its runner's readers build: typecheck's vet on both, and
-  # the test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry
-  # runs them.
+  # go-daemon. It keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack,
+  # pi-legion and daemon-live, the agent-harness job's pane-drivers, tmux-scripts and
+  # session-scripts parts, and release.yaml's legion_build set Go up from it. One leg per runner,
+  # because typecheck runs on ubuntu-24.04-arm and the others on ubuntu-24.04, and the key carries
+  # the runner's architecture. Each leg builds what its runner's readers build: typecheck's vet on
+  # both, and the test and race builds on the x86_64 leg alone, since no job that reads the arm64
+  # entry runs them.
   daemon:
     strategy:
       fail-fast: false
@@ -152,14 +157,14 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
-      # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
+      # What typecheck builds: the vet of every package. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
       # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
       # cache on a devbox, would ride in an entry every job that restores go-daemon downloads, and
       # the step builds them in about two minutes (run 43990864191).
       - name: Build what typecheck builds of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true'
-        run: go vet -tags e2e ./...
+        run: go vet ./...
         working-directory: packages/daemon
 
       # What daemon-go builds: the test binary of every package, and the race build of the three

@@ -115,7 +115,7 @@ func sessionRequest(t *testing.T, handler http.Handler, method, target string, b
 	return response
 }
 
-func createInteractionIssue(t *testing.T, handler http.Handler, project, title, spec string) struct {
+func createInteractionIssue(t testing.TB, handler http.Handler, project, title, spec string) struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
 } {

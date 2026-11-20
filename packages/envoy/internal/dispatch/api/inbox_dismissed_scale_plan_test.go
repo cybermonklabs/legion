@@ -53,7 +53,7 @@ type dismissedScaleExplained struct {
 // what the planner really does at this size rather than what a pin makes it do. On the loaded
 // shape each plan is held to its index and its sort rule; on the baselines they are printed and
 // held to nothing, since a scan of an empty table is the right plan for an empty table.
-func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold bool) {
+func explainDismissedScaleReads(t testing.TB, shape *dismissedScaleShape, hold bool) {
 	t.Helper()
 	ctx := context.Background()
 	connection, err := shape.database.Pool.Acquire(ctx)
@@ -94,7 +94,7 @@ func explainDismissedScaleReads(t *testing.T, shape *dismissedScaleShape, hold b
 
 // planLoopsOver is the greatest number of times any one node of an analysed plan read relation:
 // one for a table the read visits once, and a row count for one it visits per row.
-func planLoopsOver(t *testing.T, planJSON json.RawMessage, relation string) float64 {
+func planLoopsOver(t testing.TB, planJSON json.RawMessage, relation string) float64 {
 	t.Helper()
 	var node struct {
 		Relation string            `json:"Relation Name"`
@@ -120,7 +120,7 @@ func planLoopsOver(t *testing.T, planJSON json.RawMessage, relation string) floa
 // which the checks read, and once as text, which the report prints. Both run inside a transaction
 // that is rolled back, so a write route's read takes no lock past the measurement.
 func explainDismissedScale(
-	t *testing.T, connection *pgx.Conn, name, statement string, args []any,
+	t testing.TB, connection *pgx.Conn, name, statement string, args []any,
 ) (json.RawMessage, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -248,7 +248,7 @@ const dismissedScaleControlAgentCount = `
 // red: a read the Dismissed page would have to make before it could answer, far above the 250 ms
 // every one of those pages is held to. A control that came in under the bound would mean this
 // measurement cannot tell the two shapes apart, and so proves nothing about the one it passed.
-func dismissedScaleNegativeControl(t *testing.T, shape *dismissedScaleShape) {
+func dismissedScaleNegativeControl(t testing.TB, shape *dismissedScaleShape) {
 	t.Helper()
 	ctx := context.Background()
 	var planJSON []byte

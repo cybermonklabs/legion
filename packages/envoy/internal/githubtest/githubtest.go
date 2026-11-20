@@ -25,14 +25,14 @@ type Spec struct {
 }
 
 // Server starts a fake GitHub server and returns its URL; it is closed when the test ends.
-func Server(t *testing.T, spec Spec) string {
+func Server(t testing.TB, spec Spec) string {
 	t.Helper()
 	return Serve(t, spec).URL
 }
 
 // Serve is Server for a fake that needs the server itself rather than its URL — its client, its
 // handler, or a close of its own beside the one Serve registers.
-func Serve(t *testing.T, spec Spec) *httptest.Server {
+func Serve(t testing.TB, spec Spec) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if spec.Record != nil {

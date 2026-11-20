@@ -210,7 +210,7 @@ func TestABindingWriteConflictedTwiceFailsTheLaunch(t *testing.T) {
 // name may carry such characters (claim.ProjectToken's doc: "sjawhar/legion" names the same role
 // topics under either daemon), and Stage 4a's root-ready configures Options.Project with the
 // run's own dashed label while its claim tokens use the stripped form the same way, which is
-// this test's scenario (LEGION-462 e2e: scripts/e2e/stage4a-sandbox-runtime.sh's root-ready).
+// this test's scenario (LEGION-462 e2e: TestStage4aSandboxRuntimeLive's root-ready).
 func TestALauncherHelloIsAcceptedWhenTheConfiguredProjectCarriesCharactersAClaimTokenDrops(t *testing.T) {
 	dashed := "s4a-dashed-project"
 	normalized, err := claim.ProjectToken(dashed)

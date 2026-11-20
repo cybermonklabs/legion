@@ -1,0 +1,172 @@
+# The variables a test of this repository gates on, one row each, with the class that says why
+# the gate does not keep the test out of the jobs ci-ok needs. .github/scripts/check-test-reach.sh
+# finds every gate (a Go function, or a Bun or Playwright `skip`/`skipIf`/`if` condition, that
+# reads an environment variable and on its value skips the test or guards an assertion), fails on
+# a gate whose variable no row here names, and checks the row's class against each gate:
+#
+#   set           `jobs` names the jobs of ci.yaml that give the test the variable. Each named job
+#                 must set it (a workflow, job or step `env:`, an inline `NAME=value command`, an
+#                 `export`, or an action that writes it into $GITHUB_ENV, as install-omp writes
+#                 LEGION_TEST_OMP), and for each gate some named job must run the gate's test in a
+#                 step whose environment holds it. `set_by_script` may name the script a named job
+#                 runs that sets it instead (packages/dispatch/e2e/visual-run.sh hands its
+#                 container DISPATCH_E2E_VISUAL_SEED): the search then checks that the script
+#                 assigns the variable and that a step of a named job runs the script.
+#   selector      the same check as `set`, for a variable that chooses which tests run (a flag a
+#                 job sets so that its own suites run) rather than one that hands a test an input.
+#   prerequisite  each gate calls testprereq.Require (Go) or requireOrSkip or skipWithout
+#                 (@legion/test-fixtures/host-tools), or reads GITHUB_ACTIONS and fails there:
+#                 off GitHub Actions the test skips naming what it lacks, and on GitHub Actions it
+#                 fails.
+#   tool          each gate is in a `Benchmark…` function or in a file whose first 15 lines carry
+#                 the tool line, `legion: tool - …`: a tool reads what the person running it hands
+#                 it, and no job runs it.
+#   opt-out       the gate skips only where the variable is set, a person's opt-out on a machine
+#                 that lacks what the test needs: some job ci-ok needs runs the test, and none of
+#                 them sets the variable in the step that runs it.
+#
+# A gate in a tool holds under any row, since the tool reads what its runner hands it; the row
+# says what the variable is to the tests that also read it. A row whose variable no gate reads is
+# a finding too, so a row leaves with the last gate on its variable.
+#
+# Each row also says why, in a sentence a reviewer can check against the gate.
+variables:
+  AIRLOCK_MODEL:
+    class: set
+    jobs: [airlock-lean]
+    why: The Lean model's binary, which airlock-lean builds and hands the corpus comparison and the fuzz.
+  BROKER_TEST_DATABASE_URL:
+    class: set
+    jobs: [envoy-go, envoy-go-race-api, broker-multiprocess, daemon-go]
+    why: The Postgres server the broker's store tests make their databases on, a service of each job that runs them.
+  DISPATCH_BENCH_DATABASE_URL:
+    class: tool
+    why: The seeded database BenchmarkSearchLatencyOnCorpus times its searches on.
+  DISPATCH_COVERAGE_SCALE_URL:
+    class: tool
+    why: The Postgres server BenchmarkCoverageStatementScale seeds at production's size.
+  DISPATCH_E2E_VISUAL_SEED:
+    class: set
+    jobs: [dispatch-browser]
+    set_by_script: packages/dispatch/e2e/visual-run.sh
+    why: The seed file visual-run.sh writes and hands its container, which the visual job runs.
+  DISPATCH_EDIT_PROFILE_OUT:
+    class: tool
+    why: Where BenchmarkProfileTheColdEditOfTheHeaviestDocuments writes its profile.
+  DISPATCH_INTAKE_BURST:
+    class: tool
+    why: The burst BenchmarkIntakeBurstOfMergedPullRequests replays.
+  DISPATCH_NEARCOPY_CORPUS:
+    class: tool
+    why: The corpus BenchmarkNearCopyRefusalReplay replays.
+  DISPATCH_OUTBOX_LOAD_STEPS:
+    class: selector
+    jobs: [dispatch-multiprocess]
+    why: Selects TestTheOutboxLoadSteps, which dispatch-multiprocess runs in a step of its own with it set.
+  DISPATCH_PREVIOUS_BUILD:
+    class: set
+    jobs: [dispatch-two-builds]
+    why: The older build the twobuild suite runs beside this tree's, which dispatch-two-builds builds.
+  DISPATCH_RECALL_CORPUS:
+    class: tool
+    why: The duplicate corpus the related-recall benchmarks read.
+  DISPATCH_RECALL_LATENCY_ISSUE:
+    class: tool
+    why: The issue BenchmarkRelatedCheckLatencyOnRecallCorpus times its related check against.
+  DISPATCH_RECALL_REQUIRE_NO_LOSS:
+    class: tool
+    why: Makes BenchmarkRelatedRecallOnDuplicates fail on any recall loss.
+  DISPATCH_RENDER_CORPUS:
+    class: set
+    jobs: [envoy-go]
+    why: The repository's markdown corpus envoy-go hands the incremental render test.
+  DISPATCH_TEST_DATABASE_URL:
+    class: set
+    jobs: [envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess, dispatch-two-builds, envoy-session-stall]
+    why: The Postgres server the Dispatch store tests make their databases on, a service of each job that runs them.
+  DISPATCH_TEST_NO_CONTAINERS:
+    class: opt-out
+    why: A box that runs no test containers sets it to skip the S3-compatible server test; no job sets it.
+  DISPATCH_TOKEN_CORPUS:
+    class: set
+    jobs: [envoy-go-docs-finalizers]
+    why: The repository's markdown corpus envoy-go-docs-finalizers hands TestWriteCorpusReadsOnce; the corpus benchmarks read it as tools.
+  GITHUB_ACTIONS:
+    class: prerequisite
+    why: testprereq.Require skips off GitHub Actions and fails on it.
+  HOME:
+    class: prerequisite
+    why: The launcher's role-layout tests need a directory outside /tmp and say so through testprereq.Require.
+  LEGION_E2E:
+    class: selector
+    jobs: [envoy-client]
+    why: Selects the envoy-client tests against a real NATS container, which envoy-client runs.
+  LEGION_E2E_DISPATCH_STACK:
+    class: selector
+    jobs: [envoy-session-stall]
+    why: Selects the envoy-client tests that start a Dispatch stack, which envoy-session-stall runs.
+  LEGION_E2E_ENVOY_STACK:
+    class: selector
+    jobs: [envoy-session-stall]
+    why: Selects the envoy-client tests that build and start natsd and the listener, which envoy-session-stall runs.
+  LEGION_SCALE_TEST:
+    class: tool
+    why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.
+  LEGION_TEST_CLAUDE:
+    class: set
+    jobs: [claude-envoy, agent-harness, envoy-session-stall]
+    why: The Claude Code binary install-claude-code puts in the job's environment.
+  LEGION_TEST_CODEX:
+    class: set
+    jobs: [claude-envoy]
+    why: The native Codex binary install-codex puts in claude-envoy's environment.
+  LEGION_TEST_DRAIN_MEASURE:
+    class: set
+    jobs: [daemon-go]
+    why: Turns on the drain test's time bound, which daemon-go measures.
+  LEGION_TEST_KIND_IMAGE:
+    class: set
+    jobs: [kind]
+    why: The worker image the kind rig loads, which the kind job builds or takes from worker-image.
+  LEGION_TEST_KIND_IMAGE_ARCHIVE:
+    class: set
+    jobs: [kind]
+    why: The archive of that worker image the kind rig loads into its node.
+  LEGION_TEST_NATS_URL:
+    class: set
+    jobs: [pi-envoy, pi-legion]
+    why: The NATS service of the job that runs the Oh My Pi extension tests.
+  LEGION_TEST_OMP:
+    class: set
+    jobs: [daemon-go, plugin-pack, agent-harness, pi-envoy, pi-legion, envoy-session-stall]
+    why: The Oh My Pi binary install-omp puts in the job's environment.
+  LEGION_TEST_PG_DSN:
+    class: set
+    jobs: [daemon-go, daemon-live, agent-harness, sessions-script, envoy-go, dispatch-browser]
+    why: The Postgres server the daemon's tests and the Dispatch harness's make their databases on, a service of each job that runs them.
+  LEGION_TEST_UV:
+    class: set
+    jobs: [daemon-go]
+    why: The uv binary install-uv puts in daemon-go's environment.
+  LOADTEST_REPLAY_BUNDLE:
+    class: tool
+    why: The production bundle the loadtest replay benchmarks read.
+  PLAYWRIGHT_BASE_URL:
+    class: opt-out
+    why: A run against a deployed https Dispatch sets it, and the plain-HTTP rows skip there; no job sets it.
+  PMDOC_ANCHOR_CORPUS:
+    class: set
+    jobs: [envoy-go]
+    why: The anchor corpus envoy-go hands the pmdoc mark tests.
+  PMDOC_DIFF_BASE:
+    class: set
+    jobs: [envoy-go]
+    why: The base dump differential.sh hands TestDifferentialCompare, in envoy-go's pmdoc differential step.
+  PMDOC_DIFF_OUT:
+    class: set
+    jobs: [envoy-go]
+    why: Where differential.sh has TestDifferentialDump write each side's dump, in envoy-go's pmdoc differential step.
+  PMDOC_WALK_CORPUS:
+    class: set
+    jobs: [envoy-go]
+    why: The walk corpus envoy-go hands the pmdoc walk test.

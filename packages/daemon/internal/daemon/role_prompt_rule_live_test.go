@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof that a role process is launched with the rules its own system prompt carries:
 // the pod memory rule, in the paragraph every phase worker is given
 // (packages/daemon/internal/prompts/roles/mechanics/headless.md, "What you run in the pod") and
@@ -12,8 +10,9 @@
 // child's own architect, a sub-architect, whose role part is the sub-architect's
 // (packages/daemon/internal/prompts/roles/architect.md, `# Legion Sub-Architect`) and whose
 // addressing line names the architect above it (addressingFragment, in specs.go).
-// scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
-// and the PostgreSQL it runs against.
+// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
+// later, which the daemon's boot refuses to start without.
 //
 // What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
 // in each composed prompt and in the one part per tree it comes from
@@ -27,12 +26,13 @@
 // `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
 // launch mints), and the shim starts Oh My Pi as a child
 // rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
-// for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
-// shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
-// proof claims. The argv is NUL-separated, and the word after `--append-system-prompt` is the
-// path of the file that holds the whole prompt the agent runs under: Oh My Pi reads a value with
-// no newline as a path and appends the file's contents, and the launch writes that file before
-// the process starts and never while it runs (runtime.WriteSystemPrompt).
+// for the child of that shim whose argv[0] is the Oh My Pi LEGION_TEST_OMP names, and reads that
+// child. Reading the shim's own argv would pass a shim that dropped or rewrote the prompt, which
+// is not what this proof claims. The argv is NUL-separated, and the word after
+// `--append-system-prompt` is the path of the file that holds the whole prompt the agent runs
+// under: Oh My Pi reads a value with no newline as a path and appends the file's contents, and
+// the launch writes that file before the process starts and never while it runs
+// (runtime.WriteSystemPrompt).
 //
 // It reads the prompt from nowhere else on purpose. The composer, the role prompt files below the
 // state directory and the SpawnSpec the runtime recorded each hold the text before a process ever
@@ -82,7 +82,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -223,7 +222,6 @@ type launchedPrompt struct {
 // is reported; and in the child's architect's, the sub-architect's own heading in place of the
 // root's, and the addressing clause that names the root's architect as the architect above it.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
 	r.step("step1-every-role-of-the-tree-runs-a-pane-whose-own-argv-carries-a-system-prompt", r.everyPaneIsReady)
 	r.step("step2-the-phase-worker-was-launched-with-the-pod-memory-rule", r.phaseWorkerCarriesTheRule)
@@ -238,12 +236,9 @@ func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
 // booted over the local runtime.
 func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/role-prompt-rule.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
+	proof := newLiveProof(t)
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
 		issue:          proof.cfg.Project + "-1",
@@ -255,8 +250,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()
@@ -542,7 +536,7 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 }
 
 // ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live process whose
-// PPid is that shim and whose argv[0] is the binary LEGION_OMP_PATH names. /proc is walked
+// PPid is that shim and whose argv[0] is the binary LEGION_TEST_OMP names. /proc is walked
 // rather than /proc/<pid>/task/<tid>/children read, because that file lists only the children
 // one thread of the process forked, and the Go shim forks from whichever of its threads runs
 // exec.Command: measured in a gVisor pod, the shim's main thread listed no child while another

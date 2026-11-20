@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # LEGION-394's live proof: a person's direct Send or Aside from Dispatch's conversation page reaches
 # a real Oh My Pi session as that person's own user turn, and everything else keeps its Envoy card.
-# One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with
+# One real session — the Oh My Pi LEGION_TEST_OMP names (the build `.omp-pin` pins) with
 # this checkout's plugin in an isolated profile, its cwd under /tmp — registers with a real Envoy
 # listener and NATS, and a real Dispatch built from the checkout, with NATS on and its trusted
 # identity header, serves the page this checkout's SPA builds. A browser signed in by that header
@@ -25,43 +25,58 @@
 # publishes on the session's subject inside that minute, naming the failed attempt, must inject
 # nothing either (Deep's first round-2 construction). Last, Dispatch's record says the session took
 # the Send and the Aside at attempt 1, the carded Send at its retry, and nothing else. Each check
-# prints `== <name>`, what it observed, and `ok <name>`; the first that fails ends the run
-# non-zero, naming it.
+# prints `== <name>`, what it observed, and `CHECK <name>: PASS`; the first that fails prints
+# `CHECK <name>: FAIL: <why>` and ends the run with exit 1. The agent-harness job's session-scripts
+# part runs it as a step (.github/workflows/ci-job-agent-harness.yaml).
 #
-# Run it as `bash scripts/e2e/dispatch-user-turns.sh` from a checkout, devbox only. The session's model
-# is Anthropic, on the route LEGION_E2E_MODEL_ROUTE names (`gateway`, the default, or `key-file`):
-# `gateway` goes through the Hawk model gateway on the operator's own hawk login
-# (lib/install-model-gateway.sh), so LEGION_E2E_MODEL_GATEWAY_URL is required and the keyring must be
-# unlocked; `key-file` reads the 0600 file LEGION_E2E_ANTHROPIC_KEY_FILE names on every call
-# (lib/install-key-file-model-route.sh), for a devbox with no Hawk gateway. DISPATCH_USER_TURNS_OMP
-# names another Oh My Pi (a mise tool spec such as github:cybermonklabs/oh-my-pi@<version>) in
-# place of the pinned one. DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two
-# spec-edit checks alone, then ends: the spec-edit live check, which needs none of the others;
+# Run it as `bash scripts/e2e/dispatch-user-turns.sh` from a checkout, with two inputs, both
+# required and both set by that job: LEGION_TEST_OMP, the Oh My Pi the session runs (the build
+# .omp-pin pins, which .github/actions/install-omp installs), and LEGION_TEST_PG_DSN, a loopback
+# PostgreSQL with pgvector the run creates Dispatch's database in and drops it from. It needs tmux,
+# go, bun, jq, curl, psql, python3 and jj (make_omp_home reads the jj config), and Playwright's
+# Chromium (`bunx playwright install chromium` in packages/dispatch). Nothing else comes from
+# outside the runner:
+#   - NATS is natsd (packages/envoy/internal/testnats/cmd/natsd), built from this checkout;
+#   - the model is lib/user-turns-model.ts, an Anthropic Messages stand-in on loopback whose scripted
+#     answers make the tool calls a check needs (the spec's `dispatch issue`, its `dispatch
+#     doc-edit` after the person's edit) and name the code word each prompt carries. The session
+#     reaches it through the key-file route (lib/install-key-file-model-route.sh --base-url), whose
+#     key command reads a placeholder key from a 0600 file of the run's own, and the stand-in
+#     refuses a request without it.
+# DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two spec-edit checks alone,
+# then ends: the spec-edit live check, which needs none of the others;
 # DISPATCH_USER_TURNS_ONLY=spec-edit-card stops after the first of them, the card's arrival.
 # Everything the run creates is its own and goes on any exit: its scratch directory, the isolated
-# profile under the HOME it gives Oh My Pi (make_omp_home, lib/omp-home.sh), the key command a
-# key-file route writes, its tmux server, its listener and Dispatch, and its Postgres and NATS
-# containers.
+# profile under the HOME it gives Oh My Pi (make_omp_home, lib/omp-home.sh), the key command the
+# key-file route writes, its tmux server, the stand-in, natsd, its listener and Dispatch, and
+# Dispatch's database.
 # DISPATCH_USER_TURNS_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) keeps the
-# logs, the page's screenshots, the session transcript, the arguments the rig's extension command
-# recorded and every `message_start` its extension saw.
+# logs, the page's screenshots, the session transcript, the stand-in's requests, the arguments the
+# rig's extension command recorded and every `message_start` its extension saw.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce, so no process here inherits an operator's seed.
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
+unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "/tmp/legion-e2e-user-turns.$$.XXXXXXXX")
 evidence=${DISPATCH_USER_TURNS_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-user-turns-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
 ok=
+standin_pid=
+natsd_pid=
 listener_pid=
 dispatch_pid=
 envoy_port=
 dispatch_port=
+# The run has its database's name before it creates it, so the drop in cleanup reads
+# database_created, which the `create database` sets, and never names a database that is not there.
+database=
+database_created=
 profile=legion-e2e-user-turns-$$-$(date +%s)
-nats_container=legion-e2e-user-turns-nats-$$
-pg_container=legion-e2e-user-turns-pg-$$
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
 session_cwd=$work/session
@@ -71,11 +86,15 @@ session_id=
 session_file=
 check=setup
 timeout_hook=
+omp_bin=${LEGION_TEST_OMP:-}
 
 begin() { check=$1; echo "== $check"; }
 note() { echo "   $*"; }
-pass() { echo "ok $check"; }
-fail() { echo "FAIL $check: $*" >&2; exit 1; }
+pass() { echo "CHECK $check: PASS"; }
+fail() {
+  echo "CHECK $check: FAIL: $*"
+  exit 1
+}
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
@@ -98,15 +117,20 @@ cleanup() {
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$natsd_pid"
+  stop_pid "$standin_pid"
   stop_marked_processes "$work"
-  docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  if [ -n "$database_created" ]; then
+    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+      echo "could not drop database $database; drop it by hand" >&2
+  fi
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
   echo "evidence: $evidence (logs/, checks/ with the page's screenshots and the session pane, session.jsonl)"
   return 0
 }
 trap cleanup EXIT
-trap 'echo "FAIL $check: line $LINENO exited $?: $BASH_COMMAND" >&2' ERR
+trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND"' ERR
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -181,11 +205,11 @@ unlisted() {
   listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -e --arg d "$session_cwd" 'all(.[]; .dir != $d)' >/dev/null
 }
 # session_gone: the session's Oh My Pi has exited, by the pid its pane recorded as it started it
-# (record_pid_sh and recorded_pid, lib/process-tree.sh), which execs `mise x`, which execs Oh My Pi:
+# (record_pid_sh and recorded_pid, lib/process-tree.sh), which execs Oh My Pi:
 # that process's Envoy plugin is what holds the session on the listener, which the next wait reads.
 # No walk of the machine's /proc by working directory: one took 26 s over 28,165 entries at load
 # 453, against this wait's 30 s.
-session_gone() { ! recorded_pid "$work/session.pid" "$omp_exe" >/dev/null; }
+session_gone() { ! recorded_pid "$work/session.pid" "$omp_bin" >/dev/null; }
 human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/json' "$@"; }
 # bearer sends the run's Dispatch token on curl's standard input, in no command line; its callers
 # give their bodies with -d.
@@ -203,36 +227,51 @@ launch_session() {
     HOME="$omp_home" OMP_PROFILE="$profile" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
-    mise x "$omp_tool" -- omp "$@")
+    "$omp_bin" "$@")
   tm new-session -d -s user -x 200 -y 50 -c "$session_cwd" "$command"
 }
 
 # ---- setup -----------------------------------------------------------------------------------------
-for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-omp_tool=${DISPATCH_USER_TURNS_OMP:-$(<"$root/.omp-pin")}
+begin setup
+for tool in go jq jj curl psql python3 tmux bun; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates Dispatch's database in (the agent-harness job's service in CI)"
+# The one read of the DSN: the rewrite refuses every DSN the loopback guard refuses, and its answer
+# is the connection string Dispatch gets (lib/loopback-dsn.sh, run_database_url).
+database=legion_e2e_user_turns_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
+[ -n "$omp_bin" ] ||
+  fail "LEGION_TEST_OMP is required: the Oh My Pi the session runs (.github/actions/install-omp exports it in CI)"
+[ -x "$omp_bin" ] || fail "LEGION_TEST_OMP names $omp_bin, which is not an executable file"
 mkdir -p "$session_cwd"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
-mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
-# The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
-# the session by it, so it is the binary itself (native_program, lib/process-tree.sh): a script's
-# or a mise shim's process runs another file, and the wait for the session to end would pass at once.
-omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool: $omp_exe"
+# The session's Oh My Pi is known by the program the kernel records it runs (session_gone), so
+# LEGION_TEST_OMP names the binary itself (native_program, lib/process-tree.sh): a script's or a
+# mise shim's process runs another file, and the wait for the session to end would pass at once.
+omp_bin=$(native_program "$omp_bin") || fail "LEGION_TEST_OMP: $omp_bin"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
+go -C "$root/packages/envoy" build -o "$work/envoy-listener" ./cmd/listener
+go -C "$root/packages/envoy" build -o "$work/dispatch" ./cmd/dispatch
+go -C "$root/packages/envoy" build -o "$work/natsd" ./internal/testnats/cmd/natsd
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
-note "Oh My Pi $omp_tool; run $run"
+note "Oh My Pi $omp_bin ($("$omp_bin" --version 2>/dev/null | head -1)); run $run"
 
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-  -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch
-# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
-. "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
+  fail "could not create database $database in LEGION_TEST_PG_DSN"
+database_created=1
+mkdir -p "$work/nats-store"
+start_process natsd "$work/natsd" -p -1 -store_dir "$work/nats-store"
+await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
+nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
+  fail "natsd logged no client port; see $evidence/logs/natsd.log"
+nats_url=nats://127.0.0.1:$nats_port
+# The model: every request must carry the run's placeholder key, which the key command reads.
+(umask 077 && printf 'user-turns-standin-%s\n' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')" >"$work/model-key")
+start_process standin bun "$root/scripts/e2e/lib/user-turns-model.ts" "$work/standin.port" "$work/model-key" \
+  "$evidence/logs/standin-requests.jsonl"
+standin_port=
+await_port_file standin "$work/standin.port" standin_port
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&
@@ -250,7 +289,7 @@ start_held listener envoy_port ENVOY_LISTEN_FD -- \
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
+  DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
   DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
@@ -262,27 +301,15 @@ note "listener port $envoy_port; Dispatch port $dispatch_port"
 
 # The session runs outside Legion, with no role, so it needs only the Envoy plugin, the one this
 # proof is about.
-manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
+manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp-path "$omp_bin")
 note "plugin $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile"
-model_route=${LEGION_E2E_MODEL_ROUTE:-gateway}
-case "$model_route" in
-gateway)
-  bash "$root/scripts/e2e/lib/install-model-gateway.sh" --profile "$profile" --home "$omp_home" \
-    --dest "$work/model-gateway" --cache-dir "$work/model-gateway-cache" >/dev/null ||
-    fail "the session's model route through the Hawk model gateway could not be installed (the reason is above)"
-  ;;
-key-file)
-  [ -n "${LEGION_E2E_ANTHROPIC_KEY_FILE:-}" ] ||
-    fail "LEGION_E2E_ANTHROPIC_KEY_FILE is unset: name a 0600 file holding a plaintext Anthropic key"
-  # The key command goes under $work, which cleanup removes on every exit; the call record, which
-  # holds no secret, goes with the evidence.
-  bash "$root/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$omp_home" \
-    --dest "$evidence/model-route" --key-dir "$work/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" >/dev/null ||
-    fail "the session's model route through the key file could not be installed (the reason is above)"
-  ;;
-*) fail "LEGION_E2E_MODEL_ROUTE must be gateway or key-file, not '$model_route'" ;;
-esac
-note "model route $model_route"
+# The key command goes under $work, which cleanup removes on every exit; the call record, which
+# holds no secret, goes with the evidence.
+bash "$root/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$omp_home" \
+  --dest "$evidence/model-route" --key-dir "$work/model-key-command" --key-file "$work/model-key" \
+  --base-url "http://127.0.0.1:$standin_port" >/dev/null ||
+  fail "the session's model route to the stand-in could not be installed (the reason is above)"
+note "the model is the stand-in on 127.0.0.1:$standin_port (lib/user-turns-model.ts), keyed by the run's placeholder"
 only=${DISPATCH_USER_TURNS_ONLY:-}
 case "$only" in "" | spec-edit | spec-edit-card) ;; *) fail "DISPATCH_USER_TURNS_ONLY must be spec-edit, spec-edit-card or unset, not '$only'" ;; esac
 
@@ -358,6 +385,7 @@ printf '%s\n' 'compaction:' '  keepRecentTokens: 200' >>"$profile_agent/config.y
 note "skill $skill_name, template $template_name, file command $file_command_name, extension command $extension_command_name"
 human -X POST "http://127.0.0.1:$dispatch_port/api/v1/projects" -d '{"key":"UT","name":"User turns"}' >/dev/null
 issue=$(human -X POST "http://127.0.0.1:$dispatch_port/api/v1/issues" -d '{"project":"UT","title":"A person'"'"'s direct message"}' | jq -r .key)
+pass
 
 # ---- the session -----------------------------------------------------------------------------------
 begin session-registers
@@ -365,8 +393,8 @@ launch_session
 until_true 90 "the session to register with the listener" registered
 # The session's own process, by the pid its pane recorded: the later wait for it to end
 # (session_gone) holds only once this has held, so it can fail.
-recorded_pid "$work/session.pid" "$omp_exe" >/dev/null ||
-  fail "the pane's recorded process ($(cat "$work/session.pid" 2>&1)) does not run $omp_exe"
+recorded_pid "$work/session.pid" "$omp_bin" >/dev/null ||
+  fail "the pane's recorded process ($(cat "$work/session.pid" 2>&1)) does not run $omp_bin"
 row=$(listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -c --arg d "$session_cwd" 'first(.[] | select(.dir == $d))')
 session_id=$(jq -r .session_id <<<"$row")
 jq -e '.capabilities | index("aside") and index("btw") and index("steer")' <<<"$row" >/dev/null ||
@@ -571,7 +599,12 @@ until_true 120 "the broadcast's card" has_card "$broadcast_body"
 note "a card, no user message"
 pass
 
-issue_body="LEGION-394 $run issue message: is $issue ready?"
+# The body names no key of an issue this Dispatch holds (LEGION-394 names none here, so the page
+# draws it as plain text). The page draws a bare key that names an issue as a link that holds the
+# issue's title (useTextReferences, packages/dispatch/web/src/features/refs/MarkdownBody.tsx), so
+# the thread's text for a body that named $issue would not hold the body, and
+# the-page-shows-each-message-once, which finds each message by its body, would count it 0.
+issue_body="LEGION-394 $run issue message: is this issue ready?"
 begin an-issue-message-gets-a-card
 human -X POST "http://127.0.0.1:$dispatch_port/api/v1/issues/$issue/messages" \
   -d "$(jq -nc --arg b "$issue_body" --arg s "$session_id" '{body: $b, target: ("session:" + $s), delivery: "steer"}')" >/dev/null
@@ -677,17 +710,21 @@ pass
 begin a-forged-command-list-changes-nothing-on-the-page
 # Anything that reaches NATS can publish on the session's frames subject, which the relay forwards
 # to every page watching (packages/envoy/internal/dispatch/agentstream). With a page open, each frame
-# below breaks one rule of the contract, at a sequence number far above the session's own, so a page
-# that took any would show it: its list must stay the session's, with no error screen. A well-formed
-# list published last must replace it, which shows the frames reached the page and were refused. A
-# fresh page, served the session's own replay, then lists what the session sent.
+# below breaks one rule of the contract, at a sequence number above any the session has reached:
+# its publisher numbers frames from its clock, a thousand a millisecond from its start
+# (SEQ_PER_MS, packages/pi-shared/src/agent-stream.ts), so the run's clock in that unit is above
+# them, and a page that took any frame would show it: its list must stay the session's, with no
+# error screen. A well-formed list published last must replace it, which shows the frames reached
+# the page and were refused. A fresh page, served the session's own replay, then lists what the
+# session sent.
+forged_seq=$(($(date +%s%3N) * 1000))
 forged=$(page forge "http://127.0.0.1:$dispatch_port" "$login" "$session_id" "$nats_url" "$evidence/checks/composer-after-forgery.png" \
-  '{"v":1,"kind":"commands","seq":900010,"commands":[{"name":"forgedcontrol'"$run"'","source":"builtin"}]}' \
-  '{"v":1,"kind":"commands","seq":900001,"commands":[{"name":"forgedsource","source":"terminal"}]}' \
-  '{"v":1,"kind":"commands","seq":900002,"commands":"forged-not-a-list"}' \
-  '{"v":1,"kind":"commands","seq":900003,"commands":[{"name":"","source":"builtin"}]}' \
-  '{"v":1,"kind":"commands","seq":900004,"commands":[{"name":" ","source":"builtin"}]}' \
-  '{"v":2,"kind":"commands","seq":900005,"commands":[{"name":"forgedversion","source":"builtin"}]}')
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 10))"',"commands":[{"name":"forgedcontrol'"$run"'","source":"builtin"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 1))"',"commands":[{"name":"forgedsource","source":"terminal"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 2))"',"commands":"forged-not-a-list"}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 3))"',"commands":[{"name":"","source":"builtin"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 4))"',"commands":[{"name":" ","source":"builtin"}]}' \
+  '{"v":2,"kind":"commands","seq":'"$((forged_seq + 5))"',"commands":[{"name":"forgedversion","source":"builtin"}]}')
 note "$forged"
 jq -e '.after == .before and .errorScreens == 0' <<<"$forged" >/dev/null ||
   fail "a malformed frame changed the page's list or showed an error screen: $forged"

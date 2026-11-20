@@ -11,7 +11,6 @@
 #
 #   bash scripts/e2e/lib/model-gateway-unserved.sh --record <file>
 #   bash scripts/e2e/lib/model-gateway-unserved.sh --notes <dest> <since> <check>
-#   bash scripts/e2e/lib/model-gateway-unserved.sh --fresh <evidence-dir>
 #
 # The record. The key command appends one line per call an agent makes (the installer's preflight
 # is none), to <dest>/<key-command-name>.calls (the one such file a route's own --dest ever holds)
@@ -65,12 +64,6 @@
 #   - An agent served again before that window held a key through the whole check, and is left out.
 # It says nothing when no agent is listed, or when <dest> holds no record yet.
 #
-# --fresh is the stage proofs' refusal of a reused evidence directory, the first thing each does:
-# it exits 0 when <evidence-dir> does not exist or is an empty directory it can list, and otherwise
-# prints why the run cannot use it and exits 1, for the stage to fail with. Any content is an
-# earlier run's evidence, whether or not that run got as far as installing its key command, and a
-# directory it cannot list may hold some.
-#
 # Every form exits 2 on an argument refusal, and --record and --notes 1 on a record line they
 # cannot read.
 set -euo pipefail
@@ -82,7 +75,7 @@ refuse() {
   echo "$me: $*" >&2
   exit 2
 }
-usage="usage: $0 --record <file> | $0 --notes <dest> <since> <check> | $0 --fresh <evidence-dir>"
+usage="usage: $0 --record <file> | $0 --notes <dest> <since> <check>"
 # known OUTCOME DETAIL refuses a line of $record the key command does not write: an outcome it does
 # not know, or a short line, whose fields have moved.
 known() {
@@ -177,19 +170,6 @@ case "${1:-}" in
   [ "${#lines[@]}" != 0 ] || exit 0
   echo "$me: ${#lines[@]} agent(s) may have failed check $4 for want of a model key: $without still without one on their last call, and $((${#lines[@]} - without)) served again after a starve from $lookback on ($retry_s s before the check began); if the check waited on one of them, that may be why it failed ($record):"
   printf '%s\n' "${lines[@]}" | sort
-  ;;
---fresh)
-  [ $# = 2 ] || refuse "$usage"
-  [ -e "$2" ] || exit 0
-  if [ -d "$2" ]; then
-    if ! entries=$(ls -A -- "$2" 2>&1); then
-      echo "$2 cannot be listed ($entries), so this run cannot tell whether it holds an earlier run's evidence; give this run an evidence directory of its own"
-      exit 1
-    fi
-    [ -n "$entries" ] || exit 0
-  fi
-  echo "$2 is not an empty directory: it holds an earlier run's evidence, which this run must neither write into nor read as its own; give this run an evidence directory of its own"
-  exit 1
   ;;
 *) refuse "$usage" ;;
 esac

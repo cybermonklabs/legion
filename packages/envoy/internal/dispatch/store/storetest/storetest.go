@@ -42,6 +42,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -67,7 +68,8 @@ var shared struct {
 const openKey = "this tree's runner (storetest.Open)"
 
 // Open returns a store on a new database carrying every migration, dropped after t ends. It skips
-// t when DISPATCH_TEST_DATABASE_URL is unset.
+// t when DISPATCH_TEST_DATABASE_URL is unset, and fails it there on GitHub Actions, where each job
+// that runs a Postgres-backed Dispatch test names its Postgres service (testprereq.Require).
 func Open(t testing.TB) *store.Store {
 	t.Helper()
 	return OpenFrom(t, openKey, migrateWithThisTree)
@@ -94,9 +96,8 @@ func ready(t testing.TB) {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
 	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
-	}
+	testprereq.Require(t, raw != "", "envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess or dispatch-two-builds",
+		"%s must be set to run Postgres-backed Dispatch tests", DatabaseURLEnv)
 	shared.once.Do(func() { shared.err = openAdmin(raw) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)

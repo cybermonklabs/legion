@@ -228,7 +228,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 }
 
 // closeDocumentRoom closes artifactID's room, flushing it to the store, when one is resident.
-func closeDocumentRoom(t *testing.T, service *Service, artifactID string) {
+func closeDocumentRoom(t testing.TB, service *Service, artifactID string) {
 	t.Helper()
 	if service.srv.GetDoc(artifactID) == nil {
 		return

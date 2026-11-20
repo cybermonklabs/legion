@@ -1,5 +1,5 @@
 -- coverage_corpus.sql builds the synthetic corpus the search coverage statement is measured on
--- (TestCoverageStatementScale, coverage_scale_test.go; dispatch://INFRA-4241, R2): the tables
+-- (BenchmarkCoverageStatementScale, coverage_scale_test.go; dispatch://INFRA-4241, R2): the tables
 -- the statement reads, in production's counts and proportions of 2026-11-17 times a scale. At
 -- scale 1 that is 11,151 issues, each with a primary document of 5 versions, 216,414 document
 -- versions in all, and the window rows of each kind: document_block 738,255, comment_block
@@ -49,10 +49,10 @@
 -- embeddings_window_embedded and embeddings_window_unembedded, among them), which is faster than
 -- keeping each up to date row by row. VACUUM and ANALYZE are the caller's, since VACUUM cannot
 -- run inside a transaction. A vacuum sets the visibility map, whose states
--- TestCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with the
--- statistics recording pages all-visible that no longer are), only where every commit near this
--- one in the commit log is flushed, so TestCoverageStatementScale makes its databases commit
--- synchronously.
+-- BenchmarkCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with
+-- the statistics recording pages all-visible that no longer are), only where every commit near
+-- this one in the commit log is flushed, so BenchmarkCoverageStatementScale makes its databases
+-- commit synchronously.
 
 begin;
 

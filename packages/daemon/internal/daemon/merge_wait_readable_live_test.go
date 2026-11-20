@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for the one thing that tells a head that stopped from a head that is
 // moving: the `mergeWait` object an issue's view of GET /legion/v1/state carries while its review
 // round waits on GitHub's answer about merging the pull request's head (api.MergeWaitView, built
@@ -7,8 +5,10 @@
 // the round waits on, the merge state the record holds for it, when that state was last read
 // (record.PullRequest.StateReadAt), when GitHub last moved the pull request, how many of the
 // fence's check runs are the head's own, and the head and state the architect and the reviewer
-// were told the round was stuck at. scripts/e2e/merge-wait-readable.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// were told the round was stuck at. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
+// without.
 //
 // The step the proof exists for is the second: a read that only confirms the state already
 // recorded still moves `stateReadAt`, so a head read a minute ago reads differently from one
@@ -26,8 +26,8 @@
 // /legion/v1/state — of the decoded object for what it says, and of the body's own keys for what
 // it leaves off, which is what the negative control holds.
 //
-// What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is mergeWaitGitHub, a REST stand-in for
+// What the proof stands in for lies outside the rule. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is mergeWaitGitHub, a REST stand-in for
 // the two pull requests the proof drives, whose answer for a head — `mergeable`,
 // `mergeable_state`, `head.sha`, `base.ref` and `updated_at` — the steps set between them, and
 // which can be made to answer nothing at all for a head, the state a round is in before its first
@@ -137,14 +137,14 @@ func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
 	r.step("the-wait-ends", r.theWaitEnds)
 }
 
-// newMergeWaitReadableLive boots the daemon over the script's broker with the three issues already
-// recorded, each in reviewing and holding its tree's admission slot: the one the proof drives, on
-// an open pull request GitHub answers `blocked` for; the one whose reviewer requests changes in
-// step 5; and the one whose pull request the record holds closed, its reviewer's approval standing
-// at the head it was closed on.
+// newMergeWaitReadableLive boots the daemon over the package's test broker with the three issues
+// already recorded, each in reviewing and holding its tree's admission slot: the one the proof
+// drives, on an open pull request GitHub answers `blocked` for; the one whose reviewer requests
+// changes in step 5; and the one whose pull request the record holds closed, its reviewer's
+// approval standing at the head it was closed on.
 func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/merge-wait-readable.sh")
+	proof := newLiveProof(t)
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -677,8 +677,11 @@ func (r *mergeWaitReadableLive) publishSynchronize(number int, issue, head strin
 // publishBasePush publishes somebody else's push onto the base branch, as Envoy relays a GitHub
 // push to a branch Legion holds no pull request on (intake's decodePush makes it an intake.BasePush).
 // Its handler walks the open pull requests recorded on that base and asks for a read of each whose
-// round waits on GitHub (workflow's basePush, askMergeStateFor), which is how a step asks the
-// daemon to read GitHub again without changing anything the round is judged by.
+// issue stands in testing, reviewing, accepting, retro or merging (workflow's basePush,
+// askMergeStateFor, under classify.MergeStateReadOwed's base-push reason): each open pull
+// request of this proof is read while its issue stands in one of them, whether its round waits on
+// GitHub or not. That is how a step asks the daemon to read GitHub again without changing anything
+// the round is judged by.
 func (r *mergeWaitReadableLive) publishBasePush() {
 	r.t.Helper()
 	r.seq++

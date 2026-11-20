@@ -1,5 +1,7 @@
 package embedqueue
 
+// legion: tool - BenchmarkCoverageStatementScale times the search coverage statement against the one it replaced on synthetic corpora at production's size and twice it, in six states of embeddings, times the builds of its two window indexes, and states the corpus size at which the statement reaches its 10 s bound, for the author of a change to that statement or to those indexes, who runs it as a Job through scripts/coverage-scale.sh before the change merges and reads its coverage-scale: line (pass at 4 x production's corpus or more); run with DISPATCH_COVERAGE_SCALE_URL=<a Postgres server it may create and drop databases on> go test -count=1 -v -timeout 3h -run '^$' -bench '^BenchmarkCoverageStatementScale$' -benchtime 1x ./internal/dispatch/embedqueue/
+
 import (
 	"bytes"
 	"cmp"
@@ -28,9 +30,9 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// coverageScaleURLEnv names the Postgres server TestCoverageStatementScale builds its corpora on,
-// one database per scale, which it creates and drops: never a server that holds anything else of
-// value, and never CI's, which leaves it unset. Its database path is ignored, as storetest's
+// coverageScaleURLEnv names the Postgres server BenchmarkCoverageStatementScale builds its corpora
+// on, one database per scale, which it creates and drops: never a server that holds anything else
+// of value. No CI step runs the benchmark. Its database path is ignored, as storetest's
 // DISPATCH_TEST_DATABASE_URL's is. coverageScalesEnv lists the scales, space-separated; 1 is
 // production's counts of 2026-11-17.
 const (
@@ -228,7 +230,7 @@ type coverageScalePoint struct {
 	states []statePoint
 }
 
-// TestCoverageStatementScale measures the search coverage statement as the route runs it (the
+// BenchmarkCoverageStatementScale measures the search coverage statement as the route runs it (the
 // head: coverageQuery under the settings planCoverage sets) against the statement it replaced
 // (mainCoverageQuery, the base) on a synthetic corpus at each scale DISPATCH_COVERAGE_SCALES
 // names, in each of six states of embeddings (scaleStates): four of its visibility map and
@@ -238,10 +240,12 @@ type coverageScalePoint struct {
 // the builds of the two window indexes (rebuildWindowIndexes), which a deploy of their migrations
 // waits for before it serves. scripts/coverage-scale.sh runs it in a Job of its own, with a
 // Postgres of its own; a pod's test server is too small and too shared for corpora of
-// production's size, and CI never sets the URL that runs it.
+// production's size. It is a tool, not a test: DISPATCH_COVERAGE_SCALE_URL and
+// DISPATCH_COVERAGE_SCALES are its inputs, it skips while the URL is unset, and no CI step passes
+// -bench. Run it once, with -benchtime 1x: each run of its body is the whole measurement.
 //
 // Each scale gets a database of its own, migrated by the store's own path (store.Migrate), with
-// autovacuum off on embeddings, so that nothing but the test sets its visibility map or its
+// autovacuum off on embeddings, so that nothing but the measurement sets its visibility map or its
 // statistics; the corpus loaded (testdata/coverage_corpus.sql over this repository's prose); the
 // record step run to completion (recordSources) as the boot pass leaves a database; and the two
 // window indexes dropped and built again by their migrations' own statements, each build timed.
@@ -271,41 +275,41 @@ type coverageScalePoint struct {
 // is the one whose size is the smallest, and its size is the one judged. The last line it prints
 // starts `coverage-scale:` and names every number the verdict rests on, with the index builds'
 // times and sizes, so a reader of the Job's log judges it from its end.
-func TestCoverageStatementScale(t *testing.T) {
+func BenchmarkCoverageStatementScale(b *testing.B) {
 	server := os.Getenv(coverageScaleURLEnv)
 	if server == "" {
-		t.Skip(coverageScaleURLEnv + " is unset: it must name a Postgres server this test may create and drop " +
-			"databases on, which packages/envoy/scripts/coverage-scale.sh starts and names; CI never sets it")
+		b.Skip(coverageScaleURLEnv + " is unset: it must name a Postgres server this measurement may create and drop " +
+			"databases on, which packages/envoy/scripts/coverage-scale.sh starts and names")
 	}
 	bound, err := time.ParseDuration(coverageStatementTimeout)
 	if err != nil {
-		t.Fatalf("read the coverage statement's bound %q as a duration: %v", coverageStatementTimeout, err)
+		b.Fatalf("read the coverage statement's bound %q as a duration: %v", coverageStatementTimeout, err)
 	}
-	scales := coverageScales(t)
-	prose := repositoryProse(t)
+	scales := coverageScales(b)
+	prose := repositoryProse(b)
 	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
 	if err != nil {
-		t.Fatalf("read the corpus script: %v", err)
+		b.Fatalf("read the corpus script: %v", err)
 	}
 	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, serverDatabaseURL(t, server, "postgres"))
+	admin, err := pgx.Connect(ctx, serverDatabaseURL(b, server, "postgres"))
 	if err != nil {
-		t.Fatalf("connect to %s's postgres database: %v", coverageScaleURLEnv, err)
+		b.Fatalf("connect to %s's postgres database: %v", coverageScaleURLEnv, err)
 	}
-	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	b.Cleanup(func() { _ = admin.Close(context.Background()) })
 
 	var points []coverageScalePoint
 	for _, scale := range scales {
-		t.Run("scale="+scale.text, func(t *testing.T) {
-			points = append(points, measureCoverageAtScale(t, admin, server, scale, prose, string(script)))
+		b.Run("scale="+scale.text, func(b *testing.B) {
+			points = append(points, measureCoverageAtScale(b, admin, server, scale, prose, string(script)))
 		})
 	}
-	judgeCoverageScale(t, scales, points, bound)
+	judgeCoverageScale(b, scales, points, bound)
 }
 
 // coverageScales reads DISPATCH_COVERAGE_SCALES, or its default, as scales above 0, each named
 // once.
-func coverageScales(t *testing.T) []coverageScale {
+func coverageScales(t testing.TB) []coverageScale {
 	t.Helper()
 	raw := os.Getenv(coverageScalesEnv)
 	if strings.TrimSpace(raw) == "" {
@@ -331,7 +335,7 @@ func coverageScales(t *testing.T) []coverageScale {
 // (n, line) a line, with no empty line. Real prose is what makes the texts compress and hash
 // as Dispatch's do. A line that is no valid UTF-8, or that holds a NUL, which Postgres text
 // cannot, is left out.
-func repositoryProse(t *testing.T) [][]any {
+func repositoryProse(t testing.TB) [][]any {
 	t.Helper()
 	moduleRoot := filepath.Join("..", "..", "..")
 	repository := filepath.Join(moduleRoot, "..", "..")
@@ -376,7 +380,7 @@ func repositoryProse(t *testing.T) [][]any {
 }
 
 // serverDatabaseURL is raw, the URL of a server, naming database instead of its own.
-func serverDatabaseURL(t *testing.T, raw, database string) string {
+func serverDatabaseURL(t testing.TB, raw, database string) string {
 	t.Helper()
 	server, err := url.Parse(raw)
 	if err != nil {
@@ -390,7 +394,7 @@ func serverDatabaseURL(t *testing.T, raw, database string) string {
 // the window indexes again from their migrations (rebuildWindowIndexes), and measures both
 // statements on it in each state of scaleStates, logging what it read; the database is dropped
 // when t ends.
-func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale coverageScale, prose [][]any, script string) coverageScalePoint {
+func measureCoverageAtScale(t testing.TB, admin *pgx.Conn, server string, scale coverageScale, prose [][]any, script string) coverageScalePoint {
 	ctx := context.Background()
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
@@ -518,7 +522,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 // first scan of the table would set them, writing every page of it, which no build over a
 // production table long since read and vacuumed does. It answers the builds in
 // coverageWindowIndexes' order.
-func rebuildWindowIndexes(t *testing.T, database *store.Store, stage string) []windowIndexBuild {
+func rebuildWindowIndexes(t testing.TB, database *store.Store, stage string) []windowIndexBuild {
 	t.Helper()
 	ctx := context.Background()
 	mustExec(t, database.Pool, `vacuum embeddings`)
@@ -549,7 +553,7 @@ func rebuildWindowIndexes(t *testing.T, database *store.Store, stage string) []w
 // it is planned again at each run (QueryExecModeDescribeExec, as benchtime's runner does): a
 // cached prepared statement switches to a generic plan from its sixth execution, which is not the
 // plan a call gets.
-func measurementConn(t *testing.T, databaseURL string) *pgx.Conn {
+func measurementConn(t testing.TB, databaseURL string) *pgx.Conn {
 	t.Helper()
 	ctx := context.Background()
 	config, err := pgx.ParseConfig(databaseURL)
@@ -569,7 +573,7 @@ func measurementConn(t *testing.T, databaseURL string) *pgx.Conn {
 // loadCoverageCorpus runs the corpus script at scale on one connection of databaseURL: the prose
 // copied into the temporary table the script reads (COPY FROM STDIN), the scale and the two
 // identities set, then the script as one simple-protocol statement, which commits once.
-func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, prose [][]any, script string) {
+func loadCoverageCorpus(t testing.TB, databaseURL string, scale coverageScale, prose [][]any, script string) {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, databaseURL)
@@ -607,7 +611,7 @@ func loadSmallCoverageCorpus(t *testing.T, database *store.Store) {
 // counts times the scale, rounded as the script rounds them, of issues, document versions and
 // each window kind's rows; every issue's source recorded; and every issue's latest spec its
 // sampled size in turn, beginning `## Summary`. It logs the counts.
-func checkCoverageCorpus(t *testing.T, database *store.Store, scale coverageScale, recorded int64) {
+func checkCoverageCorpus(t testing.TB, database *store.Store, scale coverageScale, recorded int64) {
 	t.Helper()
 	ctx := context.Background()
 	scaled := func(rows int64) int64 {
@@ -693,7 +697,7 @@ type scaleQuerier interface {
 // alternately, under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON), each run's time its planning plus
 // execution. It logs one plan of each in text form, from an EXPLAIN (ANALYZE, BUFFERS) of its own
 // after the timed runs.
-func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string) (head, base []time.Duration) {
+func timeCoverageStatements(t testing.TB, conn *pgx.Conn, stage, identity string) (head, base []time.Duration) {
 	t.Helper()
 	const baseName, headName = "base (mainCoverageQuery)", "head (coverageQuery, under planCoverage's settings)"
 	warm := func(q scaleQuerier, statement string) { mustExec(t, q, statement, identity) }
@@ -716,7 +720,7 @@ func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string
 // statement_timeout set local to 0 where Coverage sets its bound (coverageStatementTimeout), so
 // no run is cut off by it, then planCoverage, which runs its settings in the transaction. do then
 // runs coverageQuery in the transaction, which is rolled back, undoing the settings.
-func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement string)) {
+func runHead(t testing.TB, conn *pgx.Conn, do func(q scaleQuerier, statement string)) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -733,7 +737,7 @@ func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement str
 
 // logTextPlan logs statement's plan for identity on q in text form, from an EXPLAIN (ANALYZE,
 // BUFFERS) of its own.
-func logTextPlan(t *testing.T, q scaleQuerier, stage, name, statement, identity string) {
+func logTextPlan(t testing.TB, q scaleQuerier, stage, name, statement, identity string) {
 	t.Helper()
 	rows, err := q.Query(context.Background(), "explain (analyze, buffers) "+statement, identity)
 	if err != nil {
@@ -751,7 +755,7 @@ func logTextPlan(t *testing.T, q scaleQuerier, stage, name, statement, identity 
 // as its estimates price it. It answers the run's planning plus execution time and whether the
 // plan read embeddings by a Seq Scan, which runs the blank test's regex over every window's text
 // again: the plan planCoverage's settings keep the statement from.
-func coverageNegativeControl(t *testing.T, conn *pgx.Conn, stage, identity string) (time.Duration, bool) {
+func coverageNegativeControl(t testing.TB, conn *pgx.Conn, stage, identity string) (time.Duration, bool) {
 	t.Helper()
 	took, plan := explainedRun(t, conn, stage+": negative control (coverageQuery, the planner free)", coverageQuery, identity)
 	return took, explaintest.SeqScansRelation(t, plan, "embeddings")
@@ -761,7 +765,7 @@ func coverageNegativeControl(t *testing.T, conn *pgx.Conn, stage, identity strin
 // FORMAT JSON): its planning plus execution time as the run reports them, and its plan's one
 // "Plan" node. A plan missing either time is a failure rather than a zero, which would read as the
 // fastest run there is.
-func explainedRun(t *testing.T, q querier, name, statement, identity string) (time.Duration, json.RawMessage) {
+func explainedRun(t testing.TB, q querier, name, statement, identity string) (time.Duration, json.RawMessage) {
 	t.Helper()
 	var raw []byte
 	if err := q.QueryRow(context.Background(), "explain (analyze, buffers, format json) "+statement, identity).Scan(&raw); err != nil {
@@ -800,7 +804,7 @@ func runsInMilliseconds(times []time.Duration) string {
 // dropScaleDatabase drops name as storetest drops a test's database: plainly, again while
 // Postgres answers that it is in use (SQLSTATE 55006, a backend of the closed pools still being
 // torn down), and with force as the last attempt.
-func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
+func dropScaleDatabase(t testing.TB, admin *pgx.Conn, name string) {
 	ctx := context.Background()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
@@ -833,7 +837,7 @@ func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
 // base's medians, the negative control's times and whether it read embeddings by a Seq Scan, and
 // the fits and their multiple; then the slowest state and its multiple, or, where a state has no
 // fit, that the slowest state is not known, and the slowest of the others.
-func judgeCoverageScale(t *testing.T, scales []coverageScale, points []coverageScalePoint, bound time.Duration) {
+func judgeCoverageScale(t testing.TB, scales []coverageScale, points []coverageScalePoint, bound time.Duration) {
 	t.Helper()
 	if len(points) < 2 {
 		fmt.Printf("coverage-scale: FAIL: %d of the %d scales were measured; the fit needs two\n", len(points), len(scales))

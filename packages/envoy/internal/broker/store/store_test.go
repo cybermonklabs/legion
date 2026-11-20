@@ -12,13 +12,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 func testDatabaseURL(t *testing.T) string {
+	t.Helper()
 	url := os.Getenv("BROKER_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
+	testprereq.Require(t, url != "", "envoy-go", "BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
 	return url
 }
 

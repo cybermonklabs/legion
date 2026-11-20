@@ -1,3 +1,4 @@
+// legion: tool - draws a corpus's post-cut cases into the fit, report, anchor and reserve slices, for the person who runs an approval-eval round on them.
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";

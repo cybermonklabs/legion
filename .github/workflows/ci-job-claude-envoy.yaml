@@ -40,6 +40,10 @@ jobs:
       # endpoint and Dispatch, and refuses on GitHub Actions without one. The pin is read from
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
+      # tests/codex-real.test.ts runs the plugin's Codex build on the pinned Codex CLI against a
+      # stand-in Responses API, and refuses on GitHub Actions without one. The pin is read from
+      # .codex-pin, the repository's one copy of it (.github/actions/install-codex).
+      - uses: ./.github/actions/install-codex
       - run: bun install --frozen-lockfile
       - name: Lint Claude Envoy plugin
         run: bun run lint

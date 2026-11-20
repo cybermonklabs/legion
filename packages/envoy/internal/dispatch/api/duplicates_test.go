@@ -26,7 +26,7 @@ import (
 // bound goes in unchecked, as it must in production, and a case run under it would measure the
 // machine. TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound proves the bound itself.
 
-func createIssueRequest(t *testing.T, handler http.Handler, body map[string]any) *httptest.ResponseRecorder {
+func createIssueRequest(t testing.TB, handler http.Handler, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
 }

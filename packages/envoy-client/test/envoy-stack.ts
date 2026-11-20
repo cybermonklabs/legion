@@ -24,7 +24,28 @@ export interface EnvoyStack {
   readonly natsHostPort: string;
   /** natsd's monitoring base URL, `http://127.0.0.1:<port>` (`/connz`, `/jsz`). */
   readonly monitorUrl: string;
-  /** Stops the listener and natsd. Their scratch directory is the caller's, and goes with it. */
+  /**
+   * Starts one more listener on the same natsd, on a loopback port the stack holds, under the first
+   * listener's environment (the caller's `listenerEnv` included) and a machine id of its own, and
+   * resolves once its /healthz answers healthy. The stack stops it with the rest, and the caller
+   * may stop it sooner.
+   */
+  startListener(): Promise<StartedListener>;
+  /**
+   * Stops natsd, leaves the bus down for `downMs`, and starts it again on the same port and the
+   * same store, resolving once it holds the `ENVOY_NOTIFICATIONS` stream again: an outage of the
+   * bus under every client of the stack.
+   */
+  restartNats(downMs: number): Promise<void>;
+  /** Stops the listeners and natsd. Their scratch directory is the caller's, and goes with it. */
+  stop(): Promise<void>;
+}
+
+/** A listener `startListener` added to the stack. */
+export interface StartedListener {
+  /** Its base URL, `http://127.0.0.1:<port>`. */
+  readonly url: string;
+  /** Stops it. */
   stop(): Promise<void>;
 }
 
@@ -281,8 +302,17 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
   const { PATH = "" } = process.env;
   const work = options.work;
   const processes: Subprocess[] = [];
+  // natsd is stopped last, after every listener: a restart leaves the newest natsd at the end of
+  // `processes`, behind the listeners started before it.
+  const natsProcesses = new Set<Subprocess>();
   const stop = async () => {
-    for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
+    const order = [...processes].reverse();
+    for (const child of order.filter((one) => !natsProcesses.has(one))) {
+      await stopProcess(child, "SIGTERM");
+    }
+    for (const child of order.filter((one) => natsProcesses.has(one))) {
+      await stopProcess(child, "SIGTERM");
+    }
   };
   try {
     const bin = path.join(work, "bin");
@@ -293,20 +323,24 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       binaries: "natsd and the listener",
     });
     const natsHome = path.join(work, "nats-home");
-    const listenerHome = path.join(work, "listener-home");
     mkdirSync(natsHome);
-    mkdirSync(listenerHome);
     const natsLog = path.join(work, "natsd.log");
+    const natsStore = path.join(work, "nats-store");
+    /** natsd on client port `client` and monitoring port `monitoring`, on the stack's one store. */
+    const spawnNats = (client: string, monitoring: string): Subprocess => {
+      const natsd = startServer({
+        command: [path.join(bin, "natsd"), "-p", client, "-m", monitoring, "-store_dir", natsStore],
+        env: { PATH, HOME: natsHome },
+        log: natsLog,
+      });
+      processes.push(natsd);
+      natsProcesses.add(natsd);
+      return natsd;
+    };
     // -1 is nats-server's RANDOM_PORT: natsd binds client (-p) and monitoring (-m) ports the
     // kernel chooses, and logs them. A -p of 0 would mean the default 4222, and an -m of 0 no
     // monitoring at all.
-    const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
-    const natsd = startServer({
-      command: [path.join(bin, "natsd"), ...natsArgs],
-      env: { PATH, HOME: natsHome },
-      log: natsLog,
-    });
-    processes.push(natsd);
+    let natsd = spawnNats("-1", "-1");
     await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async () => {
       const reported = natsdAddresses(natsLog);
       if (reported === undefined) return false;
@@ -318,50 +352,88 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const natsHostPort = addresses.client;
     const natsUrl = `nats://${natsHostPort}`;
     const monitor = `http://${addresses.monitor}`;
-
-    const listenerLog = path.join(work, "listener.log");
-    const { child: listener, port: listenerPort } = await startOnHeldPort(
-      "listener",
-      "ENVOY_LISTEN_FD",
-      options.portChosen,
-      (port) => ({
-        command: [path.join(bin, "listener")],
-        // The caller's environment last, so a test may replace a setting of the stack's own.
-        env: {
-          PATH,
-          HOME: listenerHome,
-          // With ENVOY_LISTEN_FD these name the held socket's address, which the listener checks.
-          PORT: String(port),
-          ENVOY_LISTEN_HOST: "127.0.0.1",
-          ENVOY_MACHINE_ID: `envoy-stack-${process.pid}`,
-          NATS_URLS: natsUrl,
-          ...options.listenerEnv,
-        },
-        log: listenerLog,
-      })
-    );
-    processes.push(listener);
-    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
-    await awaitReady(
-      "the listener",
-      listener,
-      listenerLog,
-      ENVOY_READY,
-      async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
-    );
-    await awaitReady(
-      "natsd's ENVOY_NOTIFICATIONS stream",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => {
+    const awaitStream = (server: Subprocess) =>
+      awaitReady("natsd's ENVOY_NOTIFICATIONS stream", server, natsLog, ENVOY_READY, async () => {
         const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
         return (jsz?.account_details ?? []).some((account) =>
           (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
         );
-      }
-    );
-    return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, stop };
+      });
+
+    let listeners = 0;
+    /** One listener on a port the stack holds ({@link startOnHeldPort}), under the stack's
+     *  environment and a machine id and home of its own. */
+    const spawnListener = async (): Promise<{ url: string; child: Subprocess }> => {
+      listeners += 1;
+      const name = listeners === 1 ? "listener" : `listener-${listeners}`;
+      const home = path.join(work, `${name}-home`);
+      mkdirSync(home);
+      const log = path.join(work, `${name}.log`);
+      const machineID =
+        listeners === 1 ? `envoy-stack-${process.pid}` : `envoy-stack-${process.pid}-${listeners}`;
+      const { child, port } = await startOnHeldPort(
+        "listener",
+        "ENVOY_LISTEN_FD",
+        options.portChosen,
+        (held) => ({
+          command: [path.join(bin, "listener")],
+          // The caller's environment last, so a test may replace a setting of the stack's own.
+          env: {
+            PATH,
+            HOME: home,
+            // With ENVOY_LISTEN_FD these name the held socket's address, which the listener checks.
+            PORT: String(held),
+            ENVOY_LISTEN_HOST: "127.0.0.1",
+            ENVOY_MACHINE_ID: machineID,
+            NATS_URLS: natsUrl,
+            ...options.listenerEnv,
+          },
+          log,
+        })
+      );
+      processes.push(child);
+      const url = `http://127.0.0.1:${port}`;
+      await awaitReady(
+        `the ${name}`,
+        child,
+        log,
+        ENVOY_READY,
+        async () => (await getJson(`${url}/healthz`, StatusSchema))?.status === "healthy"
+      );
+      return { url, child };
+    };
+    const { url: envoyUrl } = await spawnListener();
+    await awaitStream(natsd);
+    const startListener = async (): Promise<StartedListener> => {
+      const { url, child } = await spawnListener();
+      return { url, stop: () => stopProcess(child, "SIGTERM") };
+    };
+    // A restart binds the ports the first start was given, so every client of the stack finds
+    // the bus where it was.
+    const clientPort = addresses.client.slice(addresses.client.lastIndexOf(":") + 1);
+    const monitorPort = addresses.monitor.slice(addresses.monitor.lastIndexOf(":") + 1);
+    const restartNats = async (downMs: number): Promise<void> => {
+      await stopProcess(natsd, "SIGTERM");
+      await Bun.sleep(downMs);
+      natsd = spawnNats(clientPort, monitorPort);
+      await awaitReady(
+        "natsd",
+        natsd,
+        natsLog,
+        ENVOY_READY,
+        async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
+      );
+      await awaitStream(natsd);
+    };
+    return {
+      envoyUrl,
+      natsUrl,
+      natsHostPort,
+      monitorUrl: monitor,
+      startListener,
+      restartNats,
+      stop,
+    };
   } catch (error) {
     await stop();
     throw error;

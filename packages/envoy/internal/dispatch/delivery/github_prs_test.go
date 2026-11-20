@@ -36,7 +36,7 @@ type fakeInstallation struct {
 // missing permission or a multi-repository installation overrides permissions/installationRepos
 // before calling newTestClient.
 type fakeGitHub struct {
-	t                 *testing.T
+	t                 testing.TB
 	mux               *http.ServeMux
 	installID         int64
 	tokenMints        atomic.Int64
@@ -85,7 +85,7 @@ func (f *fakeGitHub) tokenExpired(r *http.Request) bool {
 	return ok && !time.Now().Before(expires.(time.Time))
 }
 
-func newFakeGitHub(t *testing.T) *fakeGitHub {
+func newFakeGitHub(t testing.TB) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{
 		t: t, mux: http.NewServeMux(), installID: 1,
@@ -199,7 +199,7 @@ func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Optio
 	return client
 }
 
-func mustEncode(t *testing.T, w http.ResponseWriter, v any) {
+func mustEncode(t testing.TB, w http.ResponseWriter, v any) {
 	t.Helper()
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Errorf("encode response: %v", err)

@@ -19,16 +19,14 @@
  * would kill a process its row is still using: the probe the seven driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
- * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the fake Dispatch
- * host `outside-path-reach-fixtures.ts` starts for the rows of the four `outside-path-reach*`
- * test files, and the processes `local-instance-support.test.ts` starts through its
- * `Supervisor`. Two subprocesses a row can wait for run outside it, as stated edges. One is the
- * psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases
- * of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
- * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
- * other is the `ps` that reads the process table on a machine with no `/proc`, here
- * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
- * processes under `/proc` and never runs that `ps`.
+ * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, and the processes
+ * `local-instance-support.test.ts` starts through its `Supervisor`. Two subprocesses a row can
+ * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and hooks
+ * of `psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts`
+ * call too, so bounding that psql would reach past `e2e/__tests__/`. The other is the `ps` that
+ * reads the process table on a machine with no `/proc`, here (`processTable`) and in
+ * `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its processes under `/proc`
+ * and never runs that `ps`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -48,17 +46,15 @@
  * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
  * five-run whole-lane checks recorded on Dispatch issue INFRA-3082 at heads 32078f86 through
  * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
- * three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16. Three readings are older, and
- * each names the run it came from: the driver's 3.59 s and the listing's 76.20 s and 78.4 s. A
+ * three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16. Two readings are older, and
+ * each names the run it came from: the listing's 76.20 s and 78.4 s. A
  * later run may read more: a bound holds while it stays at least three times the largest reading
  * of its kind, and that is what a reader of a new run checks. The reading behind `twoStackBuild`
  * was taken from cold, on a pod with four cores.
  *
  * - `short`, against 11.95 s: what the one `playwright test --help` of `playwright-argv.test.ts`
  *   cost. The other short commands, the two compare-recordings runs, the two `bun --eval`
- *   probes, and the harness and import children, read 7.39 s or less; so do the driver of
- *   `replace-blocks-guard.test.ts` and its psql and tail, at most 3.59 s (in the check at
- *   dc68da15 on 2026-11-15), 0.803 s and 0.19 s.
+ *   probes, and the harness and import children, read 7.39 s or less.
  * - `listing`, against 113.61 s, one of four listings started at once, in a whole-lane run under
  *   nine busy loops, three per CPU, on a pod of 3 CPUs, on 2026-11-16; against 76.20 s, the
  *   largest of the 22 listings of two such runs on 2026-11-15; and against 78.4 s, the spec's
@@ -76,7 +72,8 @@
  * 6.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
  * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
  * fires before the row's limit and the failure names the child. The lane runs in the
- * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
+ * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes, all but the three
+ * files whose rows need a PostgreSQL (`bun run test` leaves them out, below). That job ran green
  * in 158 s (job 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of
  * those the lane started about 2 minutes in. A stuck listing therefore fails about 8 minutes into
  * the job: more than twice as long as a green run of the job, and well inside its limit, so the
@@ -86,10 +83,15 @@
  * block of `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does
  * not total). A hung child of either fails at its own 60 s bound; the row's limit fires only
  * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
- * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
- * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips
- * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of
- * `ci.yaml` names either.
+ * row, stalled from the lane's start, fails about 9.5 minutes into the job.
+ *
+ * The two-stack row of `second-global-setup.test.ts` runs in no `bun run test`. It, the rows of
+ * `psql-session.test.ts` and those of `harness-stacks.test.ts` are `bun run test:postgres`,
+ * which the `postgres-rows` job of `.github/workflows/dispatch-browser.yaml` runs on the image's
+ * PostgreSQL 18, with the server and broker binaries its `binaries` job built, so the child
+ * there builds no Go. The row's 1 830 000 ms is the bound of a child that builds two stacks from
+ * cold, which that job's step budget is far below: a stuck child there fails at that budget,
+ * which names the step.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -704,8 +706,8 @@ const passwordParameter = new RegExp(
  *  percent-decoded and in any case; and the value of a `PGPASSWORD=value` assignment inside a
  *  word, in any case, as `env PGPASSWORD=… psql` and `bash -c "PGPASSWORD=… psql"` start a child
  *  (both `passwordParameter`). A variable libpq does not read, such as `DB_PASSWORD`, is not
- *  hidden. A child's command can hold a database URL with a password in it, as the `--dbname`
- *  `replace-blocks-guard.test.ts` hands psql. The cost line and the failure go to the run's
+ *  hidden. A child's command can hold a database URL with a password in it, as a `--dbname` a
+ *  caller hands psql does. The cost line and the failure go to the run's
  *  stderr, which CI keeps in a public log, so neither may print a password. Two forms still
  *  show: a value not opened with `'` that holds a raw `&`, quote or backslash shows what follows
  *  that character, as a shell's `PGPASSWORD="…"` does from its opening `"`, and a URL password
@@ -815,10 +817,10 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Six files of this directory run children that are
+ *  This never throws for an exit status. Five files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
- *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
- *  `replace-blocks-guard.test.ts` and `round-robin-proxy.test.ts` - so a helper that always threw
+ *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts` and
+ *  `round-robin-proxy.test.ts` - so a helper that always threw
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *

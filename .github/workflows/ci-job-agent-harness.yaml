@@ -1,0 +1,854 @@
+name: CI job agent-harness
+
+# The steps of ci.yaml's `agent-harness` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# That `if:` tests an output the merge queue and the `full-ci` label hold back, as they hold back
+# the slow suites (the comment on ci.yaml's `agent_harness` output says why).
+#
+# The tests here drive real agents, each answered by a model stand-in of the test's own. The job
+# is split into parts, and each part is a literal job of this file, not a leg of a matrix: the
+# readers of ci.yaml (check-ci-filters.sh, ci-ok's report) read each job of this file by its id
+# and expand no matrix. Each part installs what its own tests use and nothing more, and ends with
+# the upload of its tests' logs when it fails and with the ci-ok-report step. Each part stays
+# within the time of daemon-go's median green run, about 24 minutes.
+#
+# pane-drivers runs the five live proofs of internal/daemon that drive real Oh My Pi panes, the
+# tests .github/scripts/ci_job_reads.py's AGENT_HARNESS_TESTS names, every test of the five files
+# its AGENT_HARNESS_FILES names. Each boots the whole daemon through the function `legion start`
+# calls, over this job's PostgreSQL and the package's test NATS server, builds the `legion` its
+# panes run and packs both plugins from this checkout, installs them on the pinned Oh My Pi, and
+# runs each pane as a child process group of the test (internal/daemon's
+# localruntime_live_test.go) against a model stand-in of its own. They were the drivers of five
+# scripts under scripts/e2e, which no CI job ran; they carry no build tag now, and the daemon-go
+# race step, which runs their package, skips them by name, so each runs once per run of the
+# router, here, where its reads are this job's inputs: with them in daemon-go a change to the
+# lockfile or to one skill would run the daemon's whole Go suite.
+#
+# The tests' names are written in .github/scripts/ci_job_reads.py (AGENT_HARNESS_TESTS), which
+# builds the pane-drivers step's `-run` and the race step's `-skip` from the one list and holds
+# each step's whole script to the text it builds, so the two cannot come to name different tests.
+#
+# What pane-drivers installs is what those tests need:
+#   * the pgvector Postgres service and LEGION_TEST_PG_DSN - the store every daemon the tests
+#     boot migrates and runs on, and the server late_completion_live_test.go's Dispatch makes a
+#     database of its own on, whose migrations create the pgvector extension;
+#   * the NATS image the daemon package's test broker starts (internal/testnats's Image), pulled
+#     first for the reason the action gives, and TESTCONTAINERS_RYUK_DISABLED, as daemon-go sets
+#     it;
+#   * git and jj 0.38 or later, which the daemon resolves at boot and refuses to start without:
+#     git is the runner image's own, and install-jj gives the jj the worker image ships and
+#     installs the mise install-omp installs the pin through, so it comes first;
+#   * Oh My Pi at the pin .omp-pin names (LEGION_TEST_OMP), which every pane runs;
+#   * Bun and a frozen install, for the plugin packs;
+#   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
+#     the same package the plugin-pack and daemon-live jobs' steps build, and builds `legion` and
+#     the Dispatch server.
+# No tmux, no socat and no Claude Code: the panes are child process groups on Oh My Pi alone.
+#
+# A failed test leaves its logs: each test writes the daemon's own log at debug, Dispatch's where
+# it starts one, and each pane's output to a directory named for it under
+# LEGION_TEST_DAEMON_LOG_DIR (internal/daemon/live_proof_test.go's liveLogDir), and the step after
+# the tests uploads that directory when the part fails.
+#
+# tmux-scripts runs what drives real agents in the panes of the daemon's own private tmux server:
+# three scripts of scripts/e2e, each itself the test and each a step that prints one `CHECK
+# <name>: PASS` or `CHECK <name>: FAIL: <why>` line per check and exits 1 after any FAIL
+# (stage2-tmux-supervision.sh, controller-start-tmux.sh and clean-session-stop-tmux.sh), and the
+# Claude Code backend's live proof of internal/daemon, the test AGENT_HARNESS_TMUX_TESTS names
+# (claude_backend_live_test.go), whose implementer runs Claude Code in such a pane. Each script
+# takes the job's environment alone: Oh My Pi from LEGION_TEST_OMP, Claude Code from
+# LEGION_TEST_CLAUDE, and a database of its own on the job's PostgreSQL (LEGION_TEST_PG_DSN). Each
+# builds its NATS, natsd (packages/envoy/internal/testnats/cmd/natsd, the server envoy-stack.ts
+# runs), from this checkout rather than take a service of the job's, since a service container is
+# started with no arguments and the daemon needs JetStream (`-js`); and each script that calls a
+# model starts its own stand-in, scripts/e2e/lib/messages-standin.ts, keyed by a placeholder of the
+# run's own. The Go test takes NATS as pane-drivers' do and its model from a stand-in of its own.
+# Nothing of theirs starts a container, reads a model key or reaches GitHub.
+#
+# What tmux-scripts installs is what those four need: tmux, socat (stage 2's stale-hello check) and
+# the PostgreSQL client (each script makes and drops its database with psql) from apt; jj, then
+# Oh My Pi through the mise install-jj installs (LEGION_TEST_OMP); Bun and a frozen install, for
+# the plugin packs, the claude-envoy build and the model stand-in; Claude Code at .claude-code-pin
+# (.github/actions/install-claude-code, LEGION_TEST_CLAUDE), the install the claude-envoy job
+# runs; setup-go and the go-daemon cache restore, since each script builds `legion`, the listener
+# and natsd and the Go test compiles internal/daemon's test binary; and the NATS image the
+# package's test broker starts, for the Go test. A failed step leaves its logs: each script's
+# evidence directory, or stage 2's kept work directory, and the Go test's logs under
+# LEGION_TEST_DAEMON_LOG_DIR, which the step after them uploads when the part fails.
+#
+# session-settings and session-scripts run three more scripts of scripts/e2e, each itself the test
+# and a step of its own with the same CHECK lines. session-settings runs
+# dispatch-session-settings.sh (Dispatch's live view shows and switches an Oh My Pi session's model
+# and thinking level, on one Chromium page); session-scripts runs dispatch-user-turns.sh (a
+# person's Send and Aside from Dispatch's page become an interactive Oh My Pi session's own turns
+# in a tmux pane, and everything else stays a card) and envoy-session-delivery.sh (every Envoy
+# event reaches an Oh My Pi session and a Claude Code session exactly once across seven
+# disruptions and a brand-new session). Each takes the job's environment alone: Oh My Pi from
+# LEGION_TEST_OMP, Claude Code from LEGION_TEST_CLAUDE, a database of its own on the job's
+# PostgreSQL (LEGION_TEST_PG_DSN), natsd built from this checkout, and a model stand-in of its own
+# on lib/messages-standin.ts, keyed by a placeholder of the run's own:
+# lib/session-settings-model.ts serves an Anthropic-shaped provider and an OpenAI-shaped one,
+# lib/user-turns-model.ts makes the `dispatch` calls the spec-edit checks need, and
+# lib/session-delivery-model.ts the Envoy tool calls of the sessions' setup. Nothing of theirs
+# starts a container, reads a model key or reaches GitHub.
+#
+# What session-settings installs is what its script needs: the PostgreSQL client (it makes and
+# drops its database with psql) from apt; jj, for the mise install-omp installs Oh My Pi through
+# (LEGION_TEST_OMP); Bun and a frozen install, for the plugin pack, the SPA build, the driver and
+# the stand-in; Playwright's Chromium in packages/dispatch, the page the driver holds open; and
+# setup-go and the go-envoy cache restore, since it builds the Envoy listener, Dispatch and natsd.
+#
+# What session-scripts installs is what its two need: tmux (dispatch-user-turns.sh's pane), socat
+# (envoy-session-delivery.sh's NATS proxies serve on a held socket with ACCEPT-FD, which socat
+# 1.8.0 added; Ubuntu 24.04's is 1.8.0.0) and the PostgreSQL client from apt; jj (make_omp_home
+# reads its config), then Oh My Pi through the mise install-jj installs (LEGION_TEST_OMP); Bun and
+# a frozen install, for the plugin pack, the claude-envoy build, the SPA build, the page driver
+# and the stand-ins; Claude Code at .claude-code-pin (LEGION_TEST_CLAUDE), the install the
+# claude-envoy job runs; Playwright's Chromium in packages/dispatch, the page dispatch-user-turns.sh
+# drives; and setup-go and the go-daemon cache restore, since each builds the Envoy listener,
+# Dispatch and natsd, and envoy-session-delivery.sh `legion`, whose claude-bridge runs the Claude
+# Code session. In both parts a failed step leaves its evidence directory under
+# agent-harness-logs, which the step after them uploads when the part fails.
+#
+# plugin-smokes runs the four live scripts of the Oh My Pi plugin, each itself the test and a step
+# of its own with the same CHECK lines: packages/pi-envoy/scripts/smoke-delivery.sh (a session
+# claims a role, a message to the role reaches its model, and its end frees the role),
+# smoke-btw.sh (a targeted Dispatch message to a session in the middle of a tool call, as a BTW and
+# as a steer, gets a correlated reply), smoke-registration-stall.sh (a pane whose registration is
+# wedged stays listed past the listener's live window, and one taken out of the registry puts
+# itself back) and packages/dispatch/e2e/acceptance/omp-roundtrip.sh (a person's answer to the
+# session's ask, and a person's message to the role it holds, reach its transcript). Each takes the
+# job's environment alone, through scripts/e2e/lib/plugin-smoke.sh: Oh My Pi from LEGION_TEST_OMP in
+# `--mode rpc`, this checkout's pi-envoy packed through scripts/e2e/lib/pack-plugin.sh, natsd and
+# the listener of packages/envoy-client/test/envoy-stack.ts, the Dispatch of
+# packages/envoy-client/test/dispatch-stack.ts with its NATS on that stack, on a database of its own
+# on the job's PostgreSQL (LEGION_TEST_PG_DSN), and the model stand-in lib/plugin-smoke-model.ts on
+# lib/messages-standin.ts, keyed by a placeholder of the run's own, which makes the tool calls each
+# script's session needs. lib/plugin-smoke-stack.ts starts the two stacks. Nothing of theirs starts
+# a container, reads a model key or reaches GitHub.
+#
+# What plugin-smokes installs is what its scripts need: jj, for the mise install-omp installs Oh
+# My Pi through (LEGION_TEST_OMP); Bun and a frozen install, for the plugin pack, the stacks and the
+# stand-in; and setup-go and the go-envoy cache restore, since the stacks build natsd, the listener
+# and Dispatch, all of packages/envoy. No apt package, no tmux, no Claude Code and no Chromium. A
+# failed step leaves its logs under agent-harness-logs, which the step after them uploads when the
+# part fails.
+#
+# nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh, itself the test, with the same
+# CHECK lines, in two steps, one per mode: an Oh My Pi session, a Claude Code session and two Codex
+# CLI sessions, each with a broker token of its own, are admitted to their own channels on the hub
+# behind the NATS auth service, receive a direct message across a restart of the listener and of
+# natsd, and a probe in one session's environment is refused another's channel. The first step
+# runs the default mode, each session the plugin's own code under a stand-in host, with no model.
+# The second runs --real-hosts, the hosts themselves: the pinned Oh My Pi in RPC mode, the pinned
+# Claude Code under `legion claude-bridge` and the pinned Codex CLI in a tmux server of the run's
+# own, each with this checkout's plugin, each delivery's model turn answered by the script's own
+# model stand-in (scripts/e2e/lib/messages-standin.ts), keyed by a placeholder of the run's own:
+# Anthropic Messages for Oh My Pi and Claude Code, OpenAI Responses for Codex. Each takes the job's
+# environment alone: the stack of packages/envoy/scripts/dev-stack.sh --callout on two databases
+# of its own on the job's PostgreSQL (LEGION_TEST_PG_DSN), built from this checkout; no container,
+# no credential and no model from outside the runner.
+#
+# What nats-callout-sessions installs is what its script needs: tmux (each real Codex session's
+# terminal) and the PostgreSQL client (dev-stack.sh makes and drops its databases with psql) from
+# apt; jj, for the mise install-omp installs Oh My Pi through; the pins of the three hosts the
+# second step runs, Oh My Pi at .omp-pin (LEGION_TEST_OMP), Claude Code at .claude-code-pin
+# (LEGION_TEST_CLAUDE) and Codex CLI at .codex-pin (LEGION_TEST_CODEX); Bun and a frozen install,
+# for the plugins, their stand-in hosts, the Codex plugin's build and pack, the stand-in `codex` it
+# compiles and the model stand-in; and setup-go with two cache restores, go-envoy-test, since
+# dev-stack.sh builds the stack's eight commands, all of packages/envoy, and go-daemon, since the
+# second step builds `legion` of packages/daemon for the bridge. curl, jq and python3 are the
+# runner image's own. A failed step leaves its evidence directory under agent-harness-logs, which
+# the step after them uploads when the part fails.
+#
+# Each part's last step reports ci-ok for the caller: on a merge-group run that part's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end each part with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  pane-drivers:
+    runs-on: ubuntu-24.04
+    # The step's own -timeout is 20 minutes, inside the part's budget of about 24. The five tests'
+    # drivers took 152 s (claim compaction), 300 s (provider error retry), about 55 s (role prompt
+    # rule), 78 s (late completion) and about 213 s (busy relaunch) in a Legion worker pod under
+    # gVisor, about 13 minutes one after another, and a hung test prints the goroutine dump that
+    # names it before the runner cancels the job. Around it are the jj, Oh My Pi and Bun
+    # installs, the image pull and the Go build of internal/daemon's test binary,
+    # which the cache restore makes incremental; 40 minutes leaves that setup the other 20 on a
+    # slow runner. Measured on a runner: the whole part took 10.3 minutes in CI run 44719869512
+    # and 9.9 in run 44635427552.
+    timeout-minutes: 40
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
+      # pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every daemon the tests boot resolves git and jj at boot and refuses to start without
+      # either, and late_completion_live_test.go makes its panes' workspace with them: git is the
+      # runner image's own, and this is the jj the worker image ships. It also leaves mise at
+      # ~/.local/bin/mise, which install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every pane runs the Oh My Pi .omp-pin names, and the tests refuse on GitHub Actions
+      # without one (LEGION_TEST_OMP).
+      - uses: ./.github/actions/install-omp
+
+      # Each test packs both plugins with `bun pm pack`, whose prepack builds each bundle from the
+      # installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # go-daemon, shared with typecheck, daemon-go, plugin-pack, daemon-live and pi-legion: this
+      # step compiles the same package's test binary the plugin-pack job's step does.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The package's test broker starts testnats.Image (the hub's 2.15.1), pulled first for the
+      # reason the action gives.
+      - name: Pull the NATS test container image
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/testnats/nats.go Image
+
+      # The five tests, by name. .github/scripts/ci_job_reads.py builds this text and the
+      # daemon-go race step's `-skip` from AGENT_HARNESS_TESTS and holds both steps to what it
+      # builds.
+      - name: Run the pane drivers on the pinned Oh My Pi
+        env:
+          LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/agent-harness-logs
+        run: go test -v -count=1 -timeout 20m -run '^(TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestLateCompletionsThroughTheRealLegionToolLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's logs, one directory per test: the daemon's own daemon.log at debug,
+      # Dispatch's dispatch.log where the test starts one, and each pane's output.
+      - name: Upload the pane drivers' logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-pane-drivers-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tmux-scripts:
+    runs-on: ubuntu-24.04
+    # Budget: the part took 8.5 minutes in CI run 44635427552, the scripts' builds of `legion`, the
+    # listener and natsd, which the cache restore makes incremental, and the installs included; in
+    # run 44719869512 it failed early, so that run measures nothing. Stage 2's orphan sweep alone
+    # waits out a 120 s grace. 45 minutes, set before any run was measured, leaves a slow runner
+    # room.
+    timeout-minutes: 45
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # As pane-drivers sets it: the runner VM is discarded after the job.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The daemon refuses to start without tmux; stage 2's stale-hello check writes to the
+      # daemon's worker socket with socat; each script makes and drops its database with psql.
+      - name: Install tmux, socat and the PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux socat postgresql-client
+          tmux -V
+          socat -V | sed -n 2p
+          psql --version
+
+      # The daemon resolves git and jj at boot and refuses to start without either; this is the jj
+      # the worker image ships, and it leaves the mise install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every Oh My Pi pane and boot gate of the three scripts runs the Oh My Pi .omp-pin names
+      # (LEGION_TEST_OMP), and each script refuses without one.
+      - uses: ./.github/actions/install-omp
+
+      # The plugin packs, the claude-envoy build and the model stand-in run on Bun over the
+      # installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # clean-session-stop-tmux.sh's implementer and the Claude Code test's run the Claude Code
+      # .claude-code-pin names (LEGION_TEST_CLAUDE), the install the claude-envoy job runs.
+      - uses: ./.github/actions/install-claude-code
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # go-daemon, shared with pane-drivers and the jobs its comment names: each script builds
+      # ./cmd/legion, and the Go test compiles internal/daemon's test binary.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The package's test broker, which the Go test's daemon runs on, starts testnats.Image (the
+      # hub's 2.15.1), pulled first for the reason the action gives.
+      - name: Pull the NATS test container image
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/testnats/nats.go Image
+
+      # Each script's own variable names its evidence directory, set on the command line rather
+      # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
+      # commands the scripts start compile. The steps after the first run whether or not an
+      # earlier one failed, so one failed proof does not hide the result of the others.
+      - name: Stage 2's supervision on tmux
+        run: bash scripts/e2e/stage2-tmux-supervision.sh
+
+      - name: The operator-launched controller on tmux
+        if: ${{ !cancelled() }}
+        run: CONTROLLER_START_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/controller-start" bash scripts/e2e/controller-start-tmux.sh
+
+      - name: The daemon's clean stop of a dead role's session
+        if: ${{ !cancelled() }}
+        run: CLEAN_SESSION_STOP_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/clean-session-stop" bash scripts/e2e/clean-session-stop-tmux.sh
+
+      # The test, by name. .github/scripts/ci_job_reads.py builds this text and the daemon-go race
+      # step's `-skip` from AGENT_HARNESS_TMUX_TESTS and holds both steps to what it builds.
+      - name: Run the Claude Code backend's proof on tmux
+        if: ${{ !cancelled() }}
+        env:
+          LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/agent-harness-logs
+        run: go test -v -count=1 -timeout 15m -run '^(TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed step's logs: the controller's and the clean stop's evidence directories and the
+      # Go test's daemon, Dispatch and pane logs under agent-harness-logs, and stage 2's work
+      # directory, which that script keeps on a failure.
+      - name: Upload the tmux scripts' logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-tmux-scripts-logs-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/agent-harness-logs
+            /tmp/legion-e2e2.*
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  session-settings:
+    runs-on: ubuntu-24.04
+    # Budget: the script passed end to end in 392 s in a Legion worker pod under gVisor (its builds
+    # of the listener, Dispatch, natsd and the SPA, then its 21 checks, whose own waits include the
+    # 45 s command of picker-during-turn and the 65 s of no-answer), and the whole part took 7.2
+    # minutes in CI run 44719869512 and 6.3 in run 44635427552, inside the part budget of about 24.
+    timeout-minutes: 25
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in the script's own database.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The script makes and drops its database with psql.
+      - name: Install the PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      # The jj the worker image ships, which leaves the mise install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every Oh My Pi session of the script runs the Oh My Pi .omp-pin names (LEGION_TEST_OMP),
+      # and the script refuses without one.
+      - uses: ./.github/actions/install-omp
+
+      # The plugin pack, the SPA build, the driver and the model stand-in run on Bun over the
+      # installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The page the driver holds open is Playwright's own Chromium, resolved from
+      # packages/dispatch as the dispatch-browser jobs resolve it. No apt in this step, for the
+      # reason ci-job-dispatch-two-builds.yaml's step of the same name gives.
+      - name: Install Playwright Chromium
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # go-envoy: the script builds the Envoy listener, Dispatch and natsd, all of packages/envoy,
+      # as envoy-session-stall's stack does.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The script's own variable names its evidence directory, set on the command line rather
+      # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
+      # commands the script starts compile.
+      - name: The live view's model and thinking switch
+        run: SESSION_SETTINGS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-settings" bash scripts/e2e/dispatch-session-settings.sh
+
+      # A failed step's evidence: the transcript, the services' logs, the model stand-in's
+      # requests, the sessions' files and the page's screenshots.
+      - name: Upload the session settings proof's logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-session-settings-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  session-scripts:
+    runs-on: ubuntu-24.04
+    # Budget: the part, both scripts and the installs, took 9.7 minutes in CI run 44719869512 and
+    # 9.8 in run 44635427552. dispatch-user-turns.sh's own waits (the spec edit's 30 s quiet
+    # window, the 65 s forged frame, the listener's drop of a stopped session, which waits up to
+    # 330 s) are its longest. 30 minutes, set before any run was measured, leaves a slow runner
+    # room.
+    timeout-minutes: 30
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in each script's own database.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # dispatch-user-turns.sh runs its session in a tmux pane; envoy-session-delivery.sh's NATS
+      # proxies serve on a held socket with socat's ACCEPT-FD, which socat 1.8.0 added (the script
+      # refuses a socat without it); each script makes and drops its database with psql.
+      - name: Install tmux, socat and the PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux socat postgresql-client
+          tmux -V
+          socat -V | sed -n 2p
+          psql --version
+
+      # make_omp_home (scripts/e2e/lib/omp-home.sh) reads the jj config; this is the jj the worker
+      # image ships, and it leaves the mise install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every Oh My Pi session of the two scripts runs the Oh My Pi .omp-pin names
+      # (LEGION_TEST_OMP), and each script refuses without one.
+      - uses: ./.github/actions/install-omp
+
+      # The plugin pack, the claude-envoy build, the SPA build, the page driver and the model
+      # stand-ins run on Bun over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # envoy-session-delivery.sh's second session runs the Claude Code .claude-code-pin names
+      # (LEGION_TEST_CLAUDE), the install the claude-envoy job runs.
+      - uses: ./.github/actions/install-claude-code
+
+      # The page dispatch-user-turns.sh drives is Playwright's own Chromium, resolved from
+      # packages/dispatch as the dispatch-browser jobs resolve it. No apt in this step, for the
+      # reason ci-job-dispatch-two-builds.yaml's step of the same name gives.
+      - name: Install Playwright Chromium
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # go-daemon, shared with the other parts and the jobs pane-drivers' comment names:
+      # envoy-session-delivery.sh builds ./cmd/legion for its claude-bridge.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # Each script's own variable names its evidence directory, set on the command line rather
+      # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
+      # commands the scripts start compile. The second step runs whether or not the first failed,
+      # so one failed proof does not hide the result of the other.
+      - name: A person's direct turns from Dispatch's page
+        run: DISPATCH_USER_TURNS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/user-turns" bash scripts/e2e/dispatch-user-turns.sh
+
+      - name: Every Envoy event reaches both sessions once
+        if: ${{ !cancelled() }}
+        run: SESSION_DELIVERY_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/session-delivery" bash scripts/e2e/envoy-session-delivery.sh
+
+      # A failed step's evidence: each script's transcript, its services' logs, its model
+      # stand-in's requests, its sessions' transcripts and its page's screenshots.
+      - name: Upload the session scripts' logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-session-scripts-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  plugin-smokes:
+    runs-on: ubuntu-24.04
+    # Budget: in a Legion worker pod under gVisor smoke-delivery.sh passed end to end in 17 s,
+    # smoke-btw.sh in 93 s (each mode's turn sleeps 45 s, and the steer is read after it),
+    # omp-roundtrip.sh in 36 s and smoke-registration-stall.sh in 529 s (four arms one after
+    # another, each stall arm's watch a 90 s live window and a minute or more past it), each after
+    # its own builds of natsd, the listener and, for two of them, Dispatch, which the go-envoy
+    # cache restore makes incremental; the whole part took 11.9 minutes in CI run 44719869512 and
+    # 11.6 in run 44635427552, inside the part budget of about 24.
+    timeout-minutes: 25
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in the database dispatch-stack.ts makes for each script.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The jj the worker image ships, which leaves the mise install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every Oh My Pi session of the four scripts runs the Oh My Pi .omp-pin names
+      # (LEGION_TEST_OMP), and each script refuses without one.
+      - uses: ./.github/actions/install-omp
+
+      # The plugin pack, the two stacks (lib/plugin-smoke-stack.ts) and the model stand-in run on
+      # Bun over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # go-envoy: the stacks build natsd, the listener and Dispatch, all of packages/envoy, as
+      # envoy-session-stall's stacks do.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
+      # Each script's logs go to the directory PLUGIN_SMOKE_EVIDENCE_DIR names, set on the command
+      # line rather than in an env: block, which ci_filter_coverage.py reads as able to change what
+      # the go commands the scripts start compile. The steps after the first run whether or not an
+      # earlier one failed, so one failed script does not hide the result of the others.
+      - name: A message to a role reaches the session that claimed it
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-delivery" bash packages/pi-envoy/scripts/smoke-delivery.sh
+
+      - name: A targeted Dispatch message mid-turn gets a correlated reply
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-btw" bash packages/pi-envoy/scripts/smoke-btw.sh
+
+      - name: A wedged or removed registration keeps the pane listed
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-registration-stall" bash packages/pi-envoy/scripts/smoke-registration-stall.sh
+
+      - name: A person's answer and message reach the session
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/omp-roundtrip" bash packages/dispatch/e2e/acceptance/omp-roundtrip.sh
+
+      # A failed step's logs: each script's model stand-in requests, its services' logs and each
+      # session's RPC stream, stderr and transcript.
+      - name: Upload the plugin smokes' logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-plugin-smokes-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  nats-callout-sessions:
+    runs-on: ubuntu-24.04
+    # Budget: the default-mode step printed 19 of 19 checks in 2.1 minutes in CI run 44744458379.
+    # The --real-hosts step is not yet measured on a runner: in a worker pod of 2 CPUs it took 17.3
+    # minutes, 14.2 of them its builds of `legion` and of dev-stack.sh's eight commands at -p=1,
+    # which the go-daemon and go-envoy-test restores make incremental here, then 3.1 for the
+    # sessions' three rounds of a message each, each receive waiting up to 45 s for its ack, and
+    # two restarts. 25 minutes, as session-settings' and plugin-smokes' first runs had, lets the
+    # first runs say what the part takes.
+    timeout-minutes: 25
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in the database dev-stack.sh makes for it.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # dev-stack.sh makes and drops its two databases with psql; --real-hosts runs each Codex
+      # session in a tmux server of its own.
+      - name: Install tmux and the PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux postgresql-client
+          tmux -V
+          psql --version
+
+      # --real-hosts' Oh My Pi, the build .omp-pin names (LEGION_TEST_OMP), which install-omp
+      # installs through the mise install-jj leaves.
+      - uses: ./.github/actions/install-jj
+
+      - uses: ./.github/actions/install-omp
+
+      # The plugins, their stand-in hosts, the Codex plugin's build and pack, the stand-in `codex`
+      # and the model stand-in run on Bun over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # --real-hosts' Claude Code and Codex CLI, the releases .claude-code-pin and .codex-pin name
+      # (LEGION_TEST_CLAUDE, LEGION_TEST_CODEX), the installs the claude-envoy job runs.
+      - uses: ./.github/actions/install-claude-code
+
+      - uses: ./.github/actions/install-codex
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # go-envoy-test, restored only, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test gives:
+      # dev-stack.sh builds the Dispatch server, the broker and its commands beside the listener and
+      # natsd, and only that family's entry holds their packages.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+
+      # go-daemon, shared with the other parts and the jobs pane-drivers' comment names:
+      # --real-hosts builds ./cmd/legion for its claude-bridge. Its key carries the Go version
+      # setup-go read from packages/envoy/go.mod, the one packages/daemon/go.mod names too. The
+      # two entries hold the same module versions in ~/go/pkg/mod, read-only there, so this second
+      # extraction refuses those files ("Cannot open: File exists"), keeps the copies the first one
+      # wrote, extracts every other file, and ends in the action's "Failed to restore" warning.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # Each step's own variable names its evidence directory, set on the command line rather
+      # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
+      # commands the script starts compile. The second step runs whether or not the first failed,
+      # so one mode's failure hides neither result.
+      - name: Each session's broker token admits it to its own channel alone
+        run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions" bash scripts/e2e/nats-callout-sessions.sh
+
+      # The same proof on the hosts themselves: the pinned Oh My Pi, Claude Code and Codex CLI with
+      # this checkout's plugins, each calling the script's own model stand-in
+      # (scripts/e2e/lib/messages-standin.ts), keyed by a placeholder of the run's own.
+      - name: Each real host's plugin joins its own channel with its broker token
+        if: ${{ !cancelled() }}
+        run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions-real-hosts" bash scripts/e2e/nats-callout-sessions.sh --real-hosts
+
+      # A failed step's evidence: the stack's logs, each client's output, every answer the checks
+      # read, and with --real-hosts each host's transcript and the model stand-in's requests.
+      - name: Upload the NATS auth service sessions proof's logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-nats-callout-sessions-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

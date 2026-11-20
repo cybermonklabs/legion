@@ -1,39 +1,43 @@
 package main
 
+// legion: tool - runs the history planner over every document of a production bundle and fails on a version it cannot reach, for a person who picks a bundle for a load run and must know it replays whole; run with LOADTEST_REPLAY_BUNDLE=<bundle dir> go test -count=1 -run '^$' -bench '^BenchmarkPlanHistoryBundle$' -benchtime 1x ./loadtest
+
 import (
 	"os"
 	"strings"
 	"testing"
 )
 
-// TestPlanHistoryBundle runs planHistory over every document of the bundle LOADTEST_REPLAY_BUNDLE
-// names (skipped without it) and fails on any version it cannot reach. It logs keys and numbers
-// only, never a text.
-func TestPlanHistoryBundle(t *testing.T) {
+// BenchmarkPlanHistoryBundle runs planHistory over every document of the bundle
+// LOADTEST_REPLAY_BUNDLE names (its input: it skips without it) and fails on any version it cannot
+// reach. It logs keys and numbers only, never a text. It is a benchmark, not a test, since it
+// reads a production bundle, and no CI step passes -bench; the planner's rules are tested on
+// generated inputs. Run it once, with -benchtime 1x.
+func BenchmarkPlanHistoryBundle(b *testing.B) {
 	dir := os.Getenv("LOADTEST_REPLAY_BUNDLE")
 	if dir == "" {
-		t.Skip("LOADTEST_REPLAY_BUNDLE is not set")
+		b.Skip("LOADTEST_REPLAY_BUNDLE is not set")
 	}
-	b, err := readBundle(dir)
+	bundle, err := readBundle(dir)
 	if err != nil {
-		t.Fatal(err)
+		b.Fatal(err)
 	}
 	docs, versions, flipped, unreachable, missing, runs := 0, 0, 0, 0, 0, 0
-	for i := range b.State.Issues {
-		is := &b.State.Issues[i]
+	for i := range bundle.State.Issues {
+		is := &bundle.State.Issues[i]
 		for j := range is.Artifacts {
 			a := &is.Artifacts[j]
 			if a.Kind != "doc" || a.TextPath == "" {
 				continue
 			}
-			raw, err := b.readFile(a.TextPath)
+			raw, err := bundle.readFile(a.TextPath)
 			if err != nil {
-				t.Fatal(err)
+				b.Fatal(err)
 			}
 			text := string(raw)
 			p, err := docPlan(is, a, text)
 			if err != nil {
-				t.Errorf("%s %s: %v", is.Key, a.ID, err)
+				b.Errorf("%s %s: %v", is.Key, a.ID, err)
 				continue
 			}
 			docs++
@@ -55,13 +59,13 @@ func TestPlanHistoryBundle(t *testing.T) {
 						askBytes += len(line)
 					}
 				}
-				t.Logf("short %s doc %s: %d unreachable, %d sign flipped, of %d versions; text %d bytes, removed run %d bytes, base %d bytes, smallest planned %d, ask directive lines %d bytes, ask step versions %d, restore at %d",
+				b.Logf("short %s doc %s: %d unreachable, %d sign flipped, of %d versions; text %d bytes, removed run %d bytes, base %d bytes, smallest planned %d, ask directive lines %d bytes, ask step versions %d, restore at %d",
 					is.Key, a.ID[:8], p.Unreachable, p.Flipped, a.Version, len(text), p.RunEnd-p.RunStart, len(baseText(text, p.RunStart, p.RunEnd)), smallest, askBytes, len(p.AskAt), p.Restore)
 			}
 		}
 	}
-	t.Logf("documents %d, versions %d, with a removed run %d, sign flipped %d, unreachable %d, sizes missing %d", docs, versions, runs, flipped, unreachable, missing)
+	b.Logf("documents %d, versions %d, with a removed run %d, sign flipped %d, unreachable %d, sizes missing %d", docs, versions, runs, flipped, unreachable, missing)
 	if unreachable > 0 {
-		t.Errorf("%d versions unreachable", unreachable)
+		b.Errorf("%d versions unreachable", unreachable)
 	}
 }

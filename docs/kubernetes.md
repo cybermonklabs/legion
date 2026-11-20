@@ -9,7 +9,7 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 `bun scripts/semantic-line-breaks.ts docs/kubernetes.md` checks the layout, and `--write` fixes it.
 
 The Go coordinator (`packages/daemon`, LEGION-208) runs each process as an Agent Sandbox;
-its live proof is `scripts/e2e/stage4b-sandbox-tree.sh` on the production cluster.
+its live proof is `TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`), which the kind job of `ci.yaml` runs on a kind cluster with Agent Sandbox and gVisor.
 The TypeScript daemon no longer runs on Kubernetes:
 it refuses `runtime: kubernetes` at config load and names the Go daemon (LEGION-286), and its sources were deleted on 2026-10-03.
 Its runtime's section below is kept for reference until someone removes it (LEGION-223).
@@ -137,7 +137,7 @@ It carries:
   `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
   or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
-  `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
+  `scripts/e2e/leak-guard-image-probe.sh` drives all of this inside the image each `worker-image` job builds, once on the image's own `PATH` and once with `/opt/legion/bin` taken off it as its control;
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
@@ -534,7 +534,7 @@ Where nothing failed and something has no verdict, `legion probe-image` prints `
 Each TLS line of a run that its bound, the deadline or a signal ended names which one ended it and after how long (`its 20s limit ended it after 20.0s: …`, `the probe's deadline ended it after …`, `signal: killed ended it after 0.3s, before its 20s limit: …`).
 The boot log names a derived bound when it applies, and so does `legion config check`.
 Oh My Pi's boot after it fits the registration deadline, `worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals` (360 s by default).
-The stage 4a harness's `image-probe` and `root-ready` checks (`scripts/e2e/README.md`) are where a launch of the published image on the production cluster is measured.
+`TestStage4aSandboxRuntimeLive`'s `image-probe` and `root-ready` checks, which the kind job runs, launch the image under test in a kind cluster; a launch of the published image on the production cluster is the deployment's pipeline's to measure.
 
 ### The image is probed before it publishes
 
@@ -545,7 +545,7 @@ the same two probes, run by the daemon's own code, plus two only the image runs
 that root's built channel server (`dist/envoy-channel.js`) and generated Legion plugin (`legion/.claude-plugin/plugin.json`), each a regular file, and the root's own declared `legion.daemonApiVersion`;
 and Claude Code's pin, which must name one exact version and lock that release and its `linux-x64` package, the one whose binary a pod's install runs, at that version with the `sha512` integrity `npm ci` holds each tarball to.
 The lane reads the pin and fetches nothing:
-installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
+installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by the kind job's `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
 Each of the lane's refusals names a build of the image from this daemon's commit.
 The two probes the daemon shares hold the Legion plugin to the daemon API contract (`legion.daemonApiVersion`), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
 
@@ -657,7 +657,7 @@ The image build's own run passes no `--role-namespaces`, since a build's contain
 The runtime requires `capabilities=checked` too:
 an image whose `legion` predates the capability check prints no such mark and is refused naming that (`Succeeded without checking the capability list (its legion CLI predates the
 check): build the image from this daemon's commit`), a line that carries `capabilities=browser-skipped` (a probe run with `--skip-browser`, which the daemon's probe never passes) is refused naming that mark, and a probe pod that exits 1 on a missing capability is refused with its log tail, which names it (`capability <name> is missing: <detail>` under the table's `missing` row;
-the stage 4a harness's `image-probe-capability-negative` check drives that with an operator pod env `PUPPETEER_EXECUTABLE_PATH=/nonexistent/chromium`).
+`TestStage4aSandboxRuntimeLive`'s `image-probe-capability-negative` check, which the kind job runs, drives that with an operator pod env `PUPPETEER_EXECUTABLE_PATH=/nonexistent/chromium`).
 A probe pod whose container exits 75 (`bootprobe.NoVerdictExit`) is a transient attempt, not a refusal: the daemon logs `boot probe failed transiently; waiting to run it again` with the detail `pod <name> exited 75 with no verdict: …`, and runs a new probe pod after the retry's wait, 10 s doubling, within the six attempts.
 After the sixth such attempt the boot exits with `the worker image probe never completed within its retry budget (6 attempts): pod <name> exited 75 with no verdict: …`, which names each TLS run and step with no verdict.
 Any other exit of the probe container, exit 1 included, is the image's refusal.
@@ -698,7 +698,7 @@ reads being missing: <kubelet message>`.
 The `FailedMount` forms the kubelet retries itself and heals (`failed to sync configmap cache: timed out waiting for the condition` and the secret form, `object
 "<ns>"/"<name>" not registered`, `Unable to attach or mount volumes … timed out waiting for the
 condition`) stay under the six-attempt budget, and the providers Secret, which every pod mounts, keeps its own earlier rule and wording (`cannot mount the providers Secret …`);
-the stage 4a harness's `image-probe-missing-volume-negative` check drives the refusal with a volume `operator-missing` from a ConfigMap `<operator ConfigMap>-missing` that does not exist, mounted at `/etc/legion-operator-missing`.
+`TestStage4aSandboxRuntimeLive`'s `image-probe-missing-volume-negative` check, which the kind job runs, drives the refusal with a volume `operator-missing` from a ConfigMap `<operator ConfigMap>-missing` that does not exist, mounted at `/etc/legion-operator-missing`.
 The runtime keeps the line's `model-fallback` mark for the deployment's capability report ([The deployment's capability report](#the-deployments-capability-report)).
 To run it yourself: `docker run --rm ghcr.io/cybermonklabs/legion-worker@sha256:… probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --skip-agent-models` (both roots are required:
 the Legion and Envoy plugin roots a Sandbox pod loads the plugins from, so the probe loads them the same way;
@@ -1356,7 +1356,7 @@ Without it Oh My Pi returns the session to a model it suppressed itself, for a r
 For a refusal the setting changes nothing, and the reason differs by path.
 A refusal that lands before the model has sent any text is one Oh My Pi walks the chain for itself, and it pins the fallback it walks to, which the revert leaves alone however it is set; that pin ends at the plugin's timed return, a `setModel`, which clears it and puts the session back on the role's own model.
 A refusal that lands after the text Oh My Pi leaves where it is, so the revert has no fallback of its own to move: there the plugin's own `setModel` walks the chain, and the same timed return brings the session back.
-`scripts/e2e/refusal-fallback-omp.sh` measures the difference on a ten-minute cooldown: with the setting, no request at all reaches the refused model between the fifth minute and the tenth, and the first request after the tenth goes to that model again.
+`packages/pi-legion/extensions/legion-model-fallback-omp.test.ts` holds both paths on the real Oh My Pi with a short cooldown: no request reaches the refused model before the plugin's return is due, and the session goes back to it after; a rate limit is the other case, where the session comes back when Oh My Pi's own suppression ends rather than at the cooldown.
 
 Two commands replace what a provider keeps refusing, and the compaction is the first of them, because a new session loses what the old one held — what the worker learned of its issue, and what it had not pushed or written down yet:
 
@@ -5220,8 +5220,8 @@ its task goes back to waiting and is sent again once the relaunched agent is rea
 A claim whose suspension was held for that turn's end is suspended instead, as it is when its process dies.
 
 The record costs one API write per generation started, the annotation's patch (844 bytes in the runtime's tests, with Dispatch and the broker unset), where a start in a running issue pod made none before.
-Stage 4b drives both cases with real agents on the cluster:
-`address-moved-env-same-pod` respells `envoy_url`'s host, and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports ([`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh)).
+The kind job's Stage 4b tests drive both cases with real agents in issue pods:
+`address-moved-env-same-pod` hands the pods another address of the same Envoy listener (`TestStage4bDaemonRestartsOnTheKindRigLive`), and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bStreamMoveOnTheKindRigLive`), both in `packages/daemon/internal/daemon/stage4b_kind_live_test.go`.
 
 ### A shell on an issue's disk
 
@@ -5962,7 +5962,7 @@ What it may wait on instead is the predecessor's claim being *reaped*
 Under gVisor the container cgroup changes nothing inside the sandbox:
 `runsc` sizes the sandbox from the pod's cgroup, so inside a pod `nproc` is max(2, ⌈Σ cpu limits⌉)
 — except on GKE Autopilot's container-optimized compute platform, where a sandboxed pod reads `nproc` 2 whatever it reserves and whatever its host holds (measured 2026-11-05 at 2, 2.5, 3, 4 and 6 CPU, each on an 8-vCPU node, dispatch://INFRA-928/artifact/measurements-2026-11-05-md):
-there the pod's own cgroup cpu quota (`cpu.cfs_quota_us`/`cpu.cfs_period_us`) read Σ cpu limits exactly at each of those sizes, which is why that quota, not `nproc`, is what [the live proof](../scripts/e2e/README.md) asserts there,
+there the pod's own cgroup cpu quota (`cpu.cfs_quota_us`/`cpu.cfs_period_us`) read Σ cpu limits exactly at each of those sizes, which is why that quota, not `nproc`, is what a reading of a pod's CPU there takes,
 while a pod of the same cluster placed on a node of a named machine series (`cloud.google.com/machine-family`) read 3 at a 3-CPU limit, its whole reservation, where the rule above holds
 — and `/proc/meminfo`'s `MemTotal` is about Σ memory limits of the pod's containers, and an active role may use the pod's whole reservation while its siblings idle.
 The reservation is the pod's working set, and its request is what the scheduler counts.
@@ -7495,10 +7495,12 @@ It needs:
 
 It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 
-### The live proof
+### The test on a kind cluster
 
-`scripts/e2e/stage4b-sandbox-tree.sh` drives three real issue trees through the Go daemon on this runtime, in the production cluster's namespace `legion`, against production Dispatch, the Envoy listener and NATS, with real agents.
-What it holds, and what it touches in production, is in [`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh).
+`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
+Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses, at another address of the listener and under `controller: daemon`, and `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream.
+Each brings up a rig of its own, since one rig running every checkpoint runs past the time a part of the kind job has.
+The kind job of `ci.yaml` runs the three in its `tree-stage4b`, `tree-stage4b-restart` and `tree-stage4b-move` parts.
 
 ### Probing a configuration before the daemon boots on it
 
@@ -8073,8 +8075,8 @@ each issue's pod (every role of it alike) and the image probe's.
   After a login the broker refused (a 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
-  Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience agent-secrets --duration 1h`:
-  each account holds one credential, so a proof logging in as a running daemon's account would take that daemon's credential.
+  Running the daemon off the cluster, `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of its own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience agent-secrets --duration 1h`:
+  each account holds one credential, so a daemon logging in as a running daemon's account would take that daemon's credential.
 
 - A held enrollment can come long after the shim's hello, which carries the pod's projected token as the shim read it then, and that token lives `token_expiry_seconds` from when the kubelet wrote it;
   the broker refuses an expired one as `POD_TOKEN_EXPIRED`, naming its expiry.
@@ -8471,7 +8473,7 @@ A claim that exists but is not bound yet is waited on through every attempt of t
 The daemon needs no right on PersistentVolumeClaims for any of this: the pod names the claim and the kubelet mounts it.
 An `nfs` volume is not among the Pod Security "restricted" profile's volume types, which GKE Autopilot's own policy extends with it:
 a namespace that enforces `restricted` (`pod-security.kubernetes.io/enforce`) refuses such a pod, and takes the share through a `persistent_volume_claim` bound to an NFS PersistentVolume instead.
-`scripts/e2e/share-volumes-kind.sh` is the live proof.
+`TestShareVolumesMountInAnIssuePodLive` (`packages/daemon/internal/daemon/share_volumes_live_test.go`), which the kind job of `ci.yaml` runs, is the live test.
 
 ### Cutting over an instance from tmux to pods
 
@@ -8482,7 +8484,7 @@ Drain every tree while it is still on tmux, stop the daemon, choose a new `state
 The state file intentionally holds the controller's tmux locator beside root and worker pod locators; the daemon routes them by process kind.
 
 The Go daemon's cutover is the same drain and fresh `state_dir`;
-its [Configuration](#configuration) says where its rules differ, and its [live proof](#the-live-proof) is what to run at the head you deploy.
+its [Configuration](#configuration) says where its rules differ, and its [test on a kind cluster](#the-test-on-a-kind-cluster) runs in the merge queue before the merge of every change it reads.
 
 ```yaml
 runtime:
@@ -8696,7 +8698,6 @@ While the registry holds the controller role for nobody, the daemon also logs `c
 liveness: the controller role has no live holder; the controller is gone` at every check.
 Both modes log both lines on the same schedule, and every line names the mode (`mode`;
 the not-registered line also says whether a session holds the record, `registered`), so one log query on either line's text counts either mode.
-Stage 4b's `daemon-controller-liveness` checkpoint shows both lines for a daemon-launched controller whose pod is gone and whose relaunches cannot schedule, and neither while it runs ([`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh)).
 
 ### Daemon-launched controller
 

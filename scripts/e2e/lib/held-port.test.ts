@@ -38,7 +38,7 @@ if (!onLinux) {
   );
 }
 // Both gates are read, so a host that has neither says so about both.
-const withoutGo = skipWithout("go");
+const withoutGo = skipWithout(["go"], "test");
 const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {

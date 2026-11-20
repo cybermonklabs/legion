@@ -168,8 +168,8 @@
 #      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml
 #      calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore
 #      go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow of
-#      .github/workflows that restores it (the release builds, the nightly browser re-record,
-#      ci-caches.yaml's own lookups), since a drift there misses as silently (the keys compared as
+#      .github/workflows that restores it (the release builds and ci-caches.yaml's own lookups),
+#      since a drift there misses as silently (the keys compared as
 #      text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
 #      the restore is in, or that none of ci.yaml's files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not

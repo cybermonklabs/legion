@@ -336,7 +336,7 @@ test("a title keeps no bidirectional override, and keeps a private-use glyph", a
 
 // These two drive a real tmux server, and a host without one runs neither and says so. Read once,
 // at module scope: a call per row would print the warning per row.
-const withoutTmux = skipWithout("tmux")
+const withoutTmux = skipWithout(["tmux"], "claude-envoy")
 
 /** Where the two rows' tmux sockets go. A socket path has 107 bytes to fit in (Linux's `sun_path`
  *  holds 108 with its terminating zero), and tmux refuses a longer one (`Filename too long`):

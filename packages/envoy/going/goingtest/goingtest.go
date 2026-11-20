@@ -5,6 +5,7 @@
 package goingtest
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,6 +53,9 @@ type ReceivedRequest struct {
 type Model struct {
 	// URL is the base URL to configure a client's endpoint with; the client appends the route.
 	URL string
+	// Certificate is the certificate a model NewTLSModel started serves, which a client must
+	// trust to reach it, and nil for a model served over plain HTTP.
+	Certificate *x509.Certificate
 
 	replies []Reply
 
@@ -68,6 +72,20 @@ func NewModel(t testing.TB, replies ...Reply) *Model {
 	server := httptest.NewServer(http.HandlerFunc(model.serve))
 	t.Cleanup(server.Close)
 	model.URL = server.URL
+	return model
+}
+
+// NewTLSModel is NewModel served over TLS, for a client that takes only an https endpoint: a
+// process that reads its endpoint from its environment, as Dispatch's answerer does. Its URL is
+// https on 127.0.0.1, and Certificate is the one certificate the server presents, which the
+// client is given as a root to trust it.
+func NewTLSModel(t testing.TB, replies ...Reply) *Model {
+	t.Helper()
+	model := &Model{replies: replies}
+	server := httptest.NewTLSServer(http.HandlerFunc(model.serve))
+	t.Cleanup(server.Close)
+	model.URL = server.URL
+	model.Certificate = server.Certificate()
 	return model
 }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads which cybermonklabs/legion commit each production daemon and listener image, and each client that delivers to a session, was built from, against a given commit, for the implementer of a pull request that moves a producer onto a message name's new form, who runs it before the merge and quotes its verdict in the pull request.
 # packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo>
 #   [--listeners | --clients [--dotfiles <dir>]] <commit>
 #

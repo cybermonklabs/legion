@@ -795,9 +795,9 @@ describe("github", () => {
     // A role's gh runs on its App's installation token (appauth: the App's `<slug>[bot]`), and
     // GitHub answers REST `GET /user` to an installation token with 403 "Resource not accessible
     // by integration" — read in a Legion pod on 2026-10-10 through the reviewer App's token.
-    // GraphQL `{viewer{login}}` is how such a token reads its own identity, and how the
-    // repository's proofs read it (internal/api/real_github_test.go,
-    // scripts/e2e/stage4b-sandbox-tree.sh), so the row passes with the bot login it answers.
+    // GraphQL `{viewer{login}}` is how such a token reads its own identity, and how the kind job's
+    // TestStage4bSandboxTreeOnTheKindRigLive reads it, so the row passes with the bot login it
+    // answers.
     const installationToken = async (command: string, args: readonly string[]) => {
       if (command !== "gh") return { code: 0, stdout: "", stderr: "" };
       if (

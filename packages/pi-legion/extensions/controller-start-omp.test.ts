@@ -54,8 +54,9 @@ import { z } from "zod";
 // stand-in (`startDaemonController`). LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the
 // NATS server, as in pi-envoy's real-binary tests. A run without both skips, except on GitHub
 // Actions, where the pi-legion job supplies both (`ompNatsGuard`).
-const { skip, setup, onActions } = ompNatsGuard();
-/** The NATS server alone, for the one case below that needs no Oh My Pi binary. */
+const { skip, setup } = ompNatsGuard("pi-legion");
+/** The NATS server alone, for the one case below that needs no Oh My Pi binary. Its gate is
+ *  `ompNatsGuard`'s: that names it where it is unset, and fails the file on GitHub Actions. */
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 
 /**
@@ -1072,7 +1073,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 // the silent one, and it needs the NATS server and not the binary, so it runs wherever one is
 // configured.
 const RELAY_REFUSAL_MS = 3_000;
-test.skipIf(natsUrl === undefined && !onActions)(
+test.skipIf(natsUrl === undefined)(
   "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });

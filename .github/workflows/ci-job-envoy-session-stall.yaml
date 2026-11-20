@@ -31,8 +31,13 @@ env:
 
 jobs:
   envoy-session-stall:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # x86_64: the pinned Oh My Pi the session rig's third part runs ships linux-x64 alone.
+    runs-on: ubuntu-24.04
+    # The four steps after the comment mention (two Dispatch proofs, the session-title test
+    # and the version-pin test) took about five minutes in a Legion pod on top of the 20 the
+    # other steps were held to. No runner has timed them yet: the first run measures them, and
+    # this limit becomes that time with headroom.
+    timeout-minutes: 30
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -53,8 +58,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The session rig's third part runs the pinned Oh My Pi and Claude Code: jj leaves the mise
+      # install-omp installs the pin through, and install-claude-code needs Bun.
+      - uses: ./.github/actions/install-jj
+      - uses: ./.github/actions/install-omp
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/install-claude-code
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -86,7 +96,9 @@ jobs:
         run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
-      # this one as a file because of the leading "./".
+      # this one as a file because of the leading "./". Its three parts: the session states on a
+      # stalled child; what a stalled session keeps across a second listener, a bus outage and
+      # Dispatch; and the real hosts' new session and /clear and resume.
       - name: Session state rig of a stalled session
         run: bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
@@ -120,6 +132,38 @@ jobs:
       - name: Comment mention of the real CLI against a real Dispatch
         run: bun test src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
+      # A person's approval pins the bytes of the version they approved, and the real `dispatch`
+      # CLI against a real Dispatch server of this tree prints the hash of that version's UTF-8
+      # bytes, after a later version too.
+      - name: Approved-version bytes of the real CLI against a real Dispatch
+        run: bun test src/__tests__/approved-version-bytes.live.test.ts
+        working-directory: packages/envoy-client
+      # The two Dispatch proofs below each reset a database of their own on the job's Postgres,
+      # through psql, which this runner may not carry.
+      - name: Install psql and create the Dispatch proofs' databases
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          for database in claimant_delivery verification_results; do
+            psql "$DISPATCH_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "create database $database"
+          done
+      # Dispatch's outbox publishes a person's answer, comment or untargeted message on a claimed
+      # issue to the claiming session's own topic, and a mention skips the mentioned session's own
+      # copy only once the mention's send landed: envoy-dispatch built from this tree, natsd and
+      # the e2e harness's fake Envoy listener, one CHECK line per case.
+      - name: Claimant delivery of Dispatch's outbox
+        run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/claimant_delivery?sslmode=disable" bash scripts/e2e/dispatch-claimant-delivery.sh
+      # A recorded check result says where its commit stands against the commits its check
+      # compares with, and the head moves with the pull-request events Dispatch takes off the bus:
+      # envoy-dispatch built from this tree against the e2e harness's fake GitHub, one CHECK line
+      # per step and case.
+      - name: Verification results of Dispatch
+        run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/verification_results?sslmode=disable" bash scripts/e2e/verification-results.sh
+      # The name a person gave a Claude Code session is what claude-envoy registers, a rename
+      # replaces it, and a session nobody named keeps the folder-and-short-id fallback: the
+      # plugin's bundles built from this tree, natsd and a listener, one CHECK line per case.
+      - name: Session title of claude-envoy
+        run: bash packages/claude-envoy/scripts/smoke-session-title.sh
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

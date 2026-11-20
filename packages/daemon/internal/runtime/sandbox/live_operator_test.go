@@ -1,9 +1,6 @@
-//go:build e2e
-
 // The Stage 4a harness's operator-pod checks: the root pod carries the operator's ServiceAccount
-// and projected token, starts its agent on Legion's pod baseline under the operator's overlay, and
-// hands the agent the providers Secret's keys while its shim never holds them. The rig is
-// live_test.go.
+// and projected token, and starts its agent on Legion's pod baseline under the operator's overlay.
+// The rig is live_test.go.
 
 package sandbox
 
@@ -22,15 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-// operator-token: the root pod runs as the operator's ServiceAccount with no API server token —
-// asserted in every mode, LEGION_E2E_MODEL_ROUTE=key-file included, since neither fact depends on
-// which model route the operator pod fixture carries. Under gateway, it also holds the one
-// projected token the operator's pod asks for — its audience, its lifetime, at its mount, read
-// into the harness's memory with only its claims printed — which key-file's pod-key-file.yml
-// mounts none of (no gateway to authenticate to), so that part is skipped under key-file alone,
-// never because the fixture happens to lack a token for some other reason: a fixture that claims
-// gateway but ships no projected token is a real bug this check must still catch, not a reason to
-// skip silently.
+// operator-token: the root pod runs as the operator's ServiceAccount with no API server token, and
+// holds the one projected token the operator's pod asks for — its audience, its lifetime, at its
+// mount, read into the harness's memory with only its claims printed — which the operator route's
+// models.yml hands the model gateway.
 func (r *liveRig) checkOperatorToken() error {
 	root := r.claim("root")
 	if err := r.ensureRunning(root); err != nil {
@@ -55,13 +47,9 @@ func (r *liveRig) checkOperatorToken() error {
 	if apiToken != "absent" {
 		return errors.New("the pod holds the API server's service account token")
 	}
-	if r.env.modelRoute == "key-file" {
-		note("operator", "LEGION_E2E_MODEL_ROUTE=key-file: no projected ServiceAccount token to check (pod-key-file.yml mounts none)")
-		return nil
-	}
 	want, err := projectedToken(r.pod)
 	if err != nil {
-		return fmt.Errorf("LEGION_E2E_MODEL_ROUTE=%s: %w", r.env.modelRoute, err)
+		return fmt.Errorf("the operator route's pod: %w", err)
 	}
 	token, err := r.exec(root, "cat", want.file)
 	if err != nil {
@@ -275,72 +263,6 @@ func (r *liveRig) procCmdline(c *liveClaim, pid string) ([]string, error) {
 		return nil, err
 	}
 	return strings.Split(out, "\n"), nil
-}
-
-// provider-key: the root's shim hands its agent the providers Secret's key (--provider-env-dir) and
-// never holds it: the agent's environment carries the Secret's value under the variable
-// provider_keys names, and the shim's (the agent's parent) carries no such variable. Under
-// LEGION_E2E_MODEL_ROUTE=key-file, the same holds for ANTHROPIC_API_KEY (liveAnthropicKeyVariable,
-// runtimeOptions's doc comment), the providers Secret's own second key in that mode: the agent's
-// environment carries the Secret's value under that exact name, and the shim's does not.
-func (r *liveRig) checkProviderKey() error {
-	root := r.claim("root")
-	if err := r.ensureRunning(root); err != nil {
-		return err
-	}
-	secret := ProvidersSecretName(r.env.project)
-	encoded, err := r.kubectl("get", "secret", secret, "-o", "jsonpath={.data."+liveProvidersSecretKey+"}")
-	if err != nil {
-		return err
-	}
-	value, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(value) == 0 {
-		return fmt.Errorf("secret %s's key %s reads %q (%v), want the value the script wrote", secret, liveProvidersSecretKey, encoded, err)
-	}
-	pid, err := r.agentPid(root)
-	if err != nil {
-		return err
-	}
-	agent, err := r.procEnviron(root, pid)
-	if err != nil {
-		return err
-	}
-	shimPid, err := r.shimPid(root, pid)
-	if err != nil {
-		return err
-	}
-	shim, err := r.procEnviron(root, shimPid)
-	if err != nil {
-		return err
-	}
-	if agent[liveProviderKey] != string(value) {
-		return fmt.Errorf("the agent (pid %s) has %s of %d bytes, want secret %s's key %s (%d bytes)", pid, liveProviderKey, len(agent[liveProviderKey]), secret, liveProvidersSecretKey, len(value))
-	}
-	note("operator", "/proc/%s/environ (the agent): %s equals secret %s's key %s (%d bytes, not printed)", pid, liveProviderKey, secret, liveProvidersSecretKey, len(value))
-	if held, ok := shim[liveProviderKey]; ok {
-		return fmt.Errorf("the shim (pid %s) holds %s (%d bytes), want the agent's environment alone to", shimPid, liveProviderKey, len(held))
-	}
-	note("operator", "/proc/%s/environ (the shim): no %s", shimPid, liveProviderKey)
-	if r.env.modelRoute != "key-file" {
-		return nil
-	}
-	anthropicEncoded, err := r.kubectl("get", "secret", secret, "-o", "jsonpath={.data."+liveAnthropicKeyVariable+"}")
-	if err != nil {
-		return err
-	}
-	anthropicValue, err := base64.StdEncoding.DecodeString(anthropicEncoded)
-	if err != nil || len(anthropicValue) == 0 {
-		return fmt.Errorf("secret %s's key %s reads %q (%v), want the placeholder the script wrote", secret, liveAnthropicKeyVariable, anthropicEncoded, err)
-	}
-	if agent[liveAnthropicKeyVariable] != string(anthropicValue) {
-		return fmt.Errorf("the agent (pid %s) has %s of %d bytes, want secret %s's key %s (%d bytes)", pid, liveAnthropicKeyVariable, len(agent[liveAnthropicKeyVariable]), secret, liveAnthropicKeyVariable, len(anthropicValue))
-	}
-	note("operator", "/proc/%s/environ (the agent): %s equals secret %s's key %s (%d bytes, not printed)", pid, liveAnthropicKeyVariable, secret, liveAnthropicKeyVariable, len(anthropicValue))
-	if held, ok := shim[liveAnthropicKeyVariable]; ok {
-		return fmt.Errorf("the shim (pid %s) holds %s (%d bytes), want the agent's environment alone to", shimPid, liveAnthropicKeyVariable, len(held))
-	}
-	note("operator", "/proc/%s/environ (the shim): no %s", shimPid, liveAnthropicKeyVariable)
-	return nil
 }
 
 // agentPid is the pid of a claim's stub agent, `exec sleep infinity`, which the loop finds.

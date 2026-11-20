@@ -21,7 +21,7 @@ const keyFile = join(scratch, "key.pem");
 const closers: (() => void)[] = [];
 let tlsFiles: { readonly cert: Buffer; readonly key: Buffer };
 
-const skip = skipWithout("openssl");
+const skip = skipWithout(["openssl"], "test");
 
 beforeAll(() => {
   if (skip) return;

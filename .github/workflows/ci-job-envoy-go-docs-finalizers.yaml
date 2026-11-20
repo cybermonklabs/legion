@@ -32,7 +32,7 @@ env:
 jobs:
   envoy-go-docs-finalizers:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 49m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. Both numbers come from this job's own green runs, the slowest of
     # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
     # 1012.796 s in 128790317116 and 864.037 s in 128751128912, and about 71 s of checkout,
@@ -40,12 +40,16 @@ jobs:
     # request, first when main took in #2414's tests (953 services built to 1068), again on the
     # merge of #2870, which moved work into this lane, and now with #2960's wedged-commit row,
     # measured at 56 s in series in an issue pod (the row's own 47.69 s, and 8.29 s more in the
-    # residency case, which gives each of its trials a connection of its own). The step's
-    # deadline is the smallest whole minute at which the slowest package time, that growth
-    # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
-    # before changing either, and from the slowest run rather than the newest: a package that
-    # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 40
+    # residency case, which gives each of its trials a connection of its own). It grew a fourth
+    # time when the two corpus tests below took the repository's guides: 271 s for
+    # TestWriteCorpusReadsOnce and 336 s more for TestAMarginWriteMatchesTheWholeDocumentWrite's
+    # corpus specs, measured on a two-vCPU pod over the fifteen guides of the list on 2026-11-18,
+    # so 1744 s. The step's deadline is the smallest whole minute at which the slowest package
+    # time, that growth included, is at most 60 % of it, and this limit is six minutes above that.
+    # Measure again before changing either, and from the slowest run rather than the newest: a
+    # package that has grown past 60 % of its deadline is a deadline to raise, not a flake to
+    # re-run.
+    timeout-minutes: 55
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -88,13 +92,33 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The document service's two corpus tests read a directory of real specs:
+      # TestWriteCorpusReadsOnce counts each write's fork reads on each one (DISPATCH_TOKEN_CORPUS)
+      # and skips without it, and
+      # TestAMarginWriteMatchesTheWholeDocumentWrite compares the margin write with the
+      # whole-document write on each one as well as on its generated documents
+      # (DISPATCH_TEST_SPEC_CORPUS). The specs are the repository's own guides that
+      # packages/envoy/internal/dispatch/testdata/repository-markdown.txt lists, written as
+      # envoy-go writes them for pmdoc's corpus tests (its step of this name says how), and this
+      # job's filter, envoy_go_race_docs, names the list and each guide on it.
+      - name: Write the repository's guides into the corpus directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/repository-markdown"
+          while IFS= read -r guide; do
+            case $guide in '' | '#'*) continue ;; esac
+            cp -- "$guide" "$RUNNER_TEMP/repository-markdown/${guide//\//__}"
+          done < packages/envoy/internal/dispatch/testdata/repository-markdown.txt
+          ls -l "$RUNNER_TEMP/repository-markdown"
       # -v, because the package's leak check prints its line from TestMain after the tests have
       # run: go test in package-list mode buffers the test binary's own output and drops it when
       # the package passes, so without -v a green run would carry the `ok` line and nothing else,
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
+        env:
+          DISPATCH_TOKEN_CORPUS: ${{ runner.temp }}/repository-markdown
+          DISPATCH_TEST_SPEC_CORPUS: ${{ runner.temp }}/repository-markdown
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 49m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

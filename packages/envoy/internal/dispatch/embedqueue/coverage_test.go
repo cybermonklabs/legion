@@ -105,7 +105,7 @@ func withTableTriggersOff(t *testing.T, database *store.Store, table string, fn 
 	}
 }
 
-func mustExec(t *testing.T, q querier, sql string, args ...any) {
+func mustExec(t testing.TB, q querier, sql string, args ...any) {
 	t.Helper()
 	if _, err := q.Exec(context.Background(), sql, args...); err != nil {
 		t.Fatalf("%s: %v", strings.TrimSpace(sql), err)

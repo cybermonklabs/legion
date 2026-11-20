@@ -6,10 +6,13 @@
 // account: the AWS SDK's own profile and credential-chain resolution, which the in-process tests
 // replace (useAWS), decides the sign-in, and moto's IAM checks decide what it may do. moto ignores
 // a policy's conditions, so no IAM policy is proved here (the decision
-// "AWS is proved without an AWS account"). packages/envoy/scripts/aws-moto-check.sh starts moto
-// and runs this test:
+// "AWS is proved without an AWS account"). The test starts moto itself, in a test container
+// (startMoto), so it needs Docker and nothing else:
 //
-//	packages/envoy/scripts/aws-moto-check.sh [BINARY]
+//	go test -tags moto -run '^TestTheBuiltCLIAgainstMoto$' -count=1 -v ./cmd/agent-secrets/
+//
+// AGENT_SECRETS_BINARY names another build of the binary to run, an older release as the negative
+// control; empty, the test builds the CLI from this tree.
 package main
 
 import (
@@ -33,9 +36,48 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/docker/docker/api/types/container"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 )
+
+// motoImage is the moto every run of this file starts: ghcr.io/cybermonklabs/legion/ci, the copy of
+// motoserver/moto:5.2.5 (.github/ci-images.yaml). The envoy-go CI job reads this declaration and
+// pulls the image before its first test step, so no test reaches the registry mid-run; keep it a
+// single-line string constant.
+const motoImage = "ghcr.io/cybermonklabs/legion/ci@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a"
+
+// motoAccount is the account moto answers as, the one writerARN names.
+const motoAccount = "111122223333"
+
+// startMoto runs moto's server in a container, removed when t ends, under motoAccount, and answers
+// its endpoint once its own API answers.
+func startMoto(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	moto, err := testcontainers.Run(ctx, motoImage,
+		testcontainers.WithEnv(map[string]string{"MOTO_ACCOUNT_ID": motoAccount}),
+		testcontainers.WithExposedPorts("5000/tcp"),
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/moto-api/").WithPort("5000/tcp").WithStartupTimeout(90*time.Second)),
+		// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
+		// host: one Python process serving a handful of IAM users and one secret.
+		testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
+			hostConfig.NanoCPUs = 1_000_000_000
+			hostConfig.Memory = 1 << 30
+		}),
+	)
+	testcontainers.CleanupContainer(t, moto)
+	if err != nil {
+		t.Fatalf("start moto: %v", err)
+	}
+	endpoint, err := moto.PortEndpoint(ctx, "5000/tcp", "http")
+	if err != nil {
+		t.Fatalf("moto's endpoint: %v", err)
+	}
+	return endpoint
+}
 
 // motoKeys is an access key pair moto issued.
 type motoKeys struct{ id, secret string }
@@ -95,10 +137,7 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 // the config holds with no credential of its own lets that endpoint sign in, and the using line
 // says so.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
-	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
-	if endpoint == "" {
-		t.Fatal("AGENT_SECRETS_MOTO_URL is unset: run packages/envoy/scripts/aws-moto-check.sh, which starts moto and names it")
-	}
+	endpoint := startMoto(t)
 	binary := os.Getenv("AGENT_SECRETS_BINARY")
 	if binary == "" {
 		binary = buildAgentSecrets(t)
@@ -161,7 +200,7 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 		}
 		return stderr.String(), code
 	}
-	const writerARN = "arn:aws:iam::111122223333:user/writer"
+	const writerARN = "arn:aws:iam::" + motoAccount + ":user/writer"
 	// lent is a container credentials endpoint (AWS_CONTAINER_CREDENTIALS_FULL_URI) that lends
 	// writer's keys, as a machine's role would: the last of the SDK's sources these rows reach.
 	lent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -211,7 +250,7 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	})
 	t.Run("4 AWS_PROFILE=nobody is refused", func(t *testing.T) {
 		stderr, code := run(t, []string{"AWS_PROFILE=nobody"}, "", "list")
-		if want := "using the AWS profile nobody (AWS_PROFILE): arn:aws:iam::111122223333:user/nobody"; code != 1 || !strings.Contains(stderr, want) {
+		if want := "using the AWS profile nobody (AWS_PROFILE): arn:aws:iam::" + motoAccount + ":user/nobody"; code != 1 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit %d, stderr %q; want 1 and %q", code, stderr, want)
 		}
 	})

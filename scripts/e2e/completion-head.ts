@@ -1,4 +1,5 @@
-// The driver of handoff-records.sh's `completion head` step: one call of the real
+// The driver of the `completion head` step of
+// packages/daemon/internal/daemon/handoff_records_live_test.go: one call of the real
 // `findHandoffReport` (packages/pi-shared/src/handoff-record.ts), the function each harness's
 // `legion` tool asks what a `handoff_complete` reports beside its summary, made against the run's
 // own Dispatch server as the pane's plugin makes it — `paneHandoffReport` on the session's

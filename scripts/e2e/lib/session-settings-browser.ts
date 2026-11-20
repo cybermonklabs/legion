@@ -3,10 +3,32 @@
 // thread as shown, the agent view's first replay, and a screenshot per check.
 //
 // Playwright is resolved from packages/dispatch, the package that owns the browser suite, and
-// launched on the Chromium the rig names: a pod has no Playwright browser of its own (INFRA-42).
+// launched on the Chromium it downloaded there (`bunx playwright install chromium`), as the
+// dispatch-browser jobs launch it.
 import { createRequire } from "node:module";
 import { readAgentReplay } from "./agent-replay";
 import { currentNumber, PERSON, type Rig, until } from "./session-settings-common";
+
+interface Chromium {
+  launch(): Promise<{
+    newContext(options: Record<string, unknown>): Promise<{ newPage(): Promise<Page> }>;
+    close(): Promise<void>;
+  }>;
+  executablePath(): string;
+}
+
+/** Playwright's Chromium, from packages/dispatch's @playwright/test. */
+function chromium(): Chromium {
+  const require = createRequire(
+    new URL("../../../packages/dispatch/package.json", import.meta.url)
+  );
+  return require("@playwright/test").chromium;
+}
+
+/** Where the Chromium Playwright launches is, downloaded or not. */
+export function playwrightChromium(): string {
+  return chromium().executablePath();
+}
 
 interface Locator {
   selectOption(value: string): Promise<unknown>;
@@ -64,16 +86,12 @@ export class Browser {
   }
 
   static async open(rig: Rig): Promise<Browser> {
-    const require = createRequire(
-      new URL("../../../packages/dispatch/package.json", import.meta.url)
-    );
-    const { chromium } = require("@playwright/test");
-    const browser = await chromium.launch({ executablePath: rig.chromium });
+    const browser = await chromium().launch();
     const context = await browser.newContext({
       extraHTTPHeaders: { "X-Dispatch-User": PERSON },
       viewport: { height: 1000, width: 1280 },
     });
-    const page: Page = await context.newPage();
+    const page = await context.newPage();
     return new Browser(rig, page, () => browser.close());
   }
 

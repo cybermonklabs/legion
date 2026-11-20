@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The tester's prompt no longer has the tester run, beside CI, a test file that no CI lane runs:
+  such a file is a finding the tester reports, and a check whose surface is a CI job's test is read
+  from that job's run at the head.
+time: 2026-11-19T23:00:34Z
+custom:
+  Issue: pr4397

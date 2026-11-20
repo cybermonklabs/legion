@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // unrenamedRow is a mapping that was never renamed and sorts after the renamed pair, so a read
@@ -68,9 +70,7 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 	if err := h.pool.QueryRow(h.ctx, `select count(*) > 0 from pg_collation where collprovider = 'i'`).Scan(&icu); err != nil {
 		h.t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
 	}
-	if !icu {
-		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
-	}
+	testprereq.Require(h.t, icu, "envoy-go", "a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
 	// glibc's en_US was measured to follow. Both name columns take it: the canonical name of a
 	// row is a coalesce of the two (refs.CanonicalRepoSQL), and Postgres derives no collation at

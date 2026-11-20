@@ -16,9 +16,13 @@
 #
 #   go test -json -count=1 [-race] [-skip PATTERN] -timeout D PACKAGE...
 #
-# and reads that report. `--var NAME` names a variable the packages need, and repeats; with none
-# it is BROKER_TEST_DATABASE_URL. When a named variable is unset or empty it prints
-# `database_skips=UNKNOWN` naming it and exits 1, and runs no test. `--race` adds -race.
+# and prints its test log to stdout as the tests run: the Output of each -json event, which holds
+# each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or `--- SKIP` line, since -json runs
+# the test binary verbose (-test.v=test2json; a -v beside it would pass -test.v=true after that
+# and take test2json's framing away). Then it reads that report. `--var NAME` names a variable
+# the packages need, and repeats; with none it is BROKER_TEST_DATABASE_URL. When a named variable
+# is unset or empty it prints `database_skips=UNKNOWN` naming it and exits 1, and runs no test.
+# `--race` adds -race.
 # `--timeout D` sets the -timeout, and without it the -timeout is ${GO_TEST_TIMEOUT:-15m}. The
 # -timeout bounds each package's test binary, not the run, since go test runs the packages
 # several at a time, so a caller that must bound the run sets a limit of its own (CI's steps do).
@@ -69,18 +73,14 @@ DEFAULT_EXCEPT='/internal/broker/natscallout$'
 # under a run's patterns names a test that run must hold, and a line with no reason is refused
 # when the script starts. A test that skips on some servers only is not here: its skip is counted
 # where CI's server runs it (TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs
-# needs a PostgreSQL built with ICU, which CI's image is).
+# needs a PostgreSQL built with ICU, which CI's image is). The closing quote stands on a line of
+# its own, so a copy with any one line of the table deleted is still a whole script
+# (database-skips.test.sh's control 5 deletes one).
 EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/broker/airlock FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
 github.com/sjawhar/envoy/internal/broker/airlock TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/broker/airlock TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
-github.com/sjawhar/envoy/internal/dispatch/api TestDismissedScaleHoldsTheInboxsReads is a measurement, run only with LEGION_SCALE_TEST=1
-github.com/sjawhar/envoy/internal/dispatch/api TestNearCopyRefusalReplay needs DISPATCH_NEARCOPY_CORPUS, a corpus scripts/near-copy-replay.sh writes
-github.com/sjawhar/envoy/internal/dispatch/api TestRelatedRecallOnDuplicates needs DISPATCH_RECALL_CORPUS, a corpus scripts/related-recall.sh writes
-github.com/sjawhar/envoy/internal/dispatch/api TestRelatedCheckLatencyOnRecallCorpus needs DISPATCH_RECALL_CORPUS and DISPATCH_RECALL_LATENCY_ISSUE
-github.com/sjawhar/envoy/internal/dispatch/api TestSearchLatencyOnCorpus needs DISPATCH_BENCH_DATABASE_URL, a restored corpus copy
-github.com/sjawhar/envoy/internal/dispatch/api TestStatementTimings is a measurement on the seeded database DISPATCH_BENCH_DATABASE_URL names (benchtime.Open), which CI leaves unset
-github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open)
-github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set'
+github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
+'
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -237,7 +237,11 @@ under='def under($pkg): $listed[$pkg] == true;'
 if [ -z "$report" ]; then
   report="$work/report.json"
   go_test_exit=0
-  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  # tee keeps the whole stream as the report; the reader of the log takes a line it cannot
+  # parse as nothing, so it neither fails nor closes the pipe before go test ends.
+  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" 2>"$work/stderr" |
+    tee "$report" | jq --unbuffered -Rrj 'fromjson? | objects | .Output | strings' ||
+    go_test_exit=${PIPESTATUS[0]}
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"

@@ -61,9 +61,11 @@
 # a content or a heading it must refuse. The
 # `push-tag` cases push to a local bare origin through a URL rewrite, and two
 # more reach github.com itself: one with the pinned host keys, one with a copy
-# of the script whose pinned key GitHub does not hold. Those, and a comparison
-# of the pinned keys with `gh api meta`, print a SKIP line and count nothing
-# when the network or a gh sign-in is missing.
+# of the script whose pinned key GitHub does not hold. Those print a SKIP line
+# and count nothing when the network is missing. A comparison of the pinned
+# keys with `gh api meta` does the same where gh, a sign-in or the network is
+# missing, except on GitHub Actions, where the test job's step gives gh
+# GH_TOKEN and the case fails without an answer instead.
 # The `release`, `release-section` and `push-tag` cases all reach a write the
 # script under test guards with this repository's own private-name rules, so
 # every case here fills the seam that guard leaves, $RELEASE_PUSH_LEAK_ENGINE,
@@ -1722,10 +1724,13 @@ fi
 
 echo
 echo "Case: push-tag's pinned host keys are the ones GitHub publishes"
-# A rotation shows up here first. It needs gh signed in and the network, and is skipped without.
+# A rotation shows up here first. It needs gh signed in and the network: it is skipped without
+# them, and fails without them on GitHub Actions, where the test job's step gives gh GH_TOKEN.
 if command -v gh >/dev/null && published=$(gh api meta --jq '.ssh_keys[]' 2>/dev/null) && [ -n "$published" ]; then
   pinned=$(sed -n 's/^github\.com //p' "$release_push" | sort)
   check "the pinned keys equal gh api meta's ssh_keys" "$(is "$pinned" "$(sort <<<"$published")")"
+elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+  check "the pinned keys equal gh api meta's ssh_keys (gh api meta answered no key: no gh, no GH_TOKEN or no network)" false
 else
   echo "  SKIP: the published-keys comparison (gh api meta failed: no gh, no sign-in or no network)"
 fi

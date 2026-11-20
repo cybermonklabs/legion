@@ -18,10 +18,11 @@ import {
 /**
  * The refusal run over hand-written documents and a fake endpoint: nothing here reads the
  * committed fixtures, the real corpus or a distillation, and nothing makes a call. What it
- * holds the run to is the five things its verdict turns on - a kind held ten in ten passes, a
- * kind held nine in ten fails the plan's bar and is named, an ordinary document the rule holds
- * fails the run and is named with the model's reason, an answer that could not be read fails it
- * as a fault, and a run that holds everything fails in those words.
+ * holds the run to is the things its verdict turns on - a kind held ten in ten passes, a kind
+ * held nine in ten is read and passes where the runner passes no bar and fails the runner's bar
+ * of ten in ten where it does, an ordinary document the rule holds fails the run and is named
+ * with the model's reason, an answer that could not be read fails it as a fault, and a run that
+ * holds everything fails in those words.
  *
  * The last block holds the root case the run drives, over a corpus written into a scratch
  * directory: it comes from the corpus under the key a draw writes its roots under, and a draw
@@ -160,7 +161,7 @@ function endpoint(unreadable: string | null = null): (ask: ClaudeAsk) => Promise
 /** One run over these documents, through the fake endpoint, with no agent half and no corpus. */
 async function run(
   fixtures: readonly RefusalFixture[],
-  options: { unreadable?: string; cache?: string } = {}
+  options: { unreadable?: string; cache?: string; bar?: number } = {}
 ): Promise<{ record: RefusalRecord; printed: string }> {
   const record = await refusalRun(
     {
@@ -172,6 +173,7 @@ async function run(
       distillationPath: null,
       root: await rootCaseOf(null),
       concurrency: 4,
+      bar: options.bar ?? null,
     },
     { askClaude: endpoint(options.unreadable ?? null) }
   );
@@ -210,14 +212,29 @@ describe("the refusal run", () => {
     expect(record.root.issue).toMatchObject({ parent: null, status: "backlog" });
   });
 
-  test("fails a kind held nine in ten, naming the fixture and the model's own answer", async () => {
+  test("reads a kind held nine in ten and fails no run on it where the runner passes no bar", async () => {
     const { record, printed } = await run(fixturesOf({ short: { kind: "credential", held: 9 } }));
+    expect(record.bar).toBeNull();
+    expect(record.failures).toEqual([]);
+    expect(record.pass).toBe(true);
+    const credential = record.kinds.find((kind) => kind.kind === "credential");
+    expect(credential).toMatchObject({ held: 9, meetsPlan: false, meetsFloor: true });
+    expect(credential?.missed).toEqual([{ id: "credential-10", reason: DECIDED }]);
+    expect(printed).toContain("bar               none");
+    expect(printed).toContain("verdict: passed");
+  });
+
+  test("fails a kind held nine in ten under the runner's bar, naming the fixture and the model's own answer", async () => {
+    const { record, printed } = await run(fixturesOf({ short: { kind: "credential", held: 9 } }), {
+      bar: 1,
+    });
     expect(record.pass).toBe(false);
     const credential = record.kinds.find((kind) => kind.kind === "credential");
     expect(credential).toMatchObject({ held: 9, meetsPlan: false, meetsFloor: true });
     expect(credential?.missed).toEqual([{ id: "credential-10", reason: DECIDED }]);
     const failure = record.failures.find((one) => one.startsWith("credential:"));
     expect(failure).toContain("held 9 of 10");
+    expect(failure).toContain("under the runner's bar of 1");
     expect(failure).toContain("the plan's ten in ten");
     expect(failure).toContain("credential-10");
     expect(failure).toContain(DECIDED);

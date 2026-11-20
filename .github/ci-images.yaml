@@ -8,8 +8,9 @@
 # from, and it holds `tag:` and `digest:` besides:
 #
 #   upstream  where the image comes from: the image's own reference at its own registry. Every
-#             row that carries one but the playwright row below names Docker Hub, which is why
-#             the rest of this file says Docker Hub where it means the upstream registry.
+#             row that carries one but the playwright row, the Agent Sandbox controller row and
+#             the NFS server row below names Docker Hub, which is why the rest of this file says
+#             Docker Hub where it means the upstream registry.
 #             .github/scripts/mirror-ci-images.sh copies the repository of this reference at the
 #             row's digest, and never the tag it names, so the bytes it lands are this row's
 #             bytes whatever upstream did since. That script copies only a row the package does
@@ -95,6 +96,12 @@ images:
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
 
+  # moto's AWS (Secrets Manager, STS and IAM), which the built agent-secrets runs against with no
+  # AWS account: motoImage, the container cmd/agent-secrets/secret_moto_test.go starts.
+  - upstream: docker.io/motoserver/moto:5.2.5@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a
+    tag: moto-5.2.5-59a1965d
+    digest: sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a
+
   # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
     tag: ubuntu-534baea6
@@ -144,10 +151,10 @@ images:
     tag: actionlint-1.7.12-b1934ee5
     digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
-  # The Postgres the Stage 1 live proof starts when no DSN is given: PostgreSQL 18, the major
-  # version CI's `services:` Postgres and Cloud SQL run. The `test` job gives the script a DSN
-  # (LEGION_E2E_PG_DSN), so CI does not reach this pull today; the devbox does, and it was the
-  # one reference in a file CI runs that went to Docker Hub direct.
+  # The Postgres the Stage 1 script starts when no DSN is given: PostgreSQL 18, the major version
+  # CI's `services:` Postgres and Cloud SQL run. The `daemon-go` job, which runs the script, gives
+  # it a DSN (LEGION_E2E_PG_DSN), so CI does not reach this pull; a run of the script with no DSN
+  # does, and it was the one reference in a file CI runs that went to Docker Hub direct.
   - upstream: docker.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
     tag: postgres-979bccfd
     digest: sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
@@ -170,9 +177,9 @@ images:
   # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
   # decide every pixel of it: the container is what makes one taken by a person and one taken by
   # CI the same image. Its upstream tag carries the Playwright release bun.lock resolves, and
-  # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is the
-  # one row whose upstream is not Docker Hub: Microsoft publishes this image on its own registry
-  # alone, and the copy below is what every build and every CI job reads.
+  # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is one
+  # of the three rows whose upstream is not Docker Hub: Microsoft publishes this image on its own
+  # registry alone, and the copy below is what every build and every CI job reads.
   - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
     tag: playwright-v1.64.1-noble-2f05f8a7
     digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
@@ -184,3 +191,30 @@ images:
   - built: .github/docker/browser.Dockerfile
     tag: browser-69c3a316
     digest: sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+
+  # The kind job's cluster, five images, each named by scripts/e2e/lib/kind-sandbox.sh: the node
+  # image of every kind cluster it creates (Kubernetes v1.37.0, the default of kind v0.33.0), the
+  # local registry the images under test are pushed to, the Agent Sandbox v1.0.3 controller its
+  # vendored manifest runs, the busybox of its gVisor check pod, and the NFS server
+  # (NFS-Ganesha, as the Kubernetes SIG Storage's nfs-provisioner v4.0.8 ships it) a gVisor pod
+  # mounts a share of. The Agent Sandbox controller's and the NFS server's upstream is the
+  # Kubernetes project's own registry, where each is published alone.
+  - upstream: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    tag: node-v1.37.0-a1ed56cf
+    digest: sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
+  - upstream: docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    tag: registry-2.8.3-a3d8aaa6
+    digest: sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+
+  - upstream: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.3@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e
+    tag: agent-sandbox-controller-v1.0.3-8c8f5814
+    digest: sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e
+
+  - upstream: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    tag: busybox-1.37-a7dbc319
+    digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+
+  - upstream: registry.k8s.io/sig-storage/nfs-provisioner:v4.0.8@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
+    tag: nfs-provisioner-v4.0.8-c825f3d5
+    digest: sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d

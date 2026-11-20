@@ -349,7 +349,7 @@ func indexedAsks(t *testing.T, service *Service, artifactID string) int {
 }
 
 func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
-	for name, create := range map[string]func(*testing.T, *store.Store, string) string{
+	for name, create := range map[string]func(testing.TB, *store.Store, string) string{
 		"issue document":   createDocument,
 		"project document": createProjectDocument,
 	} {

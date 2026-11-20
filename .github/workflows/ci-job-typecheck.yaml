@@ -54,10 +54,9 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-      # With the e2e tag, vet also compiles the live proofs behind it (the Stage 4a harness,
-      # sandbox/live*_test.go), which run on the devbox against a real cluster.
-      - name: Vet the Go daemon, its e2e-tagged live proofs included
-        run: go vet -tags e2e ./...
+      # Vet compiles every package of the module and its test files, and runs no test.
+      - name: Vet the Go daemon
+        run: go vet ./...
         working-directory: packages/daemon
 
       # The same vet as macOS builds the module: `legion` ships for darwin
@@ -67,7 +66,7 @@ jobs:
       # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
       # One darwin architecture is enough: no file of the module, or of the envoy packages it
       # imports, tells amd64 from arm64 on darwin.
-      - name: Vet the Go daemon for darwin, its e2e-tagged live proofs included
+      - name: Vet the Go daemon for darwin
         run: |
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do

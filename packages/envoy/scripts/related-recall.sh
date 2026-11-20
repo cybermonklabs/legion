@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
+# legion: tool - exports one project's duplicate pairs from a Dispatch server, read-only, as the input of BenchmarkRelatedRecallOnDuplicates and BenchmarkRelatedCheckLatencyOnRecallCorpus, which a person who changes the related-item check runs on it.
 # Copies one project's pairs of issues closed one into the other, and every other issue they
-# compete with, from a Dispatch server into a JSONL file, for TestRelatedRecallOnDuplicates
-# (internal/dispatch/api) to score the related-item check on. A pair is a done issue
+# compete with, from a Dispatch server into a JSONL file, for BenchmarkRelatedRecallOnDuplicates
+# and BenchmarkRelatedCheckLatencyOnRecallCorpus (internal/dispatch/api, run as scripts/README.md's
+# "Measuring the related-item check on a project's duplicates" shows) to score the related-item
+# check on. A pair is a done issue
 # whose close reason names one other issue that covers it: "Duplicate of", "Duplicate:", "Folded
 # into", "Covered by" or "Superseded by", in any case, followed by a Dispatch issue reference
 # (a Dispatch link to KEY, a bare KEY-123 of one of the server's projects, or an /issues/KEY link). The

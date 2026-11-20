@@ -17,6 +17,7 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -274,15 +275,30 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   }
 }
 
-/** One provider the stand-in serves and the models it offers under it. Every provider is the same
- * stand-in at the same base URL, so a case that needs two models tells them apart by the `model`
- * of the Messages request it is answering. */
+/** One provider the stand-in serves and the models it offers under it. Every provider of one wire
+ * protocol is the same stand-in at the same base URL, so a case that needs two models tells them
+ * apart by the `model` of the request it is answering. */
 export interface StandinProvider {
   /** The provider key, as a selector's first half (`standin` in `standin/standin-model`). */
   readonly provider: string;
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** The wire protocol its models speak, and so where the stand-in answers them: Anthropic
+   * Messages (`anthropic-messages`, the default) under `<base>/anthropic`, OpenAI Chat
+   * Completions (`openai-completions`) under `<base>/openai/v1`. */
+  readonly api?: "anthropic-messages" | "openai-completions";
+  /** A base URL of the case's own in place of the stand-in's: a port nothing answers on, for a
+   * provider whose every request must fail. */
+  readonly baseUrl?: string;
+  /** The key the profile names for it: `standin-key` when absent, the placeholder every other
+   * case's stand-in takes. `null` names none, as for an OAuth provider no account signed in to,
+   * so no `get_available_models` lists its models and a switch to one is refused for want of a
+   * key. */
+  readonly apiKey?: string | null;
+  /** The thinking levels its models offer, which `/effort` lists after `off` and `auto`; when
+   * absent, its models have no adjustable thinking level. */
+  readonly efforts?: readonly string[];
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -293,10 +309,11 @@ export const DEFAULT_STANDIN_PROVIDERS: readonly StandinProvider[] = [
 
 /**
  * Writes the profile under `home`: the stand-in at `base` as its providers, each keyed by a
- * literal like a plain API-key caller, every model role on the first model of the first provider,
- * and every provider a devbox or runner could answer from without it disabled, so no turn reaches
- * a real model. `config` lines are appended to config.yml. The option `providers` names what the
- * case's own models are — a fallback chain needs a second model to step to — and defaults to the
+ * literal like a plain API-key caller unless it names none, every model role on the first model of
+ * the first provider, and every provider a devbox or runner could answer from without it disabled,
+ * so no turn reaches a real model. `config` lines are appended to config.yml. The option
+ * `providers` names what the case's own models are — a fallback chain needs a second model to step
+ * to, a model switch two protocols' models with thinking levels of their own — and defaults to the
  * single `standin/standin-model` every other case runs on. The option `registered` names the
  * providers a case's own extension registers at runtime (`pi.registerProvider`): models.yml
  * carries none of them, but `enabledModels` must still name each, or the session lists none of its
@@ -323,23 +340,32 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
-        `  ${provider}:`,
-        `    baseUrl: ${base}/anthropic`,
-        "    auth: apiKey",
-        "    api: anthropic-messages",
-        "    apiKey: standin-key",
-        "    models:",
-        ...models.flatMap((id) => [
-          `      - id: ${id}`,
-          `        name: Stand-in ${id}`,
-          "        reasoning: false",
-          "        input: [text]",
-          "        contextWindow: 200000",
-          "        maxTokens: 8000",
-          "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
-        ]),
-      ]),
+      ...providers.flatMap(
+        ({ provider, models, api = "anthropic-messages", baseUrl, apiKey, efforts }) => [
+          `  ${provider}:`,
+          `    baseUrl: ${baseUrl ?? (api === "anthropic-messages" ? `${base}/anthropic` : `${base}/openai/v1`)}`,
+          ...(apiKey === null ? ["    auth: oauth"] : ["    auth: apiKey"]),
+          `    api: ${api}`,
+          ...(apiKey === null ? [] : [`    apiKey: ${apiKey ?? "standin-key"}`]),
+          "    models:",
+          ...models.flatMap((id) => [
+            `      - id: ${id}`,
+            `        name: Stand-in ${id}`,
+            ...(efforts === undefined
+              ? ["        reasoning: false"]
+              : [
+                  "        reasoning: true",
+                  // The pin's own mode for each protocol: a token budget for Anthropic's,
+                  // an effort name for OpenAI's.
+                  `        thinking: {mode: ${api === "anthropic-messages" ? "budget" : "effort"}, efforts: [${efforts.join(", ")}]}`,
+                ]),
+            "        input: [text]",
+            "        contextWindow: 200000",
+            "        maxTokens: 8000",
+            "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
+          ]),
+        ]
+      ),
       "",
     ].join("\n")
   );
@@ -794,7 +820,7 @@ export function isSummarization(request: Request): boolean {
   );
 }
 
-/** The real binary and the NATS server one case runs against, as `ompNatsGuard().setup()`
+/** The real binary and the NATS server one case runs against, as `ompNatsGuard(job).setup()`
  *  resolves them: `binary` is what `runLegionPane` spawns, `nats` what `LegionPaneOptions.nats`
  *  takes. */
 export interface OmpNatsRun {
@@ -808,10 +834,7 @@ export interface OmpNatsRun {
 export interface OmpNatsGuard {
   /** What every case of the file passes `test.skipIf`. */
   readonly skip: boolean;
-  /** Whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not `CI`), for a file that needs a
-   *  third thing of its host and so guards it the same way (a tmux on PATH, say). */
-  readonly onActions: boolean;
-  /** The binary and the server a case runs against; throws on GitHub Actions without them. */
+  /** The binary and the server a case runs against, for a case `skip` let run. */
   readonly setup: () => OmpNatsRun;
 }
 
@@ -819,23 +842,27 @@ export interface OmpNatsGuard {
  * The guard every real-Oh-My-Pi pane test opens with: `LEGION_TEST_OMP` names the binary and
  * `LEGION_TEST_NATS_URL` the NATS server each pane runs against, which `LegionPaneOptions.nats`
  * requires — a session whose `ENVOY_NATS_URL` reaches no server is given no consumer, and its
- * claim boot then ends the session (INFRA-771), so a pane without a real server proves nothing.
+ * claim boot then ends the session (since the change that made a session's own JetStream consumer
+ * its only inbound), so a pane without a real server proves nothing.
  *
- * A run without either variable skips, since neither a binary nor a server is on every host.
- * On GitHub Actions it throws naming the variable instead: Actions is the host that ships the
- * change, its job supplies both, and a skip there would hide the only run of the check. The
- * switch is `GITHUB_ACTIONS === "true"`, not `CI`, which agent harnesses on the devbox export.
+ * A run without either variable skips, since neither a binary nor a server is on every host, and
+ * says which it lacks. On GitHub Actions it throws naming the variables and `job` instead, the
+ * ci.yaml job that runs the file: that job supplies both, and a skip there would hide the only run
+ * of the check (`requireOrSkip`, `@legion/test-fixtures/host-tools`). Call it once, at the test
+ * file's module scope.
  */
-export function ompNatsGuard(): OmpNatsGuard {
+export function ompNatsGuard(job: string): OmpNatsGuard {
   const binary = process.env.LEGION_TEST_OMP;
   const nats = process.env.LEGION_TEST_NATS_URL;
-  const onActions = process.env.GITHUB_ACTIONS === "true";
+  const missing = [
+    ...(binary === undefined ? ["LEGION_TEST_OMP, naming the Oh My Pi binary of .omp-pin"] : []),
+    ...(nats === undefined ? ["LEGION_TEST_NATS_URL, naming the NATS server a pane runs on"] : []),
+  ];
   return {
-    skip: (binary === undefined || nats === undefined) && !onActions,
-    onActions,
+    skip: requireOrSkip(missing.join("; "), missing.length === 0, job),
     setup: () => {
-      if (binary === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-      if (nats === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
+      if (binary === undefined) throw new Error("LEGION_TEST_OMP is unset");
+      if (nats === undefined) throw new Error("LEGION_TEST_NATS_URL is unset");
       return { binary, nats };
     },
   };

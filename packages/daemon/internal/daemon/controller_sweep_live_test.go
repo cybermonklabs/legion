@@ -1,15 +1,13 @@
-//go:build e2e
-
-// The controller orphan sweep's live proof's driver (scripts/e2e/controller-sweep-kind.sh, which
-// builds it with `-tags e2e` and owns the throwaway kind cluster and the Postgres it runs against).
-// The daemon's loader reads a `controller: daemon` legion.yaml, boot's own factory builds the
-// Sandbox runtime it configures over the daemon's Postgres store (controller_sweep_kind_test.go),
-// and the runtime launches the project controller through Agent Sandbox's controller under gVisor.
-// The claims the orphan sweep is told of are read from the store before that launch, as a boot
-// reconciliation retried while the keeper launches the controller reads them, and the store holds
-// the controller's claim launching, as the supervisor stores it before the launch begins. What the
-// proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no repository is mapped.
+// The controller orphan sweep's live test, which the kind job of ci.yaml runs on the rig of
+// internal/kindtest, against the rig's PostgreSQL as the daemon's store. The daemon's loader reads
+// a `controller: daemon` legion.yaml, boot's own factory builds the Sandbox runtime it configures
+// over the daemon's Postgres store (controller_sweep_kind_test.go), and the runtime launches the
+// project controller through Agent Sandbox's controller under gVisor. The claims the orphan sweep
+// is told of are read from the store before that launch, as a boot reconciliation retried while
+// the keeper launches the controller reads them, and the store holds the controller's claim
+// launching, as the supervisor stores it before the launch begins. What the test stands in for lies
+// outside the sweep: the agent is a sleep stub (no model, Dispatch or NATS), the App tokens are
+// placeholders, the shared public leak check is the rig's stand-in, and no repository is mapped.
 package daemon
 
 import (
@@ -34,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/kindtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -72,34 +71,22 @@ type controllerSweepLive struct {
 }
 
 // TestTheControllerOrphanSweepLive launches the project controller and sweeps at grace 0 with the
-// known set read before the launch. LEGION_E2E_EXPECT says which sweep the binary was built with:
-// `kept` for this checkout's, which must keep the launched controller's Sandbox and delete it with
-// its volume once the claim is retired, and `deleted` for a sweep built without the fix (the
-// script's negative control), which must delete it.
+// known set read before the launch: the sweep must keep the launched controller's Sandbox, and
+// delete it with its volume once the claim is retired.
 func TestTheControllerOrphanSweepLive(t *testing.T) {
 	fixtureenv.Live(t)
-	env := map[string]string{}
-	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST",
-		"LEGION_E2E_WORK", "LEGION_E2E_STORE_DSN", "LEGION_E2E_EXPECT"} {
-		if env[name] = os.Getenv(name); env[name] == "" {
-			t.Fatalf("%s is unset; scripts/e2e/controller-sweep-kind.sh sets it", name)
-		}
-	}
-	expect := env["LEGION_E2E_EXPECT"]
-	if expect != "kept" && expect != "deleted" {
-		t.Fatalf("LEGION_E2E_EXPECT is %q, want kept or deleted", expect)
-	}
-	// The proof creates and deletes Sandboxes, so it runs only on a kind cluster, the one its script
-	// made, and never on whatever the operator's current context is.
-	if !strings.HasPrefix(env["LEGION_E2E_KUBE_CONTEXT"], "kind-") {
-		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
-	}
+	rig := kindtest.Start(t)
+	db := rig.StartPostgres(t)
+	kindLiveProviders(t, rig, controllerSweepKindProject, db.InCluster)
+	// The leak check is read with the implement App's read lease, which outboxTokens mints as
+	// outbox-token-read (outbox_test.go).
+	leakCheckAPI := kindtest.LeakCheckAPI(t, "outbox-token-read")
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	path := writeControllerSweepKindConfig(t, filepath.Join(env["LEGION_E2E_WORK"], "controller-sweep-"+expect), env["LEGION_E2E_STORE_DSN"],
-		env["LEGION_E2E_STREAM_HOST"], env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"])
+	path := writeControllerSweepKindConfig(t, filepath.Join(t.TempDir(), "controller-sweep"), db.Host,
+		rig.Gateway, rig.Image, rig.Kubeconfig, rig.Context)
 	cfg, err := config.LoadForValidation(path, nil)
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)
@@ -153,7 +140,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		for range listener.Events() {
 		}
 	}()
-	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, log); err != nil {
+	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, leakCheckAPI, log); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 
@@ -162,13 +149,6 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 	// launched the controller hands the sweep.
 	known := r.known()
 	r.check("controller-launch", func() { r.launch(known) })
-	if expect == "deleted" {
-		r.check("reverted-sweep-deletes-launched-controller", func() {
-			sweep := r.sweepUntilGone(known)
-			fmt.Printf("   the sweep without the fix deleted the launched controller's Sandbox at sweep %d, its claim stored %s and unretired\n", sweep, supervise.StateLaunching)
-		})
-		return
-	}
 	r.check("sweep-keeps-launched-controller", func() { r.sweepKeeps(known) })
 	r.check("retired-controller-swept", func() {
 		r.putClaim(supervise.StateRetired)

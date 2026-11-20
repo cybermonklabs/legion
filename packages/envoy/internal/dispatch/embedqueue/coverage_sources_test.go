@@ -15,7 +15,7 @@ import (
 
 // recordOnce runs the record step (recordSources) to completion, as the pass and the periodic run
 // do, and answers how many sources it recorded.
-func recordOnce(t *testing.T, database *store.Store) int64 {
+func recordOnce(t testing.TB, database *store.Store) int64 {
 	t.Helper()
 	var recorded int64
 	if err := recordSources(context.Background(), database, &recorded); err != nil {

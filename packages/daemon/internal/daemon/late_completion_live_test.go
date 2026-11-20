@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof that a completion the `legion` tool sends after the issue moved on is answered
 // for the phase the role left (dispatch://INFRA-3146): a finished implementer that completes
 // again while the issue is in testing, with the tester's commit as the commit the shared
@@ -8,8 +6,8 @@
 // implement record; a finished tester that completes again, naming its own test record, is
 // refused the same in one request; and a reviewer whose own approval moved the issue to
 // accepting before it completed has its completion taken, naming its own review record.
-// scripts/e2e/late-completion.sh builds this driver with `-tags e2e` and owns the nats-server and
-// the PostgreSQL it runs against.
+// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// PostgreSQL that job gives it and the package's test NATS server.
 //
 // The unit tests already hold each half: pi-shared's handoff-record.test.ts the record the tool's
 // findHandoffReport reads once the issue has moved on, and internal/api's handoff_test.go and
@@ -58,9 +56,9 @@
 // every role of the issue shares: its `@-` is first the implementer's commit, on `legion/<issue>`
 // of an origin of the run's own as a pushed round leaves it, which the implementer's completion in
 // implementing is held to; then the tester's commit on top of it, pushed nowhere. This tree's
-// tool reads nothing of that workspace for a phase the role left; the negative control's, at
-// 9f1d4789, holds every implementer completion to `@-`, so it refuses the implementer's repeat
-// naming the push of the tester's commit and sends nothing.
+// tool reads nothing of that workspace for a phase the role left; a tool that held every
+// implementer completion to `@-` would refuse the implementer's repeat, naming the push of the
+// tester's commit, and send the daemon nothing.
 package daemon
 
 import (
@@ -82,11 +80,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testprereq"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -183,7 +182,6 @@ type lateAnswer struct {
 // approval moved the issue to accepting, each call made by the `legion` tool the panes load; then
 // judges the three late answers.
 func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newLateCompletionLive(t)
 	r.step("step1-the-implementer-pane-completes-implementing-through-the-real-tool-at-its-pushed-head", r.implementerCompletes)
 	r.step("step2-the-finished-implementer-calls-handoff-complete-again-over-the-testers-commit-in-the-shared-workspace", r.finishedImplementerRepeats)
@@ -200,17 +198,13 @@ func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
 // seeded; and the daemon booted over the local runtime.
 func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/late-completion.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	for _, tool := range []string{"bun", "jj", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("%s is not on PATH: %v", tool, err)
-		}
+		_, err := exec.LookPath(tool)
+		testprereq.Require(t, err == nil, agentHarnessJob, "%s is not on PATH, and the proof packs the plugins with bun and makes the panes' workspace with jj and git: %v", tool, err)
 	}
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
+	proof := newLiveProof(t)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = "LC" + randomSuffix(t)[:6]
@@ -238,8 +232,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	r.dispatch = startHandoffDispatch(t, root)
@@ -450,8 +443,8 @@ func (r *lateCompletionLive) seed() {
 // driver writes the implementer's implement record as that pane's own session, naming the
 // workspace's `@-`, which `legion/<issue>@origin` carries; then the turn calls handoff_complete;
 // the completion is taken, naming that record at that head, and the issue moves to testing. The
-// tool and the daemon answer it alike on this tree and the negative control's: the implementer
-// works the issue's phase, and its round is pushed and named.
+// tool and the daemon answer it alike on this tree and under a tool that holds every implementer
+// completion to `@-`: the implementer works the issue's phase, and its round is pushed and named.
 func (r *lateCompletionLive) implementerCompletes() {
 	t := r.t
 	implementer := r.token(claim.RoleImplementer)
@@ -478,8 +471,9 @@ func (r *lateCompletionLive) implementerCompletes() {
 // second turn, and the stand-in's turn calls handoff_complete again. The step records the tool's
 // answer and every line the daemon wrote for the implementer's claim from the delivery until a
 // settle after the tool answered, and holds that the issue is still in testing. Step 6 judges
-// both, the number of requests among them: the negative control's tool refuses this call itself,
-// naming the push of the tester's commit, so its run reaches step 6 with no line for the call.
+// both, the number of requests among them: a tool that held every implementer completion to `@-`
+// would refuse this call itself, naming the push of the tester's commit, so its run would reach
+// step 6 with no line for the call.
 func (r *lateCompletionLive) finishedImplementerRepeats() {
 	t := r.t
 	r.testerCommit = r.commitAsTester()
@@ -501,8 +495,8 @@ func (r *lateCompletionLive) finishedImplementerRepeats() {
 // Step 3. The tester the implementer's completion started takes its testing task, its turn held
 // at the stand-in; the driver writes the tester's test record as that pane's own session; then
 // the turn calls handoff_complete with verdict pass; the completion is taken, naming that record,
-// and the issue moves to reviewing. The tool and the daemon answer it alike on this tree and the
-// negative control's: the tester works the issue's phase.
+// and the issue moves to reviewing. The tool and the daemon answer it alike on this tree and under
+// such a tool: the tester works the issue's phase.
 func (r *lateCompletionLive) testerCompletes() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
@@ -580,8 +574,8 @@ func (r *lateCompletionLive) reviewerCompletesLate() {
 // carried the implementer's head and not the tester's commit its workspace stands on, so the tool
 // ran none of its push checks and the daemon answered it. The reviewer's late completion names its
 // own review record and is taken, which GET /legion/v1/state shows as that record on the
-// reviewer's phases row. Every mismatch is named in one failure, so a negative control's run
-// reads every answer.
+// reviewer's phases row. Every mismatch is named in one failure, so a failing run reads every
+// answer.
 func (r *lateCompletionLive) eachAnswerIsTheBranchs() {
 	t := r.t
 	var wrong []string

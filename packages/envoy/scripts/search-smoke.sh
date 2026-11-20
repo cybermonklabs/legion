@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - prints what a searcher sees for fixed queries on a copy of the production Dispatch database, for a person who changes search and diffs two builds' output to judge the change.
 # Prints what a searcher sees for each query in a file: Dispatch's own server, started against
 # DATABASE_URL (a corpus copy from corpus-copy.sh), answers GET /api/v1/search, and each answer
 # prints as one line of totals and its rows as `pos kind owner id snippet`. The output is plain

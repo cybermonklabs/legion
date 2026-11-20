@@ -1,17 +1,14 @@
-//go:build e2e
-
 // The harness of this package's live proofs of one issue on an open pull request, whose roles the
 // fake runtime launches and the driver plays over the daemon's worker stream and HTTP routes:
 // behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
-// phase_entry_converge_live_test.go, each built with `-tags e2e` by the script under scripts/e2e/
-// that bears its name. Each driver embeds liveIssueProof, liveProof (live_proof_test.go) grown for
-// that one issue: the issue's seed and the daemon's boot over the fake runtime; the reads of a
-// claim's token, its launch and the issue's state; each role's agent, as the registered session it
-// is over HTTP (liveSession) and as the turns a step plays on the shim (liveClaimant); GitHub's
-// REST API for the pull request at the head the driver last pushed (liveGitHub); and the
-// implementer's push, GitHub's synchronize and a push onto the base. firstLine, the cut of a
-// prompt a note prints, is here too, for these drivers and the other e2e ones. What one proof
-// alone drives stays in its driver.
+// phase_entry_converge_live_test.go, each a test CI's daemon-live job runs by name. Each driver
+// embeds liveIssueProof, liveProof (live_proof_test.go) grown for that one issue: the issue's
+// seed and the daemon's boot over the fake runtime; the reads of a claim's token, its launch and
+// the issue's state; each role's agent, as the registered session it is over HTTP (liveSession)
+// and as the turns a step plays on the shim (liveClaimant); GitHub's REST API for the pull request
+// at the head the driver last pushed (liveGitHub); and the implementer's push, GitHub's
+// synchronize and a push onto the base. firstLine, the cut of a prompt a note prints, is here too,
+// for these drivers and the other live ones. What one proof alone drives stays in its driver.
 package daemon
 
 import (
@@ -64,12 +61,12 @@ type liveIssueProof struct {
 	seq int64
 }
 
-// newLiveIssueProof readies a proof of one issue over the broker newLiveProof reads, skipping as
-// it does and naming script: the issue is the run's project's first, titled title, and its pull
-// request, on base, is numbered from the run's own suffix.
-func newLiveIssueProof(t *testing.T, script, base, title string) liveIssueProof {
+// newLiveIssueProof readies a proof of one issue over the broker newLiveProof takes: the issue is
+// the run's project's first, titled title, and its pull request, on base, is numbered from the
+// run's own suffix.
+func newLiveIssueProof(t *testing.T, base, title string) liveIssueProof {
 	t.Helper()
-	proof := newLiveProof(t, script)
+	proof := newLiveProof(t)
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -448,6 +445,9 @@ type liveGitHub struct {
 	// moved past the head, which the daemon reads twice and merges forward in the phase the issue
 	// stands in (workflow's mergeability).
 	conflicting bool
+	// pullReads counts the reads of the pull request itself this stand-in has answered: the
+	// merge-state reads a push onto the base asks for among them, which a proof counts.
+	pullReads int
 }
 
 // serveGitHub starts g as GitHub for this proof's pull request, at the head g's sha names and with
@@ -472,6 +472,13 @@ func (g *liveGitHub) conflicts(yes bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.conflicting = yes
+}
+
+// reads is how many reads of the pull request itself the stand-in has answered so far.
+func (g *liveGitHub) reads() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullReads
 }
 
 func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -506,6 +513,7 @@ func (g *liveGitHub) answer(w http.ResponseWriter, path string) bool {
 	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
 		g.write(w, []any{})
 	case rest == fmt.Sprintf("/pulls/%d", g.number):
+		g.pullReads++
 		pull := map[string]any{
 			"number": g.number, "state": "open", "mergeable": !g.conflicting,
 			"base": map[string]string{"ref": g.base},

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -100,7 +101,7 @@ func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
 
 // A plain launch (spec.Plugins nil) carries no install wrapper: the agent command starts with the
 // agent's own path, naming the image's two extension roots, byte for byte what a fresh planner's
-// argv names today (stage4b-sandbox-tree.sh).
+// argv names today.
 func TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -126,9 +127,7 @@ func TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots(t *testing.T) {
 // single quote or a space is one word to `sh -c`: run the rendered script through `sh -n` (syntax
 // check only) in this pod, which has /bin/sh.
 func TestInstallScriptQuotesShellUnsafeSources(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no /bin/sh in this environment")
-	}
+	requireSh(t)
 	plugins := &runtime.PluginInstall{PiLegion: "/tmp/odd dir/pi-legion's.tgz", PiEnvoy: "/tmp/another 'one'.tgz", Contract: 24}
 	script := startScript("/home/legion/.local/state/tester", 3, plugins, "", installLockWait(2*time.Second, 3))
 	// The two sources carry a space and a single quote; verified below (sh -n) rather than as a
@@ -145,13 +144,21 @@ func TestInstallScriptQuotesShellUnsafeSources(t *testing.T) {
 // requireFlock skips when /usr/bin/flock is not on this machine. The rendered script names flock
 // by that absolute path, so where it is missing (a developer's Mac) the install line exits 127:
 // every test that runs the script would fail on the install's absence rather than on what it is
-// about, and the failure would name the wrong thing. The launcher package's namespace_test.go
-// takes its prerequisite skip the same way.
+// about, and the failure would name the wrong thing. On GitHub Actions, whose runner ships flock,
+// it fails instead (testprereq.Require), as the launcher package's namespace_test.go does with
+// its prerequisite.
 func requireFlock(t *testing.T) {
 	t.Helper()
-	if _, err := os.Stat("/usr/bin/flock"); err != nil {
-		t.Skipf("the install script locks with /usr/bin/flock, which this environment lacks: %v", err)
-	}
+	_, err := os.Stat("/usr/bin/flock")
+	testprereq.Require(t, err == nil, "daemon-go", "the install script locks with /usr/bin/flock, which this environment lacks: %v", err)
+}
+
+// requireSh skips where there is no sh to run the rendered script in, and fails there on GitHub
+// Actions (testprereq.Require).
+func requireSh(t *testing.T) {
+	t.Helper()
+	_, err := exec.LookPath("sh")
+	testprereq.Require(t, err == nil, "daemon-go", "no /bin/sh in this environment")
 }
 
 // bunInstallArgs runs the rendered start wrapper under sh with a stand-in bun at the script's
@@ -164,9 +171,7 @@ func requireFlock(t *testing.T) {
 // out of, and would make the run's behaviour depend on where it was started.
 func bunInstallArgs(t *testing.T, plugins *runtime.PluginInstall) []string {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no /bin/sh in this environment")
-	}
+	requireSh(t)
 	requireFlock(t)
 	dir := t.TempDir()
 	recorded := filepath.Join(dir, "bun-args")
@@ -355,12 +360,9 @@ type claudeCodeRun struct {
 // can put the cache in whatever state another of the pod's Claude roles would have left it in.
 func runClaudeStart(t *testing.T, npmBody string, seedCache ...func(t *testing.T, cache string)) claudeCodeRun {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no /bin/sh in this environment")
-	}
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("no node in this environment: the install's version check runs on it")
-	}
+	requireSh(t)
+	_, noNode := exec.LookPath("node")
+	testprereq.Require(t, noNode == nil, "daemon-go", "no node in this environment: the install's version check runs on it")
 	requireFlock(t)
 	dir := t.TempDir()
 	pin := filepath.Join(dir, "pin")
@@ -668,9 +670,7 @@ func overlapped(lines []string) (overlap bool, err error) {
 // a race it must win rather than a certainty, and a control that never interleaves is a broken
 // harness, failed here rather than reported green.
 func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no /bin/sh in this environment")
-	}
+	requireSh(t)
 	requireFlock(t)
 
 	locked := installLockProbe(t, false)
@@ -840,9 +840,7 @@ type startRun struct {
 // than inheriting it, so the run never locks a cache anything else is installing out of.
 func runStart(t *testing.T, start, bin, bun, cache string, plugins *runtime.PluginInstall, setup, agent []string) startRun {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no /bin/sh in this environment")
-	}
+	requireSh(t)
 	if plugins != nil {
 		requireFlock(t)
 	}

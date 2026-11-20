@@ -2,25 +2,14 @@ package workspace
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"cmp"
-	"compress/gzip"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
 	"io"
 	"maps"
-	"math/big"
-	"net"
 	"net/http"
-	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -31,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/fakegithub"
 )
 
 // gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:
@@ -347,241 +338,36 @@ func TestFetchRefusesARequestWithNoLogOrClock(t *testing.T) {
 	}
 }
 
-// packFailure is how the GitHub stand-in fails a pack request: with an HTTP status, or one of the
-// two ways a connection breaks mid-transfer.
-type packFailure int
-
-const (
-	// cutShort sends half the answer, then closes the connection: HTTP/1.1.
-	cutShort packFailure = -1
-	// resetStream sends half the answer, then resets the stream: HTTP/2.
-	resetStream packFailure = -2
-)
-
-// gitHubStandIn is a real git http-backend that git reaches as https://github.com/acme/widgets:
-// through a CONNECT proxy https_proxy names, with a certificate for github.com that
-// GIT_SSL_CAINFO trusts. So Fetch's clone runs as it does in a pod, its one-shot credential
-// included, which the stand-in requires over Basic auth as GitHub does, refusing any password but
-// token. Each pack request (the protocol v2 `command=fetch` POST) fails the next of failures'
-// ways, then the stand-in serves them.
+// gitHubStandIn is GitHub as a pod's fetch reaches it: the fake GitHub (internal/fakegithub)
+// serving the local bare remote as acme/widgets, which git reaches as
+// https://github.com/acme/widgets through the CONNECT proxy https_proxy names, with a certificate
+// for github.com that GIT_SSL_CAINFO trusts (fakegithub's Route). So Fetch's clone runs as it does
+// in a pod, its one-shot credential included, which the fake requires over Basic auth as GitHub
+// does, refusing any password but a token it was granted. Each pack request (the protocol v2
+// `command=fetch` POST) fails the next of failures' ways, then the fake serves them.
 type gitHubStandIn struct {
+	*fakegithub.Server
 	remote string
-
-	mu        sync.Mutex
-	tokens    []string
-	failures  []packFailure
-	attempts  int
-	passwords []string
 }
 
-func newGitHubStandIn(t *testing.T, http2 bool, token string, failures ...packFailure) *gitHubStandIn {
+func newGitHubStandIn(t *testing.T, http2 bool, token string, failures ...fakegithub.PackFailure) *gitHubStandIn {
 	t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("the stand-in runs a real git http-backend: %v", err)
-	}
-	root := t.TempDir()
-	s := &gitHubStandIn{remote: localBareRemote(t), tokens: []string{token}, failures: failures}
-	if err := os.Mkdir(filepath.Join(root, "acme"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(s.remote, filepath.Join(root, "acme", "widgets.git")); err != nil {
-		t.Fatal(err)
-	}
-	backend := &cgi.Handler{Path: git, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, password, ok := r.BasicAuth()
-		s.mu.Lock()
-		if ok {
-			s.passwords = append(s.passwords, password)
-			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/info/refs") {
-				s.attempts++
-			}
-		}
-		accepted := slices.Contains(s.tokens, password)
-		s.mu.Unlock()
-		if !ok || user != "x-access-token" || !accepted {
-			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
-			http.Error(w, "Invalid username or token.", http.StatusUnauthorized)
-			return
-		}
-		if r.Method == http.MethodPost {
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Errorf("read the request: %v", err)
-				return
-			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			if packRequest(t, r, body) {
-				s.mu.Lock()
-				failure := packFailure(0)
-				if len(s.failures) > 0 {
-					failure, s.failures = s.failures[0], s.failures[1:]
-				}
-				s.mu.Unlock()
-				if failure != 0 {
-					failPack(t, w, r, backend, failure)
-					return
-				}
-			}
-		}
-		backend.ServeHTTP(w, r)
-	}))
-	server.EnableHTTP2 = http2
-	ca, leaf := gitHubCertificate(t)
-	server.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
-	server.StartTLS()
-	t.Cleanup(server.Close)
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GIT_SSL_CAINFO", caFile)
-	t.Setenv("https_proxy", "http://"+connectProxy(t, server.Listener.Addr().String()))
-	t.Setenv("no_proxy", "")
-	t.Setenv("NO_PROXY", "")
-	return s
-}
-
-// packRequest is whether r, whose body is body, is a protocol v2 pack request.
-func packRequest(t *testing.T, r *http.Request, body []byte) bool {
-	t.Helper()
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		reader, err := gzip.NewReader(bytes.NewReader(body))
-		if err != nil {
-			t.Errorf("read the gzipped request: %v", err)
-			return false
-		}
-		if body, err = io.ReadAll(reader); err != nil {
-			t.Errorf("read the gzipped request: %v", err)
-			return false
-		}
-	}
-	return bytes.Contains(body, []byte("command=fetch"))
-}
-
-// failPack answers r, a pack request, as failure says.
-func failPack(t *testing.T, w http.ResponseWriter, r *http.Request, backend http.Handler, failure packFailure) {
-	if failure > 0 {
-		http.Error(w, "flaky", int(failure))
-		return
-	}
-	answer := httptest.NewRecorder()
-	backend.ServeHTTP(answer, r)
-	for name, values := range answer.Header() {
-		w.Header()[name] = values
-	}
-	w.Header().Del("Content-Length")
-	w.WriteHeader(answer.Code)
-	body := answer.Body.Bytes()
-	_, _ = w.Write(body[:len(body)/2])
-	w.(http.Flusher).Flush()
-	if failure == resetStream {
-		panic(http.ErrAbortHandler)
-	}
-	conn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		t.Errorf("cut the answer short: %v", err)
-		return
-	}
-	_ = conn.Close()
-}
-
-// gitHubCertificate is a CA's certificate, DER, and a certificate for github.com it signed.
-func gitHubCertificate(t *testing.T) ([]byte, tls.Certificate) {
-	t.Helper()
-	key := func() *ecdsa.PrivateKey {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return key
-	}
-	caKey, leafKey := key(), key()
-	valid := time.Now()
-	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "stand-in CA"},
-		NotBefore: valid.Add(-time.Hour), NotAfter: valid.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-	ca, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "github.com"}, DNSNames: []string{"github.com"},
-		NotBefore: valid.Add(-time.Hour), NotAfter: valid.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leaf, err := x509.CreateCertificate(rand.Reader, leafTemplate, caTemplate, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ca, tls.Certificate{Certificate: [][]byte{leaf}, PrivateKey: leafKey}
-}
-
-// connectProxy answers each CONNECT, whatever host it names, with a tunnel to target, and returns
-// its address.
-func connectProxy(t *testing.T, target string) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				reader := bufio.NewReader(conn)
-				request, err := http.ReadRequest(reader)
-				if err != nil || request.Method != http.MethodConnect {
-					return
-				}
-				upstream, err := net.Dial("tcp", target)
-				if err != nil {
-					return
-				}
-				defer upstream.Close()
-				if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
-					return
-				}
-				go func() { _, _ = io.Copy(upstream, reader) }()
-				_, _ = io.Copy(conn, upstream)
-			}()
-		}
-	}()
-	return listener.Addr().String()
-}
-
-// attemptCount is how many clone attempts reached the stand-in: one authenticated ref
-// advertisement each.
-func (s *gitHubStandIn) attemptCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.attempts
-}
-
-// accept has the stand-in take token as well as the one it was made with.
-func (s *gitHubStandIn) accept(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tokens = append(s.tokens, token)
-}
-
-// presented is every password git presented, in order.
-func (s *gitHubStandIn) presented() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.passwords)
+	server := fakegithub.Start(t, fakegithub.Options{HTTP2: http2})
+	remote := localBareRemote(t)
+	server.Serve(t, fakegithub.Repository{Owner: "acme", Name: "widgets", Bare: remote})
+	server.Grant(token, false)
+	server.FailPacks(failures...)
+	server.Route(t)
+	return &gitHubStandIn{Server: server, remote: remote}
 }
 
 // tokensPresented fails the test unless git presented the one-shot credential's token on every
 // authenticated request, and on at least one per attempt.
 func (s *gitHubStandIn) tokensPresented(t *testing.T, token string) {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.attempts == 0 || len(s.passwords) < s.attempts || slices.ContainsFunc(s.passwords, func(password string) bool { return password != token }) {
-		t.Fatalf("git presented %q over %d attempts, want the provisioning token on every request", s.passwords, s.attempts)
+	attempts, passwords := s.Attempts(), s.Presented()
+	if attempts == 0 || len(passwords) < attempts || slices.ContainsFunc(passwords, func(password string) bool { return password != token }) {
+		t.Fatalf("git presented %q over %d attempts, want the provisioning token on every request", passwords, attempts)
 	}
 }
 
@@ -593,18 +379,18 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		http2    bool
-		failures []packFailure
+		failures []fakegithub.PackFailure
 		logged   [][]string
 	}{
 		{
-			name: "a 408, then a transfer cut short", failures: []packFailure{http.StatusRequestTimeout, cutShort},
+			name: "a 408, then a transfer cut short", failures: []fakegithub.PackFailure{http.StatusRequestTimeout, fakegithub.CutShort},
 			logged: [][]string{
 				{"error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408", "expected 'packfile'"},
 				{"error: RPC failed; curl 18 transfer closed with outstanding read data remaining"},
 			},
 		},
 		{
-			name: "an HTTP/2 stream reset mid-pack", http2: true, failures: []packFailure{resetStream},
+			name: "an HTTP/2 stream reset mid-pack", http2: true, failures: []fakegithub.PackFailure{fakegithub.ResetStream},
 			logged: [][]string{{"error: RPC failed; curl 92 HTTP/2 stream", "was not closed cleanly"}},
 		},
 	} {
@@ -637,7 +423,7 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			if want := fetchBackoff[:len(tc.logged)]; !slices.Equal(clock.waits, want) {
 				t.Fatalf("Fetch waited %v, want %v", clock.waits, want)
 			}
-			if attempts := github.attemptCount(); attempts != len(tc.logged)+1 {
+			if attempts := github.Attempts(); attempts != len(tc.logged)+1 {
 				t.Fatalf("git made %d attempts, want %d", attempts, len(tc.logged)+1)
 			}
 			github.tokensPresented(t, testInstallationToken)
@@ -653,10 +439,10 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name, accepts string
-		failures      []packFailure
+		failures      []fakegithub.PackFailure
 		says          string
 	}{
-		{name: "a 403 on the pack request", failures: []packFailure{http.StatusForbidden, http.StatusForbidden}, says: "error: RPC failed; HTTP 403 curl 22"},
+		{name: "a 403 on the pack request", failures: []fakegithub.PackFailure{http.StatusForbidden, http.StatusForbidden}, says: "error: RPC failed; HTTP 403 curl 22"},
 		{name: "the token refused", accepts: "ghs_another", says: "fatal: Authentication failed for 'https://github.com/acme/widgets/'"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -678,7 +464,7 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 				t.Fatalf("Fetch = %v, want git's %q", err, tc.says)
 			}
 			t.Logf("Fetch failed: %v", err)
-			if attempts := github.attemptCount(); attempts != 1 || len(clock.waits) != 0 || len(logged) != 0 {
+			if attempts := github.Attempts(); attempts != 1 || len(clock.waits) != 0 || len(logged) != 0 {
 				t.Fatalf("git made %d attempts, Fetch waited %v and logged %q; want one attempt, no wait, nothing logged", attempts, clock.waits, logged)
 			}
 			github.tokensPresented(t, testInstallationToken)
@@ -717,7 +503,7 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 	})
 	t.Run("rewritten during a retry's backoff", func(t *testing.T) {
 		github := newGitHubStandIn(t, false, "ghs_stale", http.StatusRequestTimeout)
-		github.accept("ghs_fresh")
+		github.Grant("ghs_fresh", false)
 		req := fetchRequest(t)
 		file := tokenFile(t, "ghs_stale")
 		req.Token = tokenFrom(file)
@@ -728,10 +514,10 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		if _, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req); err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
-		presented := github.presented()
+		presented := github.Presented()
 		fresh := slices.Index(presented, "ghs_fresh")
-		if github.attemptCount() != 2 || fresh <= 0 || slices.Contains(presented[:fresh], "ghs_fresh") || slices.Contains(presented[fresh:], "ghs_stale") {
-			t.Fatalf("git presented %q over %d attempts, want the first attempt's token, then the rewritten one alone", presented, github.attemptCount())
+		if github.Attempts() != 2 || fresh <= 0 || slices.Contains(presented[:fresh], "ghs_fresh") || slices.Contains(presented[fresh:], "ghs_stale") {
+			t.Fatalf("git presented %q over %d attempts, want the first attempt's token, then the rewritten one alone", presented, github.Attempts())
 		}
 	})
 	// A read of the token that fails is a cause outside the issue's volume (ErrOutsideVolume):

@@ -1,5 +1,7 @@
 package api
 
+// legion: tool - p50, p95 and maximum of GET /api/v1/search on a restored copy of the production corpus, for a person who changes search and compares this checkout with a base checkout (scripts/search-latency-compare.sh runs it in both); run with DISPATCH_BENCH_DATABASE_URL=<copy> go test -count=1 -run '^$' -bench '^BenchmarkSearchLatencyOnCorpus$' -benchtime 1x ./internal/dispatch/api
+
 import (
 	"context"
 	"net/http"
@@ -14,18 +16,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestSearchLatencyOnCorpus measures GET /api/v1/search against a real corpus copy
+// BenchmarkSearchLatencyOnCorpus measures GET /api/v1/search against a real corpus copy
 // (scripts/corpus-copy.sh) and logs its p50, p95 and maximum. It sets no absolute bound: what a
 // copy answers in depends on the machine and its load, so scripts/search-latency-compare.sh runs
-// this test from a base checkout and this one against the same copy, alternately, and gates on
-// the two. It is deliberately env-gated so CI never runs it.
-func TestSearchLatencyOnCorpus(t *testing.T) {
+// it from a base checkout and this one against the same copy, alternately, and prints the two.
+// DISPATCH_BENCH_DATABASE_URL, the copy, is its input: it skips without it, and no CI step passes
+// -bench. It migrates the database it is given, so point it only at a copy. Run it once, with
+// -benchtime 1x: each run of its body is the whole measurement.
+func BenchmarkSearchLatencyOnCorpus(b *testing.B) {
 	databaseURL := os.Getenv("DISPATCH_BENCH_DATABASE_URL")
 	if databaseURL == "" {
-		t.Skip("DISPATCH_BENCH_DATABASE_URL must point at a restored corpus copy")
+		b.Skip("DISPATCH_BENCH_DATABASE_URL must point at a restored corpus copy")
 	}
 
-	handler := newCorpusSearchHandler(t, databaseURL)
+	handler := newCorpusSearchHandler(b, databaseURL)
 	terms := []string{
 		"dispatch",
 		"search",
@@ -40,7 +44,7 @@ func TestSearchLatencyOnCorpus(t *testing.T) {
 	}
 
 	for _, term := range terms {
-		assertCorpusSearchOK(t, handler, term)
+		assertCorpusSearchOK(b, handler, term)
 	}
 
 	const rounds = 10
@@ -48,7 +52,7 @@ func TestSearchLatencyOnCorpus(t *testing.T) {
 	for range rounds {
 		for _, term := range terms {
 			started := time.Now()
-			assertCorpusSearchOK(t, handler, term)
+			assertCorpusSearchOK(b, handler, term)
 			latencies = append(latencies, time.Since(started))
 		}
 	}
@@ -57,10 +61,10 @@ func TestSearchLatencyOnCorpus(t *testing.T) {
 	p50 := latencies[(len(latencies)-1)/2]
 	p95 := latencies[(len(latencies)*95+99)/100-1]
 	maximum := latencies[len(latencies)-1]
-	t.Logf("search latency over %d requests: p50=%v p95=%v max=%v", len(latencies), p50, p95, maximum)
+	b.Logf("search latency over %d requests: p50=%v p95=%v max=%v", len(latencies), p50, p95, maximum)
 }
 
-func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
+func newCorpusSearchHandler(t testing.TB, databaseURL string) http.Handler {
 	t.Helper()
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
@@ -98,7 +102,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	return mux
 }
 
-func assertCorpusSearchOK(t *testing.T, handler http.Handler, term string) {
+func assertCorpusSearchOK(t testing.TB, handler http.Handler, term string) {
 	t.Helper()
 	response := searchRequest(t, handler, url.Values{"q": {term}}.Encode())
 	if response.Code != http.StatusOK {

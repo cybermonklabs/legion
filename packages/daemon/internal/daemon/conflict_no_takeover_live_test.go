@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for the rule a head that starts conflicting with its base follows
 // (dispatch://INFRA-4374): the issue keeps its phase, and the daemon takes nobody's turn over. A
 // first read that finds the head CONFLICTING acts on nothing, since GitHub computes mergeability in
@@ -15,8 +13,11 @@
 // replaced is refused HANDOFF_HEAD_MERGED_FORWARD and records nothing, and one at the new head is
 // taken. The control is a second issue on the same base whose required check passed on its
 // conflicting head: its second read confirms the conflict too, and gets it nothing.
-// scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and owns the nats-server
-// and the PostgreSQL it runs against.
+//
+// The test runs by name in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on
+// the job's PostgreSQL and the package's test NATS server, with the job's git and jj 0.38 or later,
+// which the daemon's boot refuses to start without. Each step prints `== <step>`, what it drove
+// and what it read back, and `ok <step>`, so the job's log is the proof's own record.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
 // other whole-daemon proofs boot it (startDaemonWithin), so the proof exercises the real
@@ -41,8 +42,8 @@
 // claim stays `working` on the delivery it confirmed throughout — rather than the absence of one
 // frame type.
 //
-// What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// What the proof stands in for lies outside the rule. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is the harness's REST stand-in for the
 // issue's pull request (liveGitHub, in live_issue_proof_test.go), which answers the head
 // conflicting from the moment the driver says so, with what conflictGitHub adds: the base branch's
 // rules, which the daemon reads for a conflicting head, and the control's pull request. The minute
@@ -135,9 +136,12 @@ type conflictNoTakeoverLive struct {
 	controlNumber int
 	// heard is how many messages each role topic of the issue had taken when step 2 began, and
 	// suspends how many suspensions the fake runtime had been asked for, so the steps after it read
-	// what the conflict's reads sent apart from anything before them.
-	heard    map[claim.Role]int
-	suspends int
+	// what the conflict's reads sent apart from anything before them. readsBefore is how many
+	// reads of the issue's pull request GitHub had answered then (liveGitHub's reads), so the steps
+	// print the reads the push onto the base asked for.
+	heard       map[claim.Role]int
+	suspends    int
+	readsBefore int
 }
 
 // TestAConflictKeepsThePhaseAndTakesNoTurnOverLive drives the five steps of the proof against one
@@ -156,13 +160,13 @@ func TestAConflictKeepsThePhaseAndTakesNoTurnOverLive(t *testing.T) {
 	r.step("step5-a-conflict-whose-required-check-passed-gets-nothing", r.passedControlGetsNothing)
 }
 
-// newConflictNoTakeoverLive boots the daemon over the script's broker with the two issues already
+// newConflictNoTakeoverLive boots the daemon over the package's test broker with the two issues already
 // recorded (seed), and its implementer's claim as a launch a previous daemon began and never
 // recorded, which this boot relaunches. That last one is how the proof reaches a live implementer
 // session, serving run 1, without an operator's spawn.
 func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	t.Helper()
-	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
+	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t,
 		conflictBase, "the issue whose head starts conflicting with its base")}
 	r.control, r.controlNumber = r.cfg.Project+"-2", r.number+1
 	r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: r.conflictGitHub()})
@@ -288,13 +292,14 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 		t.Fatalf("the tester is %s before the conflict, want working: the proof turns on a turn that is running", before.State)
 	}
 	r.published(r.key)
-	r.heard, r.suspends = r.heardOn(r.key), len(r.rt.CallsOf("Suspend"))
+	r.heard, r.suspends, r.readsBefore = r.heardOn(r.key), len(r.rt.CallsOf("Suspend")), r.github.reads()
 	r.github.conflicts(true)
 	r.publishBasePush()
 	r.note("drove a push onto %s while the tester's turn runs, after which GitHub answers %s conflicting with it; %s's ruleset requires %s, which has no run on %s",
 		conflictBase, conflictFirstHead, conflictBase, conflictRequiredCheck, conflictFirstHead)
 	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Bounded(t, time.Minute, time.Second))
-	r.note("read back: the daemon logged %q for %s, head %v against base %v", first.Message, r.key, first.Attrs["head"], first.Attrs["base"])
+	r.note("read back: the daemon logged %q for %s, head %v against base %v; the push asked GitHub for %d read(s) of #%d by then",
+		first.Message, r.key, first.Attrs["head"], first.Attrs["base"], r.github.reads()-r.readsBefore, r.number)
 	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindConflictConfirm); rows != 1 {
 		t.Fatalf("the outbox holds %d second reads of %s, want the one the first read queued", rows, r.key)
 	}
@@ -327,8 +332,9 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	bound := testwait.Bounded(t, conflictSecondReadBound, time.Second)
 	second := r.awaitLogged(conflictSecondReadLine, r.key, bound)
 	first := r.loggedFor(conflictFirstReadLine, r.key)[0]
-	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v",
-		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"])
+	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v; GitHub answered %d read(s) of #%d since the push",
+		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"],
+		r.github.reads()-r.readsBefore, r.number)
 	asked := r.awaitLogged(conflictAskedLine, r.key, bound)
 	if asked.Attrs["why"] != string(record.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",

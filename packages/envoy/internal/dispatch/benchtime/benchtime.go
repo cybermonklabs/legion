@@ -27,9 +27,10 @@
 //
 // It is an ordinary package rather than a _test.go file because all three statement-owning
 // packages (api, refs, docs) run it and Go cannot share test-only code across packages, which is
-// why store/storetest is one too. CI never runs a measurement: every entry point skips while
-// DISPATCH_BENCH_DATABASE_URL is unset, the gate api/search_bench_test.go and
-// api/related_recall_test.go already use.
+// why store/storetest is one too. Every entry point skips while DISPATCH_BENCH_DATABASE_URL is
+// unset, the gate api/search_bench_test.go and api/related_recall_test.go already use, so a
+// measurement runs only where that variable names a seeded database: in CI, envoy-go's
+// statement-timing step, which seeds one on the job's Postgres and sets it for that step alone.
 package benchtime
 
 import (
@@ -47,8 +48,10 @@ import (
 )
 
 // DatabaseURLEnv names the seeded measurement database (cmd/dispatch-seed). It is deliberately
-// not DISPATCH_TEST_DATABASE_URL: a measurement must never run against the cluster the Go suites
-// template their databases from, whose durability is off and whose cache is 128 MB.
+// not DISPATCH_TEST_DATABASE_URL: the database the Go suites template theirs from holds none of
+// the seed's rows, and a dev box's test cluster runs with its durability off and a 128 MB cache,
+// so a measurement names its own database: envoy-go's statement-timing step creates one on the
+// job's Postgres and seeds it.
 const DatabaseURLEnv = "DISPATCH_BENCH_DATABASE_URL"
 
 const (
@@ -87,12 +90,12 @@ type Runner struct {
 // a non-test file of internal/dispatch may not read the process environment, which
 // internal/textcheck's TestNoReaderBypassesTheSettingsTable holds, so each _test.go caller passes
 // os.Getenv(benchtime.DatabaseURLEnv) in. The gate itself stays here: an empty URL skips t,
-// which is how CI never runs a measurement, and the three callers share that one sentence
-// rather than each keeping a copy of it.
-func Open(t *testing.T, databaseURL string) *Runner {
+// which is how every run but one that names a seeded database leaves the measurements out, and
+// the three callers share that one sentence rather than each keeping a copy of it.
+func Open(t testing.TB, databaseURL string) *Runner {
 	t.Helper()
 	if databaseURL == "" {
-		t.Skip(DatabaseURLEnv + " must name the seeded measurement database (cmd/dispatch-seed); CI leaves it unset")
+		t.Skip(DatabaseURLEnv + " must name the seeded measurement database (cmd/dispatch-seed); envoy-go's statement-timing step seeds one and sets it")
 	}
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
@@ -112,8 +115,21 @@ func Open(t *testing.T, databaseURL string) *Runner {
 	runner := &Runner{conn: conn}
 	runner.logSettings(t)
 	runner.subjects = bindSubjects(t, conn)
-	t.Logf("measurement subjects: %s", runner.subjects)
+	Logf(t, "measurement subjects: %s", runner.subjects)
 	return runner
+}
+
+// Logf writes one line of a measurement: through t.Logf under a test, and to standard output
+// under a benchmark, whose log go test cuts to ten lines when it passes (testing's trimOutput),
+// which would drop a pair's after side and every plan past its tenth line, the readings the
+// benchmark exists to print.
+func Logf(t testing.TB, format string, args ...any) {
+	t.Helper()
+	if _, benchmark := t.(*testing.B); benchmark {
+		fmt.Printf(format+"\n", args...)
+		return
+	}
+	t.Logf(format, args...)
 }
 
 // Subjects are the rows the statements read.
@@ -135,9 +151,9 @@ const (
 // the after text's median is not below the before text's. Each pair is a subtest of its own, so a
 // pair that does not improve names itself and leaves the rest of the run to report their own
 // numbers.
-func (r *Runner) Pair(t *testing.T, name string, before, after Statement) {
+func (r *Runner) Pair(t testing.TB, name string, before, after Statement) {
 	t.Helper()
-	t.Run(name, func(t *testing.T) {
+	run(t, name, func(t testing.TB) {
 		beforeMedian, afterMedian := r.bothSides(t, name, before, after)
 		if afterMedian.took >= beforeMedian.took {
 			t.Errorf("%s: the after text's median is %v, not below the before text's %v; "+
@@ -152,16 +168,31 @@ func (r *Runner) Pair(t *testing.T, name string, before, after Statement) {
 // real but smaller than the run-to-run spread of the parts it shares a statement with: the gate
 // belongs on the piece that differs, and the two end-to-end numbers are still what a reader of
 // that gate asks for next.
-func (r *Runner) Report(t *testing.T, name string, before, after Statement) {
+func (r *Runner) Report(t testing.TB, name string, before, after Statement) {
 	t.Helper()
-	t.Run(name, func(t *testing.T) {
+	run(t, name, func(t testing.TB) {
 		r.bothSides(t, name, before, after)
 	})
 }
 
+// run runs f under name as a subtest of t, with go test's own Run for either kind of caller: the
+// statement timings of internal/dispatch/docs and refs are tests, and internal/dispatch/api's are
+// a benchmark, a tool. Either way -v prints each measurement by name.
+func run(t testing.TB, name string, f func(testing.TB)) {
+	t.Helper()
+	switch caller := t.(type) {
+	case *testing.T:
+		caller.Run(name, func(t *testing.T) { f(t) })
+	case *testing.B:
+		caller.Run(name, func(b *testing.B) { f(b) })
+	default:
+		t.Fatalf("benchtime measures under a *testing.T or a *testing.B, not a %T", t)
+	}
+}
+
 // bothSides runs the two texts alternately and answers their medians, each logged beside the name
 // of the side it was read from.
-func (r *Runner) bothSides(t *testing.T, name string, before, after Statement) (reading, reading) {
+func (r *Runner) bothSides(t testing.TB, name string, before, after Statement) (reading, reading) {
 	t.Helper()
 	beforeRuns := make([]reading, 0, runs)
 	afterRuns := make([]reading, 0, runs)
@@ -182,19 +213,19 @@ func (r *Runner) bothSides(t *testing.T, name string, before, after Statement) (
 // before it. Neither sets a bound, since the two readings come from two runs and putting them
 // together is the caller's; each names the side it measured, so neither can be read as the
 // other's.
-func (r *Runner) Before(t *testing.T, name string, before Statement) {
+func (r *Runner) Before(t testing.TB, name string, before Statement) {
 	t.Helper()
 	r.oneSide(t, name, beforeSide, before)
 }
 
-func (r *Runner) After(t *testing.T, name string, after Statement) {
+func (r *Runner) After(t testing.TB, name string, after Statement) {
 	t.Helper()
 	r.oneSide(t, name, afterSide, after)
 }
 
-func (r *Runner) oneSide(t *testing.T, name, side string, statement Statement) {
+func (r *Runner) oneSide(t testing.TB, name, side string, statement Statement) {
 	t.Helper()
-	t.Run(name, func(t *testing.T) {
+	run(t, name, func(t testing.TB) {
 		readings := make([]reading, 0, runs)
 		for range runs {
 			readings = append(readings, r.explain(t, side, statement))
@@ -205,9 +236,9 @@ func (r *Runner) oneSide(t *testing.T, name, side string, statement Statement) {
 
 // logSide is the one line every measurement is reported in, so that a reading can never reach a
 // log without the side it was read from.
-func logSide(t *testing.T, name, side string, taken reading) {
+func logSide(t testing.TB, name, side string, taken reading) {
 	t.Helper()
-	t.Logf("%s: %s, planning plus execution %v (median of runs %d to %d), its median run's plan:\n%s",
+	Logf(t, "%s: %s, planning plus execution %v (median of runs %d to %d), its median run's plan:\n%s",
 		name, side, taken.took, discarded+1, runs, taken.plan)
 }
 
@@ -221,7 +252,7 @@ type reading struct {
 // explain runs one statement under EXPLAIN (ANALYZE, BUFFERS) inside a transaction it rolls
 // back. The rollback is what lets the anchor reads be measured at all: two of them end in `for
 // share`, and the row locks an analysed run takes are held until the transaction ends.
-func (r *Runner) explain(t *testing.T, side string, statement Statement) reading {
+func (r *Runner) explain(t testing.TB, side string, statement Statement) reading {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := r.conn.Begin(ctx)
@@ -300,7 +331,7 @@ var settingsRecorded = []string{
 	"max_parallel_workers_per_gather",
 }
 
-func (r *Runner) logSettings(t *testing.T) {
+func (r *Runner) logSettings(t testing.TB) {
 	t.Helper()
 	rows, err := r.conn.Query(context.Background(),
 		`select name, setting, coalesce(unit, '') from pg_settings where name = any($1) order by name`,
@@ -318,5 +349,5 @@ func (r *Runner) logSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the server settings: %v", err)
 	}
-	t.Logf("measurement cluster: %s", strings.Join(settings, " "))
+	Logf(t, "measurement cluster: %s", strings.Join(settings, " "))
 }

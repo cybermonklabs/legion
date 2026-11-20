@@ -7,10 +7,16 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/pem"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -750,7 +756,10 @@ func TestPrepareAirlockRefusesAParentThatIsASymbolicLink(t *testing.T) {
 // TestExecFormRunsACommandForANameBehindTheAirlock is the whole form end to end against the
 // package's fake broker: a grant whose answer carries an airlock name and no value for it is not
 // the "released no value" refusal, the command runs, its source line is the one it has always
-// been, and its environment holds the placeholder and the proxy.
+// been, and its environment holds the placeholder and the proxy. Its last row reads the command
+// itself while it runs: its /proc environ, its readable memory and every file under its working
+// directory and the grant's airlock directory hold the placeholder, and nothing of the session
+// key the CLI signed its requests with.
 func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -811,4 +820,123 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	if env["AGENT_SECRETS_URL"] != broker.URL {
 		t.Errorf("the command's AGENT_SECRETS_URL is %q, want the session's broker %q", env["AGENT_SECRETS_URL"], broker.URL)
 	}
+
+	// The memory and file scan. The broker's answer for a name behind the airlock carries its
+	// placeholder alone, so the one secret the CLI holds that the command must not is its own
+	// session key, read from the key dir to sign the request and the release. The CLI execs the
+	// command in its own place, so this test, the CLI's parent, is the command's parent too and
+	// may read its memory where the kernel lets only an ancestor read it (ptrace_scope 1). The
+	// placeholder is found in each place the scan reads, so a scan that reads nothing fails.
+	keyPEM, err := os.ReadFile(filepath.Join(keyDir, "key.pem"))
+	if err != nil {
+		t.Fatalf("read the session key: %v", err)
+	}
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		t.Fatalf("the session key file holds no PEM block")
+	}
+	needles := map[string][]byte{"the session key's PEM": keyPEM, "the session key's DER": block.Bytes}
+	workDir := t.TempDir()
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command(binary, "AIRLOCK_ME", "--", "sh", "-c", `env > env.txt && : > "$1" && { read -r _ || :; }`, "sh", ready)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
+		"XDG_RUNTIME_DIR="+runtimeDir, "AGENT_SECRETS_HELPER_SOCK=")
+	hold, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("hold the command's stdin: %v", err)
+	}
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start agent-secrets: %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("the command ended (%v) before it was read: %s", err, output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("the command did not start within 30s: %s", output.String())
+		}
+	}
+	pid := strconv.Itoa(cmd.Process.Pid)
+	places := map[string][]byte{}
+	if places["its /proc environ"], err = os.ReadFile("/proc/" + pid + "/environ"); err != nil {
+		t.Errorf("read the command's environ: %v", err)
+	}
+	memory, regions := readableMemory(t, pid)
+	places["its readable memory"] = memory
+	for _, dir := range []string{workDir, filepath.Join(runtimeDir, "agent-secrets")} {
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err == nil && entry.Type().IsRegular() {
+				places[path], _ = os.ReadFile(path)
+			}
+			return nil
+		})
+	}
+	_ = hold.Close()
+	if err := <-exited; err != nil {
+		t.Fatalf("the command ended with %v, want 0 once its stdin closed: %s", err, output.String())
+	}
+	if regions == 0 {
+		t.Fatalf("no region of the command's memory could be read, so the scan read nothing")
+	}
+	for _, place := range []string{"its /proc environ", "its readable memory", filepath.Join(workDir, "env.txt")} {
+		if !bytes.Contains(places[place], []byte(testAirlockPlaceholder)) {
+			t.Errorf("the placeholder is not in %s (%d bytes), so the scan of it read nothing", place, len(places[place]))
+		}
+	}
+	for place, data := range places {
+		for needle, value := range needles {
+			if bytes.Contains(data, value) {
+				t.Errorf("%s is in %s", needle, place)
+			}
+		}
+	}
+}
+
+// readableMemory is every readable region of process pid's memory, read through /proc/<pid>/mem
+// as its maps list them, and how many regions it read. A region over 1 GiB is a reservation
+// nothing wrote to, and one at or above 1<<63 ([vsyscall]) is past what a read offset holds.
+func readableMemory(t *testing.T, pid string) ([]byte, int) {
+	t.Helper()
+	maps, err := os.Open("/proc/" + pid + "/maps")
+	if err != nil {
+		t.Fatalf("open the command's maps: %v", err)
+	}
+	defer maps.Close()
+	mem, err := os.Open("/proc/" + pid + "/mem")
+	if err != nil {
+		t.Fatalf("open the command's memory: %v", err)
+	}
+	defer mem.Close()
+	var memory []byte
+	regions := 0
+	lines := bufio.NewScanner(maps)
+	for lines.Scan() {
+		fields := strings.Fields(lines.Text())
+		if len(fields) < 2 || !strings.Contains(fields[1], "r") {
+			continue
+		}
+		low, high, ok := strings.Cut(fields[0], "-")
+		start, err1 := strconv.ParseUint(low, 16, 64)
+		end, err2 := strconv.ParseUint(high, 16, 64)
+		if !ok || err1 != nil || err2 != nil || end-start > 1<<30 || start >= 1<<63 {
+			continue
+		}
+		region := make([]byte, end-start)
+		if n, err := mem.ReadAt(region, int64(start)); err == nil || n > 0 {
+			memory = append(memory, region[:n]...)
+			regions++
+		}
+	}
+	return memory, regions
 }

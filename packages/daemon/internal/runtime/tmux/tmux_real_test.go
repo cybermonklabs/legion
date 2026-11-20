@@ -4,7 +4,7 @@ package tmux
 // its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
 // from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a
 // unix-socket stub standing in for the worker stream listener. They skip, naming tmux, where tmux
-// is not on PATH.
+// is not on PATH, and fail there on GitHub Actions, where ci.yaml's daemon-go job installs it.
 
 import (
 	"context"
@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -72,9 +73,8 @@ func runRemovingTheStandins(m *testing.M) int {
 
 func requireTmux(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not on PATH: the real-tmux runtime tests need a tmux binary")
-	}
+	_, err := exec.LookPath("tmux")
+	testprereq.Require(t, err == nil, "daemon-go", "tmux is not on PATH: the real-tmux runtime tests need a tmux binary")
 }
 
 // standins builds the real `legion` (whose worker-shim every pane runs) and the stand-in OMP (as

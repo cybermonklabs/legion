@@ -1,10 +1,8 @@
-//go:build e2e
-
 // The GitHub envelopes two whole-daemon live proofs publish alike, merge_wait_readable_live_test.go's
 // and review_range_live_test.go's: the review App's review of a pull request, the implementer's push
 // and GitHub's synchronize, each published on the ENVOY_NOTIFICATIONS stream as Envoy relays the
 // webhook (liveProof's publish) and waited on until the daemon's intake has applied it
-// (waitProcessed). It carries `//go:build e2e` because no untagged test calls it.
+// (waitProcessed).
 package daemon
 
 import (

@@ -5,7 +5,9 @@
 # by the password, and opens its store behind a proxy that resets its first two connections, by
 # trying again 1 s and then 2 s later. Every step is fatal — no `|| true` outside the cleanup a
 # trap must never fail on — and the run leaves no container, no daemon, no proxy, and nothing in
-# the real state home.
+# the real state home. Each check prints one line, `CHECK <name>: PASS` or
+# `CHECK <name>: FAIL: <reason>`; a FAIL ends the run with exit 1, and a passed run ends with
+# `stage 1 e2e: PASS`.
 #
 # Everything it takes is this run's own: its work directory, its container name, its project keys
 # and its ports. Two runs on one box (a CI job and a devbox session, or two sessions) do not
@@ -31,6 +33,8 @@ retry_port=
 proxy_pid=
 proxy_port=
 ok=
+# The check the run is in, which its CHECK line names (pass, fail and the ERR trap below).
+check=setup
 container=legion-e2e-pg-$$
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e.XXXXXXXX")
 # lib/rig.sh's process helpers log each service to $evidence/logs/<name>.log.
@@ -68,31 +72,31 @@ stop_daemon() {
     kill -0 "$pid" 2>/dev/null || break
     # SIGKILL on the way out: a leaked daemon holds the port and, under $(...) or a pipe, the caller.
     [ "$i" = 50 ] && {
-      echo "daemon ignored $1"
       kill -KILL "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
-      exit 1
+      fail "daemon ignored $1"
     }
     sleep 0.2
   done
   st=0
   wait "$pid" || st=$?
-  [ "$st" = 0 ] || {
-    echo "daemon exited $st on $1"
-    exit 1
-  }
+  [ "$st" = 0 ] || fail "daemon exited $st on $1"
   pid=
 }
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 trap cleanup EXIT
+# A command that fails outside a check's own assertions still names the check it ended.
+trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND" >&2' ERR
 mkdir -p "$work/state" "$work/xdg" "$work/home"
 # The daemon runs from here, so mise resolves its tmux from here too, whatever directory the run
 # was started from.
 cd "$root/packages/daemon"
-# lib/rig.sh's real_bin_path calls it inside $(…), which would swallow a message on stdout.
+# pass and fail print the current check's CHECK line. fail writes to stderr: lib/rig.sh's
+# real_bin_path calls it inside $(…), which would swallow a message on stdout.
+pass() { echo "CHECK $check: PASS"; }
 fail() {
-  echo "$*" >&2
+  echo "CHECK $check: FAIL: $*" >&2
   exit 1
 }
 # wait_healthz [SUFFIX] polls the daemon ($pid) on $port for 10 s. A daemon that exits first stops
@@ -106,13 +110,11 @@ wait_healthz() {
     if ! kill -0 "$pid" 2>/dev/null; then
       wait "$pid" || status=$?
       pid= # reaped: cleanup must not signal a number the kernel may reuse
-      echo "daemon exited ($status) before it answered /healthz${1:-}"
-      exit 1
+      fail "daemon exited ($status) before it answered /healthz${1:-}"
     fi
     sleep 0.2
   done
-  echo "daemon never answered /healthz${1:-}"
-  exit 1
+  fail "daemon never answered /healthz${1:-}"
 }
 # held_by_daemon_and_keeper: after a healthy start, the socket the daemon serves on is held by the
 # daemon and the keeper alone. The daemon adopts it close-on-exec, so no process it starts (its
@@ -170,11 +172,9 @@ if [ -n "$first_tmux" ] && {
 }; then
   PATH="$(real_bin_path "$work/realbin" tmux):$PATH"
 fi
-command -v tmux >/dev/null || {
-  echo "tmux is required: the Go daemon supervises under tmux and refuses to start without it"
-  exit 1
-}
-export XDG_STATE_HOME="$work/xdg" # the registry lands here, never in the devbox's real one
+command -v tmux >/dev/null ||
+  fail "tmux is required: the Go daemon supervises under tmux and refuses to start without it"
+export XDG_STATE_HOME="$work/xdg" # the registry lands here, never in the host's real one
 project="E2E$$$(date +%s)"        # daemon_boot counts per project; a fresh key makes boots==1 true on any store
 # A port this run holds alone, so a daemon of another run is never mistaken for this one's: a keeper
 # holds a socket on a port the kernel chose for the whole run (lib/rig.sh's keep_port), legion.yaml
@@ -184,7 +184,7 @@ keep_port daemon_keeper port
 go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
-# CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
+# CI passes its service's DSN; with none, the run brings its own container on an ephemeral port.
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
@@ -196,10 +196,7 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
   for i in $(seq 1 40); do
     docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion >/dev/null && break
-    [ "$i" = 40 ] && {
-      echo "postgres never became ready"
-      exit 1
-    }
+    [ "$i" = 40 ] && fail "postgres never became ready"
     sleep 0.5
   done
   pgport=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
@@ -305,27 +302,27 @@ github_apps:
       fixture
       -----END PRIVATE KEY-----
 EOF
+pass
 
 # 1. refuses a wrong password at once, naming the host and never the password. Both paths' servers
 #    check passwords, so the answer is 28P01, which the start never tries again: only a connection
 #    error is (step 2). The DSN carries its own wrong password so both halves of that assertion
 #    mean something wherever this runs.
+check=refuses-a-wrong-password
 sed "s#^postgres_dsn: .*#postgres_dsn: postgres://$wrong_login@$pg_address/$pg_database#" \
   "$work/legion.yaml" >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
-  echo "expected refusal"
-  exit 1
+  fail "legion start exited 0 with a wrong Postgres password, where it must refuse"
 fi
-grep -qF "$pg_address" "$work/refusal.log" || {
-  echo "the refusal does not name the host that refused the password"
-  exit 1
-}
+pass
+check=refusal-names-the-host
+grep -qF "$pg_address" "$work/refusal.log" || fail "the refusal does not name the host that refused the password"
+pass
+check=refusal-hides-the-password
 # `! grep …` would be read as a negation set -e ignores (shellcheck SC2251): the assertion could
 # never fail. The password must fail the run, so the run says so itself.
-grep -q 'hunter2' "$work/refusal.log" && {
-  echo "the refusal printed the password"
-  exit 1
-}
+grep -q 'hunter2' "$work/refusal.log" && fail "the refusal printed the password"
+pass
 
 # 2. opens its store through a connection error at the start's first database connection, by
 #    trying again 1 s and then 2 s later (c-boot-db-retry case 2). A daemon of its own (its
@@ -335,6 +332,7 @@ grep -q 'hunter2' "$work/refusal.log" && {
 #    under pgx's default, prefer, one attempt can open a TLS connection and then a plain one, which
 #    would spend both resets on the first attempt. The proxy writes its port through a rename, as
 #    lib/held-port.py does, logs what it does with each connection, and exits 0 on SIGTERM.
+check=store-retry-proxy
 keep_port retry_keeper retry_port
 python3 - "$pg_host" "$pg_port" "$work/proxy.port" <<'EOF' >>"$work/logs/proxy.log" 2>&1 &
 import itertools, os, signal, socket, struct, sys, threading
@@ -380,6 +378,8 @@ EOF
 proxy_pid=$!
 read_port_file "$work/proxy.port" "$proxy_pid" proxy_port ||
   fail "the proxy exited or held no port within ${port_file_seconds}s; see $work/logs/proxy.log"
+pass
+check=store-retry-answers-healthz
 mkdir -p "$work/retry-state"
 # sed takes its script on stdin, so the password in the DSN reaches no command's arguments.
 sed -f /dev/stdin "$work/legion.yaml" >"$work/retry.yaml" <<EOF
@@ -393,7 +393,11 @@ pid=$retry_daemon_pid
 # The two helpers read the daemon's port from $port; the assignment before each call names this
 # daemon's for that call alone.
 port=$retry_port wait_healthz " behind the proxy"
+pass
+check=store-retry-answers-readyz
 port=$retry_port readyz_200 " behind the proxy"
+pass
+check=store-retry-waits-1s-then-2s
 # legion start logs JSON lines (slog's JSON handler), and bootprobe.Run logs each wait as one of
 # them; fromjson? and objects pass over a line that is no JSON object.
 waits=$(jq -Rnr '[inputs | fromjson? | objects
@@ -401,6 +405,8 @@ waits=$(jq -Rnr '[inputs | fromjson? | objects
   | "\(.attempt) \(.retryIn)"] | join(", ")' "$work/logs/retry_daemon.log")
 [ "$waits" = "1/10 1s, 2/10 2s" ] ||
   fail "the daemon behind the proxy logged the waits to open its store as '$waits', want '1/10 1s, 2/10 2s', one after each reset"
+pass
+check=store-retry-stops-on-sigterm
 kill -TERM "$pid"
 stop_daemon SIGTERM
 kill -TERM "$proxy_pid"
@@ -410,11 +416,14 @@ proxy_pid=
 kill -TERM "$retry_keeper_pid"
 wait "$retry_keeper_pid"
 retry_keeper_pid=
+pass
 
 # 3. starts, answers, restarts against the same store
+check=boot-answers-healthz
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz
+pass
 # The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
 # It is read here and after the restart both, never at one boot alone: the latch is one-way and
 # the booting process's own, so each start begins unlatched and this read says nothing about the
@@ -422,15 +431,19 @@ wait_healthz
 # while /readyz never latches is exactly the state this proof exists to catch, and the
 # restart reaches serving down the other path — an existing store, a second boot — where it could
 # part from this one.
+check=boot-answers-readyz
 readyz_200
+pass
+check=boot-socket-holders
 held_by_daemon_and_keeper
+pass
+check=boot-state
 "$work/legion" state --json --port "$port" >"$work/state1.json"
 jq -e --arg p "$project" \
   '.daemon.project == $p and .daemon.boots == 1 and .admission.cap == 4 and (.issues | length) == 0' \
-  "$work/state1.json" || {
-  echo "the first boot's state is not the project, boot 1, cap 4 and no issues stage 1 promises"
-  exit 1
-}
+  "$work/state1.json" ||
+  fail "the first boot's state is not the project, boot 1, cap 4 and no issues stage 1 promises"
+pass
 # The deployment's capability report rides the same document (LEGION-578): every row of the table,
 # and under tmux with nothing decided the resource-limits row open with the legion.yaml line that
 # records a decision — a report, never a refusal, so the daemon served it — and the pool-capacity
@@ -441,6 +454,7 @@ jq -e --arg p "$project" \
 # worker image carries Claude Code's pin and the Legion plugin unconditionally — the binary itself
 # a pod installs at launch — so every deployment's image is probed for the pin and the plugin,
 # this one included.
+check=capability-report
 jq -e '(.capabilities | length) == 21
   and (.capabilities | map(select(.name == "resource-limits" and .status == "open"
     and .configLine == "capabilities.decided.resource-limits: \"<reason>\""
@@ -449,15 +463,15 @@ jq -e '(.capabilities | length) == 21
     and .source == "configuration")) | length) == 1
   and (.capabilities | map(select((.name != "resource-limits" and .name != "pool-capacity"
     and .name != "secrets" and .name != "model-fallback") and has("source"))) | length) == 0' \
-  "$work/state1.json" || {
-  echo "the state does not carry the 21-row capability report with resource-limits and pool-capacity's source under tmux"
-  exit 1
-}
+  "$work/state1.json" ||
+  fail "the state does not carry the 21-row capability report with resource-limits and pool-capacity's source under tmux"
+pass
 # The daemon's resolved settings ride the same document (LEGION-791, contract 35): the value the
 # fixture set over its default, a default the fixture left alone, the runtime, the envoy_url with
 # its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
 # App key — the App rides as its id and installations alone, and nothing anywhere in the document
 # reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
+check=resolved-settings
 jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
@@ -465,37 +479,45 @@ jq -e '.settings.review_round_cap == 5
   and ((.settings | has("postgres_dsn") or has("operator_token_file")) | not)
   and ([.. | strings | select(test("BEGIN|PRIVATE KEY|postgres://|fixture-envoy-password|://[^/@ ]+:[^/@ ]+@"))] | length) == 0
   and (.settings.github_apps.implement | keys) == ["app_id", "installations"]' \
-  "$work/state1.json" || {
-  echo "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
-  exit 1
-}
+  "$work/state1.json" ||
+  fail "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
+pass
+check=registered-in-legions
 "$work/legion" legions --json |
-  jq -e --arg p "$project" --argjson port "$port" 'map(select(.team == $p and .port == $port)) | length == 1' || {
-  echo "the legions registry does not carry exactly one entry for $project on $port"
-  exit 1
-}
+  jq -e --arg p "$project" --argjson port "$port" 'map(select(.team == $p and .port == $port)) | length == 1' ||
+  fail "the legions registry does not carry exactly one entry for $project on $port"
+pass
+check=stops-on-sigterm
 kill -TERM "$pid"
 stop_daemon SIGTERM
+pass
 
+check=restart-answers-healthz
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz " after restart"
+pass
 # The restart's own latch, which the first boot's proves nothing about: a second boot, over a store
 # that already holds this project, must reach serving and say so, and its 503 would be as invisible
 # to the /healthz above as the first boot's would have been.
+check=restart-answers-readyz
 readyz_200 " after restart"
+pass
+check=restart-socket-holders
 held_by_daemon_and_keeper " after restart"
+pass
+check=restart-counts-a-second-boot
 "$work/legion" state --json --port "$port" >"$work/state2.json"
-jq -e '.daemon.boots == 2' "$work/state2.json" || {
-  echo "the restart did not record a second boot"
-  exit 1
-}
-[ "$(jq -r .daemon.firstBootAt "$work/state1.json")" = "$(jq -r .daemon.firstBootAt "$work/state2.json")" ] || {
-  echo "firstBootAt changed across the restart: the store is not the same one"
-  exit 1
-}
+jq -e '.daemon.boots == 2' "$work/state2.json" || fail "the restart did not record a second boot"
+pass
+check=restart-keeps-the-first-boot-time
+[ "$(jq -r .daemon.firstBootAt "$work/state1.json")" = "$(jq -r .daemon.firstBootAt "$work/state2.json")" ] ||
+  fail "firstBootAt changed across the restart: the store is not the same one"
+pass
+check=stops-on-legion-stop
 "$work/legion" stop --config "$work/legion.yaml"
 stop_daemon "legion stop"
+pass
 
 ok=1
 echo "stage 1 e2e: PASS"

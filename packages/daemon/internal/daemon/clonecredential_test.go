@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -39,9 +40,8 @@ func git(t *testing.T, clone string, args ...string) string {
 // logs nothing; a clone with the current helper and no useHttpPath is rewritten. A state directory
 // with no clone is nothing to do.
 func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
-	if _, err := os.Stat(realGit); err != nil {
-		t.Skipf("no git at %s: %v", realGit, err)
-	}
+	_, err := os.Stat(realGit)
+	testprereq.Require(t, err == nil, "daemon-go", "no git at %s: %v", realGit, err)
 	// The clone's helper keys are read with `git config --get-all`, which lists every scope, and the
 	// host's own config can carry the very helper asserted here (`gh auth setup-git` writes the
 	// github.com one to ~/.gitconfig). Neither the global nor the system file may reach the test,

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -1122,9 +1123,8 @@ func ownersOwnDirectories(owner, _ string) (string, error) {
 // `(fetch) [blob:none]`), and every remote's gh-resolved setting; a directory that is no git
 // repository has none.
 func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+	_, err := exec.LookPath("git")
+	testprereq.Require(t, err == nil, "daemon-go", "no git on this machine")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	repository := t.TempDir()
@@ -1224,9 +1224,8 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 // on. The three shapes the gates probed, each gh acting on evilown's repository: a filter holding a
 // second `<url> (fetch)`, the same after a GitHub URL, and a URL holding a second URL.
 func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+	_, err := exec.LookPath("git")
+	testprereq.Require(t, err == nil, "daemon-go", "no git on this machine")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	for _, tc := range []struct{ name, url, filter string }{
@@ -2570,9 +2569,8 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 // read fails, as it does in an hour whose REST limit is spent, the GET still reaches gh. A write
 // to the same repository still reads its visibility, and is refused when that read fails.
 func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on this machine")
-	}
+	_, err := exec.LookPath("git")
+	testprereq.Require(t, err == nil, "daemon-go", "no git on this machine")
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)

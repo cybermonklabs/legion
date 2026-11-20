@@ -27,7 +27,7 @@ import {
 // treats any `agent_start` after a settle as a newer run and withholds its steer, so a host that
 // counted the side turn as a run would silence the nudge with every unit test still green.
 // The WAITING self-check case below fails if that ever changes.
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-legion");
 
 /** The implementer pane the phase-stall cases run, with what its stand-in daemon recorded and
  * its transcript's phase-stall entries. */

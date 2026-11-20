@@ -1,3 +1,4 @@
+// legion: tool - pools several runs of one fresh-agent comparison into one reading per case, for the person who decides whether a change to the approval-review skill helps.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";

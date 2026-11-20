@@ -12,6 +12,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -25,7 +26,11 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // model's judgement; one `bash` form and one eval cell in each language are driven, not the
 // grammar's range, which `askgate.test.ts` covers.
 const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
+const withoutOmp = requireOrSkip(
+  "LEGION_TEST_OMP, naming the Oh My Pi binary of .omp-pin",
+  omp !== undefined,
+  "pi-envoy"
+);
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -83,7 +88,7 @@ async function runSession(options: {
   /** OMP_ASKGATE for the session: unset leaves the defaults, block for a verdict, warn for checks. */
   mode?: "warn" | "block";
 }): Promise<{ requests: Request[]; sessions: string }> {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
   const { root, home, workspace, sessions } = await ompRoot(omp, "askgate-omp-", cleanup);
 
   // The `dispatch` the session calls by its literal path.
@@ -209,7 +214,7 @@ async function gateEntries(sessions: string): Promise<unknown[]> {
     );
 }
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "a dispatch ask in a session with Dispatch on is reviewed once by the session's model, and one advisor-gate entry is recorded",
   async () => {
     const { requests, sessions } = await runSession({
@@ -261,7 +266,7 @@ for (const [language, code] of [
   ["js", (command: string) => `return await tool.bash({ command: ${JSON.stringify(command)} })`],
   ["py", (command: string) => `print(await tool.bash({"command": ${JSON.stringify(command)}}))`],
 ] as const)
-  test.skipIf(omp === undefined && !onActions)(
+  test.skipIf(withoutOmp)(
     `a write a ${language} eval cell makes, whose review gives no verdict, tells the next model request it went out unreviewed`,
     async () => {
       const { requests, sessions } = await runSession({
@@ -318,7 +323,7 @@ const lastTurn = (requests: readonly Request[]) =>
   );
 const PYTHON_PASSTHROUGH = ["eval:", "  envPassthrough:", "    prefixes: [DISPATCH_, ENVOY_]"];
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "the real CLI: a literal dispatch ask is reviewed, carries its marker and posts once",
   async () => {
     const { requests, sessions } = await runSession({
@@ -342,7 +347,7 @@ test.skipIf(omp === undefined && !onActions)(
 // The review of the marker design at cf3f1e021, C1: the gate bound an upload's marker to its own
 // review input, so the CLI refused every reviewed markdown upload by `--path`. The fake Dispatch
 // here takes the upload's form and records the file's bytes.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "the real CLI: a markdown upload by --path is reviewed, carries its marker and posts its bytes once",
   async () => {
     const brief = "# Brief\n\nShip the release today.\n";
@@ -431,7 +436,7 @@ for (const [form, firstTurn, config] of [
     [],
   ],
 ] as const)
-  test.skipIf(omp === undefined && !onActions)(
+  test.skipIf(withoutOmp)(
     `the real CLI refuses a gated write from ${form}, which carries no marker, once the session chose block`,
     async () => {
       const { requests, sessions } = await runSession({
@@ -453,7 +458,7 @@ for (const [form, firstTurn, config] of [
 
 // The CLI's checks default to warn: in a session that chose no mode, a gated write with no marker
 // posts with its warning, and pi-envoy records an `unmarked` entry for the report.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "the real CLI posts a gated write with no marker, with its warning, when the session chose no mode",
   async () => {
     const { requests, sessions } = await runSession({
@@ -475,7 +480,7 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "with askgate.enabled false no record is written, and python3 -c under bash posts once",
   async () => {
     const { requests, sessions } = await runSession({

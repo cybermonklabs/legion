@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // A deployment of the stream still creates it and reconciles what it finds on the NATS it names.
@@ -253,7 +254,7 @@ func remoteLookingURL(t *testing.T, uri string) string {
 		}
 		return startRelayProxyFrom(t, network.IP.String(), uri).url()
 	}
-	t.Skip("no non-loopback IPv4 address on this machine to reach the test server by")
+	testprereq.Require(t, false, "envoy-go-race", "no non-loopback IPv4 address on this machine to reach the test server by")
 	return ""
 }
 

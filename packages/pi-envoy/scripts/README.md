@@ -2,112 +2,77 @@
 
 ## smoke-delivery.sh
 
-Real end-to-end delivery smoke test against the *installed* pi-envoy
-plugin. It launches a real, interactive `omp` session (TUI mode, never `-p`)
-in a scratch tmux session and a throwaway directory outside any repo
-checkout, so the only extension that loads is whatever is materialized at
-`~/.omp/plugins/node_modules` — never a local source checkout via a repo's
-own `omp.extensions` manifest. The session runs on the smoke's own tmux
-server, on a socket in that throwaway directory, and the script prints the
-`tmux -S <socket> attach -t <session>` line that watches it. It drives the
-session with `tmux send-keys` to
-call `envoy_role_set` and wait for a message, publishes to that role's
-namespaced topic through the live Envoy HTTP API, asserts the session wrote
-the exact payload to disk, then kills the session and asserts teardown: the
-tmux session disappears and the role stops resolving (404) within 15 seconds.
+End-to-end delivery check of the packed plugin, which the `plugin-smokes` part of `ci.yaml`'s
+`agent-harness` job runs as a step (`.github/workflows/ci-job-agent-harness.yaml`). It starts one
+real Oh My Pi session in `--mode rpc`, as a Legion pane runs it, whose only extension is this
+checkout's pi-envoy packed as the release packs it and whose only tool is bash. The session's
+model, a stand-in, calls `envoy_role_set`; the script publishes to that role's namespaced topic
+through the listener's HTTP API and requires the session to write the exact payload to
+`received.txt`; then it ends the session by closing its input and requires the role to stop
+resolving (404) within 15 seconds.
+
+It prints one line per check, `CHECK <name>: PASS` or `CHECK <name>: FAIL: <why>`, and exits 1
+after a FAIL: `setup`, `role-claimed` (within 60 s), `delivered` (within 90 s) and `teardown`.
+The teardown ends the session the way its host ends an RPC session, which runs the plugin's
+`session_shutdown` and its deregistration; Oh My Pi ends a session it is sent a signal by with no
+shutdown handler at all, which leaves the role standing until the listener's live window.
 
 ### Usage
 
 ```bash
-cd packages/pi-envoy/scripts && ./smoke-delivery.sh
+LEGION_TEST_OMP=<omp> bash packages/pi-envoy/scripts/smoke-delivery.sh
 ```
 
-Env overrides:
+It takes nothing from outside the machine, through `scripts/e2e/lib/plugin-smoke.sh`, the rig the
+four plugin smokes share (`scripts/e2e/README.md` describes it):
 
-- `ENVOY_URL` — Envoy listener base URL (default `http://127.0.0.1:9020`).
-- `OMP_BIN` — the `omp` binary to run (default `omp`, resolved on `PATH` —
-  the dotfiles wrapper that injects provider auth).
+- `LEGION_TEST_OMP` names the Oh My Pi binary, the build `.omp-pin` pins, which
+  `.github/actions/install-omp` installs in CI.
+- natsd and the Envoy listener are the ones `packages/envoy-client/test/envoy-stack.ts` builds
+  from this checkout with `go build` and runs on loopback ports of their own.
+- The model is `scripts/e2e/lib/plugin-smoke-model.ts`, a stand-in on loopback keyed by a
+  placeholder of the run's own.
+- `PLUGIN_SMOKE_EVIDENCE_DIR`, when set, is where the run's logs go; the CI step sets it.
 
-Run from a host with:
-
-- A live Envoy listener reachable at `ENVOY_URL`, with NATS behind it.
-- The `pi-envoy` plugin installed for every `omp` session on the
-  machine, materialized at
-  `~/.omp/plugins/node_modules/@sjawhar/pi-envoy`. The script fails
-  fast and names the path if that package.json is missing, is not valid
-  JSON, or has no `.version` — the smoke is meaningless without the real
-  installed artifact.
-- A configured model provider: the script makes a real model call inside the
-  spawned session, so it costs tokens and needs live credentials.
-
-CI does not run this script — `.github/workflows/ci.yaml` has no
-step for it, and none should be added while these prerequisites are unmet in
-CI's sandbox.
+It needs `go`, `bun` with the checkout's dependencies installed, `curl`, `jq` and `tar`, and no
+tmux, Docker, model key or deployment.
 
 ## smoke-btw.sh
 
-Real targeted Dispatch smoke against the installed plugin. It starts one isolated OMP TUI session
-whose initial message (the prompt is `omp`'s argument, not typed keystrokes) asks for one bash
-command that creates a sentinel file and then sleeps 45 seconds, waits for that session's exact
-work directory to appear in the live listener registry and for the sentinel to exist, then targets
-only that session with a message on an existing open Dispatch issue while the sleep is still
-running. A correlated reply must appear on the same issue before the script tears down the session
-and confirms its registry entry clears. It never targets a role or an existing session. The
-spawned session is pointed at the same Dispatch the script talks to (`DISPATCH_URL`, plus a 0600
-token file when the script holds a bearer), so its reply lands where the script looks for it.
+End-to-end check of a targeted Dispatch message to one live session running the packed plugin,
+which the same `plugin-smokes` part runs as a step. For each mode, `btw` and then `steer`, it
+starts one Oh My Pi session as `smoke-delivery.sh` does, whose prompt asks for one bash command
+that creates a sentinel file and then sleeps 45 seconds; it waits for that session's exact work
+directory to appear in the listener's registry and for the sentinel to exist, then targets only
+that session with a message on an issue of its own Dispatch while the sleep is still running.
+A BTW is answered on the session's side turn and posted by the plugin; a steer is read at the
+turn's next tool boundary, and the session runs the `dispatch message` its card's `reply_with`
+names, which the plugin puts first on the session's `PATH` from its own `bin/`. Either way a reply
+naming the message must appear on the issue within 90 seconds, and the session's end must take it
+out of the registry within 15.
 
 ### Usage
 
 ```bash
-cd packages/pi-envoy/scripts && MODE=btw DISPATCH_SMOKE_ISSUE=CORE-1 ./smoke-btw.sh
+LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=<loopback PostgreSQL with pgvector> \
+  bash packages/pi-envoy/scripts/smoke-btw.sh [btw|steer]
 ```
 
-Set `MODE=btw` (the default) for an ephemeral reply, or `MODE=steer` to prove the primary-turn
-delivery path. `ENVOY_URL` defaults to `http://127.0.0.1:9020` and `OMP_BIN` defaults to `omp`.
-`DISPATCH_SMOKE_ISSUE` names the open issue that will receive the smoke card.
+With no argument it runs both modes, one session each. Dispatch is the server
+`packages/envoy-client/test/dispatch-stack.ts` builds from this checkout, with its NATS on the
+run's natsd and its deliveries through the run's listener, on a database of its own that it makes
+on `LEGION_TEST_PG_DSN` and drops at the end. A person of the run's own makes the issue, through
+the server's trusted identity header, and the targeted message is an agent's: it is sent with the
+server's bearer and names itself in `actor` (`smoke-btw-<hex>`), so the card is agent-authored.
+Everything else is as for `smoke-delivery.sh`.
 
-Who asks: by default the script is an agent. It asks the Dispatch a command run from this shell
-resolves, with that command's bearer
-([`scripts/e2e/lib/operator-dispatch.sh`](../../../scripts/e2e/README.md#liboperator-dispatchsh),
-which runs `bun` and needs the checkout's dependencies installed): `DISPATCH_URL`,
-`DISPATCH_TOKEN_FILE` and `DISPATCH_TOKEN` over the `dispatch` section of the envoy.json
-`envoyConfigPath("command")` chooses, whose token goes only to the server written beside it and
-whose `!` token runs. It names itself in the message's `actor` as `SMOKE_ACTOR_SESSION` (default
-`smoke-btw-<hex>`; pass your own Envoy session id when you run it from a session), so the card on
-the issue is visibly agent-authored. With no Dispatch configured it refuses, saying why; any other
-refusal of the client's (a file's token that `DISPATCH_URL` names another server for, a token file
-that cannot be read) stops it naming the reason. Set `DISPATCH_AUTH_HEADER` to one
-human-authenticated HTTP header (the current Dispatch cookie or a trusted identity header) to ask as
-a human instead, exactly as the dashboard would: `actor` is then omitted, and the script asks
-`DISPATCH_URL`, default `http://127.0.0.1:8766`.
+Each mode prints its own checks: `<mode>-registered`, `<mode>-sleeping`, `<mode>-targeted`,
+`<mode>-replied` and `<mode>-teardown`, after `setup`. Every wait is a wall-clock deadline, not a
+count of polls, so a blackholed service fails at its stated timeout instead of stretching it.
 
-The script requires live Envoy, Dispatch, and model credentials; it is never a fake-listener test or
-a CI step. A 404 from the targeted message path prints `SKIP` and exits zero, meaning the server does
-not support targeted messages. A `400 ACTOR_KIND` on a bearer run prints `SKIP` too, meaning
-the server requires a human-authenticated targeted message; use a compatible server or pass
-`DISPATCH_AUTH_HEADER`.
-
-### Timeouts
-
-Session registration and post-kill teardown bound infrastructure round trips only.
-Delivery (90s) is generous by comparison because that window spans real Envoy delivery
-plus the time for a live model turn to notice the targeted message and post the correlated
-Dispatch reply. Every wait is a wall-clock deadline (not a fixed iteration count), so a
-blackholed Envoy fails at its stated timeout instead of quietly stretching it.
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | `PASS:` delivery, correlated reply, and teardown verified; or `SKIP:` server lacks this smoke path. |
-| 1 | Any assertion failed — see the `FAIL:` line for which one, plus a captured pane or HTTP status. |
-
-Cleanup (`tmux kill-session`, `rm -rf` the temp dir) runs in an exit trap on
-every exit path, so a failed run leaves nothing behind either. Both smokes run
-their tmux on a private socket in their temp dir, so the kill can end only the
-session the smoke started; on the shared default server it could end anyone's.
-Every tmux call in either script goes through the script's `tmux` function,
-which names that socket, and a new call goes through it too.
+On every exit the scripts stop what they started by the pid each was started as, drop Dispatch's
+database and remove their `mktemp -d` under `$TMPDIR`, which a failed run without
+`PLUGIN_SMOKE_EVIDENCE_DIR` keeps and names.
 
 ## smoke-role-takeover.sh
 
@@ -116,8 +81,8 @@ resumed a live session's id can neither take, release nor outlast that session's
 (dispatch://INFRA-783), and a soft claim naming a predecessor takes the role only from a
 predecessor that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and
 A5 of its spec); and once a session that holds a role restarts, the role lookup and the session
-listing name the same holder (dispatch://INFRA-2747). It is the only smoke here that needs
-neither a model provider nor a deployment: `go` and `bun` alone, so CI runs it as a step of the
+listing name the same holder (dispatch://INFRA-2747). It needs no model at all, not even a
+stand-in, and no deployment: `go` and `bun` alone, and CI runs it as a step of the
 `envoy-session-stall` job.
 
 It builds natsd (`packages/envoy/internal/testnats/cmd/natsd`) and the listener
@@ -278,42 +243,52 @@ about four with `--base-rev`.
 
 ## smoke-registration-stall.sh
 
-Manual live smoke for the registration-stall fix (dispatch://INFRA-246): a real headless `omp`
-pane against a real Envoy listener, watched through the live registry. `--arm stall` shows that a
-pane whose registration post is wedged forever keeps refreshing past one record lifetime and says
-so exactly once; `--arm recover` shows that a pane unregistered while its process runs
-re-registers itself. `--control` is each arm's negative control (the stall control needs
-`--base-rev <rev>`, the plugin as it was then).
+Live check of the registration-stall fix, which the same `plugin-smokes` part runs as a step: a
+real headless `omp` pane running the packed plugin, against a real Envoy listener, watched through
+the live registry. `--arm stall` shows that a pane whose registration post is wedged forever keeps
+refreshing past one live window and says so exactly once; `--arm recover` shows that a pane
+unregistered while its process runs re-registers itself. `--control` is each arm's negative
+control. The stall control SIGKILLs its pane at the wedge, as a pane whose refresh never comes
+back is, and requires its record to be listed after the kill, leave the registry within the live
+window and a margin, and never return: the window the stall arm's pane outlives is one this
+listener enforces. The recover control SIGKILLs its pane before the delete and requires the record
+to stay gone, so the recover arm's return is the live pane's own refresh. That a wedged pass no
+longer holds every later tick is what the plugin's unit tests hold (`extensions/envoy.test.ts`, "a
+pass stuck on a listener call that never answers still lets later ticks refresh the registration"
+and "a whole stall says so once in the pane and once in the log").
 
 ```bash
-# against a deployment
-ENVOY_URL=<listener> ENVOY_TOKEN_FILE=<0600 file> \
-  bash packages/pi-envoy/scripts/smoke-registration-stall.sh --arm recover
-# against a listener this run starts itself
-bash packages/pi-envoy/scripts/smoke-registration-stall.sh --arm recover --local-stack
+LEGION_TEST_OMP=<omp> bash packages/pi-envoy/scripts/smoke-registration-stall.sh
+LEGION_TEST_OMP=<omp> bash packages/pi-envoy/scripts/smoke-registration-stall.sh --arm stall --control
 ```
 
-`--local-stack` builds natsd and the listener from the checkout and runs both on loopback ports of
-its own, as `smoke-role-takeover.sh` does, so the run needs no deployment and no bearer: it ignores
-`ENVOY_URL` and `ENVOY_TOKEN_FILE`, says so, and keeps both out of the pane it spawns. Its one
-remaining live dependency is the model provider the pane's turn needs, which the pane inherits
-from the caller's environment. `--heartbeat-ms <n>` shortens the pane's refresh interval, which
-every budget the run prints is measured in. Its scratch is a `mktemp -d` under `$TMPDIR` that an
-exit trap removes. Exit 0 is `SMOKE <arm> PASS:`, 1 is `SMOKE <arm> FAIL:` naming the observation
-that failed, and 2 is a refusal.
+With no `--arm` it runs both arms and both controls, one pane each, which is what CI runs. Each
+prints `CHECK <arm>: PASS` or `CHECK <arm>: FAIL: <why>` after `setup` (`stall`, `stall-control`,
+`recover` and `recover-control`), and the run exits 1 after a FAIL and 2 on a refused argument.
+
+The listener is the one `packages/envoy-client/test/envoy-stack.ts` builds, as for
+`smoke-delivery.sh`, given a live window of its own (`ENVOY_SESSION_LIVE_WINDOW`), and the pane's
+one prompt is answered by the same model stand-in. The pane refreshes every 20 seconds, or every
+`--heartbeat-ms <n>`, and its pass deadline is that interval, as a deployment's is. The window is
+kept in the arrangement `@legion/contracts` declares, which the script reads at run time
+(`SESSION_HEARTBEAT_MS` and `SESSION_LIVE_WINDOW_MS`): three refreshes and one whole listener
+call fall short of it with the deployment's slack to spare, so it is
+`SESSION_LIVE_WINDOW_MS - 3 × (SESSION_HEARTBEAT_MS - refresh)`, 90 seconds at the default. Every
+budget the run prints is measured in those two numbers.
 
 ## local-stack.sh
 
-The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
+The loopback Envoy stack `smoke-role-takeover.sh` brings up, in one sourced file: a free loopback
 port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
 revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
 and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
-never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
+never run: it starts no process, so the script keeps its own isolation, logs, traps, timeouts,
 messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through, `refuse` in both smokes here.
-`packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
+exhausted port range is reported through, `refuse` in that smoke.
+`packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite, and the
+one the other three smokes here run.
 
 ## listener-api.sh
 

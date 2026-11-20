@@ -88,13 +88,13 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       - name: Check the text packages/envoy pins
-        run: go test -count=1 ./internal/textcheck/
+        run: go test -v -count=1 ./internal/textcheck/
         working-directory: packages/envoy
       - name: Check the text packages/envoy/infra pins
-        run: go test -count=1 ./internal/textcheck/
+        run: go test -v -count=1 ./internal/textcheck/
         working-directory: packages/envoy/infra
       - name: Check the text packages/daemon pins
-        run: go test -count=1 ./internal/textcheck/
+        run: go test -v -count=1 ./internal/textcheck/
         working-directory: packages/daemon
       # The seventeen tests of the API's nine static source checks read the module's source and
       # open no database, so they run here rather than in the job that carries Postgres for that
@@ -111,7 +111,7 @@ jobs:
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestOnlyTheIssuePatchWritesTheRoute|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable|TestTheRouteWriterGuardSeesAPlantedWriter)$' ./internal/dispatch/api
+        run: go test -v -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestOnlyTheIssuePatchWritesTheRoute|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable|TestTheRouteWriterGuardSeesAPlantedWriter)$' ./internal/dispatch/api
         working-directory: packages/envoy
       # The two pure pins of packages/daemon's supervise table: they hold the table to the
       # package's own source — a row or a named ignore for every event in every state, and one
@@ -124,7 +124,7 @@ jobs:
       # texts, so a pin added or renamed reaches both or fails the ci-filters job naming this
       # step. The file's three other tests drive a machine and stay in that plain step.
       - name: Test the supervise table's two pure pins (no database)
-        run: go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
+        run: go test -v -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

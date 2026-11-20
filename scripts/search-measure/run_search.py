@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - runs the committed cases against a Dispatch search route and records where each answer landed, for a person who changes keyword search and reads the rows with analyze.py.
 """Run the cases against a Dispatch search route and record where the right answer landed.
 
 usage: DISPATCH_TOKEN_FILE=<file> run_search.py --cases cases.json --fixture-dsn <dsn> \\

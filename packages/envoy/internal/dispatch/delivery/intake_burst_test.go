@@ -1,8 +1,12 @@
 package delivery
 
+// legion: tool - how long the intake takes to store a burst of 20 merged pull requests when every GitHub call takes 200 ms, for a person who changes the intake and compares the build before the change with the build after it; run with DISPATCH_INTAKE_BURST=1 go test -count=1 -run '^$' -bench '^BenchmarkIntakeBurstOfMergedPullRequests$' -benchtime 1x ./internal/dispatch/delivery
+
 // A measurement, not a check: how long the intake takes to handle a burst of merged pull requests
-// when every GitHub call takes 200 ms. It uses only what the package's tests had before the intake
-// ran its messages per key, so the same file measures the build before that change and after it.
+// when every GitHub call takes 200 ms. It uses only the package's test helpers, which take a
+// testing.TB, and StartIntakes through startIntakesForBurst, so the same file copied into a build
+// of this package from before a change measures that build as well as the one after it. No CI
+// step passes -bench, so CI never runs it.
 
 import (
 	"context"
@@ -33,7 +37,7 @@ func withLatency(latency time.Duration, next http.Handler) http.Handler {
 // startIntakesForBurst calls StartIntakes with the arguments every build's StartIntakes takes
 // first, and the zero value of any it takes after them (the settings wake, which leaves the
 // settings read once), so the file compiles against either signature.
-func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string) (*bus.Client, error), args ...any) func() {
+func startIntakesForBurst(t testing.TB, ctx context.Context, connect func(string) (*bus.Client, error), args ...any) func() {
 	t.Helper()
 	start := reflect.ValueOf(StartIntakes)
 	in := []reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(connect)}
@@ -50,24 +54,26 @@ func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string
 	return out[0].Interface().(func())
 }
 
-// TestIntakeBurstOfMergedPullRequests publishes 20 merged pull requests, each its own, and logs how
-// long the intake took to acknowledge them all with 200 ms added to every GitHub call. Run with
-// DISPATCH_INTAKE_BURST=1.
-func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
+// BenchmarkIntakeBurstOfMergedPullRequests publishes 20 merged pull requests, each its own, and
+// logs how long the intake took to acknowledge them all with 200 ms added to every GitHub call.
+// DISPATCH_INTAKE_BURST=1 is its input, the runner's word that it means to spend the minute: it
+// skips without it. It needs the package's test database and NATS, as the package's tests do. Run
+// it once, with -benchtime 1x: each run of its body is the whole burst.
+func BenchmarkIntakeBurstOfMergedPullRequests(b *testing.B) {
 	if os.Getenv("DISPATCH_INTAKE_BURST") != "1" {
-		t.Skip("a measurement: set DISPATCH_INTAKE_BURST=1 to run it")
+		b.Skip("a measurement: set DISPATCH_INTAKE_BURST=1 to run it")
 	}
 	const burst = 20
-	pool, ctx := deliveryTestPool(t)
-	seedDeliverySettings(t, ctx, pool)
+	pool, ctx := deliveryTestPool(b)
+	seedDeliverySettings(b, ctx, pool)
 
-	fake := newFakeGitHub(t)
+	fake := newFakeGitHub(b)
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
-			t.Errorf("parse pull request number %q: %v", r.PathValue("number"), err)
+			b.Errorf("parse pull request number %q: %v", r.PathValue("number"), err)
 		}
-		mustEncode(t, w, map[string]any{
+		mustEncode(b, w, map[string]any{
 			"number": number, "title": fmt.Sprintf("feat: widget %d", number), "html_url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 			"user": map[string]any{"login": "octocat"}, "labels": []any{map[string]any{"name": "non-task"}},
 			"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T02:00:00Z",
@@ -75,7 +81,7 @@ func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
 		})
 	})
 	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
-		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{
+		mustEncode(b, w, []any{map[string]any{"commit": map[string]any{
 			"message": "feat: a widget", "author": map[string]any{"date": "2024-01-01T00:00:00Z"},
 		}}})
 	})
@@ -85,34 +91,34 @@ func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
 	fake.mux.Handle("/", withLatency(burstGitHubLatency, routes))
 	github := fake.newTestClient()
 
-	natsURL := testnats.URL(t)
-	publisher := intakeTestClient(t)
+	natsURL := testnats.URL(b)
+	publisher := intakeTestClient(b)
 	runCtx, cancel := context.WithCancel(ctx)
-	stop := startIntakesForBurst(t, runCtx, func(name string) (*bus.Client, error) {
+	stop := startIntakesForBurst(b, runCtx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker())
-	t.Cleanup(func() {
+	}, pool, deliveryTestIntakeLeases(b, pool), github, events.NewBroker())
+	b.Cleanup(func() {
 		cancel()
 		stop()
 	})
-	awaitBoundDurable(t, publisher)
+	awaitBoundDurable(b, publisher)
 
 	started := time.Now()
 	for number := 1; number <= burst; number++ {
-		publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
+		publishPullRequestEnvelope(b, publisher, "acme", "widgets", number, map[string]string{
 			"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 			"number": fmt.Sprint(number), "author": "octocat",
 		})
 	}
-	awaitAcknowledged(t, publisher)
+	awaitAcknowledged(b, publisher)
 	elapsed := time.Since(started)
 
 	var stored int
 	if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests").Scan(&stored); err != nil {
-		t.Fatalf("count pull requests: %v", err)
+		b.Fatalf("count pull requests: %v", err)
 	}
 	if stored != burst {
-		t.Fatalf("stored %d pull requests, want %d", stored, burst)
+		b.Fatalf("stored %d pull requests, want %d", stored, burst)
 	}
-	t.Logf("%d merged pull requests acknowledged in %s with %s added to every GitHub call", burst, elapsed.Round(time.Millisecond), burstGitHubLatency)
+	b.Logf("%d merged pull requests acknowledged in %s with %s added to every GitHub call", burst, elapsed.Round(time.Millisecond), burstGitHubLatency)
 }

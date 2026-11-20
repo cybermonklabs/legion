@@ -237,7 +237,7 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 //
 // It is a gate and not an entry in the checks array. The checks answer one question — may the
 // judge decide this request? — and a reader of a row reads them as that one list, which the
-// verification document's check k10 and scripts/judge-check.sh pin by name and in order. This
+// verification document's check k10 names in order and TestTheChecksBeforeTheModel holds by name. This
 // answers another question altogether: is there still a request to decide? Nothing is wrong
 // with a request that was cancelled, so no check of it failed, and the row says what happened in
 // a key of its own.

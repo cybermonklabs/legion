@@ -1,13 +1,16 @@
 package docs
 
+// legion: tool - dumps what each document write answers and leaves on each spec of a corpus, for a person who changes how the writes read and render a document and compares the dumps of two revisions with cmp; run with DISPATCH_TOKEN_CORPUS=<dir of specs> DISPATCH_WRITE_CORPUS_OUT=<dump> go test -count=1 -run '^$' -bench '^BenchmarkWriteCorpus$' -benchtime 1x ./internal/dispatch/docs
+
 // The write corpus differential runs the document writes the API makes - an anchored comment, a
 // suggestion, and an edit with its version, each one committed transaction in the API's order -
 // on every spec of a directory of markdown specs, at two revisions, and dumps what each write
 // answered and left, so a change to how the writes read and render the document can be judged by
-// comparing the two dumps byte for byte (cmp). The test skips unless DISPATCH_TOKEN_CORPUS names
-// the directory. The file is copied unchanged into the older revision, so it uses only what both
-// revisions have: the service's exported writes and reads, and the package's own test helpers.
-// runWriteCorpus is shared with the reads test, which observes every operation it runs.
+// comparing the two dumps byte for byte (cmp). The benchmark skips unless DISPATCH_TOKEN_CORPUS
+// names the directory, its input, and no CI step passes -bench. The file is copied unchanged into
+// the older revision, so it uses only what both revisions have: the service's exported writes and
+// reads, and the package's own test helpers, which take a testing.TB. runWriteCorpus is shared
+// with the reads test, which observes every operation it runs.
 
 import (
 	"bufio"
@@ -91,7 +94,7 @@ const writeCorpusCreatedAt = "2026-10-28T00:00:00Z"
 
 // newWriteCorpusService is a service with a store of its own whose settlement waits an hour, so
 // no settlement runs while the writes do.
-func newWriteCorpusService(t *testing.T) *Service {
+func newWriteCorpusService(t testing.TB) *Service {
 	t.Helper()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -110,7 +113,7 @@ func writeCorpusBlockIDs(prefix string) {
 // seedWriteCorpusDocument creates a document holding markdown as an upload creates one: the
 // artifact row, the service's seed of its live document, and its first version recording the
 // seed's canonical markdown, credited to the uploader, all in one committed transaction.
-func seedWriteCorpusDocument(t *testing.T, service *Service, slug, markdown string) string {
+func seedWriteCorpusDocument(t testing.TB, service *Service, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -158,7 +161,7 @@ type writeCorpusQuotes struct {
 // the third top-level paragraph where the spec has none. A phrase is the opening of an unmarked
 // text node - its first sentence, at most twelve words and at least five - written in letters,
 // digits, spaces and plain punctuation only, so the edit's replacement reads as the same text.
-func chooseWriteCorpusQuotes(t *testing.T, tree *pmdoc.Node) writeCorpusQuotes {
+func chooseWriteCorpusQuotes(t testing.TB, tree *pmdoc.Node) writeCorpusQuotes {
 	t.Helper()
 	var topLevel []string
 	var nested string
@@ -249,7 +252,7 @@ func writeCorpusSha256(text string) string {
 // and a doc-edit, and returns what they answered and left. observe, when set, is called inside
 // each transaction before its first operation with "<mode>/<transaction>/begin" and after each
 // operation with "<mode>/<transaction>/<operation>".
-func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, observe func(step string)) writeCorpusLine {
+func runWriteCorpus(t testing.TB, service *Service, specName, markdown string, observe func(step string)) writeCorpusLine {
 	t.Helper()
 	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
 	if observe == nil {
@@ -396,7 +399,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 				return nil
 			}
 		}
-		firstBlock := func(t *testing.T) model.ArtifactBlock {
+		firstBlock := func(t testing.TB) model.ArtifactBlock {
 			t.Helper()
 			_, blocks, err := service.TextWithBlocks(ctx, artifactID)
 			if err != nil || len(blocks) == 0 {
@@ -404,7 +407,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 			}
 			return blocks[0]
 		}
-		blockHolding := func(t *testing.T, quote string) model.ArtifactBlock {
+		blockHolding := func(t testing.TB, quote string) model.ArtifactBlock {
 			t.Helper()
 			id, err := service.BlockForQuote(ctx, artifactID, quote)
 			if err != nil {
@@ -486,47 +489,51 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 	return line
 }
 
-func TestWriteCorpus(t *testing.T) {
+// BenchmarkWriteCorpus writes the dump of every spec of DISPATCH_TOKEN_CORPUS to the file
+// DISPATCH_WRITE_CORPUS_OUT names, both its inputs, each spec on a database of its own as a
+// sub-benchmark. It needs the package's test database. Run it once, with -benchtime 1x: each run
+// of a spec's body is that spec's whole pass.
+func BenchmarkWriteCorpus(b *testing.B) {
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {
-		t.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to dump the writes on them")
+		b.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to dump the writes on them")
 	}
 	outPath := os.Getenv("DISPATCH_WRITE_CORPUS_OUT")
 	if outPath == "" {
-		t.Fatal("DISPATCH_WRITE_CORPUS_OUT must name the file the dump is written to")
+		b.Fatal("DISPATCH_WRITE_CORPUS_OUT must name the file the dump is written to")
 	}
 	names, err := tokenCorpusSpecs(dir)
 	if err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS: %v", err)
+		b.Fatalf("DISPATCH_TOKEN_CORPUS: %v", err)
 	}
 	out, err := os.Create(outPath)
 	if err != nil {
-		t.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
 	}
 	defer out.Close()
 	writer := bufio.NewWriter(out)
 	for _, name := range names {
 		source, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			b.Fatalf("%s: %v", name, err)
 		}
 		var line writeCorpusLine
-		if !t.Run(name, func(t *testing.T) {
-			line = runWriteCorpus(t, newWriteCorpusService(t), name, string(source), nil)
+		if !b.Run(name, func(b *testing.B) {
+			line = runWriteCorpus(b, newWriteCorpusService(b), name, string(source), nil)
 		}) {
-			t.FailNow()
+			b.FailNow()
 		}
 		encoded, err := json.Marshal(line)
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			b.Fatalf("%s: %v", name, err)
 		}
 		writer.Write(encoded)
 		writer.WriteByte('\n')
 	}
 	if err := writer.Flush(); err != nil {
-		t.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
 	}
 	if err := out.Close(); err != nil {
-		t.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_WRITE_CORPUS_OUT: %v", err)
 	}
 }

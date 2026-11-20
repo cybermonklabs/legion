@@ -13,7 +13,7 @@ import { procRootOf } from "./proc-root";
 // (lib/proc-root.ts), so its time is its own and not the host's process count.
 const leftovers = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
-const skip = skipWithout("perl", "sleep", "find");
+const skip = skipWithout(["perl", "sleep", "find"], "test");
 const prefix = "legion-e2e-leftovers-test";
 
 const started: number[] = [];

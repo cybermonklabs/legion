@@ -68,9 +68,9 @@ func TestElevenRunsDecideTheMedian(t *testing.T) {
 }
 
 // Every statement-timing test is gated on this one variable, and no other variable turns a
-// measurement on: a CI job that sets none runs none.
+// measurement on: a CI step that sets none runs none.
 func TestTheGateIsTheBenchDatabaseURL(t *testing.T) {
 	if !strings.HasPrefix(DatabaseURLEnv, "DISPATCH_BENCH_") {
-		t.Fatalf("the gate is %q, which is not the bench database variable CI leaves unset", DatabaseURLEnv)
+		t.Fatalf("the gate is %q, which is not a DISPATCH_BENCH_ variable, the bench database's", DatabaseURLEnv)
 	}
 }

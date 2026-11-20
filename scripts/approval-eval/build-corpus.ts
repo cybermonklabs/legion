@@ -1,3 +1,4 @@
+// legion: tool - builds the corpus of one person's approval answers from production Dispatch's event log, the input every approval-eval round reads, for the person who measures approval-review recipes and models on it.
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

@@ -1,46 +1,48 @@
 #!/usr/bin/env bash
-# INFRA-195's local-stack proof: Dispatch's live view shows an Oh My Pi session's current model and
+# The local-stack proof that Dispatch's live view shows an Oh My Pi session's current model and
 # thinking level and switches them, on a real session. Oh My Pi runs in `--mode rpc`, as a Legion
-# pane runs it, with this checkout's Envoy plugin in an isolated agent directory
-# (PI_CODING_AGENT_DIR) under the run's own HOME; it registers with a real Envoy listener and a real
-# nats-server, and a real Dispatch built from the checkout, with NATS on and its trusted identity
-# header, serves the SPA this checkout builds. One held-open Chromium page, signed in by that header,
-# reads and drives the header. Every value the page shows is compared with oracles that do not read
-# the page: the session's own RPC answers (get_state, get_available_models, the command output of
-# an `/effort` prompt), its session file, and Dispatch's stored messages.
+# pane runs it, with this checkout's Envoy plugin in an isolated agent directory under the run's own
+# HOME; it registers with a real Envoy listener and NATS, and a real Dispatch built from the
+# checkout, with NATS on and its trusted identity header, serves the SPA this checkout builds. One
+# held-open Chromium page, signed in by that header, reads and drives the header. Every value the
+# page shows is compared with oracles that do not read the page: the session's own RPC answers
+# (get_state, get_available_models, the command output of an `/effort` prompt), its session file,
+# and Dispatch's stored messages.
 #
-# This script is setup and cleanup only. The checks are lib/dispatch-session-settings.ts's: each
-# prints `== <name>`, what it observed and `ok <name>`, and the first that fails ends the run
-# non-zero naming it. Run it from a checkout on a Linux host with go, bun, jq, curl, psql and
-# python3, no docker, tmux or root needed, as
+# This script is setup and cleanup only, and its setup is one check, `setup`. The checks are
+# lib/dispatch-session-settings.ts's: each prints `== <name>`, what it observed and
+# `CHECK <name>: PASS`, and the first that fails prints `CHECK <name>: FAIL: <why>` and ends the run
+# with exit 1. The agent-harness job's session-settings part runs it as a step
+# (.github/workflows/ci-job-agent-harness.yaml). Run it from a checkout on a Linux host with go,
+# bun, jq, curl, psql, tar and python3, no docker, tmux or root needed, as
 #
-#   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     ANTHROPIC_API_KEY=… OPENAI_API_KEY=… bash scripts/e2e/dispatch-session-settings.sh
+#   LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+#     bash scripts/e2e/dispatch-session-settings.sh
 #
-# Inputs, each refused when missing, naming it:
-#   LEGION_TEST_PG_DSN          a loopback PostgreSQL with pgvector, as child-adoption.sh takes it;
-#                               the run creates a database of its own in it and drops it on any exit
-#   LEGION_E2E_NATS_BIN         a nats-server; default the pinned v2.15.1, installed once with
-#                               `go install` into /legion/scratch/bin on an issue pod's volume, else
-#                               into the run's own directory
-#   LEGION_TEST_OMP             the Oh My Pi binary; default the `omp` on PATH, else the worker
-#                               image's /opt/omp/bin/omp
-#   SESSION_SETTINGS_MODELS     two `provider/id` values the caller's keys serve (default
-#                               "anthropic/claude-haiku-5-5 openai/gpt-5-nano"); the first is the
-#                               profile's default model and the fallback target
-#   SESSION_SETTINGS_CHROMIUM   the Chromium Playwright launches (default /usr/bin/chromium)
-#   ANTHROPIC_API_KEY, OPENAI_API_KEY   the caller's own provider keys, required for a model of that
-#                               provider; taken out of the environment before the run starts
-#                               anything and given back to the driver alone, which passes them to
-#                               Oh My Pi and to nothing else; never printed
+# Inputs, the two required ones refused when missing, naming them:
+#   LEGION_TEST_PG_DSN          a loopback PostgreSQL with pgvector; the run creates a database of
+#                               its own in it and drops it on any exit
+#   LEGION_TEST_OMP             the Oh My Pi binary (the build .omp-pin pins, which
+#                               .github/actions/install-omp installs)
 #   SESSION_SETTINGS_EVIDENCE_DIR   default a fresh directory under TMPDIR; kept and printed: the
-#                               transcript, every service's log, each Oh My Pi's stderr and log, the
-#                               session files, and one screenshot per check
+#                               transcript, every service's log, the model stand-in's requests,
+#                               each Oh My Pi's stderr and log, the session files, and one
+#                               screenshot per check
+# Nothing else comes from outside the runner:
+#   - NATS is natsd (packages/envoy/internal/testnats/cmd/natsd), built from this checkout, with
+#     JetStream on a store of the run's own;
+#   - every model is lib/session-settings-model.ts, a stand-in on loopback serving an
+#     Anthropic-shaped provider and an OpenAI-shaped one, keyed by a placeholder of the run's own,
+#     which the profile the driver writes (writeStandinProfile) names;
+#   - the page is Playwright's own Chromium, `bunx playwright install chromium` in packages/dispatch,
+#     which the job runs before this step.
+# The page's notice for a session that sends no settings frame has no check here:
+# lib/dispatch-session-settings.ts's `checks` says why no session this stack serves can show it.
 #
 # Everything the run starts is its own and goes on any exit, by the exact pid it was started as: the
-# nats-server, the listener, Dispatch, the process holding the broken provider's port closed, and
-# every Oh My Pi the driver started (it records each pid in $work/omp.pids). Its database is dropped
-# and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*,
+# stand-in, natsd, the listener, Dispatch, the process holding the broken provider's port closed,
+# and every Oh My Pi the driver started (it records each pid in $work/omp.pids). Its database is
+# dropped and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*,
 # PGHOSTADDR, PGSERVICE or PGSERVICEFILE variable of the caller's shell reaches any process of
 # the run: the rig talks only to its own loopback stack.
 set -euo pipefail
@@ -51,20 +53,6 @@ for variable in $(compgen -e); do
     DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$variable" ;;
   esac
 done
-
-# The provider keys leave the environment before anything starts, so no process of the run inherits
-# them; the driver alone gets them back, and hands them to each Oh My Pi it starts and to nothing
-# else.
-anthropic_key=${ANTHROPIC_API_KEY:-}
-openai_key=${OPENAI_API_KEY:-}
-unset ANTHROPIC_API_KEY OPENAI_API_KEY
-
-# The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins, as child-adoption.sh installs it. The Envoy listener refuses a
-# nats-server below v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
-nats_version=v2.15.1
-# The pi-envoy the older-plugin session runs: a release before the settings frame.
-older_pi_envoy=10.24.0
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 started=$SECONDS
@@ -83,7 +71,8 @@ export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup
 timeout_hook=
-nats_pid=
+standin_pid=
+natsd_pid=
 listener_pid=
 dispatch_pid=
 holder_pid=
@@ -94,7 +83,10 @@ database_created=
 ok=
 
 note() { echo "   $*"; }
-fail() { echo "FAIL $check: $*" >&2; exit 1; }
+fail() {
+  echo "CHECK $check: FAIL: $*"
+  exit 1
+}
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
@@ -126,7 +118,8 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$holder_pid"
-  stop_pid "$nats_pid"
+  stop_pid "$natsd_pid"
+  stop_pid "$standin_pid"
   if [ -n "$database_created" ]; then
     psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -135,17 +128,18 @@ cleanup() {
   if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
     echo "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
   else
-    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
+    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
   fi
 }
 trap cleanup EXIT
+trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND"' ERR
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # ---- inputs ------------------------------------------------------------------------------------------
 echo "== setup"
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
-  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
+  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in (the agent-harness job's service in CI)"
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
@@ -156,48 +150,21 @@ done
 # the run keeps, and its refusal is the line this script fails with.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
-omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
-if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
-[ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
+omp=${LEGION_TEST_OMP:-}
+[ -n "$omp" ] ||
+  fail "LEGION_TEST_OMP is required: the Oh My Pi every session runs (.github/actions/install-omp exports it in CI)"
 [ -x "$omp" ] || fail "LEGION_TEST_OMP names $omp, which is not an executable file"
-read -r -a models <<<"${SESSION_SETTINGS_MODELS:-anthropic/claude-haiku-5-5 openai/gpt-5-nano}"
-[ "${#models[@]}" -eq 2 ] && [ "${models[0]}" != "${models[1]}" ] ||
-  fail "SESSION_SETTINGS_MODELS must name two different provider/id models, not '${SESSION_SETTINGS_MODELS:-}'"
-for model in "${models[@]}"; do
-  [[ $model =~ ^[A-Za-z0-9._-]+/[^[:space:]]+$ ]] || fail "SESSION_SETTINGS_MODELS holds '$model', which is not provider/id"
-  case ${model%%/*} in
-    anthropic) [ -n "$anthropic_key" ] || fail "ANTHROPIC_API_KEY is required for $model (SESSION_SETTINGS_MODELS)" ;;
-    openai) [ -n "$openai_key" ] || fail "OPENAI_API_KEY is required for $model (SESSION_SETTINGS_MODELS)" ;;
-  esac
-done
-chromium=${SESSION_SETTINGS_CHROMIUM:-/usr/bin/chromium}
-[ -x "$chromium" ] || fail "SESSION_SETTINGS_CHROMIUM names $chromium, which is not an executable file; name the Chromium Playwright launches"
-nats_bin=${LEGION_E2E_NATS_BIN:-}
-if [ -z "$nats_bin" ]; then
-  nats_gobin=$work/bin
-  if [ -d /legion/scratch ]; then nats_gobin=/legion/scratch/bin; fi
-  nats_bin=$nats_gobin/nats-server
-  if ! { [ -x "$nats_bin" ] && "$nats_bin" --version | grep -qF "$nats_version"; }; then
-    note "LEGION_E2E_NATS_BIN names none; installing nats-server $nats_version into $nats_gobin"
-    # The toolchain's own go, under its own GOROOT. mise's go shim replaces a caller's GOBIN when
-    # go.set_gobin is true, and, on mise before 2026.9.0, in any shell `mise activate` set up.
-    # Separately, an activated shell exports mise's Go's GOROOT, whose compiler a newer toolchain's
-    # go refuses.
-    nats_goroot=$(go env GOROOT) &&
-      GOBIN=$nats_gobin GOROOT=$nats_goroot "$nats_goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
-      fail "could not install nats-server $nats_version; name a binary in LEGION_E2E_NATS_BIN instead"
-  fi
-fi
-[ -x "$nats_bin" ] || fail "LEGION_E2E_NATS_BIN names $nats_bin, which is not an executable file"
-note "Oh My Pi $omp ($("$omp" --version 2>/dev/null | head -1)); nats-server $("$nats_bin" --version); Chromium $chromium"
-note "models ${models[0]} (the profile's default) and ${models[1]}; LEGION_TEST_PG_DSN set (not printed)"
-note "keys: ANTHROPIC_API_KEY ${#anthropic_key} chars, OPENAI_API_KEY ${#openai_key} chars (passed to Oh My Pi only)"
+(cd "$root" && bun install --frozen-lockfile >"$evidence/logs/bun-install.log" 2>&1) || fail "bun install failed; see $evidence/logs/bun-install.log"
+chromium=$(bun "$driver" chromium) || fail "Playwright could not name its Chromium (bun $driver chromium)"
+[ -x "$chromium" ] ||
+  fail "Playwright's Chromium is not installed at $chromium: run \`bunx playwright install chromium\` in packages/dispatch"
+note "Oh My Pi $omp ($("$omp" --version 2>/dev/null | head -1)); Chromium $chromium"
 
 # ---- builds ------------------------------------------------------------------------------------------
-(cd "$root" && bun install --frozen-lockfile >"$evidence/logs/bun-install.log" 2>&1) || fail "bun install failed; see $evidence/logs/bun-install.log"
 (cd "$root/packages/contracts" && bun run build >"$evidence/logs/build-contracts.log" 2>&1) || fail "@legion/contracts did not build; see $evidence/logs/build-contracts.log"
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch) >"$evidence/logs/build-go.log" 2>&1 ||
-  fail "the listener or Dispatch did not build; see $evidence/logs/build-go.log"
+go -C "$root/packages/envoy" build -o "$work/envoy-listener" ./cmd/listener
+go -C "$root/packages/envoy" build -o "$work/dispatch" ./cmd/dispatch
+go -C "$root/packages/envoy" build -o "$work/natsd" ./internal/testnats/cmd/natsd
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 # This checkout's pi-envoy, packed as the release packs it (lib/pack-plugin.sh builds its dist) and
 # unpacked as the worker image unpacks it, so `--extension` loads what a Legion pane loads.
@@ -205,21 +172,23 @@ tarball=$(bash "$root/scripts/e2e/lib/pack-plugin.sh" pi-envoy "$work/pack" 2>"$
   fail "pi-envoy did not pack; see $evidence/logs/pack-pi-envoy.log"
 mkdir -p "$work/pi-envoy"
 tar xzf "$tarball" -C "$work/pi-envoy" --strip-components=1
-# A pi-envoy released before the settings frame, for the session that shows the older-plugin notice.
-# Pinned, not the newest release: once this pi-envoy is released, the newest reports its settings.
-mkdir -p "$work/released"
-printf '{"name":"legion-e2e-session-settings-released","private":true}\n' >"$work/released/package.json"
-(cd "$work/released" && bun add "@sjawhar/pi-envoy@$older_pi_envoy" >"$evidence/logs/bun-add-released.log" 2>&1) ||
-  fail "bun add @sjawhar/pi-envoy@$older_pi_envoy failed; see $evidence/logs/bun-add-released.log"
-note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json") from this checkout; released pi-envoy $(jq -r .version "$work/released/node_modules/@sjawhar/pi-envoy/package.json")"
+note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json") from this checkout"
 
 # ---- services ----------------------------------------------------------------------------------------
+# The model: every request must carry the run's placeholder key, which the profile names, so a turn
+# the stand-in served is one the session's own provider route sent.
+(umask 077 && printf 'session-settings-standin-%s\n' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')" >"$work/model-key")
+start_process standin bun "$root/scripts/e2e/lib/session-settings-model.ts" "$work/standin.port" "$work/model-key" \
+  "$evidence/logs/standin-requests.jsonl"
+standin_port=
+await_port_file standin "$work/standin.port" standin_port
+
 mkdir -p "$work/nats-store"
-"$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >"$evidence/logs/nats.log" 2>&1 &
-nats_pid=$!
-record_start "$nats_pid" || true
-until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
-nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
+start_process natsd "$work/natsd" -p -1 -store_dir "$work/nats-store"
+await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
+nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
+  fail "natsd logged no client port; see $evidence/logs/natsd.log"
+nats_url=nats://127.0.0.1:$nats_port
 
 psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
@@ -265,56 +234,36 @@ record_start "$holder_pid" || true
 until_true 30 "the broken provider's port to be held" test -s "$work/broken-port"
 broken_port=$(cat "$work/broken-port")
 
-# ---- the Oh My Pi profile ----------------------------------------------------------------------------
+# ---- the Oh My Pi home -------------------------------------------------------------------------------
 # HOME is the run's own, with .omp/natives linked to the caller's native-module cache as
 # lib/omp-home.sh's make_omp_home links it, so nothing is downloaded and nothing of the caller's
-# ~/.omp is written. The agent directory holds the profile every session of the run shares.
+# ~/.omp is written. Its agent directory holds the profile every session of the run shares, which
+# the driver writes before its first check.
 natives=$HOME/.omp/natives
 if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
-mkdir -p "$natives" "$work/home/.omp" "$work/agent" "$work/session" "$work/tmp"
+mkdir -p "$natives" "$work/home/.omp/agent" "$work/session" "$work/tmp"
 ln -sfT "$natives" "$work/home/.omp/natives"
-# rig-broken answers nothing: its one model is the fallback check's, and retry.fallbackChains (the
-# key the fork's session/retry-fallback-chains.ts reads) sends a failed request on it to the first
-# model. Every role is the first model, so no side request (a title, a summary) reaches another.
-cat >"$work/agent/models.yml" <<EOF
-providers:
-  rig-broken:
-    baseUrl: http://127.0.0.1:$broken_port/v1
-    api: openai-completions
-    apiKey: rig-broken-literal-key
-    models:
-      - id: broken-model
-        name: Rig broken model
-EOF
-{
-  echo "defaultThinkingLevel: low"
-  echo "modelRoles:"
-  for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
-    echo "  $role: ${models[0]}"
-  done
-  echo "retry:"
-  echo "  fallbackChains:"
-  echo "    rig-broken/broken-model:"
-  echo "      - ${models[0]}"
-} >"$work/agent/config.yml"
-cp "$work/agent/models.yml" "$work/agent/config.yml" "$evidence/logs/"
 
-jq -n --arg work "$work" --arg evidence "$evidence" --arg omp "$omp" --arg chromium "$chromium" \
+jq -n --arg work "$work" --arg evidence "$evidence" --arg omp "$omp" \
   --arg dispatch "http://127.0.0.1:$dispatch_port" --arg envoy "http://127.0.0.1:$envoy_port" --arg nats "$nats_url" \
-  --arg a "${models[0]}" --arg b "${models[1]}" --arg plugin "$work/pi-envoy" \
-  --arg released "$work/released/node_modules/@sjawhar/pi-envoy" '{
-    work: $work, evidence: $evidence, omp: $omp, chromium: $chromium, dispatchUrl: $dispatch,
-    envoyUrl: $envoy, natsUrl: $nats, models: [$a, $b], plugin: $plugin, releasedPlugin: $released,
-    home: ($work + "/home"), agentDir: ($work + "/agent"), sessionCwd: ($work + "/session"),
-    tmp: ($work + "/tmp"), envoyTokenFile: ($work + "/envoy-token"),
-    dispatchTokenFile: ($work + "/dispatch-token"), pidFile: ($work + "/omp.pids"),
-    defaultLevel: "low", unkeyedModel: "google/gemini-2.5-flash"
+  --arg standin "http://127.0.0.1:$standin_port" --argjson broken "$broken_port" --arg plugin "$work/pi-envoy" '{
+    work: $work, evidence: $evidence, omp: $omp, dispatchUrl: $dispatch, envoyUrl: $envoy,
+    natsUrl: $nats, standinUrl: $standin, standinKeyFile: ($work + "/model-key"), brokenPort: $broken,
+    plugin: $plugin, home: ($work + "/home"),
+    agentDir: ($work + "/home/.omp/agent"), sessionCwd: ($work + "/session"), tmp: ($work + "/tmp"),
+    envoyTokenFile: ($work + "/envoy-token"), dispatchTokenFile: ($work + "/dispatch-token"),
+    pidFile: ($work + "/omp.pids")
   }' >"$work/rig.json"
-note "NATS $nats_url, listener port $envoy_port, Dispatch port $dispatch_port, database $database, broken provider port $broken_port"
+note "model stand-in on port $standin_port, NATS $nats_url, listener port $envoy_port, Dispatch port $dispatch_port, database $database, broken provider port $broken_port"
 note "setup took $((SECONDS - started))s"
+echo "CHECK setup: PASS"
 
 # ---- the checks --------------------------------------------------------------------------------------
-check=checks
-ANTHROPIC_API_KEY=$anthropic_key OPENAI_API_KEY=$openai_key bun "$driver" run "$work/rig.json" ||
-  fail "the driver failed (the failing check is named above)"
+# The driver prints a CHECK line for each of its checks, the failing one included; a driver that
+# ends without one prints none, and this line names it.
+check=driver
+driver_status=0
+bun "$driver" run "$work/rig.json" || driver_status=$?
+cp "$work/home/.omp/agent/models.yml" "$work/home/.omp/agent/config.yml" "$evidence/logs/" 2>/dev/null || true
+[ "$driver_status" -eq 0 ] || fail "the driver exited $driver_status (the check it failed in is named above)"
 ok=1

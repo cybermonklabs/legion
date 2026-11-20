@@ -17,7 +17,7 @@ const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
 // perl: run starts every harness through ownGroup (lib/own-group.ts).
-const skip = skipWithout("bash", "sleep", "sh", "perl");
+const skip = skipWithout(["bash", "sleep", "sh", "perl"], "test");
 const program = join(dir, "program");
 const literalPattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const other = join(dir, "other");
@@ -350,14 +350,13 @@ echo "none: status $st: \${why%%:*}"
 );
 
 // The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh) and the proc_*
-// reads they use each read only the /proc entries of the processes they ask about (the failure note
-// of parked-decision-devbox.sh's wait_for_run_processes is parked-decision-cleanup.test.ts's). Each
+// reads they use each read only the /proc entries of the processes they ask about. Each
 // row puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing:
 // those read every process on the machine (procps-ng's `ps -p` included), so a helper that still
 // calls one is named in the log, and the row fails. The traced row, where strace is on the host,
 // also holds that the helpers list no directory but the task directory of a process they ask about
 // and open no other process's entry.
-const noStrace = skipWithout("strace");
+const noStrace = skipWithout(["strace"], "test");
 const logPsPgrepPkillCalls = `mkdir -p "$scratch/bin"
 for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
 PATH="$scratch/bin:$PATH"`;
@@ -579,120 +578,6 @@ echo "pid $pid"
   );
 });
 
-// stage3-4b13b-acceptance.sh sources ACCEPT_ROOT's lib/rig.sh, which can be another checkout's. Its
-// require_process_tree fails before the run starts anything, naming each lib/process-tree.sh
-// function that lib lacks and ACCEPT_ROOT, where a lib from before that file passed every other
-// guard and died later on "command not found". An older ACCEPT_ROOT is a shell that sourced no
-// process-tree.sh; this checkout's lib is the run() harness, which sources it through rig.sh.
-const requireProcessTree = scriptFunctions(
-  join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh")
-)("require_process_tree");
-describe.skipIf(skip)("require_process_tree", () => {
-  test("names each missing function and ACCEPT_ROOT for a lib from before lib/process-tree.sh, and passes this checkout's", () => {
-    const older = Bun.spawnSync(
-      [
-        "bash",
-        "-c",
-        `set -Eeuo pipefail\nroot=/older/checkout\nfail() { echo "FAIL: $*"; exit 1; }\n${requireProcessTree}\nrequire_process_tree\necho "went on"`,
-      ],
-      { env: { PATH: process.env.PATH ?? "" } }
-    );
-    expect({
-      code: older.exitCode,
-      out: older.stdout.toString(),
-      err: older.stderr.toString(),
-    }).toEqual({
-      code: 1,
-      out: "FAIL: ACCEPT_ROOT's scripts/e2e/lib/rig.sh (/older/checkout) predates lib/process-tree.sh and has no omp_program launched incarnation_pid env_of env_has stop_marked_processes: point ACCEPT_ROOT at a checkout that has it\n",
-      err: "",
-    });
-    const current = run(`${requireProcessTree}\nrequire_process_tree\necho "went on"`);
-    expect(current).toEqual({ code: 0, out: "went on\n", err: "" });
-  });
-});
-
-// stage3-4b13b-acceptance.sh's merger-pane-mints-no-grant reads the merger pane's environment for
-// LEGION_GRANT_FILE and LEGION_GRANT through env_has, and holds an absence only on its status 1.
-const carriesNoGrant = scriptFunctions(join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh"))(
-  "carries_no_grant"
-);
-describe.skipIf(skip)("carries_no_grant", () => {
-  test(
-    "fails while a grant stands first in a 200 KB environment and when the environment cannot be read, and holds only for an environment without one",
-    () => {
-      const r = run(`${carriesNoGrant}
-pad=$(printf '%0100000d' 0)
-env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
-granted=$!
-started+=("$granted")
-env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
-clean=$!
-started+=("$clean")
-until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
-for p in "$granted" "$clean" "$(ended_pid)"; do
-  st=0
-  why=$(carries_no_grant "$p") || st=$?
-  echo "status $st: $why"
-done
-`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe(
-        "status 1: still carries LEGION_GRANT_FILE\nstatus 0: \nstatus 1: has an environment that could not be read (env_has status 2)\n"
-      );
-    },
-    slow
-  );
-});
-
-// stage3-4b13b-acceptance.sh's and stage3-devbox-workflow.sh's endpoint_mismatch read an Oh My Pi's
-// environment for the rig's endpoints (env_of) and then for the ANTHROPIC_API_KEY it must not carry
-// (env_has): the key's absence holds only on env_has's status 1, and an environment either read
-// could not read is a mismatch, never a clean one.
-describe.skipIf(skip)("endpoint_mismatch", () => {
-  test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
-    "%s's holds only for the rig's endpoints and no key, and fails closed on an environment either read could not read",
-    (script) => {
-      const endpointMismatch = scriptFunctions(join(import.meta.dir, "..", script))(
-        "endpoint_mismatch"
-      );
-      // The third program ends between the two reads: env_has, shadowed, kills and reaps it before
-      // its own read, after env_of has read every endpoint, so env_has finds no environment. check
-      // runs endpoint_mismatch in this shell, not a substitution, so the wait reaps the harness's
-      // own child and the pid is gone, not a zombie, when env_has reads it.
-      const r = run(`${endpointMismatch}
-port_dispatch=1 port_listener=2 port_nats=3 state=/rig
-rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
-env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
-clean=$!
-env -i "\${rig[@]}" ANTHROPIC_API_KEY=k "$program" 600 </dev/null >/dev/null 2>&1 &
-keyed=$!
-env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
-ending=$!
-started+=("$clean" "$keyed" "$ending")
-until_true 10 "the three programs to run" sh -c 'p=$1; shift; for pid; do [ "$(readlink /proc/$pid/exe)" = "$p" ] || exit 1; done' sh "$program" "$clean" "$keyed" "$ending"
-check() { local st=0; endpoint_mismatch "$2" >"$scratch/found" || st=$?; echo "$1: status $st: $(cat "$scratch/found")"; }
-check clean "$clean"
-check keyed "$keyed"
-check unreadable "$(ended_pid)"
-eval "real_$(declare -f env_has)"
-env_has() {
-  if [ "$1" = "$ending" ]; then builtin kill -KILL "$1"; { wait "$1" || true; } 2>/dev/null; fi
-  real_env_has "$@"
-}
-check "ended between the reads" "$ending"
-`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe(
-        "clean: status 1: \n" +
-          "keyed: status 0: ANTHROPIC_API_KEY set, want unset\n" +
-          "unreadable: status 0: an environment that could not be read (env_of status 2)\n" +
-          "ended between the reads: status 0: an environment that could not be read (env_has status 2)\n"
-      );
-    },
-    slow
-  );
-});
-
 // clean-session-stop-tmux.sh's kill_the_agent SIGKILLs the agent under a claim's pane, the pane
 // read from the claim's locator incarnation `<pid>:<start ticks>`. A pane is a copy of bash running
 // a `worker-shim` script, as `legion worker-shim` runs its agent, whose agent is the run's Oh My Pi,
@@ -766,10 +651,11 @@ echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
   );
   // A host with no /proc (macOS) answers proc_parent, proc_group and proc_start through ps, which
   // exits 1 for a pid that names no process. Each must still print nothing and succeed there, as it
-  // does on /proc: a caller under `set -e` assigns the answer bare (replace-blocks.sh reads the group
-  // of an instance that may have exited already), and a failure ends that caller with no word of
-  // why. The row makes the helper's own test of /proc/self read false, and the host's ps answers
-  // through a wrapper that counts its calls, so the row shows the fallback was the path taken.
+  // does on /proc: a caller under `set -e` assigns the answer bare (stage2-tmux-supervision.sh
+  // reads the shim's start that way, and the shim may have exited already), and a failure ends
+  // that caller with no word of why. The row makes the helper's own test of /proc/self read false,
+  // and the host's ps answers through a wrapper that counts its calls, so the row shows the
+  // fallback was the path taken.
   test.skipIf(hostTool("ps") === null)(
     "proc_parent, proc_group and proc_start answer through ps where there is no /proc: nothing, and success, for a process that is gone, and a live one's own",
     () => {

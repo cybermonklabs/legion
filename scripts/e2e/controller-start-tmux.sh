@@ -6,14 +6,21 @@
 # running no key command, the operator token file's mode, the controller's registration, role and
 # environment, Ctrl-C reaching Oh My Pi, `legion issue status` from an operator shell, a second
 # start revoking the first, the controller liveness probe against the listener, and the command's
-# exit code. Each check prints `== <name>`, what it observed, and `ok <name>`; the first that fails
-# ends the run non-zero, naming it.
+# exit code. Each check prints `== <name>`, what it observed, and `CHECK <name>: PASS`; the first
+# that fails prints `CHECK <name>: FAIL: <why>` and ends the run with exit 1. The agent-harness
+# job's tmux-scripts part runs it as a step (.github/workflows/ci-job-agent-harness.yaml).
 #
-# Run it as `bash scripts/e2e/controller-start-tmux.sh` from a checkout. Everything the run
-# creates is its own and goes on any exit: its scratch directory, which holds the isolated OMP
-# profile under the HOME the run gives its Oh My Pi processes (make_omp_home, lib/omp-home.sh),
-# the tmux servers, and its Postgres and NATS containers. CONTROLLER_START_EVIDENCE_DIR (default a
-# fresh /tmp directory, kept and printed) keeps the transcript and the daemon and listener logs.
+# Run it as `bash scripts/e2e/controller-start-tmux.sh` from a checkout, with two inputs, both
+# required and both set by that job: LEGION_TEST_OMP, the Oh My Pi the daemon's boot gate and the
+# controller run (the build .omp-pin pins, which .github/actions/install-omp installs), and
+# LEGION_TEST_PG_DSN, a loopback PostgreSQL the run creates the daemon's database in. NATS is natsd
+# (packages/envoy/internal/testnats/cmd/natsd), built from this checkout. The controller's one
+# model turn goes to a provider that listens nowhere (below), so no model is involved, and its gh
+# is the runner's own /usr/bin/gh (LEGION_GH_PATH). Everything the run creates is its own and goes
+# on any exit: its scratch directory, which holds the isolated OMP profile under the HOME the run
+# gives its Oh My Pi processes (make_omp_home, lib/omp-home.sh), the tmux servers, natsd and its
+# database. CONTROLLER_START_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) keeps
+# the transcript and the daemon and listener logs.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -26,7 +33,7 @@ work=$(mktemp -d "/tmp/legion-e2e-controller.$$.XXXXXXXX")
 evidence=${CONTROLLER_START_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-controller-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
 # Every line of the run also goes to $evidence/transcript.log (lib/transcript.sh), so the driver and
-# its cleanup, which stops the panes and removes both containers, never fail on a write whoever is
+# its cleanup, which stops the panes and drops the database, never fail on a write whoever is
 # reading.
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
@@ -41,14 +48,14 @@ ok=
 daemon_pid=
 listener_pid=
 daemon_keeper_pid=
+natsd_pid=
+database=
 daemon_port=
 envoy_port=
 profile=legion-e2e-controller-$$-$(date +%s)
 project="CS$$$(date +%s)"
 project=${project:0:10}
 ptoken=${project,,}
-nats_container=legion-e2e-controller-nats-$$
-pg_container=legion-e2e-controller-pg-$$
 state=$work/state
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
@@ -59,8 +66,11 @@ timeout_hook=
 
 begin() { check=$1; echo "== $check"; }
 note() { echo "   $*"; }
-pass() { echo "ok $check"; }
-fail() { echo "FAIL $check: $*" >&2; exit 1; }
+pass() { echo "CHECK $check: PASS"; }
+fail() {
+  echo "CHECK $check: FAIL: $*"
+  exit 1
+}
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
@@ -77,16 +87,20 @@ cleanup() {
   stop_pid "$daemon_pid"
   TMUX_TMPDIR=$work/tmux tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
+  stop_pid "$natsd_pid"
   stop_pid "$daemon_keeper_pid"
   stop_marked_processes "$work"
-  docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  if [ -n "$database" ]; then
+    psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+      echo "could not drop database $database; drop it by hand"
+  fi
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
   echo "evidence: $evidence (transcript.log, logs/daemon.log, logs/listener.log, and checks/: each check's own output and the controller panes)"
   return 0
 }
 trap cleanup EXIT
-trap 'echo "FAIL $check: line $LINENO exited $?: $BASH_COMMAND" >&2' ERR
+trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND"' ERR
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -95,15 +109,10 @@ tm() { tmux -L accept "$@"; }
 state_json() { legion state --json --port "$daemon_port"; }
 envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
 log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
-# The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
-# lib/omp-home.sh), with the run's own HOME for Oh My Pi: operator_env runs a command in it, and the
-# daemon starts in it (start_kept).
-operator_shell=(env "${omp_session_unsets[@]}" HOME="$omp_home" OMP_PROFILE="$profile")
-operator_env() { "${operator_shell[@]}" "$@"; }
 # controller_omp STATE_DIR CLI_PID: the pid of the Oh My Pi that the run's `legion controller start`,
 # the process CLI_PID its pane recorded as it started it (record_pid_sh, lib/process-tree.sh),
 # launched for STATE_DIR. The command starts Oh My Pi through `sh -c` (controller.go's exec.Command),
-# so it is the process below CLI_PID that runs the pinned Oh My Pi, $omp_exe (launched,
+# so it is the process below CLI_PID that runs the Oh My Pi under proof, $omp_exe (launched,
 # lib/process-tree.sh), and its
 # environment, read once in this shell with no pipe, must name STATE_DIR. Nothing searches the
 # machine's /proc for it: there it shares argv[0] with every other Oh My Pi and its own daemon
@@ -137,41 +146,62 @@ controller_omp() {
 }
 
 # ---- setup -----------------------------------------------------------------------------------------
-for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go jq curl python3 tmux bun psql; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+omp=${LEGION_TEST_OMP:-}
+[ -n "$omp" ] || fail "LEGION_TEST_OMP is unset: name the Oh My Pi the daemon and the controller run (.github/actions/install-omp exports it in CI)"
+[ -x "$omp" ] || fail "LEGION_TEST_OMP names $omp, which is not an executable file"
+# The run knows the controller's Oh My Pi by the program the kernel records it runs (controller_omp),
+# so LEGION_TEST_OMP names the binary itself, the Oh My Pi under proof, omp_exe (native_program,
+# lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise shim's runs the
+# version mise picks.
+omp_exe=$(native_program "$omp") || fail "LEGION_TEST_OMP: $omp_exe"
+# Every `legion` of the run resolves Oh My Pi from LEGION_OMP_PATH, legion.yaml and controller.yaml
+# naming no omp_invocation (omplaunch.ResolveInvocation): `legion config check` resolves it too.
+export LEGION_OMP_PATH=$omp_exe
+# The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
+# lib/omp-home.sh), with the run's own HOME for Oh My Pi and the Oh My Pi under proof as
+# LEGION_OMP_PATH, which omp_session_unsets drops from the caller's environment first: operator_env
+# runs a command in it, and the daemon starts in it (start_kept).
+operator_shell=(env "${omp_session_unsets[@]}" LEGION_OMP_PATH="$omp_exe" HOME="$omp_home" OMP_PROFILE="$profile")
+operator_env() { "${operator_shell[@]}" "$@"; }
+pg_dsn=${LEGION_TEST_PG_DSN:-}
+[ -n "$pg_dsn" ] || fail "LEGION_TEST_PG_DSN is unset: name the loopback PostgreSQL the run creates the daemon's database in (the agent-harness job's service in CI)"
+require_loopback_dsn db_host LEGION_TEST_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
+# The guard reads the DSN alone, and psql would read these three besides it (lib/loopback-dsn.sh).
+unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 mkdir -p "$state" "$work/xdg" "$work/tmux"
 make_omp_home "$omp_home"
 export XDG_STATE_HOME=$work/xdg TMUX_TMPDIR=$work/tmux
 # The daemon and `legion controller start` refuse a script as the first gh on PATH (a box's own gh
-# wrapper heads the devbox's), so every process of the run is told mise's gh as the real gh.
-LEGION_GH_PATH=$(mise which gh) || fail "mise has no gh"
+# wrapper can head it), so every process of the run is told the runner's own gh as the real gh.
+LEGION_GH_PATH=/usr/bin/gh
+[ -x "$LEGION_GH_PATH" ] || fail "$LEGION_GH_PATH, the gh the run names as the real one, is not an executable file"
 export LEGION_GH_PATH
-pin=$(<"$root/.omp-pin")
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-# The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
-# omp`, execs. controller_omp knows the controller's process by it, as the kernel records it.
-omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin has no bin/omp"
 # The daemon's port is one the kernel chose, held by a keeper for the run (lib/rig.sh's keep_port),
 # so legion.yaml and controller.yaml can name it before the daemon starts on a copy of its socket.
 keep_port daemon_keeper daemon_port
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
-note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
+(cd "$root/packages/envoy" && go build -o "$work/natsd" ./internal/testnats/cmd/natsd)
+note "legion $("$work/legion" version); Oh My Pi $omp_exe ($("$omp_exe" --version 2>&1 | head -1)); daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-  -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
-  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
-pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
-dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/legion?sslmode=disable"
+# The daemon's database, the run's own on LEGION_TEST_PG_DSN's server, as a libpq connection
+# string (lib/loopback-dsn.sh's run_database_url) that legion.yaml takes as a single-quoted YAML
+# scalar, in which a single quote is written twice.
+database=controller_start_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
+  fail "could not create database $database on LEGION_TEST_PG_DSN's server"
+run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" "the run creates and drops a database there" ||
+  fail "$database_url"
+dsn=${database_url//\'/\'\'}
 
-# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
-. "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+# natsd with JetStream, on a port it reports (lib/rig.sh's report_port).
+start_process natsd "$work/natsd" -p -1 -store_dir "$work/nats-store"
+await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
+nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
+  fail "natsd logged no client port; see $evidence/logs/natsd.log"
+nats_url=nats://127.0.0.1:$nats_port
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \
@@ -180,8 +210,8 @@ until_true 60 "the Envoy listener" curl -fsS -H "@$work/envoy-auth-header" "http
 note "listener port $envoy_port"
 
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
-envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
-manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
+envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp-path "$omp_exe")
+manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp-path "$omp_exe")
 want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
 note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemonApiVersion $want_contract"
 # The boot gate resolves the model of every task agent the prompts dispatch, so the profile names
@@ -210,16 +240,15 @@ omp_setup_wizard_off "$profile_agent/config.yml"
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port
-postgres_dsn: $dsn
+postgres_dsn: '$dsn'
 state_dir: $state
 operator_token_file: $work/operator-token
-omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$envoy_port
 nats_urls:
   - $nats_url
 envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
-# The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
+# The wake pacing off: this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
 # wake keys add no line to legion config check, which prints the renames, the open capability
 # rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
@@ -237,7 +266,6 @@ envoy_url: http://127.0.0.1:$envoy_port
 envoy_token_file: ./envoy-token
 nats_urls: [$nats_url]
 instructions: ./instructions.md
-omp_invocation: mise x $pin -- omp
 state_dir: ./controller-state
 EOF
 
@@ -332,9 +360,14 @@ note "the daemon minted nothing; $ctl_state not created"
 pass
 
 begin controller-claims-the-role
-# The pane's command records the pid of the `legion controller start` it runs (record_pid_sh,
-# lib/process-tree.sh), which execs in that process, so the run knows the command by the pid it started.
-tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
+# The pane's command is an operator's shell line: the run's own HOME and profile, the Oh My Pi under
+# proof as LEGION_OMP_PATH, which omp_session_unsets drops first, and OMP_SKIP_SETUP=1, which keeps
+# the pinned Oh My Pi's first-run setup from holding the interactive session, as
+# omp_setup_wizard_off's profile line does for a build that reads it (packages/pi-shared/test/
+# omp-harness.ts's spawnInteractive sets the same). It records the pid of the
+# `legion controller start` it runs (record_pid_sh, lib/process-tree.sh), which execs in that
+# process, so the run knows the command by the pid it started.
+tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp_exe' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)
 session1=$(jq -r .sessionId <<<"$locator1")
@@ -416,7 +449,7 @@ st=0
 out=$(legion issue status "$project-1" backlog --operator-token-file "$work/operator-token" --port "$daemon_port" 2>&1) || st=$?
 # This rig has no Dispatch, so the route that took the minted grant answers 500 naming it: the
 # bearer minted a grant and the status request reached the Dispatch client. The status write
-# itself is the full-tree proof's (stage4b-sandbox-tree.sh, controller), against a real Dispatch.
+# itself is the whole-tree kind test's (TestStage4bSandboxTreeOnTheKindRigLive), against a real Dispatch.
 grep -qF 'the daemon answered 500 Internal Server Error: Dispatch is unavailable' <<<"$out" || fail "exit $st: $out"
 note "operator bearer → controller grant → status route reached Dispatch (this rig has none): exit $st: $out"
 printf 'not-the-operator-token\n' >"$work/wrong-token" && chmod 600 "$work/wrong-token"
@@ -442,7 +475,7 @@ if [ "$code" != 500 ] || ! grep -qF DISPATCH_UNAVAILABLE "$evidence/checks/grant
   fail "the grant answered $code $(cat "$evidence/checks/grant-before-second-start.json") before the second start, want 500 DISPATCH_UNAVAILABLE"
 fi
 note "the grant, before the second start → $code $(cat "$evidence/checks/grant-before-second-start.json")"
-tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl2.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
+tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl2.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp_exe' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
 until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion' state --json --port $daemon_port | jq -e --arg s '$session1' '.controllerLocator.sessionId != null and .controllerLocator.sessionId != \$s'"
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")
@@ -464,29 +497,10 @@ note "the same grant, after the second start → $code $(cat "$evidence/checks/s
 pass
 
 begin liveness-probe-against-the-listener
-cat >"$work/liveprobe.go" <<'GO'
-package main
-
-import (
-	"context"
-	"fmt"
-	"os"
-	"strings"
-
-	"github.com/sjawhar/legion/daemon/internal/controller"
-)
-
-func main() {
-	token, _ := os.ReadFile(os.Args[2])
-	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3]})
-	for _, session := range os.Args[4:] {
-		fmt.Printf("%s=%s\n", session, p.Probe(context.Background(), session))
-	}
-}
-GO
-printf '{"Replace":{"%s":"%s"}}' "$root/packages/daemon/cmd/liveprobe-accept/main.go" "$work/liveprobe.go" >"$work/overlay.json"
-verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept \
-  "http://127.0.0.1:$envoy_port" "$work/envoy-token" "$ptoken" "$session2" "$session1" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
+# The daemon's own prober (lib/controller-liveprobe.go), run as a main inside packages/daemon.
+printf '{"Replace":{"%s":"%s"}}' "$root/packages/daemon/cmd/liveprobe-accept/main.go" "$root/scripts/e2e/lib/controller-liveprobe.go" >"$work/overlay.json"
+probe_args=("http://127.0.0.1:$envoy_port" "$work/envoy-token" "$ptoken" "$session2" "$session1")
+verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept "${probe_args[@]}" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
 [ "$verdicts" = "$session2=live $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
 note "controller.Prober on the live listener: $verdicts"
 note "$(grep -o 'controller liveness: .*' "$evidence/checks/liveprobe.log" | head -1)"

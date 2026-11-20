@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -323,80 +323,6 @@ describe("the model gateway key command", () => {
     // The preflight is no agent: a failed run's notes do not count it, nor repeat its reason.
     expect(existsSync(join(run, "model-gateway", "hawk-token.calls"))).toBe(false);
   });
-
-  test("refuses any stage proof's evidence directory that is not empty, whether or not it reached its key command", () => {
-    const evidence = join(dir, "evidence");
-    expect(unserved("--fresh", evidence)).toMatchObject({ code: 0, stdout: "" });
-    mkdirSync(evidence);
-    expect(unserved("--fresh", evidence)).toMatchObject({ code: 0, stdout: "" });
-    // An earlier Stage 4b run that stopped before its controller checkpoint left only these.
-    writeFileSync(join(evidence, "transcript.log"), "== setup\n");
-    const stopped = unserved("--fresh", evidence);
-    expect(stopped.code).toBe(1);
-    expect(stopped.stdout).toContain(`${evidence} is not an empty directory`);
-    mkdirSync(join(evidence, "model-gateway"));
-    expect(unserved("--fresh", evidence).code).toBe(1);
-    // One it cannot list is refused too, never read as empty. At mode 0300 (write and search, no
-    // read) a run it let through would append to the earlier run's transcript.log; at 000 it would
-    // die at its first mkdir. Both need a non-root runner: root lists any directory.
-    for (const mode of [0o300, 0o000]) {
-      chmodSync(evidence, mode);
-      try {
-        const unlistable = unserved("--fresh", evidence);
-        expect(unlistable.code).toBe(1);
-        expect(unlistable.stdout).toContain(`${evidence} cannot be listed`);
-        // ls's own error is the reason; the environment carries no LANG, so ls prints the C
-        // locale's.
-        expect(unlistable.stdout).toContain("Permission denied");
-      } finally {
-        chmodSync(evidence, 0o755);
-      }
-    }
-  });
-
-  test("a stage proof that refuses a reused evidence directory lists none of the earlier run's agents", async () => {
-    // The earlier run's evidence directory: its key command, and a record whose last call starved.
-    const { run: evidence, mints, keyCommand } = install();
-    await call(keyCommand, join(evidence, "issue-workspace"), mints, {
-      mode: "refused",
-      role: "tester",
-      generation: "1",
-    });
-    // Stage 3's teardown removes its containers; this run starts none, and needs no Docker.
-    const stageBin = join(dir, "stage-bin");
-    mkdirSync(stageBin, { recursive: true });
-    writeFileSync(join(stageBin, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    const stages: [string, Record<string, string>][] = [
-      // Stage 3 checks its model route before anything else, so the run names one.
-      [
-        "stage3-devbox-workflow.sh",
-        { STAGE3_EVIDENCE_DIR: evidence, LEGION_E2E_MODEL_ROUTE: "gateway" },
-      ],
-      [
-        "stage3-4b13b-acceptance.sh",
-        {
-          ACCEPT_EVIDENCE_DIR: evidence,
-          ACCEPT_PG_CONTAINER: "none",
-          ACCEPT_PG_PORT: "1",
-          ACCEPT_NATS_BIN: "/bin/false",
-        },
-      ],
-    ];
-    for (const [script, inputs] of stages) {
-      const result = Bun.spawnSync(["bash", join(lib, "..", script)], {
-        env: { PATH: `${stageBin}:${process.env.PATH}`, HOME: operatorHome, ...inputs },
-      });
-      const stderr = result.stderr.toString();
-      const scratch = /the run's scratch workspace(?:, kept for review,)? is (\S+)/.exec(
-        stderr
-      )?.[1];
-      if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
-      expect(result.exitCode).toBe(1);
-      expect(stderr).toContain(`FAIL setup: ${evidence} is not an empty directory`);
-      // The earlier run's tester could not have failed this run's setup, which never started one.
-      expect(`${result.stdout}${stderr}`).not.toContain("may have failed check");
-    }
-  }, 120_000);
 
   test("the profile's config.yml raises Oh My Pi's tool_call handler limit to 120 s, so AskGate's review fits inside it", () => {
     const { run } = install();

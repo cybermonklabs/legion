@@ -9,8 +9,7 @@
 // internal/store's role_claim_sweep_test.go proves that on the store's own surface. These two
 // cases prove it where the 503 was measured: the route. They drive both real callers of
 // store.Registry.Remove with no topics - DELETE /v1/interests/<session_id> (adminInterestsHandler)
-// and POST /v1/interests/unsubscribe with an empty topic list, which
-// packages/claude-envoy/scripts/smoke-clear-rebind.sh uses - over a role bucket holding about
+// and POST /v1/interests/unsubscribe with an empty topic list - over a role bucket holding about
 // 5,000 claims held by other sessions, through the listener's own mux.
 //
 // Each case's session holds two of its own claims, one per way a deregistration can find a claim:
@@ -242,7 +241,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 			wantBody:     "",
 		},
 		{
-			// The other caller of Remove with no topics, which smoke-clear-rebind.sh drives: an
+			// The other caller of Remove with no topics: an
 			// unsubscribe whose request names no topic clears the session's interests and the role
 			// claims of the process it states, and answers the topics it removed - none.
 			name:         "POST /v1/interests/unsubscribe with an empty topic list",

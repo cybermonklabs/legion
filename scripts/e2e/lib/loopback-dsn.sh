@@ -18,17 +18,11 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
-# verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
-# envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
-# eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
-# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
-# lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
-# sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
-# LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
-# lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
+# Seven call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's, and each is a proof of its own: verification-results.sh,
+# dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh, controller-start-tmux.sh,
+# clean-session-stop-tmux.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. Five of
+# the seven call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -44,18 +38,17 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# nine proofs those eight call sites serve reaches that server with psql, which is libpq. Five
+# seven proofs those call sites serve reaches that server with psql, which is libpq. Five
 # of them give every server
 # they start the connection string run_database_url below rebuilds, which libpq read back inside
 # the helper.
 #
-# The other four read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
-# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
+# The other two read the DSN a second time, with pgx.
 # verification-results.sh:252 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
 # raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
+# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
-# written to match libpq's URI parser and says so in its first comment. And all four run
+# written to match libpq's URI parser and says so in its first comment. And both run
 # Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
 # that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
@@ -66,16 +59,16 @@
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
-# rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of
+# rather than write it again. Whoever raises pgx moves the safety of those two proofs, and of
 # the rewrite check the next paragraph names, and must drive this guard's own cases
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
 #
-# The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
-# the shell. That rewrite, and the check that keeps it on the host this guard read, are written
-# once, on DatabaseURL in packages/daemon/internal/testpg/testdb/testdb.go. The two frames divide
-# this way: this guard reads the caller's DSN with libpq in the shell, before anything starts,
-# and the binary reads every DSN it builds from that one back with pgx inside itself.
+# The daemon's live proofs that drive real Oh My Pi panes
+# (packages/daemon/internal/daemon/live_agent_proof_test.go) rewrite the DSN they are given into
+# one that names a database of their own, and no shell guard reads that DSN first. That rewrite,
+# and the check that keeps it on the host the DSN names, are written once, on DatabaseURL in
+# packages/daemon/internal/testpg/testdb/testdb.go, which reads every DSN it builds back with pgx.
 #
 # The call runs after the caller's own tool check, because it is python3 that runs the guard.
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection, in its
@@ -130,8 +123,8 @@ run_database_url() {
 # takes it as given with `create extension if not exists`), which the role a run connects as need
 # not be, so dropping the schema would leave a database no build can migrate. A Legion pod's test
 # server is one such case: every database made from its template1 holds `vector`, and its login
-# may not create it again. Three callers run it: lib/two-builds.sh's two_builds_reset_database,
-# verification-results.sh and dispatch-claimant-delivery.sh.
+# may not create it again. Two callers run it: verification-results.sh and
+# dispatch-claimant-delivery.sh.
 empty_public_schema() {
   local reset_sql="do \$\$
 declare object record;

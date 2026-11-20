@@ -1,5 +1,5 @@
 // scripts/e2e/lib/operator-nats-seed.ts: the nkey seed a command run from the operator's shell
-// sends to a NATS it names (envoy-bridge.ts's upstream, nats-stream.ts's server). It is what
+// sends to a NATS it names (nats-stream.ts's server). It is what
 // `sessionEnvoySettings` resolves over the envoy.json `envoyConfigPath("command")` chooses with
 // ENVOY_NATS_URL set to those servers (packages/envoy-client/src/session-settings.ts), so the
 // operator's `envoy.natsSeed` serves these scripts as it serves the operator's sessions, and only

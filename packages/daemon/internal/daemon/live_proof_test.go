@@ -1,15 +1,17 @@
 // The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
 // that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
-// drive real Oh My Pi panes through liveAgentProof among them. Each one carrying the `e2e` build tag
-// is built by a script of its own under scripts/e2e, which makes the same run around it through
-// scripts/e2e/lib/live-daemon-proof.sh; admission_issues_live_test.go, which carries no build tag,
-// runs in the ordinary `go test ./internal/daemon/` on the broker that package's other tests take
-// (newLiveProofOn over workflowNATS), which is why this file carries no build tag of its own.
+// drive real Oh My Pi panes through liveAgentProof among them. None carries a build tag. CI's
+// daemon-live job (.github/workflows/ci-job-daemon-live.yaml) runs ten of the proofs that drive
+// no agent by name, the ones .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, and
+// admission_issues_live_test.go runs in the daemon-go job's `go test ./internal/daemon/` with the
+// package's other tests. CI's agent-harness job (.github/workflows/ci-job-agent-harness.yaml) runs
+// the five that drive real Oh My Pi panes by name, the ones AGENT_HARNESS_TESTS names in the same
+// file.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
-// it boots: the configuration it boots with (newLiveProof reads the broker LEGION_E2E_NATS_URL
-// names, skips when it names none, and builds workflowConfig around it), the log file the script
-// names, the stand-ins for Dispatch and Envoy's listener, the store the daemon runs on, the
+// it boots: the configuration it boots with (newLiveProof takes the broker the package's other
+// tests take, workflowNATS, and builds workflowConfig around it), the directory its logs go to
+// (liveLogDir), the stand-ins for Dispatch and Envoy's listener, the store the daemon runs on, the
 // seeding of a tree into the next free admission slots (admit), and the reads and writes a step
 // makes of them: the envelopes it publishes, the events it waits for the daemon to take, and the
 // notices an issue's architect is told (architectNotices). What the driver keeps is what its own
@@ -23,6 +25,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,18 +40,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// liveNATSURLEnv names the running nats-server the script hands the driver. Unset, a driver skips
-// rather than starting a broker of its own, so `go vet -tags e2e ./...` and a plain `go test -tags
-// e2e ./internal/daemon` still compile and run it.
-const liveNATSURLEnv = "LEGION_E2E_NATS_URL"
+// liveLogDirEnv names the directory the logs of what a live proof runs go to, in a directory of
+// each test's own (liveLogDir): the booted daemon's own log at debug, the real Dispatch a driver
+// starts, and each real pane's output. CI's daemon-live and agent-harness jobs set it under the
+// runner's temporary directory and upload it when the job fails. Unset, the daemon's log is
+// dropped, as every other test in this package drops it.
+const liveLogDirEnv = "LEGION_TEST_DAEMON_LOG_DIR"
 
-// liveDaemonLogEnv names the file the booted daemon's own log is written to, at debug, for the
-// run's evidence. Unset, the daemon's log is dropped, as every other test in this package drops
-// it.
-const liveDaemonLogEnv = "LEGION_E2E_DAEMON_LOG"
+// liveJob is the ci.yaml job that runs the proofs newLiveProof readies that drive no agent, and so
+// the job a missing prerequisite of theirs names on GitHub Actions (testprereq.Require). The five
+// that drive panes read the same prerequisites first and name agentHarnessJob
+// (live_agent_proof_test.go).
+const liveJob = "daemon-live"
 
 // liveSettle is how long a step that must see nothing happen watches for it: what it must not see
 // — the boot's sweep of merged pull requests, which runs behind the API, or a notice the outbox
@@ -57,7 +64,7 @@ const liveDaemonLogEnv = "LEGION_E2E_DAEMON_LOG"
 const liveSettle = 3 * time.Second
 
 // liveProof is what a run of a live proof holds whatever it proves: the booted daemon, the
-// configuration it was booted with, a JetStream client of the script's broker, the Dispatch and
+// configuration it was booted with, a JetStream client of the proof's broker, the Dispatch and
 // Envoy listener stand-ins the steps read the daemon's own writes back from, and the daemon's own
 // store, which seeds the fixture.
 type liveProof struct {
@@ -72,16 +79,15 @@ type liveProof struct {
 	project string
 }
 
-// newLiveProof is newLiveProofOn over the broker liveNATSURLEnv names, which boot refuses to run
-// without. With no broker named, the test skips, naming script, the driver's own script that
-// starts one: a proof whose script owns a nats-server of its own is driven by that script alone.
-func newLiveProof(t *testing.T, script string) liveProof {
+// newLiveProof is newLiveProofOn over the broker the package's other tests take (workflowNATS):
+// the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name, or testnats' own
+// container. It reads the PostgreSQL the daemon runs on first, as testConfig reads it again, so
+// that on GitHub Actions a missing LEGION_TEST_PG_DSN fails the test naming liveJob, the job that
+// gives it to these tests (testdb.DSNFor).
+func newLiveProof(t *testing.T) liveProof {
 	t.Helper()
-	natsURL := os.Getenv(liveNATSURLEnv)
-	if natsURL == "" {
-		t.Skipf("%s is unset, so there is no broker to drive the daemon's intake through; %s starts a nats-server and sets it", liveNATSURLEnv, script)
-	}
-	return newLiveProofOn(t, natsURL)
+	testdb.DSNFor(t, liveJob)
+	return newLiveProofOn(t, workflowNATS(t))
 }
 
 // newLiveProofOn readies workflowConfig over natsURL for a driver to seed and boot: Dispatch and
@@ -114,20 +120,37 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	return p
 }
 
-// log is where the booted daemon writes its own log: the file liveDaemonLogEnv names, appended to
-// across a restart, and nowhere when it names none.
+// log is where the booted daemon writes its own log: daemon.log in the test's log directory
+// (liveLogDir), appended to across a restart, and nowhere when there is none.
 func (p *liveProof) log() *slog.Logger {
 	p.t.Helper()
-	path := os.Getenv(liveDaemonLogEnv)
-	if path == "" {
+	dir := liveLogDir(p.t)
+	if dir == "" {
 		return quietLogger()
 	}
+	path := filepath.Join(dir, "daemon.log")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		p.t.Fatalf("open the daemon's log %s: %v", path, err)
 	}
 	p.t.Cleanup(func() { file.Close() })
 	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// liveLogDir is the test's own directory under the one liveLogDirEnv names, named for the test and
+// made on first use, or "" when that variable is unset. A directory of each test's own keeps the
+// logs of the several proofs one job runs apart, and finds a failed proof's by its name.
+func liveLogDir(t *testing.T) string {
+	t.Helper()
+	root := os.Getenv(liveLogDirEnv)
+	if root == "" {
+		return ""
+	}
+	dir := filepath.Join(root, t.Name())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("make the test's log directory %s: %v", dir, err)
+	}
+	return dir
 }
 
 // step runs one of the proof's steps between its `== name` and `ok name (<s>s)` lines, as the

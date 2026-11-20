@@ -75,7 +75,7 @@ func (r coverageRow) String() string {
 
 // coverageRowsOf reads every row statement answers for identity ($1) in tx: each whole row
 // rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind.
-func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
+func coverageRowsOf(t testing.TB, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	rows, err := tx.Query(context.Background(), statement, identity)
 	if err != nil {
@@ -114,7 +114,7 @@ func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (main
 // once the embedder has changed: it compares the two answers for identity, for configuredIdentity
 // where identity is another, for none and for foreignIdentity, and answers the rows each gave for
 // identity, by kind.
-func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity string) (mains, heads map[string]coverageRow) {
+func requireMainsAnswerFor(t testing.TB, database *store.Store, stage, identity string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -144,7 +144,7 @@ func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity 
 // settings planCoverage sets, inside a savepoint that it rolls back, which undoes those settings
 // and leaves tx's snapshot as it was: a statement after it plans as though they had never been
 // set.
-func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
+func headRowsOf(t testing.TB, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
 	savepoint, err := tx.Begin(ctx)

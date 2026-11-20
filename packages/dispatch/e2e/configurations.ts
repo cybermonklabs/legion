@@ -295,14 +295,18 @@ export const clockProjectNames: readonly string[] = [
   "webkit-alone",
 ];
 
-/** The three specs those projects run, each by the part of its file name that is its own:
- *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A
- *  wall-clock file is spelled once here and read twice - by the pattern below, which is how the
- *  projects select their files, and by `clockFileOnCommandLine`, which is how a command that
- *  names one of those files with no project is refused - so a fourth such file is one edit of
- *  this list. */
+/** The four specs those projects run, each by the part of its file name that is its own:
+ *  `agent-workspace-timing.e2e.ts`, `failed-room.e2e.ts`, `heavy-bodies.e2e.ts` and
+ *  `nested-directive.e2e.ts`. `failed-room.e2e.ts` measures nothing itself; what it asserts
+ *  rests on the clock all the same - a writer queued behind a room that fails is told before its
+ *  client gives up at 30 s, while a trigger holds the room's append for 20 s - so it takes the
+ *  quiet machine too. A wall-clock file is spelled once here and read twice - by the pattern
+ *  below, which is how the projects select their files, and by `clockFileOnCommandLine`, which
+ *  is how a command that names one of those files with no project is refused - so a fifth such
+ *  file is one edit of this list. */
 export const clockSpecNames: readonly string[] = [
   "agent-workspace-timing",
+  "failed-room",
   "heavy-bodies",
   "nested-directive",
 ];

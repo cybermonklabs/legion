@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# legion: not a test - the preamble the acceptance drivers source: the bearer, the work directory, the check lines they print and the CLI they run.
 # The preamble the acceptance drivers share: the bearer each run reads, the directory it works in,
 # the lines it prints for a check and the CLI it runs. Sourced, never run. Each function that
 # refuses prints why on stderr and exits the calling script with 2; one that names its usage calls

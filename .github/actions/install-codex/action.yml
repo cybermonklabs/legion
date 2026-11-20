@@ -1,0 +1,35 @@
+name: Install the pinned Codex CLI
+description: >-
+  Installs the @openai/codex release .codex-pin pins (the repository's one copy of the pin, an npm
+  version on one line) with Bun into the runner's temporary directory, and exports the path of its
+  native binary as LEGION_TEST_CODEX for the test that runs it
+  (packages/claude-envoy/tests/codex-real.test.ts), which refuses on GitHub Actions without one.
+  The native binary, not the package's bin/codex.js: that is a Node process that runs the native
+  one as its child, and the test finds the session record under the process it started, where the
+  plugin's hooks write it under their own parent, the native codex. `bun add` rather than `bunx`,
+  as install-claude-code installs Claude Code, so the binary has a path the job names. Needs the
+  repository checked out and Bun on PATH (.github/actions/setup-bun).
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned Codex CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin=$(<.codex-pin)
+        test -n "$pin"
+        started=$(date +%s)
+        directory="$RUNNER_TEMP/codex-$pin"
+        mkdir -p "$directory"
+        bun add --cwd "$directory" --exact --no-save "@openai/codex@$pin"
+        # The platform package's own binary, @openai/codex-linux-<arch>/vendor/<target>/bin/codex:
+        # the one bin/codex.js starts.
+        mapfile -t found < <(find "$directory/node_modules/@openai" -path '*/vendor/*/bin/codex' -type f)
+        if [ "${#found[@]}" -ne 1 ]; then
+          echo "::error::@openai/codex@$pin left ${#found[@]} native codex binaries under $directory/node_modules/@openai, where one was wanted: ${found[*]}"
+          exit 1
+        fi
+        codex=${found[0]}
+        "$codex" --version
+        echo "installed @openai/codex@$pin in $(( $(date +%s) - started ))s"
+        echo "LEGION_TEST_CODEX=$codex" >> "$GITHUB_ENV"

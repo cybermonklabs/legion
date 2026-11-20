@@ -21,6 +21,7 @@ import {
   stageSkills,
   unresolvedAgentDispatches,
 } from "@legion/pi-shared/test/skills-guard";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 // The rules (`@legion/pi-shared/test/skills-guard`) over the skills this package stages into
 // dist/skills: the partition scripts/pi-plugin-prepack.sh gives @sjawhar/pi-envoy, staged here as
@@ -36,7 +37,11 @@ const packageRoot = path.resolve(import.meta.dir, "..");
 // fork pin CI's pi-envoy job installs. A run without one skips the rule that reads it, except on
 // GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
+const withoutOmp = requireOrSkip(
+  "LEGION_TEST_OMP, naming the Oh My Pi binary of .omp-pin",
+  omp !== undefined,
+  "pi-envoy"
+);
 let staged: string;
 
 beforeAll(() => {
@@ -238,10 +243,10 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:48), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "every task agent the staged skills dispatch is one this plugin ships or Oh My Pi bundles",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
     const available = new Set([...shippedAgents(packageRoot), ...(await bundledAgents(omp))]);
     expect(unresolvedAgentDispatches([staged], available)).toEqual([]);
   },

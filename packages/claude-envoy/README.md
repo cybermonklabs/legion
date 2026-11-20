@@ -619,54 +619,35 @@ MCP consent preconfigured and must not depend on local dialogs.
   reply-ack design here; carrying them would let unauthenticated Envoy payloads approve tool use.
   Dispatch asks stay on Dispatch.
 
-## Manual smoke
-
-`smoke-clear-rebind.sh` and `smoke-session-title.sh` are real manual smokes, never CI steps. Each
-needs a live Envoy listener, NATS, Claude authentication and a configured model.
+## Session title and `/clear` tests
 
 To exercise an unmerged checkout the way the marketplace would install it, register a development
 marketplace with a `command` source in copy mode whose command builds a copy of the plugin with
 `bun packages/claude-envoy/scripts/build.ts --out <dir>` (a new or empty directory outside the
-repository, without `node_modules`) and prints it, install `claude-envoy@<dev-marketplace>`, and
-run the smoke against that entry. Never `claude plugin marketplace add cybermonklabs/legion#<branch>`: the
+repository, without `node_modules`) and prints it, and install `claude-envoy@<dev-marketplace>`.
+Never `claude plugin marketplace add cybermonklabs/legion#<branch>`: the
 marketplace name comes from the repository's `marketplace.json` and would replace the real
 `legion-plugins` registration.
 
-`smoke-clear-rebind.sh` checks the `/clear` handoff against the live listener. It starts Claude
-Code with user settings left out (`--setting-sources project,local`) and the build under test from
-`--plugin-dir` (`CLAUDE_PLUGIN_DIR`, default: a copy of the plugin it builds from this tree with
-`scripts/build.ts --out` in its temp directory), sends `/clear`, and passes when the registry entry
-has moved to the new session id, lists the new direct subject, and still lacks the old one two
-heartbeats later. It also fails when the entry moves later than the handoff poll allows; with
-`ENVOY_HEARTBEAT_MS=60000` that checks the poll rather than a heartbeat that happened to fall soon
-after `/clear`. It needs `tmux`, `curl`, `jq`, `bun` (for the default build), an authenticated
-`claude`, and the listener and NATS; it sends no prompt to the model and removes both ids' registry
-entries when it exits. It runs its session on its own tmux server, on a socket in its temp
-directory, and prints the `tmux -S <socket> attach -t <session>` line that
-watches it. Pointed at an older build (an installed plugin cache directory), it reproduces the
-stale subject that build leaves behind:
+The `/clear` handoff is a case of `packages/envoy-client/test/session-stall.ts`, which the
+`envoy-session-stall` job of `ci.yaml` runs: the real Claude Code, with a copy of this plugin built
+from this tree, against a listener and NATS built from this tree and a stand-in model. After
+`/clear` the id it replaced reads gone at once, and the registry entry of the id it minted lists
+that id's own direct subject and never the old one, at once and again two heartbeats later.
 
-```bash
-ENVOY_NATS_URL=nats://127.0.0.1:4222 packages/claude-envoy/scripts/smoke-clear-rebind.sh
-```
-
-`smoke-session-title.sh` checks that the name a person gave a session is what the plugin
-registers. It starts a nats-server and an Envoy listener built from this tree, builds a copy of
+`smoke-session-title.sh` is the test that the name a person gave a session is what the plugin
+registers, and the same job runs it. It builds natsd (`internal/testnats/cmd/natsd`) and an Envoy
+listener from this tree, builds a copy of
 the plugin from this tree in its temp directory (`scripts/build.ts --out`), runs that copy's
 `dist/session-hook.js` and `dist/session-title-hook.js` on the payloads Claude Code's hooks
 reference documents and its `dist/envoy-channel.js` as the session, and reads each title back
 through the listener's `GET /v1/sessions`: the chosen name registers alone, a rename replaces it,
 taking the name away brings the folder-and-short-id title back, and the `dispatch` command's stamp
-in the session's Dispatch state directory carries the same name. Its negative control runs the
-first case again against the committed `dist/envoy-channel.js` of `BASE_REV` (default
-`0306bcbe16df-`, the last revision without the fallback), which registers the folder name instead.
-It needs `bun`, `curl`, `jq`, `go` and `nats-server`
-(`go install github.com/nats-io/nats-server/v2@v2.15.1`, the hub's version: the listener refuses a
-nats-server below v2.11.12, v2.12.4 or v2.14.0), and no Claude authentication: the two
+in the session's Dispatch state directory carries the same name. It prints
+`CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>` for its setup and each case, and exits 1
+after a FAIL. It needs `bun`, `curl`, `jq` and `go`, and no Claude authentication: the two
 hook payloads are written by the script, and that the field arrives at all rests on Claude Code's
-documentation. Claude Code is not installed in an issue pod's image, though it runs there from
-`bunx --package @anthropic-ai/claude-code@<version> claude`, as
-`scripts/e2e/envoy-session-delivery.sh` runs it. Like the other two, it is never a CI step:
+documentation:
 
 ```bash
 bash packages/claude-envoy/scripts/smoke-session-title.sh
@@ -699,4 +680,15 @@ Locally:
 ```bash
 mkdir -p "$TMPDIR/claude-code" && bun add --cwd "$TMPDIR/claude-code" --exact --no-save "@anthropic-ai/claude-code@$(<.claude-code-pin)"
 cd packages/claude-envoy && LEGION_TEST_CLAUDE="$TMPDIR/claude-code/node_modules/.bin/claude" bun test tests/answers-claude.test.ts
+```
+
+`tests/codex-real.test.ts` runs the plugin's Codex build on the real Codex CLI, the release `.codex-pin` at the repository root pins, against a stand-in Responses API:
+the session record, a waiting message reaching the running turn at its next tool call, and a side question in an ephemeral fork.
+It skips without `LEGION_TEST_CODEX` naming the native binary, except on GitHub Actions, where `.github/actions/install-codex` installs the pin.
+The npm package's `bin/codex.js` is a Node process that runs the native binary as its child, so the variable names the native one.
+Locally:
+
+```bash
+mkdir -p "$TMPDIR/codex" && bun add --cwd "$TMPDIR/codex" --exact --no-save "@openai/codex@$(<.codex-pin)"
+cd packages/claude-envoy && LEGION_TEST_CODEX="$(find "$TMPDIR/codex/node_modules/@openai" -path '*/vendor/*/bin/codex' -type f)" bun test tests/codex-real.test.ts
 ```

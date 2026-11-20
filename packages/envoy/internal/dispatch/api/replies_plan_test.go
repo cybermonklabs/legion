@@ -143,7 +143,7 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 
 // planSortKeys is the Sort Key of every Sort node of planJSON, at any depth, as the plan writes it.
 // A read whose order its index already answers in carries none.
-func planSortKeys(t *testing.T, planJSON json.RawMessage) []string {
+func planSortKeys(t testing.TB, planJSON json.RawMessage) []string {
 	t.Helper()
 	var node struct {
 		NodeType string            `json:"Node Type"`

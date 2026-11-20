@@ -55,7 +55,10 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    # The proof editor's parity fuzz below, with a tenth of its default document counts, took 7
+    # minutes in a Legion pod on top of the 30 the other steps were held to. No runner has timed
+    # it yet: the first run measures it, and this limit becomes that time with headroom.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,7 +139,7 @@ jobs:
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        run: go test -v -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
@@ -144,7 +147,7 @@ jobs:
       # leaves both packages out, its `grep -Ev` and this step's package list built from
       # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the listener's wire package, its clients and wirecheck
-        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        run: go test -v -count=1 ./listenerwire/ ./internal/wirecheck/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -164,6 +167,14 @@ jobs:
       - name: Check pmdoc fixtures are up to date
         run: bun run check
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen
+      # The proof editor's four patched markdown packages against the unpatched ones as the
+      # oracle, which it installs under $TMPDIR, and its block-nesting bound against what
+      # pmdoc.Parse and pmdoc.ParseForWrite refuse, through the pmdoc test binary it builds: one
+      # CHECK line per check. A tenth of its default document counts keeps it to minutes; its
+      # full counts are a person's run (packages/proof-editor/scripts/parity-fuzz.ts's header).
+      - name: Parity fuzz of the proof editor's markdown patches and nesting bound
+        run: bun scripts/parity-fuzz.ts --documents 5200 --deep 800 --lazy 1200
+        working-directory: packages/proof-editor
       # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
       # whose display reading changed and a fixture nobody regenerated fails here rather than
       # leaving a view's test asserting against a stale tree. This is the one run of that test,
@@ -172,16 +183,13 @@ jobs:
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: go test -v -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
         working-directory: packages/envoy
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: bash scripts/dev-airlock.test.sh
-        working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
-        run: bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
@@ -191,9 +199,6 @@ jobs:
         working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: bash scripts/listener-deploy-probe.test.sh
         working-directory: packages/envoy
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: bash scripts/daemon-release-gate.test.sh

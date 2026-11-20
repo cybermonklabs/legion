@@ -67,10 +67,10 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # go test counts a skipped test as a pass and, without -v, prints nothing for it, so the
-      # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json
-      # and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
-      # this package (measurements and replays that need a database, a corpus or a variable no CI
-      # run sets, and a subprocess helper), prints database_skips=UNKNOWN and runs nothing when either
+      # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json,
+      # prints each test's result by name as the tests run, and counts that run's skips: it fails
+      # on any skip but the one its EXPECTED_SKIPS names for this package (a subprocess helper,
+      # which its parent test starts), prints database_skips=UNKNOWN and runs nothing when either
       # database variable above is unset, and on a failed run prints the failed tests' output, a
       # timed-out binary's goroutine dump among it.
       - name: Race-test the Dispatch API

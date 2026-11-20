@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The runtime a live proof uses when it needs a real Oh My Pi pane and the host has no tmux. A
 // Legion pod on a worker image from before dispatch://INFRA-3257 carries no tmux and may not have
 // one added for a test (a tool the worker image lacks is an image change,
@@ -11,7 +9,7 @@
 //
 // Everything below the pane is the real thing: the command is the one a pane runs,
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
-// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_OMP_PATH names; the
+// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_TEST_OMP names; the
 // environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over tmux.PaneInputs), which is
 // the function that package exports for exactly this — a process it does not start that must be
 // told what a pane is told. The agent therefore registers over the daemon's own HTTP routes,
@@ -131,13 +129,13 @@ type localRuntime struct {
 
 // newLocalRuntime builds the runtime and registers the cleanup that kills every process group it
 // ever started: a proof that fails part way leaves no Oh My Pi running. Each worker's own output
-// is written beside the daemon's log, in the directory the run's script keeps as its evidence
-// (liveDaemonLogEnv), since the state directory goes with the test.
+// is written beside the daemon's log, in the test's log directory (liveLogDir), since the state
+// directory goes with the test.
 func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) *localRuntime {
 	t.Helper()
 	logs := filepath.Join(stateDir, "panes")
-	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		logs = filepath.Join(filepath.Dir(daemonLog), "panes")
+	if dir := liveLogDir(t); dir != "" {
+		logs = filepath.Join(dir, "panes")
 	}
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		t.Fatalf("make the pane log directory %s: %v", logs, err)

@@ -112,6 +112,16 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // provider has refused every turn since the last one it took, so nothing of the issue's work is
 // being done and every later turn of that session would be refused the same way
 // (dispatch://INFRA-714). A run short of the limit is the report written and nothing else.
+//
+// The failure keeps the task a turn confirmed, for whoever retries the claim: the run's newest
+// turn was refused, so the task it ran is not done. The task goes back unconfirmed under a new id,
+// with its read mark kept, as a provider error's result leaves it (providerErrored). This report
+// and that turn's prompt result on the worker stream travel apart, and either can reach the
+// daemon first. A task left confirmed when the result is still to come is retired as a finished
+// turn's: the failure's let-go ends the wait for that result (letGo), and settle then reads the
+// turn as over (turnOver). The wait ends here first, because takeBackPending keeps a confirmation
+// for a prompt still waiting on its result. A result that arrives later names the id the task has
+// left, and the fence drops it as stale.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
@@ -120,6 +130,12 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
 	if run < m.deps.Limits.LaunchFailures {
 		return m.persist(ctx)
+	}
+	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
+		m.outstanding = nil
+		if err := m.takeBackPending(ctx, taskRead); err != nil {
+			return err
+		}
 	}
 	return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
 }

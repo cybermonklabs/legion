@@ -42,7 +42,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database could hold the
 // build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
-func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
+func deliveryTestPool(t testing.TB) (*store.Pool, context.Context) {
 	t.Helper()
 	return storetest.Open(t).Pool, t.Context()
 }
@@ -65,7 +65,7 @@ func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
 
 // deliveryTestIntakeLeases is the reservation StartIntakes takes in the server, made here on the
 // test's own pool (ReserveIntakeLeases).
-func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
+func deliveryTestIntakeLeases(t testing.TB, pool *store.Pool) IntakeLeases {
 	t.Helper()
 	callers, err := pool.Leases()
 	if err != nil {
@@ -79,7 +79,7 @@ func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
 }
 
 // seedDeliverySettings writes a delivery_settings row with acme/widgets-shaped placeholders.
-func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) DeliverySettings {
+func seedDeliverySettings(t testing.TB, ctx context.Context, pool *store.Pool) DeliverySettings {
 	t.Helper()
 	settings, err := PutSettings(ctx, pool, DeliverySettings{
 		DeployRepo:           "acme/widgets",
@@ -147,7 +147,7 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
 // envelope (the shape intake.go's handlePullRequestEnvelope reads) and waits for the publish to
 // be acknowledged by JetStream before returning.
-func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
+func publishPullRequestEnvelope(t testing.TB, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
@@ -183,7 +183,7 @@ func publishGitHubEnvelope(t *testing.T, natsClient *bus.Client, topic, payload 
 // awaitAcknowledged waits for the intake to have acknowledged every message the test's stream
 // holds: the durable's ack floor at the stream's last sequence and nothing outstanding. deliver
 // logs and writes before it acknowledges, so what a message caused is in place by then.
-func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
+func awaitAcknowledged(t testing.TB, natsClient *bus.Client) {
 	t.Helper()
 	stream, err := natsClient.JS().StreamInfo(bus.Stream)
 	if err != nil {
@@ -319,7 +319,7 @@ func startIntake(t *testing.T, intake *Intake) {
 }
 
 // intakeTestClient connects one NATS client for an intake test and closes it with the test.
-func intakeTestClient(t *testing.T) *bus.Client {
+func intakeTestClient(t testing.TB) *bus.Client {
 	t.Helper()
 	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
@@ -331,7 +331,7 @@ func intakeTestClient(t *testing.T) *bus.Client {
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
 // test that means to publish into a bound consumer does not race the bind.
-func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
+func awaitBoundDurable(t testing.TB, natsClient *bus.Client) {
 	t.Helper()
 	var err error
 	waitFor(t, 20*time.Second, func() bool {
@@ -361,7 +361,7 @@ func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *
 // waitFor polls done until it reports true, and fails the test once within has passed with the
 // message failure builds at that moment -- so the message carries the state the wait gave up on,
 // not the state it started from.
-func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+func waitFor(t testing.TB, within time.Duration, done func() bool, failure func() string) {
 	t.Helper()
 	if !testwait.Holds(within, 50*time.Millisecond, done) {
 		t.Fatal(failure())

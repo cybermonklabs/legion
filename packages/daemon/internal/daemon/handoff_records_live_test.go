@@ -1,9 +1,9 @@
-//go:build e2e
-
 // The live proof's driver for the handoff records of sjawhar/legion#2354: a phase's handoff is a
 // record on the Dispatch issue, written with `dispatch handoff-write` under the worker's own
-// session, and a completion names it. scripts/e2e/handoff-records.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// session, and a completion names it. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server, with the job's bun and its frozen install for the `dispatch` CLI, and with the job's git
+// and jj 0.38 or later, which the daemon's boot refuses to start without.
 //
 // Nothing of the record path is stood in for. Dispatch is the real server: this driver builds
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
@@ -20,8 +20,8 @@
 // through scripts/e2e/completion-head.ts against this run's own Dispatch, as the pane's plugin
 // runs it.
 //
-// What is stood in for lies outside the records. The broker is a native nats-server the script
-// starts and names in LEGION_E2E_NATS_URL. GitHub is the daemon's own REST stand-in
+// What is stood in for lies outside the records. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is the daemon's own REST stand-in
 // (handoffRecordsDaemonGitHub, which answers each repository with default branch main, lists the
 // one open pull request of the branch that completes rounds here, and nothing else). The Apps'
 // tokens are workflowTokenRecorder's placeholders, Envoy's listener is the package's
@@ -54,11 +54,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testprereq"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -101,7 +102,6 @@ type handoffRecordsLive struct {
 // TestHandoffRecordsLive drives the proof's steps against one booted daemon and one Dispatch.
 // A10 runs last, since it stops Dispatch under the daemon.
 func TestHandoffRecordsLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newHandoffRecordsLive(t)
 	r.step("a6-a-40kb-handoff-reads-back-byte-identical-two-writes-are-versions-1-and-2", r.a6RoundTrip)
 	r.step("a6-control-a-body-one-byte-over-the-cap-is-refused", r.a6OverCap)
@@ -119,7 +119,7 @@ func TestHandoffRecordsLive(t *testing.T) {
 // daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
-	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
+	r := startOnDispatch(t, "HR", "Handoff records live proof")
 	r.setUpDispatch()
 	r.seed()
 	r.boot()
@@ -132,9 +132,9 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 // project, prefix and six characters of the run's own, titled name, with liveRepo mapped to it as
 // its default. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
 // and boots the daemon (boot).
-func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
+func startOnDispatch(t *testing.T, prefix, name string) *handoffRecordsLive {
 	t.Helper()
-	proof := newLiveProof(t, script)
+	proof := newLiveProof(t)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = prefix + randomSuffix(t)[:6]
@@ -733,9 +733,9 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 
 // liveCLICheckout is the checkout whose packages/envoy-client holds the dispatch CLI a live proof
 // runs under bun, and whose packages/envoy its driver builds Dispatch from. testbuild.RootEnv
-// names it, and the proof's script exports it, because the driver binary runs from the caller's
-// directory, not the package's. Unset (a plain `go test -tags e2e`, which runs in the package
-// directory), the checkout is four directories up. It fails the test when bun is not on PATH.
+// names it; unset, as in the daemon-live job's `go test`, which runs in the package directory, the
+// checkout is four directories up. On GitHub Actions a missing bun fails the test naming liveJob,
+// the job that gives it bun (testprereq.Require).
 func liveCLICheckout(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv(testbuild.RootEnv)
@@ -746,9 +746,8 @@ func liveCLICheckout(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
+	_, err = exec.LookPath("bun")
+	testprereq.Require(t, err == nil, liveJob, "bun is not on PATH, and the dispatch CLI runs under it: %v", err)
 	return root
 }
 
@@ -1086,13 +1085,13 @@ type handoffDispatch struct {
 }
 
 // startHandoffDispatch starts the run's Dispatch server from root's packages/envoy on a database
-// of its own. Dispatch's own log goes beside the daemon's in the evidence directory when the
-// script names one.
+// of its own. Dispatch's own log goes beside the daemon's, in the test's log directory
+// (liveLogDir), when there is one.
 func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
-	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if dir := liveLogDir(t); dir != "" {
+		file, err := os.OpenFile(filepath.Join(dir, "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			t.Fatalf("open Dispatch's log: %v", err)
 		}
@@ -1179,6 +1178,9 @@ type handoffDispatchIssue struct {
 	Title   string `json:"title"`
 	Rank    string `json:"rank"`
 	LastSeq int64  `json:"last_seq"`
+	// PrimaryArtifactID is the document Dispatch made with the issue: a root's spec, which its
+	// architect registers as its design gate.
+	PrimaryArtifactID string `json:"primary_artifact_id"`
 }
 
 func (d *handoffDispatch) issue(key string) handoffDispatchIssue {

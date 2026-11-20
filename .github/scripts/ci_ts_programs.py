@@ -13,7 +13,7 @@ Each entry of PROGRAMS is (filter, project, why):
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
 job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
-editor beside the dashboard, and the test job the four script directories that are no workspace).
+editor beside the dashboard, and the test job the five script directories that are no workspace).
 """
 
 
@@ -49,8 +49,8 @@ PROGRAMS = [
      at("test", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)")),
     ("test", "scripts/approval-eval",
      at("test", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)")),
-    ("test", "scripts/e2e/lib",
-     at("test", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)")),
+    ("test", "scripts/e2e",
+     at("test", "Typecheck the e2e scripts and their libraries (bunx tsc --noEmit -p scripts/e2e)")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's
@@ -71,6 +71,55 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42-46 runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    # The daemon-live job's Go step runs the same dispatch command and the completion-head driver
+    # under bun, both from internal/daemon/handoff_records_live_test.go.
+    ("daemon_live", "packages/envoy-client/bin/dispatch.ts",
+     at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:702,716 runs "
+                       "`bun packages/envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    ("daemon_live", "scripts/e2e/completion-head.ts",
+     at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:763 runs "
+                       "`bun scripts/e2e/completion-head.ts`, the real findHandoffReport)")),
+    # The agent-harness job's tmux-scripts part runs the model stand-in under bun from two of its
+    # scripts, stage2-tmux-supervision.sh and clean-session-stop-tmux.sh, and its
+    # nats-callout-sessions part from nats-callout-sessions.sh's --real-hosts step.
+    ("agent_harness", "scripts/e2e/lib/messages-standin.ts",
+     "ci-job-agent-harness.yaml's tmux-scripts job: Stage 2's supervision on tmux and The daemon's clean stop of a "
+     "dead role's session (scripts/e2e/stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
+     "`bun scripts/e2e/lib/messages-standin.ts`, the model stand-in), and its nats-callout-sessions job: Each real "
+     "host's plugin joins its own channel with its broker token (scripts/e2e/nats-callout-sessions.sh:387 runs it)"),
+    # Its session-settings and session-scripts parts run a driver and a model stand-in under bun
+    # from each of their three scripts.
+    *[("agent_harness", f"scripts/e2e/lib/{entry}",
+       f"ci-job-agent-harness.yaml's {part} job: {step} (scripts/e2e/{script} runs "
+       f"`bun scripts/e2e/lib/{entry}`, {what})")
+      for entry, part, script, step, what in (
+          ("dispatch-session-settings.ts", "session-settings", "dispatch-session-settings.sh",
+           "The live view's model and thinking switch", "the driver"),
+          ("session-settings-model.ts", "session-settings", "dispatch-session-settings.sh",
+           "The live view's model and thinking switch", "the model stand-in"),
+          ("dispatch-user-turns.ts", "session-scripts", "dispatch-user-turns.sh",
+           "A person's direct turns from Dispatch's page", "the page and the bus"),
+          ("user-turns-model.ts", "session-scripts", "dispatch-user-turns.sh",
+           "A person's direct turns from Dispatch's page", "the model stand-in"),
+          ("session-delivery-model.ts", "session-scripts", "envoy-session-delivery.sh",
+           "Every Envoy event reaches both sessions once", "the model stand-in"),
+      )],
+    # Its plugin-smokes part runs the stacks and the model stand-in under bun from
+    # scripts/e2e/lib/plugin-smoke.sh, which each of its four scripts sources.
+    *[("agent_harness", f"scripts/e2e/lib/{entry}",
+       "ci-job-agent-harness.yaml's plugin-smokes job: A message to a role reaches the session that claimed it "
+       f"and the three after it (scripts/e2e/lib/plugin-smoke.sh runs `bun scripts/e2e/lib/{entry}`, {what})")
+      for entry, what in (
+          ("plugin-smoke-stack.ts", "the Envoy and Dispatch stacks"),
+          ("plugin-smoke-model.ts", "the model stand-in"),
+      )],
+    # The postgres-rows job of dispatch-browser.yaml runs three files of packages/dispatch's
+    # e2e/__tests__ with `bun test`. dispatch_ui's tsc program compiles them and its job runs none
+    # of them, so what they load is this filter's to hold, and each file is built as an entry.
+    *[("dispatch_browser", f"packages/dispatch/e2e/__tests__/{name}.test.ts",
+       "dispatch-browser.yaml's postgres-rows job: Test the dashboard's rows that need a PostgreSQL "
+       f"(`bun run test:postgres` runs `bun test` over e2e/__tests__/{name}.test.ts)")
+      for name in ("psql-session", "harness-stacks", "second-global-setup")],
 ]
 
 # The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
@@ -132,4 +181,11 @@ LISTED = [
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "
      "runs the dispatch command whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
+    # The daemon-live job's Go step reaches packages/contracts through the two programs
+    # handoff_records_live_test.go runs under bun, which BUNDLES builds. A filter has one listed
+    # block, so the two pi-shared modules completion-head.ts loads stay named in the filter and
+    # declared in ci_job_reads.py, and the bundle holds them there.
+    ("daemon_live", "packages/contracts/src", ("daemon_live",),
+     "the step's internal/daemon/handoff_records_live_test.go runs `bun packages/envoy-client/bin/dispatch.ts` and "
+     "`bun scripts/e2e/completion-head.ts`, which load the contracts modules those entries' bundles load and no other"),
 ]

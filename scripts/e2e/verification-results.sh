@@ -39,8 +39,9 @@
 # `--dry-run`, exits 2 with its line, over at least 28 commands and 112 flags; and `values-kept`,
 # where a value that starts with `-`, a value written `--observed=<value>` and a `-` a file or
 # stdin gives are stored byte for byte, while `--observed '--- PASS ...'` still reads as a flag.
-# Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case
-# failing stops the run, since every later case records a result too, and any FAIL exits 1.
+# Each step and each case prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>`, a case
+# after `== <case>` and what it read; the first case failing stops the run, since every later case
+# records a result too, and any FAIL exits 1. The `envoy-session-stall` job of `ci.yaml` runs it.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
@@ -83,9 +84,9 @@ begin() {
   echo "== $check"
 }
 note() { echo "   $*"; }
-pass() { echo "ok $check"; }
+pass() { echo "CHECK $check: PASS"; }
 fail() {
-  echo "FAIL $check: $*" >&2
+  echo "CHECK $check: FAIL: $*"
   exit 1
 }
 # What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs, the
@@ -282,6 +283,6 @@ VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;
-  1) fail "a case failed (above)" ;;
+  1) fail "a case failed (its CHECK line is above)" ;;
   *) fail "the driver stopped before its cases (status $status)" ;;
 esac

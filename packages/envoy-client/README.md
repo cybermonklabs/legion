@@ -265,7 +265,10 @@ uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
 own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
 names and drops it at the end, starts the server, which migrates that database as it boots, and
-answers its URL and the agent bearer token it minted for the run. Two tests run on it:
+answers its URL and the agent bearer token it minted for the run. Its NATS is off unless the
+caller hands it an Envoy stack (`envoy`), when it publishes to that stack's natsd and delivers its
+targeted messages and mentions through its listener, as the plugin smokes of
+`scripts/e2e/lib/plugin-smoke-stack.ts` run it. Two tests run on it:
 `src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to end,
 and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
 document write's advice the same way; each is the real CLI entry `bin/dispatch.ts` writing to that

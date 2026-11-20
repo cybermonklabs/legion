@@ -79,7 +79,7 @@ func (s Subjects) String() string {
 // bindSubjects reads every subject. A subject the database does not hold fails the run with what
 // was asked for: a measurement bound to a row that is not there measures nothing, and the
 // failure must say which part of the seed is missing rather than surface later as an empty plan.
-func bindSubjects(t *testing.T, conn *pgx.Conn) Subjects {
+func bindSubjects(t testing.TB, conn *pgx.Conn) Subjects {
 	t.Helper()
 	ctx := context.Background()
 	var subjects Subjects
@@ -153,7 +153,7 @@ func bindSubjects(t *testing.T, conn *pgx.Conn) Subjects {
 // word reads one of the three frequencies. A project whose term statistics are not built has no
 // row at any floor, which is a seeded database the refresh never ran on: the measurement would
 // then search a word of its own choosing, so the run fails instead.
-func word(t *testing.T, conn *pgx.Conn, project, which, statement string, floor int) string {
+func word(t testing.TB, conn *pgx.Conn, project, which, statement string, floor int) string {
 	t.Helper()
 	return one[string](t, conn,
 		fmt.Sprintf("%s word of %s, one in at least %d of its items", which, project, floor),
@@ -162,7 +162,7 @@ func word(t *testing.T, conn *pgx.Conn, project, which, statement string, floor 
 
 // one reads a subject that is exactly one value. A statement answering no row names the subject
 // it was looking for.
-func one[T any](t *testing.T, conn *pgx.Conn, what, statement string, args ...any) T {
+func one[T any](t testing.TB, conn *pgx.Conn, what, statement string, args ...any) T {
 	t.Helper()
 	var value T
 	if err := conn.QueryRow(context.Background(), statement, args...).Scan(&value); err != nil {

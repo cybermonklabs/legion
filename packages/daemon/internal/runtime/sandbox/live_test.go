@@ -1,31 +1,40 @@
-//go:build e2e
-
-// The Stage 4a live proof (LEGION-208 Stage 4 plan, Task 4.7): this package's runtime driven on a
-// real cluster through the Legion daemon's own restricted identity, with the devbox's admin
-// identity only for what an operator does beside it — exec, PVC reads, a Secret's hash, the
-// namespace list. scripts/e2e/stage4a-sandbox-runtime.sh builds it with `-tags e2e`, runs it, and
-// owns the run's inputs, its teardown, and the namespace comparison; see scripts/e2e/README.md.
+// The Stage 4a live test (LEGION-208 Stage 4 plan, Task 4.7): this package's runtime driven on the
+// kind rig of internal/kindtest — a kind cluster with Agent Sandbox's controller and gVisor, and
+// the fake GitHub of internal/fakegithub, which the cluster's pods reach as github.com and
+// api.github.com — through a restricted identity of the cluster's own, the legion-daemon
+// ServiceAccount under the grants docs/kubernetes.md ("RBAC the Go daemon needs") gives the
+// daemon (liveIdentity), with the rig's admin kubeconfig only for what an operator does beside it:
+// exec, PVC reads, a ConfigMap's patch. The kind job of ci.yaml runs it
+// (.github/workflows/ci-job-kind.yaml), one group of its checks in each of four parts, and
+// newKindLiveEnv sets up everything it runs on.
 //
-// Each check prints what it observed, each line naming the identity that observed it, and then
-// `CHECK <name>: PASS`. The first check that does not hold prints `CHECK <name>: FAIL: <why>` and
-// ends the run. The agent every pod runs is a stub (decision 7): the Go shim bridges it as it would
-// Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the issue pod's
-// own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it (INFRA-80), so
-// the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
+// The checks run in groups (liveGroups), each group a run of its own on a kind rig of its own, so a
+// part of the kind job runs one group by -run alone ('^TestStage4aSandboxRuntimeLive$/^<group>$').
+// Each check runs as a subtest of its group's, by its own name, prints what it observed, each line
+// naming the identity that observed it, and then `CHECK <name>: PASS`. The first check of a group
+// that does not hold prints `CHECK <name>: FAIL: <why>` and ends its group, since a later check of
+// the group starts from the state the earlier ones left; no group starts from another's, and a
+// group redoes first what its checks need of the state a check of another group leaves
+// (liveGroup.setup). The agent every pod runs is a stub (decision 7): the Go shim bridges it as
+// it would Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the
+// issue pod's own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it,
+// so the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
 // shared: SandboxName (see names.go) is one name for all six of an issue's role claims, so one issue
 // pod's resident roles each append their own launches to the same file, and a check reads only its
 // own claim's lines back out of it (roleIncarnations); a pod replacement leaves a fresh, empty one.
 // Continuity across a pod replacement is the session table's instead. Every runtime of the run keeps
-// sessions in the scratch Postgres the script started (session_store postgres, liveSessionsSecretKey),
+// sessions in the rig's PostgreSQL in the cluster (session_store postgres, liveSessionsSecretKey),
 // the harness records each claim's session there as `legion sessions import` copies one
 // (recordSession), and every resume names that recorded path, which the role launcher looks up in the
 // table — never on the disk — before any child runs.
 //
-// This file is the rig: the run's inputs, the boot-token registry, the observation and log
+// This file is the rig: the run's setup, the boot-token registry, the observation and log
 // records, the runtime's lifecycle, and the launches and reads every check shares. The checks
-// live beside it: live_install_test.go (identity and install), live_lifecycle_test.go (the claims'
-// lifecycle), live_setup_test.go (runtime.kubernetes.setup), and live_app_test.go (the implement
-// App the provisioning token comes from).
+// live beside it: live_install_test.go (the image probe), live_lifecycle_test.go (the claims'
+// lifecycle), live_setup_test.go (runtime.kubernetes.setup), live_secrets_test.go (agent-secrets,
+// against this repository's own broker), live_cache_test.go, live_pod_update_test.go,
+// live_displaced_test.go, live_operator_test.go, live_sessions_test.go, and live_app_test.go (the
+// implement App the provisioning token comes from).
 package sandbox
 
 import (
@@ -34,12 +43,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,77 +67,122 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fakegithub"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/kindtest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // liveCheck is one check of the harness: the name it prints, what it runs, and — when non-nil —
-// whether this run's inputs support it at all (SKIPPED-BLOCKED, not a failure).
+// whether this run's setup supports it at all (SKIPPED-BLOCKED, a failure under GitHub Actions).
 type liveCheck struct {
 	name    string
 	run     func(*liveRig) error
 	blocked func(*liveRig) string
 }
 
-// liveChecks are the harness's checks, in the order they run: the one list of them, which a
-// development run's entry point is checked against. namespace-clean, the last check of the proof,
-// is the script's: it compares the namespace after the teardown, outside the harness.
-var liveChecks = []liveCheck{
-	{"identity", (*liveRig).checkIdentity, nil},
-	{"installed", (*liveRig).checkInstalled, nil},
-	{"boot-refusal-negative", (*liveRig).checkBootRefusal, nil},
-	{"image-probe", (*liveRig).checkImageProbe, nil},
-	{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
-	{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
-	{"image-probe-missing-volume-negative", (*liveRig).checkImageProbeMissingVolumeRefusal, nil},
-	{"root-ready", (*liveRig).checkRootReady, nil},
-	{"gvisor", (*liveRig).checkGVisor, nil},
-	{"resources", (*liveRig).checkResources, nil},
-	{"operator-token", (*liveRig).checkOperatorToken, nil},
-	{"pod-baseline", (*liveRig).checkPodBaseline, nil},
-	{"setup-ran", (*liveRig).checkSetupRan, nil},
-	{"setup-negative", (*liveRig).checkSetupNegative, nil},
-	{"adopt-working-copy", (*liveRig).checkAdoptWorkingCopy, nil},
-	{"worker-shares-issue-pod", (*liveRig).checkWorkerSharesIssuePod, nil},
-	{"secrets-two-roles-enrolled", (*liveRig).checkSecretsTwoRolesEnrolled, secretsBlocked},
-	{"secrets-automatic-grant", (*liveRig).checkSecretsAutomaticGrant, secretsBlocked},
-	{"secrets-cross-pod-negative", (*liveRig).checkSecretsCrossPodNegative, secretsBlocked},
-	{"secrets-copied-token-negative", (*liveRig).checkSecretsCopiedTokenNegative, secretsBlocked},
-	{"secrets-self-enroll-negative", (*liveRig).checkSecretsSelfEnrollNegative, secretsBlocked},
-	{"secrets-approval-ask", (*liveRig).checkSecretsApprovalAsk, secretsBlocked},
-	{"suspend", (*liveRig).checkSuspend, nil},
-	{"role-isolation", (*liveRig).checkRoleIsolation, nil},
-	{"resume", (*liveRig).checkResume, nil},
-	{"stale-plugin-install", (*liveRig).checkStalePluginInstall, stalePluginBlocked},
-	{"same-agent-negative", (*liveRig).checkSameAgentNegative, nil},
-	{"kill-role-init", (*liveRig).checkKillRoleInit, nil},
-	{"stale-incarnation", (*liveRig).checkStaleIncarnation, nil},
-	{"secrets-old-uid-and-revocation", (*liveRig).checkSecretsOldUIDAndRevocation, secretsBlocked},
-	{"respawn-before-register", (*liveRig).checkRespawnBeforeRegister, nil},
-	{"independent-provision", (*liveRig).checkIndependentProvision, nil},
-	{"second-owner", (*liveRig).checkSecondOwner, nil},
-	{"repository-cache", (*liveRig).checkRepositoryCache, nil},
-	{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
-	{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
-	{"re-adopt", (*liveRig).checkReAdopt, nil},
-	{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
-	{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
-	{"displaced", (*liveRig).checkDisplaced, nil},
-	{"pod-update", (*liveRig).checkPodUpdate, nil},
-	{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
-	{"previous-layout", (*liveRig).checkPreviousLayout, previousLayoutBlocked},
-	{"postgres-resume", (*liveRig).checkPostgresResume, nil},
-	{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
+// liveGroup is a group of the harness's checks, a run of its own on a kind rig of its own: its
+// name, which the subtest that runs it carries and a part of the kind job selects with -run; setup,
+// what the group redoes first of the state a check of another group leaves its checks, or nil
+// where they need none; and its checks, in the order they run.
+type liveGroup struct {
+	name   string
+	setup  func(*liveRig) error
+	checks []liveCheck
 }
 
-// The runtime's settings for the run: the boot timeout covers a Karpenter node coming up and the
-// worker image's pull, which is what a first pod on an empty pool waits for.
+// liveGroups are the harness's checks, in groups that each stay within a part of the kind job
+// (.github/scripts/ci_job_reads.py's KIND_PARTS names the part that runs each). A check that reads
+// state an earlier check left, and puts back no claim of it itself, is in that check's group:
+// secrets-automatic-grant, secrets-cross-pod-negative, secrets-copied-token-negative and
+// secrets-self-enroll-negative start from the root and the worker secrets-two-roles-enrolled runs
+// and enrolls, and secrets-cross-pod-negative from the grant and request secrets-automatic-grant
+// records; stale-incarnation reads kill-role-init's kill and relaunch; and repository-cache,
+// cache-second-pod and cache-lost-volume read the runtime root-ready starts and the cache its
+// launch makes. Every other check puts each claim it starts from where it needs it itself
+// (ensureRunning, ensureSuspended), or launches one no check before it in its group launched. A
+// group that does not hold root-ready redoes first what root-ready leaves every later launch on
+// the run's repository (mapRunRepository), and roles, whose checks start from the run's first
+// issue, what root-ready and worker-shares-issue-pod leave them too (runFirstIssue).
+var liveGroups = []liveGroup{
+	// root: the run's first issue pod — its launch, which makes the run's repository's cache, the
+	// pod and the worker beside it, their enrollments with the broker, another issue's enrollment
+	// across a replacement of its pod — and the cache.
+	{name: "root", checks: []liveCheck{
+		{"root-ready", (*liveRig).checkRootReady, nil},
+		{"gvisor", (*liveRig).checkGVisor, nil},
+		{"resources", (*liveRig).checkResources, nil},
+		{"operator-token", (*liveRig).checkOperatorToken, nil},
+		{"pod-baseline", (*liveRig).checkPodBaseline, nil},
+		{"setup-ran", (*liveRig).checkSetupRan, nil},
+		{"setup-negative", (*liveRig).checkSetupNegative, nil},
+		{"adopt-working-copy", (*liveRig).checkAdoptWorkingCopy, nil},
+		{"worker-shares-issue-pod", (*liveRig).checkWorkerSharesIssuePod, nil},
+		{"secrets-two-roles-enrolled", (*liveRig).checkSecretsTwoRolesEnrolled, secretsBlocked},
+		{"secrets-automatic-grant", (*liveRig).checkSecretsAutomaticGrant, secretsBlocked},
+		{"secrets-cross-pod-negative", (*liveRig).checkSecretsCrossPodNegative, secretsBlocked},
+		{"secrets-copied-token-negative", (*liveRig).checkSecretsCopiedTokenNegative, secretsBlocked},
+		{"secrets-self-enroll-negative", (*liveRig).checkSecretsSelfEnrollNegative, secretsBlocked},
+		{"secrets-approval-ask", (*liveRig).checkSecretsApprovalAsk, secretsBlocked},
+		{"secrets-old-uid-and-revocation", (*liveRig).checkSecretsOldUIDAndRevocation, secretsBlocked},
+		{"repository-cache", (*liveRig).checkRepositoryCache, nil},
+		{"cache-second-pod", (*liveRig).checkCacheSecondPod, nil},
+		{"cache-lost-volume", (*liveRig).checkCacheLostVolume, nil},
+	}},
+	// roles: the roles of that issue's pod — a stop, isolation, a resume, a plugin install, a
+	// refused resume, a kill and its stale incarnation, a respawn before a hello — a second tree's
+	// two issues, the re-adoption of every live claim by a fresh runtime, the orphan sweep and the
+	// issue's cleanup.
+	{name: "roles", setup: (*liveRig).runFirstIssue, checks: []liveCheck{
+		{"suspend", (*liveRig).checkSuspend, nil},
+		{"role-isolation", (*liveRig).checkRoleIsolation, nil},
+		{"resume", (*liveRig).checkResume, nil},
+		{"stale-plugin-install", (*liveRig).checkStalePluginInstall, nil},
+		{"same-agent-negative", (*liveRig).checkSameAgentNegative, nil},
+		{"kill-role-init", (*liveRig).checkKillRoleInit, nil},
+		{"stale-incarnation", (*liveRig).checkStaleIncarnation, nil},
+		{"respawn-before-register", (*liveRig).checkRespawnBeforeRegister, nil},
+		{"independent-provision", (*liveRig).checkIndependentProvision, nil},
+		{"re-adopt", (*liveRig).checkReAdopt, nil},
+		{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
+		{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
+	}},
+	// image: the worker image's probe and its three refusals.
+	{name: "image", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+		{"image-probe", (*liveRig).checkImageProbe, nil},
+		{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
+		{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
+		{"image-probe-missing-volume-negative", (*liveRig).checkImageProbeMissingVolumeRefusal, nil},
+	}},
+	// issues: issues of their own, a check each: one on another owner's repository, a role its
+	// pod's replacement displaces, a resume from the session table alone, and an issue closed and
+	// resumed. The image's checks were this group's until the two together ran past the part
+	// budget (1,463 s and 1,520 s of 1,461 in CI runs 44766893801 and 44744458379).
+	{name: "issues", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+		{"second-owner", (*liveRig).checkSecondOwner, nil},
+		{"displaced", (*liveRig).checkDisplaced, nil},
+		{"postgres-resume", (*liveRig).checkPostgresResume, nil},
+		{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
+	}},
+	// pod-update: the update round over one drifted issue pod, and over two issues' pods a change
+	// drifts at once.
+	{name: "pod-update", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+		{"pod-update", (*liveRig).checkPodUpdate, nil},
+		{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
+	}},
+}
+
+// The runtime's settings for the run: the boot timeout covers the worker image's pull from the
+// rig's registry, which is what a first pod on the node waits for.
 const (
 	liveBootTimeout   = 5 * time.Minute
 	liveGrace         = 15 * time.Second
@@ -138,22 +196,22 @@ const (
 	liveSettle = 2*liveProbeInterval + 5*time.Second
 )
 
-// liveIssueVolume is the issue volume's size, the daemon configuration's default. The run sets no
-// scheduling beyond the Legion pool the runtime selects: no pod asks for another pod's node or
-// keeps off one (every issue pod owns its volume, LEGION-632), and every pod reserves what
-// liveResources gives its roles, so the scheduler, and Karpenter under the `legion` NodePool's
-// floor (karpenter.k8s.aws/instance-cpu Gt 3, set in the deployment repository), place it where
-// the pool has room.
+// liveIssueVolume is the issue volume's size, the daemon configuration's default, which kind's
+// local-path StorageClass provisions on the node's disk. The run sets no scheduling beyond the
+// Legion pool the runtime selects: no pod asks for another pod's node or keeps off one (every issue
+// pod owns its volume, LEGION-632), and every pod reserves what liveResources gives its roles.
 var liveIssueVolume = resource.MustParse("20Gi")
 
 // liveRepositoryCache is the daemon's default repository cache (config.DefaultRepositoryCache), as
-// sandboxOptions translates it.
+// sandboxOptions translates it, with its pod reserving a fifth of a CPU and 768Mi, requested in
+// full, rather than the daemon's one CPU and 4Gi: the kind job's node, one runner of four CPUs
+// and 16Gi, holds both of the run's caches beside its issue pods and the cluster's own.
 func liveRepositoryCache() RepositoryCache {
 	return RepositoryCache{
 		Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m"), corev1.ResourceMemory: resource.MustParse("768Mi"), corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m"), corev1.ResourceMemory: resource.MustParse("768Mi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
 		},
 	}
 }
@@ -178,17 +236,16 @@ func (r *liveRig) mapRepository(repo ghrepo.Repository) {
 // liveIssueOverride is the issue pod's reservation the rig sets itself, as a deployment's
 // `runtime.kubernetes.resources.issue` does, field by field: its cpu and memory, which the stub
 // agents need little of, and its ephemeral-storage limit and request, both explicitly configured
-// and equal at the GKE Autopilot cap; the controller's pod keeps config.DefaultResources(). The
-// stub agent sleeps, so the override sizes the issue pod down from the default 3 CPU and 19 GiB to
-// 2 CPU and 4 GiB, which nproc and MemTotal in the pod are then checked against.
-var liveIssueOverride = config.Reservation{CPU: "2", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "10Gi"}
+// and equal; the controller's pod keeps config.DefaultResources(). The stub agent sleeps, so the
+// override sizes the issue pod down from the default 3 CPU and 19 GiB to a fifth of a CPU and
+// 768Mi: the kind job's node, one runner of four CPUs and 16Gi, holds the dozen issue pods the run
+// keeps up at once beside its caches and the cluster's own pods.
+var liveIssueOverride = config.Reservation{CPU: "200m", Memory: "768Mi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "2Gi"}
 
 // liveResources are the reservations the rig hands the runtime (Options.Resources): the daemon's
 // defaults as it translates them (reservations, manifest_test.go) with liveIssueOverride applied
 // field by field to the issue pod's, as resolveKubernetes settles a file's `resources` block. Cpu
-// and memory are each the request and the limit alike. GKE admits a container's ephemeral-storage
-// limit equal to its request, discarding whatever higher limit was configured (confirmed live,
-// 2026-10-17); setting the two equal keeps what the rig asks for what GKE admits.
+// and memory are each the request and the limit alike, and so is ephemeral storage.
 func (r *liveRig) liveResources() PodResources {
 	resources := reservations()
 	issue := *resources.Issue.DeepCopy()
@@ -204,19 +261,16 @@ func (r *liveRig) liveResources() PodResources {
 }
 
 // The run's one provider key: the variable its agents' Oh My Pi gets, and the key of the providers
-// Secret (ProvidersSecretName) the script creates for the run, holding a value no model route reads.
+// Secret (ProvidersSecretName) newKindLiveEnv creates for the run, holding a value no model route
+// reads.
 const (
 	liveProviderKey        = "STAGE4A_PROVIDER_KEY"
 	liveProvidersSecretKey = "stage4a"
-	// liveAnthropicKeyVariable is both the providers Secret's key and the variable Oh My Pi reads
-	// it as, under LEGION_E2E_MODEL_ROUTE=key-file (runtimeOptions): mirroring the live GKE route's
-	// shape, where provider_keys names ANTHROPIC_API_KEY directly rather than a gateway.
-	liveAnthropicKeyVariable = "ANTHROPIC_API_KEY"
 )
 
-// fixtureConfigMap is the ConfigMap the operator fixture's pod.yml names; each run creates its own
-// copy, named for its project (LEGION_E2E_OPERATOR_CONFIGMAP), since Stage 4b's driver shares the
-// namespace and a common name would let one run delete another's route.
+// fixtureConfigMap is the ConfigMap the operator fixture's pod.yml names; the run creates its own
+// copy, named for its project, and points the fixture at it, as a run on a cluster other runs
+// share does.
 const fixtureConfigMap = "legion-operator-route"
 
 // The marker is the runtime locator's process incarnation: an unchanged pod UID plus the launch
@@ -226,176 +280,311 @@ const fixtureConfigMap = "legion-operator-route"
 // role carries across a pod replacement is its session, which the table holds (recordSession).
 var stubAgent = []string{"/bin/sh", "-c", `printf '%s:%s/%s\n' "$LEGION_ROLE" "$POD_UID" "$LEGION_GENERATION" >>"$LEGION_E2E_MARKER" && exec sleep infinity`, "stage4a-stub"}
 
-// liveEnv is what the script hands the harness.
+// liveEnv is what the run is set up with (newKindLiveEnv): the rig's cluster and fake GitHub, and
+// what the run puts in them before its first check.
 type liveEnv struct {
-	runtimeKubeconfig, runtimeContext, operatorContext string
-	namespace, project, claimProject, image            string
-	repo                                               ghrepo.Repository
-	// podReachability is LEGION_E2E_POD_REACHABILITY: "aws-private-ip" or "bridge" — how pods reach
-	// the devbox, which networkPathFailure's diagnostic branches on. streamHost is where the
-	// harness's own listener binds: the devbox's private address directly reachable from pods
-	// (aws-private-ip), or loopback behind the reverse-tunnel bridge every pod instead dials by
-	// streamAdvertiseHost (bridge). Every pod's shim is handed streamAdvertiseHost, never
-	// streamHost, when the two differ.
-	podReachability                             string
-	streamHost, streamAdvertiseHost, streamPort string
-	// appTokenCommand is LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND: lib/github-apps.sh's own
-	// app_token_command for appSecret, the secrets broker's github-app secret, which the script
-	// hands the harness so no copy of the broker client's command lives here; resolveApp's token
-	// manager runs it with `sh -c` for every lease.
-	appID, appSecret, appTokenCommand string
-	// storageClass is the issue volumes' StorageClass: AWS's gp2, GKE's standard-rwo, or whatever
-	// else the cluster under test defaults issue volumes to. No default of its own: the plan
-	// behind LEGION_E2E_STORAGE_CLASS is the operator's to pick, never this harness's to guess.
+	// kubeconfig and kubeContext reach the cluster as its admin: the operator's identity, which
+	// every operator step (liveRig.kubectl) takes. runtimeToken is liveDaemonAccount's, the
+	// runtime's own identity on the same cluster.
+	kubeconfig, kubeContext, runtimeToken string
+	namespace, project, claimProject      string
+	// image is the image every pod of the run starts, which trusts the fake GitHub's authority
+	// (kindtest.Rig.Image); probeImage is the worker image under test, unmodified, which the
+	// image probe's checks start, since what they check is the image itself.
+	image, probeImage string
+	// repo is the run's private repository of the fake GitHub, and repoSecondOwner a private
+	// repository under another owner, the implement App installed on both, where second-owner
+	// provisions an issue. github serves both; repoBare is the bare repository it serves repo
+	// from, which the harness's own writes to GitHub land in (liveRig.bareGit).
+	repo, repoSecondOwner ghrepo.Repository
+	github                *fakegithub.Server
+	repoBare              string
+	// streamHost is the kind network's gateway on this host, where the harness's listener binds
+	// and every pod dials it; streamPort is fixed for the run, since a live claim's shim dials the
+	// same address again once re-adopt and orphan-sweep replace the listener.
+	streamHost, streamPort string
+	// appID and appTokenCommand are the fake GitHub's implement App and a token command whose
+	// every token the fake takes (kindtest.Rig.AppTokenCommand); resolveApp's token manager runs
+	// it with `sh -c` for every lease.
+	appID, appTokenCommand string
+	// storageClass is the issue volumes' StorageClass, kind's own.
 	storageClass string
-	// modelRoute is LEGION_E2E_MODEL_ROUTE: "gateway" (the operator route's pod.yml/models.yml,
-	// a projected ServiceAccount token authenticating to a model gateway) or "key-file" (no
-	// gateway: ANTHROPIC_API_KEY reaches the agent as a provider key the providers Secret holds,
-	// mirroring the live GKE route's shape). readLiveEnv refuses any other value.
-	modelRoute string
-	// platform is LEGION_E2E_PLATFORM: "gke-autopilot" or "eks", the cluster's own platform,
-	// independent of runtimeIdentityKind (how the runtime authenticates) and podReachability (how
-	// pods reach the devbox) — a cluster could in principle combine any of these differently. Every
-	// platform-specific relaxation in this file (gke(), the cpu floor, the ephemeral-storage
-	// equalization, the extended-duration-pods affinity, the cgroup-quota-over-nproc choice) keys
-	// off this field alone, never off identity or reachability, which happened to coincide with it
-	// on every cluster this harness has run against so far but are not the same fact. readLiveEnv
-	// refuses any other value.
-	platform string
-	// runtimeIdentityKind is LEGION_E2E_RUNTIME_IDENTITY_KIND: "aws-iam-role" (an assumed IAM role
-	// mapped to the legion-daemon RBAC group, EKS's shape) or "kubernetes-service-account" (a
-	// plain system:serviceaccount:<namespace>:legion-daemon identity, GKE's shape with no IAM
-	// mapping involved). checkIdentity's assertions branch on it; readLiveEnv refuses any other
-	// value.
-	runtimeIdentityKind string
-	// repoSecondOwner is LEGION_E2E_REPO_SECOND_OWNER: a repository under another owner than
-	// repo's, both Apps installed on it, where second-owner provisions an issue.
-	repoSecondOwner    ghrepo.Repository
-	record, work, from string
-	// operatorPodFile is the run's copy of deploy/kubernetes/operator-route/pod.yml, its token
-	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
+	// work is where the runtime's log goes: the rig's evidence directory, which the kind job
+	// uploads when the test fails. scratch holds the run's own files.
+	work, scratch string
+	// operatorPodFile is the run's copy of deploy/kubernetes/operator-route/pod.yml, its
+	// placeholders filled, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker, the sha256 of the automatic rule's
-	// dummy value, the checkout's agent-secrets binary, and the token file the script mints for
-	// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
-	// person approving it. No check here waits on a person:
-	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
-	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
-	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
-	// to start (secretsBlocked).
+	// The agent-secrets checks' inputs: this repository's own broker, in this process at the kind
+	// network's gateway (startLiveBroker), the sha256 of the value it serves as LEGION_E2E_AUTO,
+	// the checkout's agent-secrets binary, and the token file the harness logs in with as the
+	// daemon does.
 	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
-	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
-	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
-	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
-	// stream, and the address it listens on there. sessionDSNLocalFile holds the same database's
-	// URL at streamHost instead — loopback under bridge, where the script's own docker container
-	// actually binds, reachable from the devbox the harness runs on even though
-	// streamAdvertiseHost (the bridge's cluster-DNS name) is not — for the harness's own direct
-	// connection in writeSession, never handed to a pod.
-	sessionDSNFile, sessionDBAddress, sessionDSNLocalFile string
-	// The stale-plugin-install checkpoint's own inputs: the devbox paths of this checkout's packed
-	// pi-legion and pi-envoy and their versions. Its negative control names the published
-	// pi-legion@9.6.1 by exact version — no devbox path of its own — so bun resolves it from the
-	// registry inside the pod. Read with os.Getenv, unlike the rest of liveEnv: unset skips the
-	// checkpoint with a clear message, never a refusal to start, so an older invocation of the
-	// script still runs every checkpoint it knows (stalePluginBlocked).
+	// sessionDSNLocalFile holds the URL of the rig's PostgreSQL as this process dials it, for the
+	// harness's own connection (writeSession), and sessionDBAddress is its address as the pods dial
+	// it, which the providers Secret's liveSessionsSecretKey holds a URL of.
+	sessionDSNLocalFile, sessionDBAddress string
+	// The stale-plugin-install checkpoint's own inputs: this checkout's packed pi-legion and
+	// pi-envoy (packLivePlugins) and their versions. Its negative control names the published
+	// pi-legion@9.6.1 by exact version, so bun resolves it from the registry inside the pod.
 	piLegionTarball, piEnvoyTarball, piLegionVersion, piEnvoyVersion string
-	// previous-layout's own inputs: the previous release's fixture harness the script built from
-	// LEGION_E2E_PREVIOUS_IMAGE's revision (testdata/previouslayout), and that release's worker image by digest, which
-	// it runs on. Read with os.Getenv, as the plugin inputs are (previousLayoutBlocked).
-	previousHarness, previousImage string
 }
 
-func readLiveEnv(t *testing.T) liveEnv {
+// The run's names in the rig's cluster: its project, the ServiceAccount the runtime acts as and
+// the one every pod of the run runs as, the audience the operator fixture's projected token is
+// issued for and the model gateway its models.yml names, which no stub agent dials (RFC 2606's
+// .invalid), and the audience the pods' and the daemon's tokens carry to the broker.
+const (
+	liveProject              = "s4a-kind"
+	liveDaemonAccount        = "legion-daemon"
+	liveWorkerAccount        = "legion-worker"
+	liveModelAudience        = "legion-model-gateway"
+	liveModelBaseURL         = "https://model-gateway.invalid/anthropic"
+	liveAgentSecretsAudience = "agent-secrets"
+	// liveApprovalOwner owns LEGION_E2E_APPROVAL, a human-tier secret no person signed in holds.
+	liveApprovalOwner = "stage4a-approver@example.com"
+)
+
+// liveIdentity is the runtime's identity in the cluster: the legion-daemon ServiceAccount, with
+// what docs/kubernetes.md's "RBAC the Go daemon needs" grants it — Sandboxes, Secrets but never a
+// list of them, pod and Service reads, pods/log, events, and a get by name of the Sandbox CRD and
+// of Agent Sandbox's controller — and no pod or PVC verb; and the ServiceAccount every pod of the
+// run runs as (the operator fixture's service_account).
+func liveIdentity(namespace string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: ServiceAccount
+metadata: {name: %[2]s, namespace: %[1]s}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: %[3]s, namespace: %[1]s}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: %[2]s, namespace: %[1]s}
+rules:
+- {apiGroups: [agents.x-k8s.io], resources: [sandboxes], verbs: [create, get, list, watch, patch, delete]}
+- {apiGroups: [agents.x-k8s.io], resources: [sandboxes/status], verbs: [get]}
+- {apiGroups: [""], resources: [secrets], verbs: [create, get, update, delete]}
+- {apiGroups: [""], resources: [pods], verbs: [get, list, watch]}
+- {apiGroups: [""], resources: [pods/log], verbs: [get]}
+- {apiGroups: [""], resources: [services], verbs: [list, watch]}
+- {apiGroups: [""], resources: [events], verbs: [list]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: %[2]s, namespace: %[1]s}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: %[2]s}
+subjects: [{kind: ServiceAccount, name: %[2]s, namespace: %[1]s}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: %[2]s-install}
+rules:
+- {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], resourceNames: [sandboxes.agents.x-k8s.io], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: %[2]s-install}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: %[2]s-install}
+subjects: [{kind: ServiceAccount, name: %[2]s, namespace: %[1]s}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: %[2]s-install, namespace: agent-sandbox-system}
+rules:
+- {apiGroups: [apps], resources: [deployments], resourceNames: [agent-sandbox-controller], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: %[2]s-install, namespace: agent-sandbox-system}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: %[2]s-install}
+subjects: [{kind: ServiceAccount, name: %[2]s, namespace: %[1]s}]
+`, namespace, liveDaemonAccount, liveWorkerAccount)
+}
+
+// newKindLiveEnv sets up the run on rig before its first check: the runtime's identity
+// (liveIdentity), two private repositories of the fake GitHub under two owners and the implement
+// App installed on both, the rig's PostgreSQL for the sessions, the operator route's ConfigMap and
+// pod fixture with their placeholders filled, the providers Secret, the broker, the checkout's
+// agent-secrets and its two packed plugins.
+func newKindLiveEnv(t *testing.T, rig *kindtest.Rig) liveEnv {
 	t.Helper()
-	get := func(name string) string {
-		value := os.Getenv(name)
-		if value == "" {
-			fmt.Printf("CHECK identity: FAIL: %s is unset; the harness refuses to start (scripts/e2e/stage4a-sandbox-runtime.sh sets it)\n", name)
-			t.FailNow()
-		}
-		return value
-	}
+	root := kindtest.RepositoryRoot(t)
 	env := liveEnv{
-		runtimeKubeconfig:     get("LEGION_E2E_RUNTIME_KUBECONFIG"),
-		runtimeContext:        get("LEGION_E2E_RUNTIME_CONTEXT"),
-		operatorContext:       get("LEGION_E2E_OPERATOR_CONTEXT"),
-		namespace:             get("LEGION_E2E_NAMESPACE"),
-		project:               get("LEGION_E2E_PROJECT"),
-		image:                 get("LEGION_E2E_IMAGE"),
-		podReachability:       get("LEGION_E2E_POD_REACHABILITY"),
-		streamHost:            get("LEGION_E2E_STREAM_HOST"),
-		streamAdvertiseHost:   get("LEGION_E2E_STREAM_ADVERTISE_HOST"),
-		streamPort:            get("LEGION_E2E_STREAM_PORT"),
-		storageClass:          get("LEGION_E2E_STORAGE_CLASS"),
-		modelRoute:            get("LEGION_E2E_MODEL_ROUTE"),
-		platform:              get("LEGION_E2E_PLATFORM"),
-		runtimeIdentityKind:   get("LEGION_E2E_RUNTIME_IDENTITY_KIND"),
-		appID:                 get("LEGION_E2E_IMPLEMENT_APP_ID"),
-		appSecret:             get("LEGION_E2E_IMPLEMENT_APP_SECRET"),
-		appTokenCommand:       get("LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND"),
-		record:                get("LEGION_E2E_RECORD"),
-		work:                  get("LEGION_E2E_WORK"),
-		from:                  os.Getenv("LEGION_E2E_FROM"),
-		operatorPodFile:       get("LEGION_E2E_OPERATOR_POD"),
-		operatorConfigMap:     get("LEGION_E2E_OPERATOR_CONFIGMAP"),
-		agentSecretsURL:       os.Getenv("LEGION_E2E_AGENT_SECRETS_URL"),
-		agentSecretsAutoSHA:   os.Getenv("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
-		agentSecretsBin:       os.Getenv("LEGION_E2E_AGENT_SECRETS_BIN"),
-		agentSecretsTokenFile: os.Getenv("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
-		sessionDSNFile:        get("LEGION_E2E_SESSION_DSN_FILE"),
-		sessionDBAddress:      get("LEGION_E2E_SESSION_DB_ADDRESS"),
-		sessionDSNLocalFile:   get("LEGION_E2E_SESSION_DSN_LOCAL_FILE"),
-		piLegionTarball:       os.Getenv("LEGION_E2E_PI_LEGION_TARBALL"),
-		piEnvoyTarball:        os.Getenv("LEGION_E2E_PI_ENVOY_TARBALL"),
-		piLegionVersion:       os.Getenv("LEGION_E2E_PI_LEGION_VERSION"),
-		piEnvoyVersion:        os.Getenv("LEGION_E2E_PI_ENVOY_VERSION"),
-		previousHarness:       os.Getenv("LEGION_E2E_PREVIOUS_HARNESS"),
-		previousImage:         os.Getenv("LEGION_E2E_PREVIOUS_IMAGE"),
+		kubeconfig: rig.Kubeconfig, kubeContext: rig.Context, namespace: "legion", project: liveProject,
+		// The claim token's project is a project token, [a-z0-9]+; the label keeps the dashes.
+		claimProject: strings.ReplaceAll(liveProject, "-", ""), image: rig.Image, probeImage: rig.WorkerImage,
+		github: rig.GitHub, streamHost: rig.Gateway, storageClass: "standard", work: rig.Evidence, scratch: t.TempDir(),
 	}
-	repo, err := ghrepo.Parse("LEGION_E2E_REPO", get("LEGION_E2E_REPO"))
+	held, err := net.Listen("tcp", net.JoinHostPort(rig.Gateway, "0"))
 	if err != nil {
-		fmt.Printf("CHECK identity: FAIL: %v\n", err)
-		t.FailNow()
+		t.Fatalf("pick the worker stream's port on %s: %v", rig.Gateway, err)
 	}
-	env.repo = repo
-	if env.modelRoute != "gateway" && env.modelRoute != "key-file" {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_MODEL_ROUTE must be gateway or key-file, not %q\n", env.modelRoute)
-		t.FailNow()
+	_, env.streamPort, _ = net.SplitHostPort(held.Addr().String())
+	_ = held.Close()
+	rig.Apply(t, liveIdentity(env.namespace))
+	if env.runtimeToken, err = rig.ServiceAccountToken(env.namespace, liveDaemonAccount, "", 4*time.Hour); err != nil {
+		t.Fatalf("mint the runtime's token: %v", err)
 	}
-	if env.runtimeIdentityKind != "aws-iam-role" && env.runtimeIdentityKind != "kubernetes-service-account" {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_RUNTIME_IDENTITY_KIND must be aws-iam-role or kubernetes-service-account, not %q\n", env.runtimeIdentityKind)
-		t.FailNow()
+
+	first := rig.GitHub.NewRepository(t, "legion-kind", "stage4a", false)
+	second := rig.GitHub.NewRepository(t, "legion-kind-other", "stage4a", false)
+	env.repo, env.repoSecondOwner = ghrepo.MustParse(first.Slug()), ghrepo.MustParse(second.Slug())
+	env.repoBare = first.Bare
+	app := rig.GitHub.AddApp(t, "legion-implement-kind", first.Owner, second.Owner)
+	env.appID, env.appTokenCommand = strconv.FormatInt(app.ID, 10), rig.AppTokenCommand(t, app, first.Owner, second.Owner)
+
+	sessions := rig.StartPostgres(t)
+	env.sessionDSNLocalFile = filepath.Join(env.scratch, "session-dsn-local")
+	if err := os.WriteFile(env.sessionDSNLocalFile, []byte(sessions.Host+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if env.platform != "gke-autopilot" && env.platform != "eks" {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_PLATFORM must be gke-autopilot or eks, not %q\n", env.platform)
-		t.FailNow()
+	inCluster, err := url.Parse(sessions.InCluster)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if env.podReachability != "aws-private-ip" && env.podReachability != "bridge" {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_POD_REACHABILITY must be aws-private-ip or bridge, not %q\n", env.podReachability)
-		t.FailNow()
+	env.sessionDBAddress = inCluster.Host
+
+	route := filepath.Join(root, "deploy", "kubernetes", "operator-route")
+	fill := func(name string, placeholders map[string]string) string {
+		t.Helper()
+		text, err := os.ReadFile(filepath.Join(route, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		filled := string(text)
+		for placeholder, value := range placeholders {
+			if !strings.Contains(filled, placeholder) {
+				t.Fatalf("the operator route's %s has no %s to fill", name, placeholder)
+			}
+			filled = strings.ReplaceAll(filled, placeholder, value)
+		}
+		path := filepath.Join(env.scratch, name)
+		if err := os.WriteFile(path, []byte(filled), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
 	}
-	if env.repoSecondOwner, err = ghrepo.Parse("LEGION_E2E_REPO_SECOND_OWNER", get("LEGION_E2E_REPO_SECOND_OWNER")); err != nil {
-		fmt.Printf("CHECK identity: FAIL: %v\n", err)
-		t.FailNow()
+	models := fill("models.yml", map[string]string{"${MODEL_BASE_URL}": liveModelBaseURL})
+	env.operatorPodFile = fill("pod.yml", map[string]string{"${MODEL_TOKEN_AUDIENCE}": liveModelAudience, "${POD_SERVICE_ACCOUNT}": liveWorkerAccount})
+	env.operatorConfigMap = fixtureConfigMap + "-" + env.project
+	rig.Kubectl(t, "-n", env.namespace, "create", "configmap", env.operatorConfigMap,
+		"--from-file=models.yml="+models, "--from-file=overlay.yml="+filepath.Join(route, "overlay.yml"))
+	note("operator", "ConfigMap %s: models.yml (baseUrl %s) and overlay.yml from %s", env.operatorConfigMap, liveModelBaseURL, route)
+	rig.Kubectl(t, "-n", env.namespace, "create", "secret", "generic", ProvidersSecretName(env.project),
+		"--from-literal="+liveProvidersSecretKey+"="+randomHex(t, 16), "--from-literal="+liveSessionsSecretKey+"="+sessions.InCluster)
+	note("operator", "Secret %s: %s (a random value no route reads), %s (the rig's PostgreSQL as the pods dial it)",
+		ProvidersSecretName(env.project), liveProvidersSecretKey, liveSessionsSecretKey)
+
+	startLiveBroker(t, rig, &env, sessions.Host)
+	env.agentSecretsBin = filepath.Join(env.scratch, "agent-secrets")
+	build := exec.Command("go", "build", "-o", env.agentSecretsBin, "./cmd/agent-secrets")
+	build.Dir = filepath.Join(root, "packages", "envoy")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build agent-secrets from the checkout: %v: %s", err, out)
 	}
-	if strings.EqualFold(env.repoSecondOwner.Owner(), repo.Owner()) {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_REPO_SECOND_OWNER %s is under %s, LEGION_E2E_REPO's owner\n", env.repoSecondOwner, repo.Owner())
-		t.FailNow()
-	}
-	if !strings.HasPrefix(env.project, "s4a-") {
-		fmt.Printf("CHECK identity: FAIL: the run project %q lacks the reserved prefix s4a-\n", env.project)
-		t.FailNow()
-	}
-	// The claim token's project is a project token, [a-z0-9]+; the label keeps the dashes.
-	env.claimProject = strings.ReplaceAll(env.project, "-", "")
-	entry := func(check liveCheck) bool { return check.name == env.from }
-	if env.from != "" && (env.from == "identity" || env.from == "stale-incarnation" || !slices.ContainsFunc(liveChecks, entry)) {
-		fmt.Printf("CHECK identity: FAIL: STAGE4A_FROM=%s is not an entry point (any check but identity and stale-incarnation, which rides kill-role-init)\n", env.from)
-		t.FailNow()
-	}
+	packLivePlugins(t, root, &env)
 	return env
+}
+
+// startLiveBroker starts this repository's own broker in this process (brokertest), at the kind
+// network's gateway where the pods reach it, on the rig's PostgreSQL as this process dials it
+// (dsn), verifying the cluster's own tokens for liveAgentSecretsAudience: the daemon's login as
+// liveDaemonAccount, which logs in as the legion-daemon service, and the pods of liveWorkerAccount,
+// which that login enrols. It serves LEGION_E2E_AUTO, shared and agent-tier, which every session
+// gets at once, and LEGION_E2E_APPROVAL, human-tier under liveApprovalOwner alone. The daemon's
+// token file holds an hour's token, the longest the broker takes, minted again every half hour
+// while the test runs, as the kubelet rotates a daemon pod's.
+func startLiveBroker(t *testing.T, rig *kindtest.Rig, env *liveEnv, dsn string) {
+	t.Helper()
+	t.Setenv("BROKER_TEST_DATABASE_URL", dsn)
+	account := func(name string) string { return "system:serviceaccount:" + env.namespace + ":" + name }
+	broker := brokertest.NewRig(t, brokertest.WithListen(net.JoinHostPort(rig.Gateway, "0")),
+		brokertest.WithClusterIssuer(rig.Issuer, liveAgentSecretsAudience, rig.IssuerClient(t),
+			map[string]string{account(liveDaemonAccount): "legion-daemon"}, map[string]string{account(liveWorkerAccount): "legion-daemon"}))
+	auto := randomHex(t, 16)
+	broker.PutSecret(t, "LEGION_E2E_AUTO", brokertest.OwnerShared, brokertest.TierAgent, auto)
+	broker.PutSecret(t, "LEGION_E2E_APPROVAL", liveApprovalOwner, brokertest.TierHuman, randomHex(t, 16))
+	sum := sha256.Sum256([]byte(auto))
+	env.agentSecretsURL, env.agentSecretsAutoSHA = broker.URL, hex.EncodeToString(sum[:])
+	env.agentSecretsTokenFile = filepath.Join(env.scratch, "agent-secrets-token")
+	mint := func() error {
+		token, err := rig.ServiceAccountToken(env.namespace, liveDaemonAccount, liveAgentSecretsAudience, time.Hour)
+		if err != nil {
+			return err
+		}
+		next := env.agentSecretsTokenFile + ".next"
+		if err := os.WriteFile(next, []byte(token), 0o600); err != nil {
+			return err
+		}
+		return os.Rename(next, env.agentSecretsTokenFile)
+	}
+	if err := mint(); err != nil {
+		t.Fatalf("mint %s's token for the broker: %v", liveDaemonAccount, err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Minute):
+				if err := mint(); err != nil {
+					fmt.Printf("   [operator] could not mint a fresh token for %s; the run's logins fail once the last one expires: %v\n", liveDaemonAccount, err)
+				}
+			}
+		}
+	}()
+	note("harness", "broker %s: LEGION_E2E_AUTO (shared, agent tier) and LEGION_E2E_APPROVAL (human tier, %s); %s logs in as legion-daemon and enrols the pods of %s",
+		broker.URL, liveApprovalOwner, liveDaemonAccount, liveWorkerAccount)
+}
+
+// packLivePlugins packs this checkout's pi-envoy and pi-legion through scripts/e2e/lib/pack-plugin.sh,
+// as every check that installs a branch-built plugin packs them, which needs bun and the
+// workspace's own install at the checkout's root, and reads their versions from their manifests.
+func packLivePlugins(t *testing.T, root string, env *liveEnv) {
+	t.Helper()
+	_, err := exec.LookPath("bun")
+	testprereq.Require(t, err == nil, "kind", "stale-plugin-install packs this checkout's two plugins with bun, which is not on PATH")
+	pack := func(name string) (tarball, version string) {
+		t.Helper()
+		command := exec.Command("bash", filepath.Join(root, "scripts", "e2e", "lib", "pack-plugin.sh"), name, filepath.Join(env.scratch, "plugins", name))
+		command.Dir = root
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		out, err := command.Output()
+		if err != nil {
+			t.Fatalf("pack %s: %v: %s", name, err, stderr.String())
+		}
+		manifest, err := os.ReadFile(filepath.Join(root, "packages", name, "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pkg struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(manifest, &pkg); err != nil || pkg.Version == "" {
+			t.Fatalf("packages/%s/package.json names no version: %v", name, err)
+		}
+		return strings.TrimSpace(string(out)), pkg.Version
+	}
+	env.piEnvoyTarball, env.piEnvoyVersion = pack("pi-envoy")
+	env.piLegionTarball, env.piLegionVersion = pack("pi-legion")
+	note("harness", "packed pi-envoy@%s (%s) and pi-legion@%s (%s) from the checkout", env.piEnvoyVersion, env.piEnvoyTarball, env.piLegionVersion, env.piLegionTarball)
+}
+
+// randomHex is n random bytes, hex-encoded.
+func randomHex(t *testing.T, n int) string {
+	t.Helper()
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(raw)
 }
 
 // readOperatorPod reads the operator fixture through the daemon's own loader, with its ConfigMap named
@@ -710,8 +899,8 @@ type liveRig struct {
 	// until a check records its cleanup confirmed.
 	trees *fakeStore
 	// mapped is the repositories the run maps (Options.Mapped): each added just before its first
-	// issue pod launches (root-ready, second-owner), so no sweep makes a cache the run's first
-	// launch of that repository is to make.
+	// issue pod launches (root-ready, second-owner, or the setup of a group that does not hold
+	// root-ready), so no sweep makes a cache the run's first launch of that repository is to make.
 	mappedMu sync.Mutex
 	mapped   []ghrepo.Repository
 
@@ -729,10 +918,19 @@ type liveRig struct {
 		gone       observed
 	}
 
-	// secrets is the broker client, nil when this run's inputs leave it unconfigured or the token
-	// login started in newLiveRig was refused (secretsBlocked). secretsBlockReason is empty exactly
-	// when secrets is set: it holds that refusal for secretsBlocked to report through the same
-	// SKIPPED-BLOCKED path a missing env var takes, since a login outcome discovered at rig setup has
+	// leakCheck is the shared public leak check every runtime of the run hands its launchers
+	// (Options.LeakCheck): the rig's stand-in, read as the daemon reads the real one
+	// (kindtest.LeakCheck). leakCheckSetting is the deployment setting that names it
+	// (Options.LeakCheckSetting, kindtest.LeakCheckSetting): its repository and the manifest
+	// digest of its files, under which the runtime pushes it to each launcher and tells every role
+	// the install as PUBLIC_LEAK_CHECK and the digest beside it, as a deployment that names its
+	// check has it done.
+	leakCheck        LeakCheckReader
+	leakCheckSetting leakguard.Setting
+
+	// secrets is the broker client, nil when the token login started in newLiveRig was refused
+	// (secretsBlocked); secretsBlockReason is empty exactly when secrets is set, and holds that
+	// refusal for secretsBlocked to report, since a login outcome discovered at rig setup has
 	// nowhere else to surface before any check runs.
 	// enrollments is the harness's own enrollment of each claim's running pod, as the daemon's
 	// machine holds it; grants and requests are what checkSecretsAutomaticGrant records for
@@ -744,36 +942,55 @@ type liveRig struct {
 	requests           map[claim.Token]string
 	// sessionStore is where every runtime of the run keeps its sessions (Options.SessionStore,
 	// runtime.kubernetes.session_store postgres): liveSessionsSecretKey, the providers Secret key
-	// holding the scratch database's URL the script wrote there, from the rig's first runtime on.
-	// The daemon loads no store that keeps sessions on the issue's disk, so there is no run of this
-	// harness without a database.
+	// holding the rig's PostgreSQL's URL, from the rig's first runtime on. The daemon loads no store
+	// that keeps sessions on the issue's disk, so there is no run of this harness without a
+	// database.
 	sessionStore ompsessions.Store
 }
 
+// TestStage4aSandboxRuntimeLive runs each group of liveGroups as a subtest of its name, on a kind
+// rig of its own (runLiveGroup). A group starts from nothing another group left, so one that fails
+// stops no other.
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
 	fixtureenv.Live(t)
-	env := readLiveEnv(t)
-	r := newLiveRig(t, env)
-	defer r.close()
-
-	skipping := env.from != ""
-	for _, check := range liveChecks {
-		if skipping && check.name == env.from {
-			skipping = false
-		}
-		if skipping && check.name != "identity" {
-			fmt.Printf("CHECK %s: SKIPPED (development run from %s)\n", check.name, env.from)
-			continue
-		}
-		r.run(check)
+	for _, group := range liveGroups {
+		t.Run(group.name, func(t *testing.T) { runLiveGroup(t, group) })
 	}
-	fmt.Println("stage 4a harness: every check passed")
 }
 
-func (r *liveRig) run(check liveCheck) {
+// runLiveGroup runs group as t: a kind rig of the group's own and the run's setup on it, the
+// group's own setup, then its checks in their order, each as a subtest of its name, stopping at the
+// first that fails.
+func runLiveGroup(t *testing.T, group liveGroup) {
+	rig := kindtest.Start(t)
+	r := newLiveRig(t, newKindLiveEnv(t, rig))
+	defer r.close()
+	if group.setup != nil {
+		fmt.Printf("== setup of %s\n", group.name)
+		if err := group.setup(r); err != nil {
+			t.Fatalf("the setup of %s: %v", group.name, err)
+		}
+	}
+	for _, check := range group.checks {
+		if !t.Run(check.name, func(t *testing.T) { r.run(t, check) }) {
+			return
+		}
+	}
+	fmt.Printf("stage 4a harness: every check of %s passed\n", group.name)
+}
+
+// run runs check as t. A check the run cannot support prints its reason and fails t under GitHub
+// Actions, where the kind job gives the run all it needs (testprereq), and prints SKIPPED-BLOCKED
+// and skips elsewhere.
+func (r *liveRig) run(t *testing.T, check liveCheck) {
 	if check.blocked != nil {
 		if reason := check.blocked(r); reason != "" {
-			fmt.Printf("CHECK %s: SKIPPED-BLOCKED: %s\n", check.name, reason)
+			if testprereq.Enforced() {
+				fmt.Printf("CHECK %s: FAIL: blocked: %s\n", check.name, reason)
+			} else {
+				fmt.Printf("CHECK %s: SKIPPED-BLOCKED: %s\n", check.name, reason)
+			}
+			testprereq.Require(t, false, "kind", "%s is blocked: %s", check.name, reason)
 			return
 		}
 	}
@@ -781,14 +998,15 @@ func (r *liveRig) run(check liveCheck) {
 	started := time.Now()
 	if err := check.run(r); err != nil {
 		fmt.Printf("CHECK %s: FAIL: %v\n", check.name, err)
-		r.t.FailNow()
+		t.FailNow()
 	}
 	fmt.Printf("CHECK %s: PASS (%s)\n", check.name, time.Since(started).Round(time.Second))
 }
 
 // note prints one piece of evidence, naming the identity that observed it: runtime (the Legion
 // daemon's restricted identity, through the runtime or the harness's own client under it),
-// operator (the admin context, through kubectl), or harness (the listener and its resolver).
+// operator (the rig's admin kubeconfig, through kubectl), or harness (the listener and its
+// resolver).
 func note(who, format string, args ...any) {
 	fmt.Printf("   [%s] %s\n", who, fmt.Sprintf(format, args...))
 }
@@ -800,54 +1018,53 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 		enrollments: map[claim.Token]liveEnrollment{}, grants: map[claim.Token]string{},
 		sessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: liveSessionsSecretKey},
 	}
-	fail := func(format string, args ...any) {
-		fmt.Printf("CHECK identity: FAIL: "+format+"\n", args...)
-		t.FailNow()
-	}
 	logFile, err := os.OpenFile(filepath.Join(env.work, "runtime.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		fail("%v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { logFile.Close() })
 	r.logs = &logRecorder{json: slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug})}
 	r.log = slog.New(recordingHandler{rec: r.logs})
 
-	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: env.runtimeKubeconfig}
-	rc, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: env.runtimeContext}).ClientConfig()
+	// The runtime's identity is the legion-daemon ServiceAccount's token on the admin
+	// kubeconfig's cluster, its own credentials dropped (liveIdentity).
+	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: env.kubeconfig}
+	admin, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: env.kubeContext}).ClientConfig()
 	if err != nil {
-		fail("the runtime context %s in %s: %v", env.runtimeContext, env.runtimeKubeconfig, err)
+		t.Fatalf("the context %s in %s: %v", env.kubeContext, env.kubeconfig, err)
 	}
-	r.rc = rc
-	// The harness's own reads under the runtime identity ask the rules of every namespace, so
-	// they run faster than client-go's default rate; the runtime paces its own (clientQPS).
-	own := rest.CopyConfig(rc)
+	r.rc = rest.AnonymousClientConfig(admin)
+	r.rc.BearerToken = env.runtimeToken
+	note("runtime", "the runtime acts as system:serviceaccount:%s:%s on %s", env.namespace, liveDaemonAccount, r.rc.Host)
+	// The harness's own reads under the runtime identity run faster than client-go's default
+	// rate; the runtime paces its own (clientQPS).
+	own := rest.CopyConfig(r.rc)
 	own.QPS, own.Burst = 50, 100
 	if r.kube, err = kubernetes.NewForConfig(own); err != nil {
-		fail("%v", err)
+		t.Fatal(err)
 	}
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
-		fail("%v", err)
+		t.Fatal(err)
 	}
-	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
-		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
-		// person approves it, and the client keeps logging in for as long as the run lasts.
-		client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
-		if err := client.Start(r.ctx); err != nil {
-			r.secretsBlockReason = fmt.Sprintf("the token login was refused: %v", err)
-		} else {
-			r.secrets = client
-		}
+	r.leakCheck, r.leakCheckSetting = kindtest.LeakCheck(t), kindtest.LeakCheckSetting(t)
+	// The run logs in as the daemon does, with legion-daemon's token for the broker; no person
+	// approves it, and the client keeps logging in for as long as the run lasts.
+	client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
+	if err := client.Start(r.ctx); err != nil {
+		r.secretsBlockReason = fmt.Sprintf("the broker at %s refused %s's token login: %v", env.agentSecretsURL, liveDaemonAccount, err)
+	} else {
+		r.secrets = client
 	}
 
 	if r.pod, err = readOperatorPod(env); err != nil {
-		fail("%v", err)
+		t.Fatal(err)
 	}
 	note("operator", "pod from %s: service account %s, %d volumes, %d mounts, ConfigMap %s",
 		env.operatorPodFile, r.pod.ServiceAccount, len(r.pod.Volumes), len(r.pod.VolumeMounts), env.operatorConfigMap)
 
-	prompt := filepath.Join(env.work, "role-prompt.md")
+	prompt := filepath.Join(env.scratch, "role-prompt.md")
 	if err := os.WriteFile(prompt, []byte("The Stage 4a stub agent; no model reads this.\n"), 0o600); err != nil {
-		fail("%v", err)
+		t.Fatal(err)
 	}
 	r.prompt = prompt
 
@@ -903,7 +1120,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	} {
 		token, err := claim.NewToken(env.claimProject, c.issue, c.role)
 		if err != nil {
-			fail("%v", err)
+			t.Fatal(err)
 		}
 		r.claims = append(r.claims, &liveClaim{
 			token: token, tree: c.tree, issue: c.issue, role: c.role, name: c.name,
@@ -940,17 +1157,11 @@ func sameLocator(a, b runtime.Locator) bool {
 }
 
 // runtimeOptions are the Options every runtime of the run is built from, as a daemon boot builds
-// them: the operator's pod, the run's provider key, the stub agent, the shared setup command, and
-// the worker stream at address, through ln.
+// them: the operator's pod, the run's provider key, the stub agent, the shared setup command, the
+// shared public leak check every launcher installs before its first role (the rig's stand-in, and
+// the setting that names it), the broker, and the worker stream at address, through ln.
 func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
-	providerKeys := map[string]string{liveProviderKey: liveProvidersSecretKey}
-	if r.env.modelRoute == "key-file" {
-		// Mirrors the live GKE route's shape: ANTHROPIC_API_KEY is a providers-Secret key of its
-		// own name, which the shim exports into the agent's environment alongside
-		// STAGE4A_PROVIDER_KEY, and the run's key-file models.yml reads it back from there.
-		providerKeys[liveAnthropicKeyVariable] = liveAnthropicKeyVariable
-	}
-	opts := Options{
+	return Options{
 		Namespace: r.env.namespace, Project: r.env.project, Image: r.env.image, StorageClass: r.env.storageClass, IssueVolume: liveIssueVolume,
 		Resources: r.liveResources(),
 		StreamURL: address,
@@ -962,7 +1173,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		// in-memory one, which outlives each runtime as Postgres outlives a daemon restart.
 		Store:                 r.trees,
 		Pod:                   r.pod,
-		ProviderKeys:          providerKeys,
+		ProviderKeys:          map[string]string{liveProviderKey: liveProvidersSecretKey},
 		Agent:                 stubAgent,
 		Setup:                 liveSetup(r.env.repo),
 		BootTimeout:           liveBootTimeout,
@@ -980,31 +1191,22 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		SessionStore:          r.sessionStore,
 		RepositoryCache:       liveRepositoryCache(),
 		Mapped:                r.mappedRepositories,
+		LeakCheck:             r.leakCheck,
+		LeakCheckSetting:      r.leakCheckSetting,
+		AgentSecrets:          &AgentSecrets{URL: r.env.agentSecretsURL, Audience: liveAgentSecretsAudience, TokenExpiry: time.Hour},
 	}
-	if r.env.agentSecretsURL != "" {
-		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}
-	return opts
 }
 
-// streamBindAddress is where the harness's own listener binds: the devbox's private address
-// directly in AWS mode, or loopback behind the reverse-tunnel bridge in GKE mode
-// (LEGION_E2E_POD_REACHABILITY=bridge), since nothing outside the devbox needs to reach this
-// address directly there — the bridge's pod and Service do that instead.
-func (r *liveRig) streamBindAddress() string {
-	return "tcp://" + r.env.streamHost + ":" + r.env.streamPort
-}
-
-// streamAddress is the worker stream's address every pod's shim dials: the devbox's private
-// address directly in AWS mode, or the reverse-tunnel bridge's in-cluster Service in GKE mode.
-// Every runtime of the run is built on it.
+// streamAddress is where the harness's own listener binds and what every pod's shim dials: the
+// kind network's gateway on this host, at the run's one port. Every runtime of the run is built on
+// it.
 func (r *liveRig) streamAddress() string {
-	return "tcp://" + r.env.streamAdvertiseHost + ":" + r.env.streamPort
+	return "tcp://" + net.JoinHostPort(r.env.streamHost, r.env.streamPort)
 }
 
-// startRuntime binds a fresh listener on streamBindAddress, builds a fresh runtime whose pods are
-// handed streamAddress to dial, and registers the runtime's launcher acceptor, as a daemon boot
-// does (sandboxRuntime), with an Observe feeding the run's observation record.
+// startRuntime binds a fresh listener on streamAddress, builds a fresh runtime whose pods are
+// handed it to dial, and registers the runtime's launcher acceptor, as a daemon boot does
+// (sandboxRuntime), with an Observe feeding the run's observation record.
 func (r *liveRig) startRuntime() error {
 	if r.tokens.apps == nil {
 		if err := r.resolveApp(); err != nil {
@@ -1012,7 +1214,7 @@ func (r *liveRig) startRuntime() error {
 		}
 	}
 	ctx, stop := context.WithCancel(r.ctx)
-	bind := r.streamBindAddress()
+	bind := r.streamAddress()
 	ln, err := stream.Listen(ctx, bind, r.reg.resolve, stream.Options{RPCTimeout: 30 * time.Second, Log: r.log})
 	if err != nil {
 		stop()
@@ -1069,45 +1271,20 @@ func (r *liveRig) stopRuntime() {
 	r.rt, r.ln, r.stop = nil, nil, nil
 }
 
-// recordSandbox appends a Sandbox name to the script's record before the Sandbox can exist, so
-// the teardown deletes it by its exact name whatever happens next.
-func (r *liveRig) recordSandbox(name string) error {
-	f, err := os.OpenFile(r.env.record, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = fmt.Fprintln(f, name)
-	return err
-}
-
 // ---- operator steps ----------------------------------------------------------------------------
 
-// kubectl runs one operator step in the namespace through the admin context. A single retry
-// absorbs the one failure mode confirmed transient here (live, 2026-10-17): the operator's
-// gke-gcloud-auth-plugin hitting a one-off "internal_failure" refreshing its token mid-run, this
-// devbox's own intermittent reach to Google's OAuth endpoint, not a cluster or RBAC problem —
-// every other kubectl failure (a real RBAC refusal, a missing object, a context error) is
-// returned as before, on the first try.
+// kubectl runs one operator step in the namespace through the rig's admin kubeconfig.
 func (r *liveRig) kubectl(args ...string) (string, error) {
-	run := func() (string, error) {
-		ctx, cancel := context.WithTimeout(r.ctx, 2*time.Minute)
-		defer cancel()
-		full := append([]string{"--context", r.env.operatorContext, "-n", r.env.namespace}, args...)
-		var stdout, stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, "kubectl", full...)
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
-			return stdout.String(), fmt.Errorf("kubectl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-		}
-		return stdout.String(), nil
+	ctx, cancel := context.WithTimeout(r.ctx, 2*time.Minute)
+	defer cancel()
+	full := append([]string{"--kubeconfig", r.env.kubeconfig, "--context", r.env.kubeContext, "-n", r.env.namespace}, args...)
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "kubectl", full...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("kubectl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	out, err := run()
-	if err != nil && strings.Contains(err.Error(), "gke-gcloud-auth-plugin") {
-		time.Sleep(2 * time.Second)
-		out, err = run()
-	}
-	return out, err
+	return stdout.String(), nil
 }
 
 // roleEnter is the shell that runs a command inside one running role of an issue pod's one
@@ -1272,17 +1449,16 @@ func (r *liveRig) recordSession(c *liveClaim) error {
 	return nil
 }
 
-// writeSession puts content in the scratch database's session table at path, last written at
-// written, as `legion sessions import` copies a session file (ompsessions.Import), through the
-// URL file the script wrote for the harness's own direct use (sessionDSNLocalFile, dialable from
-// the devbox this process runs on — never sessionDSNFile, the pod-advertised address a bridge-mode
-// devbox cannot resolve; liveEnv's doc has the reasoning).
+// writeSession puts content in the rig's PostgreSQL's session table at path, last written at
+// written, as `legion sessions import` copies a session file (ompsessions.Import), through the URL
+// file newKindLiveEnv wrote for the harness's own connection (sessionDSNLocalFile: the node's
+// address on the kind network and the Service's node port, which this process dials).
 func (r *liveRig) writeSession(path, content string, written time.Time) error {
 	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
 	defer cancel()
 	conn, err := ompsessions.Connect(ctx, r.env.sessionDSNLocalFile)
 	if err != nil {
-		return fmt.Errorf("the scratch database (LEGION_E2E_SESSION_DSN_LOCAL_FILE=%s): %w", r.env.sessionDSNLocalFile, err)
+		return fmt.Errorf("the rig's PostgreSQL (%s): %w", r.env.sessionDSNLocalFile, err)
 	}
 	defer conn.Close(context.Background())
 	outcome, err := ompsessions.Import(ctx, conn, path, []byte(content), written)
@@ -1368,9 +1544,6 @@ func (r *liveRig) claimRepository(c *liveClaim) ghrepo.Repository {
 // spawn is a Spawn of the claim's next generation; armed false mints a token no hello registers.
 func (r *liveRig) spawn(c *liveClaim, armed bool) (runtime.Locator, error) {
 	if err := r.startRuntimeOnce(); err != nil {
-		return runtime.Locator{}, err
-	}
-	if err := r.recordSandbox(SandboxName(c.token)); err != nil {
 		return runtime.Locator{}, err
 	}
 	c.bootToken, c.gen = r.reg.mint(c.token, armed)
@@ -1483,31 +1656,10 @@ func (r *liveRig) awaitHelloAgain(c *liveClaim, since time.Time) (registration, 
 }
 
 // networkPathFailure names what a pod that runs but never says hello points at: the address and
-// port it dials, and, under LEGION_E2E_POD_REACHABILITY=aws-private-ip, the security groups of the
-// node it runs on (from the node's EC2NodeClass, read as the operator) — Karpenter's EC2NodeClass
-// CRD is an AWS concept, meaningless off it. Under bridge, there is no node-level diagnostic to
-// read (the pod reaches a Service, not the devbox's own address), so the message instead points at
-// the reverse-tunnel bridge (scripts/e2e/lib/bridge-tunnel.sh), whose chisel client or kubectl
-// port-forward dying is what a network-path failure there actually means. This keys off
-// podReachability, not runtimeIdentityKind or platform: the diagnostic is about how the pod was
-// told to reach the devbox, which is independent of how the runtime authenticates or which
-// platform the cluster runs.
+// port it dials, the kind network's gateway, where this process listens.
 func (r *liveRig) networkPathFailure(pod *corev1.Pod) error {
-	if r.env.podReachability != "aws-private-ip" {
-		return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s within %s; check that the reverse-tunnel bridge is still up (its chisel client and kubectl port-forward processes, and the bridge pod's log, scripts/e2e/lib/bridge-tunnel.sh)",
-			pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort, liveBootTimeout)
-	}
-	nodeClass, err := r.kubectl("get", "node", pod.Spec.NodeName, "-o", `jsonpath={.metadata.labels.karpenter\.k8s\.aws/ec2nodeclass}`)
-	groups := "(unknown: " + fmt.Sprint(err) + ")"
-	if err == nil {
-		out, err := r.kubectl("get", "ec2nodeclass", strings.TrimSpace(nodeClass), "-o", "jsonpath={.status.securityGroups[*].id}")
-		groups = strings.TrimSpace(out)
-		if err != nil {
-			groups = "(unknown: " + err.Error() + ")"
-		}
-	}
-	return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s within %s; the node's security groups are [%s], and the devbox's security group must admit %s from them",
-		pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort, liveBootTimeout, groups, r.env.streamPort)
+	return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached %s within %s; the node reaches this process at the kind network's gateway",
+		pod.Name, pod.UID, pod.Spec.NodeName, r.streamAddress(), liveBootTimeout)
 }
 
 // suspend is a role-process stop. It leaves the issue pod in place; its launcher reports the
@@ -1520,10 +1672,10 @@ func (r *liveRig) suspend(c *liveClaim) error {
 	return nil
 }
 
-// ensureRunning and ensureSuspended put a claim where a check starts from: nothing to do in a full
-// run, where the earlier checks left it there, and the same runtime calls in a development run. A
-// claim that has run before comes back from its recorded session, which the table holds whatever
-// became of the pod that first ran it.
+// ensureRunning and ensureSuspended put a claim where a check starts from: nothing to do where an
+// earlier check of its group left it there, and the same runtime calls where none did. A claim that
+// has run before comes back from its recorded session, which the table holds whatever became of
+// the pod that first ran it.
 func (r *liveRig) ensureRunning(c *liveClaim) error {
 	if c.state == stateRunning {
 		return nil
@@ -1556,6 +1708,33 @@ func (r *liveRig) ensureSuspended(c *liveClaim) error {
 		return fmt.Errorf("setup: suspend %s: %w", c.name, err)
 	}
 	note("runtime", "setup: %s suspended", c.name)
+	return nil
+}
+
+// mapRunRepository is what root-ready leaves every later launch on the run's repository, which a
+// group that does not hold root-ready redoes first: the runtime running, and the repository in the
+// run's mapping, as Dispatch's mapping names a repository before any issue of it launches.
+func (r *liveRig) mapRunRepository() error {
+	if err := r.startRuntimeOnce(); err != nil {
+		return err
+	}
+	r.mapRepository(r.env.repo)
+	note("runtime", "setup: %s mapped", r.env.repo)
+	return nil
+}
+
+// runFirstIssue is what root-ready and worker-shares-issue-pod leave the checks of the run's first
+// issue after them, which the roles group redoes first: mapRunRepository's, then the root running,
+// whose launch makes the run's repository's cache, and the worker running beside it in its pod.
+func (r *liveRig) runFirstIssue() error {
+	if err := r.mapRunRepository(); err != nil {
+		return err
+	}
+	for _, name := range []string{"root", "worker"} {
+		if err := r.ensureRunning(r.claim(name)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

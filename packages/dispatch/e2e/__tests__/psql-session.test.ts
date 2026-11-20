@@ -1,34 +1,28 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
-import { hostTool } from "@legion/test-fixtures/host-tools";
+import { hostTool, requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 import { dropDatabase, resetSession, sql, sqlAt } from "../psql";
 import { bounds, eventually, rowLimit } from "./bounded-subprocess";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
- *  names it, and the `dispatch` CI job has no Postgres at all, so these cases skip there. The
- *  session protocol is psql's answer to real statements, so the cases that need a database are
- *  skipped where no server is named rather than faked against a mock psql that could agree with a
- *  wrong reading of the protocol. */
+ *  names it, and the step of CI's `dispatch-browser` job that runs this file starts one and names
+ *  it. The session protocol is psql's answer to real statements, so the cases that need a
+ *  database are skipped where no server is named rather than faked against a mock psql that could
+ *  agree with a wrong reading of the protocol; on GitHub Actions they fail instead. */
 const server = process.env.LEGION_TEST_PG_DSN ?? "";
 /** Everything those cases need and this host or run does not have. The psql half is the gate
- *  `skipWithout("psql")` is, composed here rather than called: it prints a line of its own, and a
- *  host that has neither psql nor a server would get one line for each half rather than one
- *  naming both (harness-stacks.test.ts composes its Playwright gate the same way). */
+ *  `skipWithout(["psql"], …)` is, composed here rather than called: it prints a line of its own,
+ *  and a host that has neither psql nor a server would get one line for each half rather than one
+ *  naming both (harness-stacks.test.ts composes its gate the same way). */
 const missing = [
   ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
   ...(server === ""
     ? ["LEGION_TEST_PG_DSN, naming a server this run may create a database on"]
     : []),
 ];
-const live = missing.length === 0;
-if (!live) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path} that need a database. This run does not have: ` +
-      `${missing.join("; ")}. Supply what is missing and run the tests again.`
-  );
-}
+const live = !requireOrSkip(missing.join("; "), missing.length === 0, "dispatch-browser");
 
 /** The database of this run alone, made in `beforeAll` and dropped in `afterAll`. The cases here
  *  create temporary tables and read pg_stat_activity, so they run on a database nobody else is

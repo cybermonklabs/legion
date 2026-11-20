@@ -1,8 +1,7 @@
-//go:build e2e
-
 // The Stage 4a harness's runtime.kubernetes.setup checks: the shared runtime starts every
-// role through a setup command, and a setup failure prevents the agent from starting. The rig is
-// live_test.go.
+// role through a setup command, and a setup failure prevents the agent from starting. The setup's
+// refused read is the fake GitHub's refusal of a credential-free git ls-remote of the run's private
+// repository. The rig is live_test.go.
 package sandbox
 
 import (
@@ -125,9 +124,6 @@ func (r *liveRig) checkSetupNegative() error {
 	c := r.claim("setup-negative")
 	r.mapRepository(r.env.repo)
 	name := SandboxName(c.token)
-	if err := r.recordSandbox(name); err != nil {
-		return err
-	}
 	cleaned := false
 	defer func() {
 		if !cleaned {

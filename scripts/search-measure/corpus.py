@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - writes and reads back the corpus files of the keyword-search measurement, which harvest.py, load_fixture.py and build_cases.py share, for a person who measures keyword search on a harvest of production Dispatch.
 """The corpus files the search-measure scripts write and read back, and the line they say.
 
 A corpus directory holds one JSON file (`projects.json`, `coverage.json`) or one JSONL file

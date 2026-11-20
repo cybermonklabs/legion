@@ -38,7 +38,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the NATS server, as in
 // legion-background-subagent-omp.test.ts. A run without both skips, except on GitHub Actions,
 // where the pi-legion job supplies both (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-legion");
 
 /** The roles whose subagents the case runs. */
 const ROLES = ["implementer", "tester", "reviewer"] as const;

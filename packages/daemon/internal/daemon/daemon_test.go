@@ -65,13 +65,10 @@ const testOperatorToken = "operator-bearer-for-daemon-tests"
 // what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
 // whatever database it is given, so the run owns one rather than sharing the server's. A test
 // that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// Without the variable the test skips, or fails on GitHub Actions (testdb.DSN).
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
-	return testdb.RunDatabaseFor(dsn)
+	return testdb.RunDatabaseFor(testdb.DSN(t))
 }
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket

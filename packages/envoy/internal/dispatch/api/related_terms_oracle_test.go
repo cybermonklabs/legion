@@ -86,7 +86,7 @@ returning items`
 // does it: the claim, the row lock, the clear and the rebuild, the four statements of main's
 // refreshSearchTermStats, in one transaction. It answers the project's item count, the picker's
 // N.
-func runMainSearchTermStatsRebuild(t *testing.T, database *store.Store, project string) int {
+func runMainSearchTermStatsRebuild(t testing.TB, database *store.Store, project string) int {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

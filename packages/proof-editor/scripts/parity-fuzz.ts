@@ -5,6 +5,11 @@
  *
  *   cd packages/proof-editor && bun run parity-fuzz
  *
+ * The `envoy-go-checks` job of ci.yaml runs it with a tenth of the default document counts. Each
+ * check prints `CHECK <name>: PASS` after a line saying what it saw, or `CHECK <name>: FAIL:
+ * <what it saw>`, and the run exits 1 after a FAIL; a step it cannot do without (a missing `go`
+ * or `curl`, the oracle's install, the CommonMark download) is a `CHECK setup: FAIL` naming it.
+ *
  * What it compares, over every document it generates and every document it reads:
  *
  * - **The four patches** (`patches/micromark@4.0.2.patch`,
@@ -638,14 +643,61 @@ interface Family {
 }
 
 const settings = options();
-const patchedAt = locate(packageDirectory);
-const oracleAt = installOracle(settings.oracle, patchedAt);
+
+/** Whether a check failed; each check prints one `CHECK <name>: PASS` or `FAIL: <why>` line. */
+let failed = false;
+function check(name: string, passed: boolean, seen: string): void {
+  if (passed) {
+    console.log(`   ${seen}`);
+    console.log(`CHECK ${name}: PASS`);
+    return;
+  }
+  failed = true;
+  console.log(`CHECK ${name}: FAIL: ${seen}`);
+}
+
+/**
+ * Runs one step the comparison cannot do without - finding the workspace's packages, installing
+ * the oracle, downloading the CommonMark examples, loading either tree - and ends the run with a
+ * failed `setup` check naming what went wrong, rather than a stack trace and no CHECK line.
+ */
+async function prepared<T>(step: () => T | Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    console.log(`CHECK setup: FAIL: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
+for (const tool of ["bun", "go", "curl"]) {
+  await prepared(() => {
+    if (Bun.which(tool) === null) throw new Error(`${tool} is not on PATH`);
+  });
+}
+const patchedAt = await prepared(() => locate(packageDirectory));
+const oracleAt = await prepared(() => installOracle(settings.oracle, patchedAt));
+await prepared(() => specPath());
 const patched = patchState(patchedAt);
 const unpatched = patchState(oracleAt);
-for (const { name } of packages) {
-  if (!patched[name]) throw new Error(`${name} in this workspace carries no patch`);
-  if (unpatched[name]) throw new Error(`${name} in the oracle carries its patch`);
-}
+const unpatchedHere = packages.filter(({ name }) => !patched[name]).map(({ name }) => name);
+check(
+  "workspace-carries-the-four-patches",
+  unpatchedHere.length === 0,
+  unpatchedHere.length === 0
+    ? "each of the four packages in this workspace carries its patch"
+    : `${unpatchedHere.join(", ")} in this workspace carries no patch`
+);
+const patchedThere = packages.filter(({ name }) => unpatched[name]).map(({ name }) => name);
+check(
+  "oracle-carries-no-patch",
+  patchedThere.length === 0,
+  patchedThere.length === 0
+    ? "none of the four packages in the oracle carries its patch"
+    : `${patchedThere.join(", ")} in the oracle carries its patch`
+);
+// A comparison of two trees that are not one patched and one not proves nothing either way.
+if (failed) process.exit(1);
 console.log(`patched: ${dirname(dirname(patchedAt.micromark))}`);
 console.log(`oracle:  ${dirname(dirname(oracleAt.micromark))}`);
 for (const { name } of packages) {
@@ -653,8 +705,8 @@ for (const { name } of packages) {
   console.log(`  ${name}@${version}`);
 }
 
-const oldReadings = readings(await load(oracleAt));
-const newReadings = readings(await load(patchedAt));
+const oldReadings = readings(await prepared(() => load(oracleAt)));
+const newReadings = readings(await prepared(() => load(patchedAt)));
 
 const started = Date.now();
 let read = 0;
@@ -697,29 +749,43 @@ console.log(`\npatched against unpatched, ${((Date.now() - started) / 1000).toFi
 for (const [name, group] of [...counts].sort()) {
   console.log(`  ${name.padEnd(14)} ${group.read} documents, ${group.differences} differences`);
 }
-console.log(
-  `  ${"total".padEnd(14)} ${read} documents, ${comparisons} comparisons, ${differences} differences`
-);
 for (const line of shown) console.log(`----\n${line}`);
+check(
+  "patches-agree-with-the-oracle",
+  differences === 0,
+  `${read} documents, ${comparisons} comparisons, ${differences} differences`
+);
 
-let failed = differences > 0;
 if (settings.phase !== "patches") {
   // The bound rewrites the constructs the patched engine already holds, so it is installed only
   // now, after every document has been read without it. Each sentinel is a document the bound
   // must read differently, one shape of chain per way of writing one, so a wrap that reached no
   // construct, or one that reads a line's depth from the wrong place, cannot pass unnoticed.
   const sentinels = [
-    ["a chain of list markers on one line", `${"- ".repeat(101)}x\n`],
-    ["a chain of quote markers on one line", `${"> ".repeat(101)}x\n`],
-    ["a list nested one level per line", `${nestedByIndentation(51)}tail\n`],
-    ["a chain of quote markers in a list item", `- ${"> ".repeat(101)}x\n`],
+    ["list-chain-on-one-line", "a chain of list markers on one line", `${"- ".repeat(101)}x\n`],
+    ["quote-chain-on-one-line", "a chain of quote markers on one line", `${"> ".repeat(101)}x\n`],
+    [
+      "list-nested-per-line",
+      "a list nested one level per line",
+      `${nestedByIndentation(51)}tail\n`,
+    ],
+    [
+      "quote-chain-in-a-list-item",
+      "a chain of quote markers in a list item",
+      `- ${"> ".repeat(101)}x\n`,
+    ],
   ] as const;
-  const beforeBound = sentinels.map(([, body]) => newReadings[0].html(body));
+  const beforeBound = sentinels.map(([, , body]) => newReadings[0].html(body));
   boundBlockNesting();
-  for (const [index, [what, body]] of sentinels.entries()) {
-    if (newReadings[0].html(body) !== beforeBound[index]) continue;
-    console.log(`\nthe bound left ${what} as it was: it reached no construct there`);
-    failed = true;
+  for (const [index, [slug, what, body]] of sentinels.entries()) {
+    const reached = newReadings[0].html(body) !== beforeBound[index];
+    check(
+      `bound-reaches-${slug}`,
+      reached,
+      reached
+        ? `the bound reads ${what} differently`
+        : `the bound left ${what} as it was: it reached no construct there`
+    );
   }
 
   const bound = Date.now();
@@ -743,22 +809,34 @@ if (settings.phase !== "patches") {
     `  ${boundRead} documents, ${boundComparisons} comparisons, ` +
       `${changed.length} documents read differently`
   );
-  if (changed.length > 0) {
-    const verdicts = refusedByGo(changed, settings.keep);
-    const stored = changed.filter(({ label }) => (verdicts.get(label)?.parse ?? "") === "");
-    const written = changed.filter(({ label }) => (verdicts.get(label)?.write ?? "") === "");
-    console.log(`  pmdoc.Parse refuses ${changed.length - stored.length} of ${changed.length}`);
-    console.log(
-      `  pmdoc.ParseForWrite refuses ${changed.length - written.length} of ${changed.length}`
-    );
-    const first = changed[0];
-    console.log(`  the first of them, ${first.label}: ${verdicts.get(first.label)?.parse}`);
-    for (const { label, body } of stored.slice(0, 10)) {
-      console.log(
-        `----\n${label} reads differently and pmdoc stores it\n  in: ${JSON.stringify(body.slice(0, 300))}`
+  const goCheck = "go-refuses-each-document-the-bound-changed";
+  if (changed.length === 0) {
+    check(goCheck, true, "the bound changed the reading of no generated document");
+  } else {
+    let verdicts: Map<string, Verdict> | undefined;
+    try {
+      verdicts = refusedByGo(changed, settings.keep);
+    } catch (error) {
+      check(goCheck, false, error instanceof Error ? error.message : String(error));
+    }
+    if (verdicts !== undefined) {
+      const judged = verdicts;
+      const stored = changed.filter(({ label }) => (judged.get(label)?.parse ?? "") === "");
+      const written = changed.filter(({ label }) => (judged.get(label)?.write ?? "") === "");
+      const first = changed[0];
+      console.log(`  the first of them, ${first.label}: ${judged.get(first.label)?.parse}`);
+      for (const { label, body } of stored.slice(0, 10)) {
+        console.log(
+          `----\n${label} reads differently and pmdoc stores it\n  in: ${JSON.stringify(body.slice(0, 300))}`
+        );
+      }
+      check(
+        goCheck,
+        stored.length === 0 && written.length === 0,
+        `pmdoc.Parse refuses ${changed.length - stored.length} of ${changed.length}, ` +
+          `pmdoc.ParseForWrite ${changed.length - written.length} of ${changed.length}`
       );
     }
-    failed ||= stored.length > 0 || written.length > 0;
   }
 }
 

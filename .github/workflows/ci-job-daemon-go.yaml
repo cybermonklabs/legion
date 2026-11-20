@@ -27,21 +27,27 @@ name: CI job daemon-go
 #     keptPropertyEnv;
 #   * tmux, jj, Oh My Pi and uv, each refused-without by a test of this module (the comment on
 #     each step says which), and the NATS images those tests start;
+#   * the CodeGraph CLI internal/workspace's real-CLI warm-up test runs, installed with Bun from
+#     packages/daemon/docker/codegraph's own lockfile, the worker image's pin of it;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, which the race
 #     step runs;
 #   * setup-go and the go-daemon cache restore, this module's build cache. The `test` job keeps a
 #     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
 #     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
 #     steps compile a scratch module and the envoy listener instead.
-# No Bun and no install: the tests of this module that needed the workspace built, or the
+# Bun, but no workspace install: the tests of this module that needed the workspace built, or the
 # repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
 # `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
 # partition of skills/ with scripts/pi-plugin-prepack.sh — which are
-# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips all three by
-# name. What is left here that names bun runs no pack: handoff_records_live_test.go's is behind
-# `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
-# workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
-# tests and no test of this job (dispatch://INFRA-1413, A4).
+# .github/workflows/ci-job-plugin-pack.yaml's now, the whole-daemon live tests, four of which
+# run the `dispatch` CLI under bun, which are .github/workflows/ci-job-daemon-live.yaml's, and
+# the five live proofs that drive real Oh My Pi panes, each of which packs both plugins, which are
+# .github/workflows/ci-job-agent-harness.yaml's; the race step below skips the three groups by
+# name. The one Bun install here is the CodeGraph CLI's, in its own directory, which is no
+# workspace of the root manifest and reads neither bun.lock nor any workspace's package.json. So
+# this job's filter names no root lockfile, no workspace manifest and no skill, and a change to
+# bun.lock or to one skill runs the plugin-pack and agent-harness tests and no test of this job
+# (dispatch://INFRA-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -71,11 +77,11 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
-    # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
-    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
-    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
+    # job's alone (no workspace install, no changie, no Bun suite), then that step's 839 s and
+    # its 15 minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is
+    # under 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried
+    # these steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of
+    # main push runs).
     timeout-minutes: 70
     services:
       postgres:
@@ -93,7 +99,7 @@ jobs:
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # agentsecrets contract tests drive (brokertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
-      # the script not to start a container of its own — that path is the devbox's.
+      # the script not to start a container of its own, the path a run with no DSN takes.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -131,9 +137,10 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-      # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
-      # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # The tmux runtime's tests drive a real tmux server and fail without one here
+      # (testprereq.Require), and the daemon supervises under tmux and refuses to start without
+      # it, which is also what the Stage 1 proof's boot needs (scripts/e2e/stage1-skeleton.sh's
+      # `command -v tmux` refusal).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
@@ -153,6 +160,25 @@ jobs:
       # takes that uv from the `uv` row of .github/ci-tools.yaml, which check-ci-tools.sh holds to
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
       - uses: ./.github/actions/install-uv
+
+      # internal/workspace's TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli
+      # runs the real CodeGraph CLI it finds on PATH, and refuses on GitHub Actions without one.
+      # The CLI is the one the worker image ships: @colbymchenry/codegraph from
+      # packages/daemon/docker/codegraph's own package.json and bun.lock, installed as
+      # worker.Dockerfile's plugin stage installs it, with no workspace install. The platform
+      # package's bin/codegraph is a shell wrapper that resolves its own symbolic link and runs the
+      # Node runtime bundled beside it, so a link in /usr/local/bin, which is on the runner's PATH,
+      # puts it on PATH without a write to $GITHUB_PATH, which would reach every later go command of
+      # this job unseen by check-ci-filters.sh. The daemon gives every codegraph call it makes
+      # DO_NOT_TRACK=1 itself (internal/workspace/codegraph.go, codegraphEnvironment), as the
+      # image's environment does, so the test's calls never phone home.
+      - uses: ./.github/actions/setup-bun
+      - name: Install the CodeGraph CLI
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          sudo ln -s "$PWD/node_modules/@colbymchenry/codegraph-linux-x64/bin/codegraph" /usr/local/bin/codegraph
+          command -v codegraph
+        working-directory: packages/daemon/docker/codegraph
 
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage
@@ -189,14 +215,26 @@ jobs:
       # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
       # tests whose subject is text, where they wait behind no fixture, and a test run twice is
       # a test whose second run tells nobody anything. The three other tests of
-      # internal/supervise/table_test.go drive a machine and run here. The names are written in
-      # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
-      # and the other job's from the one list and holds each step to it, so the skip and the run
-      # cannot come to name different tests.
+      # internal/supervise/table_test.go drive a machine and run here. Beside them it is the kind
+      # job's tests, which KIND_TESTS names and the race step below skips too: they run on a kind
+      # cluster in .github/workflows/ci-job-kind.yaml, so that the rig's library, Agent Sandbox's
+      # manifest and the worker image they run are that job's inputs. The names are written in
+      # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS, KIND_TESTS), which builds this
+      # step's text and the other jobs' from the lists and holds each step to it, so the skip and
+      # the runs cannot come to name different tests.
+      #
+      # LEGION_TEST_DRAIN_MEASURE=1 turns on the bound of internal/intake's
+      # TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent: a backlog of 5,000 events
+      # that are not Legion's, 50 of Legion's among them, drains in under a minute (drainBound)
+      # with Postgres 3 ms away. The test runs either way; without the variable it logs the time
+      # and holds no bound. It is this step's, where internal/intake runs, and not the race step's,
+      # whose detector would change the time.
       - name: Test the Go daemon
+        env:
+          LEGION_TEST_DRAIN_MEASURE: "1"
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -v -count=1 -timeout 15m -skip '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABurstableIssuePodRendersLive|TestNoTwoEventTypesShareAKind|TestShareVolumesMountInAnIssuePodLive|TestStage4aSandboxRuntimeLive|TestStage4bDaemonRestartsOnTheKindRigLive|TestStage4bSandboxTreeOnTheKindRigLive|TestStage4bStreamMoveOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive|TestTheControllerOrphanSweepLive|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -217,17 +255,29 @@ jobs:
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
       #
-      # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
+      # The -skip is the tests of internal/daemon that jobs of their own run, in one pattern
+      # ci_job_reads.py builds from the five lists. The plugin-pack job's three, which
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
-      # skills/ among them — are that job's inputs and not this suite's, and a test run twice is a
-      # test whose second run tells nobody anything. The names are written in
-      # .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this step's text and the
-      # other job's from the one list and holds each step to it, so the skip and the run cannot
-      # come to name different tests.
+      # skills/ among them — are that job's inputs and not this suite's. The daemon-live job's
+      # ten whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
+      # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
+      # CLI four of them run are that job's inputs, and none of them holds this step's package
+      # time for the minutes each takes. The agent-harness job's five live proofs that drive
+      # real Oh My Pi panes, which AGENT_HARNESS_TESTS names, and its Claude Code backend proof on
+      # tmux, which AGENT_HARNESS_TMUX_TESTS names: they run in
+      # .github/workflows/ci-job-agent-harness.yaml, so that the plugin packs they make, and
+      # bun.lock and skills/ with them, and the tmux and Claude Code the second needs, are that
+      # job's inputs, and the minutes each takes are spent in the merge queue. And the kind job's
+      # tests, which KIND_TESTS names and the plain step above skips too, whichever package each is
+      # in: they run on a kind cluster in .github/workflows/ci-job-kind.yaml. A test run twice is
+      # a test whose second run tells nobody anything. The names are written in
+      # .github/scripts/ci_job_reads.py, which builds this step's text and the other jobs' from
+      # the five lists and holds each step to it, so the skip and the runs cannot come to name
+      # different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABurstableIssuePodRendersLive|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictKeepsThePhaseAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestPlanRatingsLive|TestReviewRangeLive|TestShareVolumesMountInAnIssuePodLive|TestStage4aSandboxRuntimeLive|TestStage4bDaemonRestartsOnTheKindRigLive|TestStage4bSandboxTreeOnTheKindRigLive|TestStage4bStreamMoveOnTheKindRigLive|TestStepRecordsLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheControllerOrphanSweepLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -238,7 +288,7 @@ jobs:
       # peak, and the detector multiplies both.
       - name: Test what the race build cannot run
         run: |
-          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+          go test -v -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

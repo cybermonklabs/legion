@@ -37,6 +37,9 @@ env:
       "test": "test",
       "daemon-go": "daemon_go_tests",
       "plugin-pack": "plugin_pack",
+      "daemon-live": "daemon_live",
+      "agent-harness": "agent_harness",
+      "kind": "kind",
       "private-names-port": "private_names_port",
       "docs": "docs",
       "contracts": "contracts",
@@ -108,6 +111,12 @@ jobs:
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
+      # why: .github/ci-notes/ci.md#why-the-daemons-whole-daemon-live-tests-have-an-output-of-their-own
+      daemon_live: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_live }}
+      # why: .github/ci-notes/ci.md#why-the-agent-harness-has-an-output-of-its-own
+      agent_harness: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.agent_harness || 'false' }}
+      # why: .github/ci-notes/ci.md#why-the-kind-rig-has-an-output-of-its-own
+      kind: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.kind || 'false' }}
       # why: .github/ci-notes/ci.md#why-the-private-name-port-harness-has-an-output-of-its-own
       private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
@@ -142,7 +151,6 @@ jobs:
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
-      select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
@@ -160,6 +168,7 @@ jobs:
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
+      check_test_reach_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_test_reach_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -180,7 +189,7 @@ jobs:
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+      # why: .github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-fast-half-comes-back-on-every-push
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
@@ -188,7 +197,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Eight slow suites, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # Eight slow suites, gated as .github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
@@ -204,7 +213,7 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # A slow suite, gated as .github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -347,7 +356,6 @@ jobs:
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
-      select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
@@ -365,6 +373,7 @@ jobs:
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
+      check_test_reach_test: ${{ needs.changes.outputs.check_test_reach_test }}
 
   # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-is-a-job-of-its-own
   daemon-go:
@@ -389,6 +398,43 @@ jobs:
     uses: ./.github/workflows/ci-job-plugin-pack.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#why-the-daemons-whole-daemon-live-tests-are-a-job-of-their-own
+  daemon-live:
+    needs: changes
+    if: needs.changes.outputs.daemon_live == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-daemon-live.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-agent-harness-job-and-its-parts
+  agent-harness:
+    needs: changes
+    if: needs.changes.outputs.agent_harness == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-agent-harness.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-kind-rig-job-its-parts-and-the-image-it-tests
+  kind:
+    needs: [changes, ci-images, worker-image]
+    if: ${{ !cancelled() && needs.changes.outputs.kind == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-kind.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+      worker-image: ${{ needs.worker-image.outputs.ref }}
 
   # why: .github/ci-notes/ci.md#the-private-names-port-job-and-the-closure-it-took-off-the-test-filter
   private-names-port:
@@ -907,6 +953,9 @@ jobs:
       - test
       - daemon-go
       - plugin-pack
+      - daemon-live
+      - agent-harness
+      - kind
       - private-names-port
       - docs
       - contracts

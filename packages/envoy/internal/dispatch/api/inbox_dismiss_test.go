@@ -45,7 +45,7 @@ var seenAgentDrawn = myAgentMarks + `
 // seenRepliesOf is the seen_replies a page would carry for the rows named: one entry per row,
 // read out of the state the test seeded rather than written down. A Reply row the caller has no
 // row for is carried at version 0, the version every row starts at.
-func seenRepliesOf(t *testing.T, database *store.Store, login string, rows []string) map[string]any {
+func seenRepliesOf(t testing.TB, database *store.Store, login string, rows []string) map[string]any {
 	t.Helper()
 	ctx := context.Background()
 	threads := []string{}
@@ -92,7 +92,7 @@ func seenRepliesOf(t *testing.T, database *store.Store, login string, rows []str
 
 // dismissBody is one named dismissal's body: the rows it names and what the page drew in each of
 // them, which every named dismissal carries.
-func dismissBody(t *testing.T, database *store.Store, login string, rows []string) map[string]any {
+func dismissBody(t testing.TB, database *store.Store, login string, rows []string) map[string]any {
 	t.Helper()
 	return map[string]any{"threads": rows, "seen_replies": seenRepliesOf(t, database, login, rows)}
 }

@@ -113,10 +113,11 @@ codex_start_standins() {
 
 # codex_start_real: the pinned Codex CLI's terminal in a tmux server of its own for each session,
 # the plugin installed from the run's marketplace with Codex's own commands, into a Codex home
-# outside TMPDIR, where Codex refuses its helper binaries. Codex calls the route the run was given
-# through a provider of its own, whose key is in the variable it names (env_key), so the key is in
-# Codex's environment and never in an argv or a file of Codex's. Each session's id is the one Codex
-# mints, read from the record its SessionStart hook writes, and the pod is registered for it then.
+# outside TMPDIR, where Codex refuses its helper binaries. Codex calls the run's model stand-in
+# (codex_base_url, the stand-in's /v1) through a provider of its own, whose key, the run's
+# placeholder, is in the variable it names (env_key), so the key is in Codex's environment and
+# never in an argv or a file of Codex's. Each session's id is the one Codex mints, read from the
+# record its SessionStart hook writes, and the pod is registered for it then.
 codex_start_real() {
   local label base installed sock record codex_cache
   tmux_bin=$(command -v tmux)
@@ -159,7 +160,7 @@ codex_start_real() {
       refuse "codex plugin add installed no copy of the packed manifest at $installed; see $work/logs/$label-install.log"
     sock=$codex_tmux_dir/$label
     (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" \
-      TERM=xterm-256color LANG=C.UTF-8 NCS_CODEX_MODEL_KEY="$(<"$work/codex-model-key")" \
+      TERM=xterm-256color LANG=C.UTF-8 NCS_CODEX_MODEL_KEY="$(<"$work/model-key")" \
       ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${told_env[@]}" -- \
       "$tmux_bin" -S "$sock" -f /dev/null new-session -d -s codex -x 200 -y 50 -c "$base/cwd" \
       "$codex_bin" --dangerously-bypass-hook-trust) >>"$work/logs/$label-tmux.log" 2>&1 ||
@@ -283,7 +284,7 @@ codex_transcripts_in_evidence() {
     file=${codex_transcript[$label]:-}
     kept=$evidence/sessions/${file##*/}
     if [ -n "$file" ] && [ -s "$kept" ] && head -n 1 "$kept" | grep -qF -- "${codex_session[$label]}"; then
-      pass "transcript-in-evidence ($label): $kept, the transcript of Codex session ${codex_session[$label]}"
+      pass "transcript-in-evidence ($label)" "$kept, the transcript of Codex session ${codex_session[$label]}"
     else
       failed "transcript-in-evidence ($label)" "the evidence the teardown left holds no transcript of Codex session ${codex_session[$label]} (its record named '$file')"
     fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - the one rule by which the keyword-search measurement reads a case's query out of its fixture, which build_cases.py and run_search.py share, for a person who measures keyword search with them.
 """How a case's query text is extracted from the fixture's own content.
 
 A case is stored as a descriptor - which item, which version, which character range, and the

@@ -55,7 +55,7 @@ type testAskWithSuggestions struct {
 	Advice *testAdvisedSuggestions `json:"advice"`
 }
 
-func createSuggestionProject(t *testing.T, handler http.Handler, key string) {
+func createSuggestionProject(t testing.TB, handler http.Handler, key string) {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": key, "name": key + " project",

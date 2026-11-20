@@ -103,6 +103,10 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	}
 	rig.register(oldSession, oldSessionFile)
 	rig.must(supervise.RequestDeliver{Claim: rig.implementer, Task: phaseTask, ID: "outbox:7", Phase: phase.Implementing, Generation: issue.Generation})
+	// The delivery's send runs on a goroutine of its own (supervise's startSend). Oh My Pi
+	// acknowledges a prompt at its admission, before the turn it starts, so the rig waits that
+	// acknowledgement out: every turn it then drives is one whose prompt's result is still owed.
+	rig.machine.Wait()
 	return rig
 }
 
@@ -226,6 +230,12 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 // A claim the provider refused out of its budget fails; its issue is held, so the tree's architect
 // can retry it. That one retry must reach a working agent: a new session, because every turn of
 // the recorded one was refused, and the phase's task in it.
+//
+// Each refused turn here is reported before its prompt's result, which never comes. The failure
+// keeps the phase's task all the same, unconfirmed (supervise's turnOutcome), as a failure keeps
+// the task when the result comes first. The architect's retry writes a start for the same phase
+// and run, and that start delivers nothing more (keepsStartTask), so the new session's task is
+// the kept one.
 func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
@@ -233,8 +243,14 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 
 	rig.refuseEveryTurn(refusal)
 
-	if got := rig.machine.Claim(); got.State != supervise.StateFailed || got.Session != oldSession {
+	got := rig.machine.Claim()
+	if got.State != supervise.StateFailed || got.Session != oldSession {
 		t.Fatalf("after its refused turns the implementer is %s on session %q, want failed with the refused session still recorded", got.State, got.Session)
+	}
+	kept := got.Pending
+	if kept == nil || kept.Task != phaseTask || !kept.ConfirmedAt.IsZero() ||
+		kept.Phase != phase.Implementing || kept.Generation != rig.issue.Generation {
+		t.Fatalf("the failed implementer holds %+v, want the phase's task of run %d kept unconfirmed", kept, rig.issue.Generation)
 	}
 	current, from := rig.recordedPhase()
 	if current != phase.Held || from != phase.Implementing {
@@ -282,13 +298,13 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	if got := rig.machine.Claim(); got.Session != newSession || got.Session == oldSession {
 		t.Fatalf("the retried implementer registered session %q, want the new %q", got.Session, newSession)
 	}
-	// The task of the retried phase, behind the sentence that says this session replaced one the
-	// provider refused: a worker reading an empty transcript would otherwise take the task for a
-	// fresh start and do again what the abandoned session already pushed.
+	// The phase's task the failure kept, behind the sentence that says this session replaced one
+	// the provider refused: a worker reading an empty transcript would otherwise take the task for
+	// a fresh start and do again what the abandoned session already pushed. It is the one task
+	// sent: the retry's own start delivered nothing more.
 	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
+	if len(prompts) != 2 || prompts[1].DeliveryID != kept.ID || !strings.HasSuffix(prompts[1].Message, phaseTask) {
+		t.Fatalf("the new session was prompted %+v, want the kept phase task %s, ending with %q", prompts, kept.ID, phaseTask)
 	}
 	wantsAbandonment(t, prompts[1].Message, refusal)
 }

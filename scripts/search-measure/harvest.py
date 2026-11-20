@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - reads a Dispatch server's searchable content through its GET API into a corpus directory, for a person who measures keyword search on a harvest of production Dispatch.
 """Harvest a Dispatch server's searchable content through its read API. GET only.
 
 usage: harvest.py --out $TMPDIR/<dir> [--workers 16] [--projects KEY,KEY] [--issue-limit N]

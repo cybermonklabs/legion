@@ -1,11 +1,15 @@
 package docs
 
+// legion: tool - BenchmarkTokenCorpus dumps what the document read builds from each spec of a corpus, for a person who refactors the read and compares the dumps of two revisions with cmp to decide whether it kept the output; run with DISPATCH_TOKEN_CORPUS=<dir of specs> DISPATCH_TOKEN_CORPUS_OUT=<dump> go test -count=1 -run '^$' -bench '^BenchmarkTokenCorpus$' -benchtime 1x ./internal/dispatch/docs
+// legion: tool - BenchmarkTokenCorpusLargest times the document read of the corpus's largest spec, for a person who changes the read and weighs its cost; run with DISPATCH_TOKEN_CORPUS=<dir of specs> go test -count=1 -run '^$' -bench '^BenchmarkTokenCorpusLargest$' ./internal/dispatch/docs
+
 // The token corpus differential reads a directory of markdown specs at two revisions and dumps
 // everything the document read builds from each, so a change to how the read computes its tokens
-// can be judged by comparing the two dumps byte for byte (cmp). Both the test and the benchmark
-// skip unless DISPATCH_TOKEN_CORPUS names the directory. Each revision dumps with its own copy of
-// this file, which reads each spec as that revision's cold read folds it (foldLoaded here); the
-// dump's lines keep one format across revisions, so the two dumps compare.
+// can be judged by comparing the two dumps byte for byte (cmp). Both benchmarks skip unless
+// DISPATCH_TOKEN_CORPUS names the directory, their input, and no CI step passes -bench. Each
+// revision dumps with its own copy of this file, which reads each spec as that revision's cold
+// read folds it (foldLoaded here); the dump's lines keep one format across revisions, so the two
+// dumps compare.
 
 import (
 	"bufio"
@@ -158,22 +162,25 @@ func tokenCorpusDescendants(tree *pmdoc.Node) (descendants map[string][]string, 
 	return pmdoc.TableDescendantIDs(tree)
 }
 
-func TestTokenCorpus(t *testing.T) {
+// BenchmarkTokenCorpus writes the dump of every spec of DISPATCH_TOKEN_CORPUS to the file
+// DISPATCH_TOKEN_CORPUS_OUT names, both its inputs, and logs how long foldLoaded took over them.
+// Run it once, with -benchtime 1x: each run of its body is the whole dump.
+func BenchmarkTokenCorpus(b *testing.B) {
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {
-		t.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to dump their reads")
+		b.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to dump their reads")
 	}
 	outPath := os.Getenv("DISPATCH_TOKEN_CORPUS_OUT")
 	if outPath == "" {
-		t.Fatal("DISPATCH_TOKEN_CORPUS_OUT must name the file the dump is written to")
+		b.Fatal("DISPATCH_TOKEN_CORPUS_OUT must name the file the dump is written to")
 	}
 	names, err := tokenCorpusSpecs(dir)
 	if err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS: %v", err)
+		b.Fatalf("DISPATCH_TOKEN_CORPUS: %v", err)
 	}
 	out, err := os.Create(outPath)
 	if err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
 	}
 	defer out.Close()
 	writer := bufio.NewWriter(out)
@@ -183,7 +190,7 @@ func TestTokenCorpus(t *testing.T) {
 	for _, name := range names {
 		source, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			b.Fatalf("%s: %v", name, err)
 		}
 		specs++
 		line := tokenCorpusLine{File: name}
@@ -221,23 +228,23 @@ func TestTokenCorpus(t *testing.T) {
 		}()
 		encoded, err := json.Marshal(line)
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			b.Fatalf("%s: %v", name, err)
 		}
 		writer.Write(encoded)
 		writer.WriteByte('\n')
 	}
 	if err := writer.Flush(); err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
 	}
 	if err := out.Close(); err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
+		b.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
 	}
-	t.Logf("token corpus: %d specs, %d block tokens, %d markdown bytes, foldLoaded %s",
+	b.Logf("token corpus: %d specs, %d block tokens, %d markdown bytes, foldLoaded %s",
 		specs, tokens, markdownBytes, reading)
 }
 
 // BenchmarkTokenCorpusLargest measures buildDocumentRead on the corpus's largest spec, its tree
-// read outside the timer.
+// read outside the timer. DISPATCH_TOKEN_CORPUS is its input.
 func BenchmarkTokenCorpusLargest(b *testing.B) {
 	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
 	if dir == "" {

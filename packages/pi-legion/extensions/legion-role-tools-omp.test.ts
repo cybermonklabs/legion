@@ -26,7 +26,7 @@ import {
 // its own relay subject, so a pane with no NATS server registers nothing and claims nothing
 // (INFRA-771). A run without both skips, except on GitHub Actions, where a skip would hide the
 // only run of the check on the host that ships it (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-legion");
 
 /** Every pane runs in this tree; a root architect's own issue is the tree. */
 const TREE = "TOOLS-1";

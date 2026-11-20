@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-func getMyReplies(t *testing.T, handler http.Handler, login, query string) model.MyRepliesResponse {
+func getMyReplies(t testing.TB, handler http.Handler, login, query string) model.MyRepliesResponse {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies"+query, nil, login)
 	if response.Code != http.StatusOK {

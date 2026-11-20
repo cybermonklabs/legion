@@ -63,7 +63,7 @@ const sentinelWord = "wurd"
 
 // withSentinelWord is markdown with the first word of its padding (heaviestAdmitted) made
 // sentinelWord, so a one-word edit finds it once and leaves the document's length as it was.
-func withSentinelWord(t *testing.T, markdown string) string {
+func withSentinelWord(t testing.TB, markdown string) string {
 	t.Helper()
 	at := strings.LastIndex(markdown, "\n\nword ")
 	if at < 0 {

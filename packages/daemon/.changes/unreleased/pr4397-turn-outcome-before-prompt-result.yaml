@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A claim that fails because the provider refused its turns out of their budget keeps its pending
+  task for whoever retries it also when the plugin's report of the last refused turn reaches the
+  daemon before that turn's prompt result, where the daemon used to retire the task as finished
+  and the retried worker had no task to work on.
+time: 2026-11-19T13:26:06Z
+custom:
+  Issue: pr4397

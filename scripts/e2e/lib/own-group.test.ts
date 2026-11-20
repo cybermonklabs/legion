@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { ownGroup, untilRunning } from "./own-group";
 
-const skip = skipWithout("perl", "bash", "sleep", "true");
+const skip = skipWithout(["perl", "bash", "sleep", "true"], "test");
 
 const started: number[] = [];
 afterEach(() => {

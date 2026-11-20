@@ -140,13 +140,20 @@ generated block names every migration test of the daemon's store and grows with 
 main adds, and so are envoy_go and envoy_go_checks, its fast half, which the second step had
 no room for once envoy_go's filter took the two contract paths the API's window tests read,
 which its step runs plain, beside main's own growth of that string. They share no group with
-a filter of the other steps but ci_router, go_workspace, bun_install and legion_command,
-which this string writes again. Seven more filters moved here when main's growth and the
-spec-check filters took the second string to 98,525 bytes, past the margin:
-broker_multiprocess, airlock_lean, envoy_smoke, worker_image, ci_filters, tool_fallback and
-ci_images, which need no group but ci_router and go_workspace. With them and envoy_go's two
-filters here, each of the three strings has 25,000 bytes or more of room to rule 18's margin
-again.
+a filter of the other steps but ci_router, go_workspace, bun_install, legion_command,
+dispatch_server and jj_install, which this string writes again; the last two came with
+daemon_live, which the first step had no room for either. Seven more filters moved here
+when main's growth and the spec-check filters took the second string to 98,525 bytes, past
+the margin: broker_multiprocess, airlock_lean, envoy_smoke, worker_image, ci_filters,
+tool_fallback and ci_images, which need no group but ci_router and go_workspace. With them
+and envoy_go's two filters here, each of the three strings had 25,000 bytes or more of room
+to rule 18's margin again, until daemon_live and agent_harness took this one to about
+93,000 bytes, some 5,000 short of the margin; the first two keep 24,000 or more.
+airlock_lean went back to the second string when its mutants step's proxy-test closure
+took this one past the margin, and broker_multiprocess went to the first when main's auth
+service grew the race lane's filters here past it again, and envoy_smoke went to the first
+when daemon_live's plan-ratings reads and main's new Dispatch package took this one past it
+once more.
 
 filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
 reads. A GitHub expression can build no object from three, so jq merges them here. A
@@ -239,15 +246,16 @@ outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
-holds the reviewer's prompt to, the GitHub App helper
-internal/api/real_github_test.go:115 sources, and the examples and
+holds the reviewer's prompt to, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
-this job installs nothing (dispatch://INFRA-1413, A4).
+this job installs no workspace (dispatch://INFRA-1413, A4). Its one Bun install is
+the CodeGraph CLI's, from packages/daemon/docker/codegraph's own manifest and
+lockfile, which packages/daemon/** names, with the Bun setup-bun installs.
 
 The list is the one the test job's filter used to name through this anchor while
 it gated nothing of its own; it is now the daemon-go job's own filter, so a change
@@ -260,6 +268,12 @@ stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
+
+## daemon_go_tests: The Bun the CodeGraph CLI's install runs
+
+The Bun the CodeGraph CLI's install runs: setup-bun installs the version
+.bun-version pins, and holds it to its .github/ci-tools.yaml row through
+.github/scripts/ci-tools.sh, which omp_install's jj_install names already.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
@@ -393,6 +407,13 @@ three patterns the `test` filter already names, `*ci_router`, `*ci_filters_data`
 The guide-layout step's own files, for that same reason: its gate is
 the guide_layout filter, and a guide-only change has to select this job for it.
 
+## test: What `bunx tsc --noEmit -p scripts/e2e` compiles beyond scripts/e2e
+
+`bunx tsc --noEmit -p scripts/e2e` compiles every TypeScript file there, and with
+them the modules they import from two packages' test directories:
+lib/plugin-smoke-stack.ts imports the Dispatch and Envoy stacks, and four drivers
+and stand-ins import the Oh My Pi harness, which imports the last two.
+
 ## guide_layout: The guides' layout step of the test job (ci-job-test.yaml's
 
 The guides' layout step of the test job (ci-job-test.yaml's
@@ -479,7 +500,8 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-holds: the shards, the three `-alone` projects, the two-process job, the
+holds: the shards, the three `-alone` projects, the Bun rows that need a
+PostgreSQL, the re-recording of the stubbed rows, the two-process job, the
 fake-embedder job, the visual review and the merge job. Every entry is something a
 browser row reads: the dashboard and its contracts, the Dispatch server its harness
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
@@ -576,6 +598,15 @@ pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
 ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
 Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
+## repository_markdown: The repository's guides the corpus tests read
+
+The repository's guides the corpus tests read: the committed list and every guide
+on it, which envoy-go's and envoy-go-docs-finalizers' step "Write the repository's
+guides into the corpus directory" copies into the corpus directory (ci_job_reads.py's
+REPOSITORY_MARKDOWN). envoy_go and envoy_go_race_docs name it, so the group stands
+before the first of them in `.github/ci-filters.yaml`: an alias names only an anchor
+the document has already defined.
+
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 
 internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
@@ -647,10 +678,10 @@ not match.
 
 ## dispatch_memory: `go test -tags memory ./cmd/dispatch`. memory_profile_test.go
 
-`go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
-when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
-not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
-in-process NATS (its line 47).
+`go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads three guides only
+in its benchmark, and no step passes -bench, so they are not here.
+cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the in-process
+NATS (its line 47).
 
 ## dispatch_two_builds_go: The two-build job's Go step alone, behind a gate of
 
@@ -690,6 +721,12 @@ What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` doe
 not, so listener_command, which is that build closure, leaves them to the jobs
 that run the tests: the chat client and the router.
 
+## broker_multiprocess: Check k9 and the lease test start dev-airlock.sh's stack
+
+Check k9 (packages/envoy/scripts/airlock-check.sh) and the lease test
+(dev-airlock-lease.test.sh) start dev-airlock.sh's stack, whose dev-broker.sh
+builds these four beside the broker and agent-secrets.
+
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
@@ -697,9 +734,10 @@ and the axiom print read the model's own project, and the two fuzz runs compile 
 airlock package and compare it against the model's program, so a change to either
 side runs the job. Both sides live under internal/broker/airlock, which one glob
 names, and the Go side also compiles internal/fold, the case fold it compares names
-in; the axiom check is a script of its own, which check k15 runs too; the Lean
-toolchain comes from the elan the job's action installs, and that action reads the
-`elan` row of the tool manifest through the fetch helper every install goes through.
+in; the axiom check is a script of its own; the Lean toolchain comes from the elan
+the job's action installs, and that action reads the `elan` row of the tool manifest
+through the fetch helper every install goes through. The mutants step runs a script
+of its own, which tests the airlock's proxy package too, against the mutants beside it.
 
 ## envoy_smoke: Every file packages/envoy/docker/Dockerfile builds from
 
@@ -743,6 +781,12 @@ The job reads no Markdown file: the listener, the renderer and the contracts
 between them are its whole input, so a guide written under one of the directory
 patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/broker-client/**'` and the rest) would start it for nothing.
 
+## envoy_session_stall: What the session rig's third part runs
+
+The session rig's third part: the pinned Oh My Pi and Claude Code it runs, the
+jj install-omp installs the pin through, and the claude-envoy build it makes
+(packages/claude-envoy/scripts/build.ts and what that build reads).
+
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
 Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
@@ -760,10 +804,13 @@ packages/envoy or of skills/, which the step's some-with-excludes reads as an
 exclusion, so a pull request touching only files the build does not read builds no
 image.
 .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
-file the image build reads, including a new top-level directory of packages/envoy, or
-matches a file it does not read other than the two workflow files; it reads this
-filter only as a flat list, so the one anchor it names is ci_router, which stands
-for a single glob and leaves the list flat.
+file the image build reads, including a new top-level directory of packages/envoy; it
+reads this filter only as a flat list, so the one anchor it names is ci_router, which
+stands for a single glob and leaves the list flat. The job runs one test after the
+build, the leak guard's (scripts/e2e/leak-guard-image-probe.sh, worker-image.yaml's
+"Leak guard test of the built image"), so the list names that file too, which no build
+reads, and that check leaves the filter's other direction alone, since its job does
+more than build.
 
 ## worker_image: Changelog fragments, which worker_image's package patterns match and
 
@@ -878,6 +925,109 @@ that copy and check them, the tool rows and the filler beside them, and the
 crane the action installs, so a guide written under one of those directories
 would start it for nothing.
 
+## daemon_live: The daemon-live job: internal/daemon's whole-daemon live tests
+
+The daemon-live job: internal/daemon's ten whole-daemon live tests of
+DAEMON_LIVE_TESTS (.github/scripts/ci_job_reads.py), which boot the whole daemon over
+the job's PostgreSQL and the package's test NATS server and drive it with no agent.
+The step runs those tests by name and compiles the package they are in to do it, so
+this list is that package's test closure - packages/daemon, the Dispatch server
+internal/testbuild builds, which handoff_records_live_test.go and
+step_records_live_test.go start, and the envoy packages internal/daemon imports - and
+what the ten read beyond it: the `dispatch` CLI and the completion-head driver
+handoff_records_live_test.go's rig runs under bun, the CLI step_records_live_test.go
+runs, the workspace sources the two load and the frozen install they load them from,
+jj, which every daemon they boot resolves, and the NATS image the package's test
+broker starts.
+
+## daemon_live: The two programs handoff_records_live_test.go's rig runs under bun
+
+bun packages/envoy-client/bin/dispatch.ts and scripts/e2e/completion-head.ts, the
+two programs handoff_records_live_test.go's rig runs, and the sources they load: the
+Envoy client's (and the broker client's, which it imports), pi-shared's
+handoff-record.ts with the one module of its own package it imports, and the
+modules of packages/contracts/src their bundles load (ci_ts_programs.py, BUNDLES),
+in the filter's listed block. check-ts-filters.sh holds this filter to every file the
+two bundles load.
+
+## agent_harness: The agent-harness job: internal/daemon's live proofs over real panes
+
+The agent-harness job: internal/daemon's five live proofs of AGENT_HARNESS_TESTS
+(.github/scripts/ci_job_reads.py), which boot the whole daemon over the job's
+PostgreSQL and the package's test NATS server and drive real Oh My Pi panes on it.
+The step runs those tests by name and compiles the package they are in to do it, so
+this list is that package's test closure - packages/daemon, the Dispatch server
+internal/testbuild builds, which late_completion_live_test.go starts, and the envoy
+packages internal/daemon imports - and what the five read beyond it: the `legion`
+command they build for their panes, the two plugins they pack with `bun pm pack`
+and everything each plugin's prepack builds its bundle from, the frozen install the
+packs read, jj, the pinned Oh My Pi, and the NATS image the package's test broker
+starts. The tmux-scripts part adds the three tmux scripts of scripts/e2e, the lib
+files they source and run, their builds of `legion`, the Envoy listener, natsd and
+the controller's liveness prober, the claude-envoy build, the model stand-in and
+what it loads, and the pinned Claude Code; and the Claude Code backend's live proof
+of AGENT_HARNESS_TMUX_TESTS, in the package above. The session-settings and
+session-scripts parts add three more scripts of scripts/e2e, the drivers and model
+stand-ins they run under bun and what those load, their builds of the listener,
+Dispatch, natsd and `legion`, and the SPA two of them build and drive in Playwright's
+Chromium. The plugin-smokes part adds the four live scripts of the Oh My Pi plugin,
+in packages/pi-envoy and packages/dispatch, the rig they source, the two stacks of
+packages/envoy-client/test it starts under bun and the model stand-in it runs. The
+nats-callout-sessions part adds scripts/e2e/nats-callout-sessions.sh, the stack of
+packages/envoy/scripts/dev-stack.sh --callout it runs and that stack's build of eight
+commands of packages/envoy, and the Codex plugin it builds and packs; its --real-hosts
+step adds its build of `legion`, the model stand-in it runs under bun and what that
+loads, and the pinned Oh My Pi, Claude Code and Codex CLI.
+
+## agent_harness: The plugin packs each test runs
+
+scripts/e2e/lib/pack-plugin.sh, which each test runs once per plugin, and what
+its `bun pm pack` runs: each plugin's prepack (scripts/pi-plugin-prepack.sh) and
+what that builds the bundle from.
+
+## agent_harness: The tmux-scripts part
+
+The tmux-scripts part: its three scripts of scripts/e2e, the lib files they source
+and run, the overlay main the controller's runs as packages/daemon's
+cmd/liveprobe-accept, and the model stand-in two of them run under bun, with the
+test fixtures packages/pi-shared/test/omp-harness.ts, which it imports, imports.
+The Envoy listener each script builds from this checkout follows them, with its
+whole closure, and natsd (packages/envoy/internal/testnats/cmd/natsd), which imports
+nats-server alone.
+
+## agent_harness: The claude-envoy build and the Claude Code release
+
+The claude-envoy build the clean stop and the Claude Code test run with bun
+(packages/claude-envoy/scripts/build.ts) and what the claude-envoy job's build reads
+beyond the trees above, and the Claude Code release both run,
+which .github/actions/install-claude-code installs at .claude-code-pin.
+
+## agent_harness: The session-settings and session-scripts parts
+
+The session-settings and session-scripts parts: their three scripts of scripts/e2e,
+the drivers and model stand-ins they run under bun, and the SPA two of them build in
+packages/dispatch, with the proof editor it bundles, whose @playwright/test launches
+the page.
+
+## agent_harness: The plugin-smokes part
+
+The plugin-smokes part: the rig its four scripts source, which starts the stacks
+and the model stand-in under bun; the scripts are in the two packages above and
+the stacks in packages/envoy-client.
+
+## agent_harness: The nats-callout-sessions part
+
+The nats-callout-sessions part: its script, the lib file it sources for its Codex
+sessions, the stack it runs (packages/envoy/scripts/dev-stack.sh and the lib file
+that sources for the NATS auth service), and the Codex plugin's marketplace entry it
+packs the plugin by. The stack's go build follows them, with its whole closure; the
+plugins and their stand-in hosts are in the packages above. Its second step runs the
+script with --real-hosts: the hosts themselves, each calling the model stand-in the
+script starts (scripts/e2e/lib/messages-standin.ts), which streams Codex's turns
+through scripts/e2e/lib/responses-stream.ts, and the Codex CLI .codex-pin names, which
+.github/actions/install-codex installs; the step's other reads (the plugin packs, the
+model stand-in, the Claude Code release and Oh My Pi) are in the sections above.
+
 ## proof_sdk_offline: The proof-sdk-offline job: a frozen install behind a
 
 The proof-sdk-offline job: a frozen install behind a proxy that answers 504
@@ -891,6 +1041,31 @@ tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
 .github/scripts/ci-fault-proxy.py, the program that drives the install, and the
 two files that hold the job: ci.yaml, which carries its `if:`, and the called
 file its steps live in.
+
+## kind: The kind job, its clusters, its worker image and its rig
+
+The kind job (.github/workflows/ci-job-kind.yaml): the tests of ci_job_reads.py's
+KIND_TESTS, on kind clusters its parts bring up with
+scripts/e2e/lib/kind-sandbox.sh and the Agent Sandbox CRD and manifest of
+packages/daemon/internal/runtime/sandbox/testdata, against the worker image of this
+commit and the fake GitHub of packages/daemon/internal/fakegithub. Its rig
+part compiles internal/kindtest's tests, whose closure is under packages/daemon and
+packages/envoy/testprereq. The worker image is a read of the job however the run came
+by it, its own image job's build or worker-image.yaml's, so this list names every
+path worker_image names as that filter writes it, worker-image.yaml with them, but
+packages/envoy/deploy, which the .dockerignore keeps out of the build whole, and of
+that filter's `!` patterns those that leave no Go test file out; rule 17 of
+.github/scripts/check-ci-filters.sh writes the others into the generated block.
+.github/scripts/check-image-trigger-paths.sh holds this list to the image job's build,
+and reads it only as a flat list, so the anchors it names are ci_router and
+ci_filters_data, each of which stands for a single glob.
+
+## kind: What the kind tests read beside the rig
+
+What the kind tests read beside the rig: the operator route the sandbox runtime's
+test fills, the role-namespace helper the share test enters a role with, and the
+plugin pack that test runs over a frozen bun install, the plugins' own changelog
+fragments and the skills' guide included, which the prepack reads.
 
 ## envoy_client: The Envoy client's job (envoy-client)
 
@@ -1047,8 +1222,8 @@ ci-ok job's `needs:`, without which the verdict is reached before that job ends 
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the ten slow suites' pull-request case is
-(.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+event must hold back, as the twelve slow suites' pull-request case is
+(.github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -1133,7 +1308,7 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise
     and jj (pi-shared) and elan (airlock-lean) are;
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
-    daemon-go, plugin-pack, pi-envoy and pi-legion;
+    daemon-go, plugin-pack, pi-envoy, pi-legion and envoy-session-stall;
   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
   * an image of this repository built for linux/amd64: worker-image, browser-image, and
@@ -1275,6 +1450,32 @@ The one test of that suite that packs the two plugin releases, in a job of its o
 pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
 suite (dispatch://INFRA-1413, A4).
 
+## Why the daemon's whole-daemon live tests have an output of their own
+
+The ten whole-daemon live tests of the daemon's Go suite, in a job of their own: four of
+them run the `dispatch` CLI under bun, so with them in daemon-go a lockfile change ran the
+daemon's whole Go suite. No `full-ci` term: the job comes back on every push that selects
+it, as daemon-go does.
+
+## Why the agent harness has an output of its own
+
+The agent harness: a job of parts, each driving real agents on model stand-ins for up to
+24 minutes, the first of them the five live proofs of the daemon's Go suite that drive real
+Oh My Pi panes, the second the scripts and the Go test that drive them on tmux, the third
+and fourth the scripts that drive sessions through Dispatch and Envoy, the fifth the four
+live scripts of the Oh My Pi plugin. A slow suite, gated as
+.github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+says.
+
+## Why the kind rig has an output of its own
+
+The kind rig: a job of parts, each bringing up a kind cluster with Agent Sandbox and gVisor
+on the runner and running the Sandbox runtime's tests on it against the worker image of
+this commit and a fake GitHub, the first of them the rig's own measuring test. A slow
+suite, gated as
+.github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+says.
+
 ## Why the private-name port harness has an output of its own
 
 The private-name port harness, in a job of its own: it builds the `legion` binary of
@@ -1309,9 +1510,9 @@ a pull request is held to. The `full-ci` label no longer decides whether this su
 only which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
-## The ten slow suites, whose runner time dwarfs every other job's. The
+## The twelve slow suites, whose runner time dwarfs every other job's. The
 
-The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
+The twelve slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`. Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -1351,8 +1552,8 @@ and so reads the same files.
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the nine outputs the ten slow suites run behind. On a pull request without that
-label each of those nine is `false` whether its paths matched or not, so a reader of the
+the eleven outputs the twelve slow suites run behind. On a pull request without that
+label each of those eleven is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
@@ -1591,6 +1792,57 @@ to either ran the daemon's whole Go suite. Here they run on their own inputs, an
 daemon-go race step skips them by name (.github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS
 builds both steps' text).
 
+## Why the daemon's whole-daemon live tests are a job of their own
+
+The ten whole-daemon live tests of the daemon's Go suite that
+.github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names: each boots the whole daemon over
+this job's PostgreSQL and the package's test NATS server and drives it with no agent. They
+were the drivers of ten scripts under scripts/e2e, which no job of this router ran; they
+run here on each pull request and merge group whose paths select them, and the daemon-go race
+step skips them by name (.github/scripts/ci_job_reads.py builds both steps' text). Not
+fail-open: their tests were in no job that `changes` failing runs.
+
+## The agent harness job and its parts
+
+The agent harness: parts that each drive real agents, answered by model stand-ins, for up to
+24 minutes. Its first part runs the five live proofs of the daemon's Go suite that
+.github/scripts/ci_job_reads.py's AGENT_HARNESS_TESTS names, which drive real Oh My Pi panes
+on the whole daemon; the daemon-go race step skips them by name (.github/scripts/ci_job_reads.py
+builds both steps' text). They were the drivers of five scripts under scripts/e2e, which no CI
+job ran. Its second part, tmux-scripts, runs three scripts under scripts/e2e that drive Oh My
+Pi and Claude Code panes on the daemon's own tmux server, each a step of its own, and the
+Claude Code backend's live proof of AGENT_HARNESS_TMUX_TESTS, which the race step skips too.
+Its third and fourth parts, session-settings and session-scripts, run three more scripts under
+scripts/e2e, each a step of its own, that drive Oh My Pi and Claude Code sessions through
+Dispatch, Envoy and a Chromium page. Its fifth, plugin-smokes, runs the four live scripts of the
+Oh My Pi plugin, each a step of its own, on Envoy and Dispatch stacks of their own.
+The merge queue runs the job, and a pull request only with the label `full-ci`, as
+#why-the-agent-harness-has-an-output-of-its-own says. Not fail-open: its tests were in no job
+that `changes` failing runs.
+
+## The kind rig job, its parts and the image it tests
+
+The kind rig: parts that each bring up a kind cluster on the runner with Agent Sandbox's
+controller and gVisor, a registry the node pulls from and the fake GitHub of
+packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it against the
+worker image of this commit. Its parts, each a job of the called file, run the tests
+.github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
+the rig's own measuring test in one, the share test in another, the burstable and controller
+sweep tests in a third, the Sandbox runtime's live test in five, one group of its checks each,
+each of those eight within about 24 minutes, and the whole-tree tests in four more, one each:
+tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
+tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
+runs past that budget, so three tests on rigs of their own hold them, each within it as CI run
+44766893801 measured them (17.4, 18.5 and 24.0 minutes, the last before its controller check
+moved to tree-stage4b-restart).
+The image under test is the worker-image job's on a pull request where that job built the
+head, handed down as `worker-image`, and otherwise the called file's image job builds it once
+per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls
+the copies that job lands of the rows its pins name. It carries `!cancelled()`, as
+tool-fallback does, so the two needs skipped hold nothing back. The merge queue runs the job,
+and a pull request only with the label `full-ci`, as #why-the-kind-rig-has-an-output-of-its-own
+says. Not fail-open: its tests were in no job that `changes` failing runs.
+
 ## The private-names-port job, and the closure it took off the test filter
 
 The harness that holds this repository's four private-name rules, as the `legion` binary of
@@ -1637,7 +1889,7 @@ service on a job whose other thirty-odd steps would start it for nothing.
 The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
 They were split out of the browser suite (the dispatch-browser job), whose full lane - the one
 the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
-ten suites that label holds back, while these checks must come back on every push.
+twelve suites that label holds back, while these checks must come back on every push.
 No Postgres service and no Go, but contracts is built
 before the suites: one case of the dashboard's test run spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
@@ -1650,16 +1902,18 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-`-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts this job's ci-ok report.
+`-alone` projects a machine each, the job of the suite's Bun rows that need a PostgreSQL and
+the fake-embedder job, which both run on both lanes, the re-recording of the stubbed rows,
+the two-process job, the containerised visual review, and the merge job that joins the shard
+and alone reports into one and posts this job's ci-ok report.
 
 Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
 `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
 proves those two rows and no more - it is not the run that proves the suite before main.
 Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-- runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-group is where a change meets the whole suite before it lands, and the nightly
+- runs `full`: every project, the three `-alone` ones, the re-recording of the stubbed rows
+and the two-process job. So the merge group is where a change meets the whole suite before
+it lands, and the nightly
 (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
 lane, from main) runs it again on main's tip.
 
@@ -1705,7 +1959,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite), is one of the ten slow suites,
+container-backed NATS matrix and the integration suite), is one of the twelve slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of

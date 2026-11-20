@@ -175,7 +175,9 @@ happy_page() {
     "15|dispatch-browser / merge|null" \
     "16|lint|success" \
     "17|dispatch-multiprocess|success" \
-    "18|dispatch-browser / visual|failure"
+    "18|dispatch-browser / visual|failure" \
+    "19|dispatch-browser / postgres-rows|failure" \
+    "20|dispatch-browser / recordings|skipped"
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
@@ -224,7 +226,7 @@ echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
+check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 9)"
 check "each entry holds the four fields and no other" \
   "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,leg,name")"
 check "a shard job's id, name and conclusion travel unchanged" \
@@ -245,6 +247,14 @@ check "and keeps its conclusion, so reading three can name it when it is red" \
 check "the binaries job is kept, with a null leg" "$(is "$(field 10 .leg)" null)"
 check "and keeps its conclusion, so reading three can name a build that failed" \
   "$(is "$(field 10 .conclusion)" success)"
+check "the job of the Bun rows that need a PostgreSQL is kept, with a null leg" \
+  "$(is "$(field 19 .leg)" null)"
+check "and keeps its conclusion, so reading three can name it when it is red" \
+  "$(is "$(field 19 .conclusion)" failure)"
+check "the job that re-records the stubbed rows is kept, with a null leg" \
+  "$(is "$(field 20 .leg)" null)"
+check "and keeps its conclusion, skipped on the pull-request lane" \
+  "$(is "$(field 20 .conclusion)" skipped)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
@@ -527,7 +537,7 @@ retry_seconds=1
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 7)"
+check "writes the attempt that answered" "$(is "$(entries)" 9)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(at_least "$seconds" 1)"

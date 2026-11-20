@@ -1705,19 +1705,21 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // and a task taken back unread loses the mark, so nothing the worker reports from whatever turn
 // follows belongs to it. A caller whose prompt's turn is over or aborted therefore leaves nothing
 // of the task outstanding before it calls, since the set is what this reads to tell the two
-// apart: a provider error's result has ended the wait already (promptResulted), and a compaction
-// ends it itself (compactStart).
+// apart: a provider error's result has ended the wait already (promptResulted), a compaction
+// ends it itself (compactStart), and so does a run of refused turns that fails the claim before
+// the newest one's result has come (turnOutcome).
 //
 // A confirmation it clears was taken by a turn that was not the task's — another input's, or one
 // the prompt's own answer says came to nothing — so what it told goes back to untold with it, and
-// the next prompt carries that sentence again (moveTelling). Two callers clear a confirmation a
-// turn of the task itself may have taken, and the untelling is right for both: a provider error
+// the next prompt carries that sentence again (moveTelling). Three callers clear a confirmation a
+// turn of the task itself may have taken, and the untelling is right for each: a provider error
 // (providerErrored) is a model call that failed, often the turn's first, so the agent never read
 // the prompt, and where an earlier call of the turn did, the sentence is told twice rather than
-// lost; a compaction (compactStart) aborts the turn, and the sentence repeated in the next prompt
-// is the safe way round. A confirmation kept for an outstanding prompt keeps its telling too,
-// moved with it to the new id, so that a later take-back of the same confirmation under that id
-// still finds it.
+// lost; a run of refused turns (turnOutcome) is the same refusal, reported by the plugin rather
+// than by the prompt's result; a compaction (compactStart) aborts the turn, and the sentence
+// repeated in the next prompt is the safe way round. A confirmation kept for an outstanding
+// prompt keeps its telling too, moved with it to the new id, so that a later take-back of the
+// same confirmation under that id still finds it.
 //
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's

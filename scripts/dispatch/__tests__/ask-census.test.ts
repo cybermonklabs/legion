@@ -1,11 +1,9 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { join } from "node:path";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
 } from "../../../packages/envoy-client/src/dispatch-http.ts";
-import { runJq } from "../../e2e/lib/run-jq.ts";
 import {
   applyCodes,
   censusIssues,
@@ -48,15 +46,6 @@ const since1671: ApprovalHistoryEvent[] = [
   handedBack(6, 2, "Proposes an hourly export."),
   ...approved(7, 2),
 ];
-
-/** The approval requests `drive_gated_spec` in the stage 4b proof reads from the same events. */
-function stage4bRequests(events: readonly unknown[], artifactId: string): number {
-  const library = join(import.meta.dir, "..", "..", "e2e", "lib");
-  const program = 'include "design-gate-approval-requests"; approval_requests($artifact) | length';
-  return Number(
-    runJq(["-L", library, "--arg", "artifact", artifactId, program], JSON.stringify(events))
-  );
-}
 
 const from = "2026-10-01T00:00:00.000Z";
 const to = "2026-10-02T00:00:00.000Z";
@@ -183,22 +172,6 @@ describe("ask census", () => {
         humanTurns: 2,
         exceedsHumanTurnBudget: false,
       },
-    ]);
-  });
-
-  test("counts the arrivals the stage 4b proof reads as approval requests, before and since #1671", () => {
-    const histories = [...recordedRounds.issues, { asks: [], events: since1671 }];
-    const counted = histories.flatMap(({ asks, events }) =>
-      summarizeApprovalRounds(events, asks).map((round) => ({
-        census: round.arrivals,
-        stage4b: stage4bRequests(events, round.artifactId),
-      }))
-    );
-    expect(counted).toEqual([
-      { census: 4, stage4b: 4 },
-      { census: 3, stage4b: 3 },
-      { census: 2, stage4b: 2 },
-      { census: 3, stage4b: 3 },
     ]);
   });
 

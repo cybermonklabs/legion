@@ -1,10 +1,10 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables named below are the caller's to set or read
-# local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: free ports below
+# local-stack.sh — the loopback Envoy stack smoke-role-takeover.sh brings up: free ports below
 # the kernel's ephemeral range, and natsd (packages/envoy/internal/testnats/cmd/natsd) and the
-# listener (packages/envoy/cmd/listener) built from a checkout with `go build`.
-# smoke-role-takeover.sh and smoke-registration-stall.sh (--local-stack) source it, so what those
-# two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
-# stack for the TypeScript suite.
+# listener (packages/envoy/cmd/listener) built from a checkout with `go build`. That smoke
+# sources it, so what it knows about the stack is written once; packages/envoy-client/test/envoy-stack.ts
+# is the same stack for the TypeScript suite and for the other smokes beside this file, which
+# start it through scripts/e2e/lib/plugin-smoke.sh.
 #
 # Sourced, never run: it defines functions, sets no trap, starts no process and writes no file.
 # Each caller keeps its own process bookkeeping — how it isolates the environment (`env -i`, bare
@@ -16,8 +16,8 @@
 #   refuse MESSAGE    prints MESSAGE prefixed with the script's name and exits 2; port_range
 #                     reports a kernel with no usable range below its ephemeral one through it
 # and sets
-#   local_stack_fail  the function pick_port reports an exhausted range through: `refuse` in both
-#                     callers, each of which prints with the script's name and exits 2
+#   local_stack_fail  the function pick_port reports an exhausted range through: `refuse` in
+#                     smoke-role-takeover.sh, which prints with the script's name and exits 2
 # and reads, after port_range, ephemeral_low and port_floor.
 
 # port_range: the kernel's ephemeral range (ephemeral_low), which every outbound connection

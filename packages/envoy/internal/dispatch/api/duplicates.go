@@ -25,14 +25,14 @@ const duplicateCandidateLimit = 5
 // The two bars the near-copy score is read against. A score is the share of the new text's picked
 // rarest-word weight that a candidate holds, so both are fractions of one.
 //
-// TestNearCopyRefusalReplay measures them: it replays every create of INFRA from 2026-10-20 to
-// 2026-11-04 against the project as it stood at each create, over the corpus
-// `near-copy-corpus.jsonl` attached to dispatch://INFRA-1160, and reports the false-refusal and
-// nudge rates at each bar. It holds the two constants to the ceilings the spec gives them, but
-// it is env-gated and CI never runs it (near_copy_replay_test.go), so nothing fails when the
-// numbers below go stale. A change to the term picker, to the project's term statistics or to
-// the scoring statement invalidates this calibration, and the replay is the recalibration to
-// run by hand after it.
+// BenchmarkNearCopyRefusalReplay measures them: it replays every create of one project from
+// 2026-10-20 to 2026-11-04 against the project as it stood at each create, over the corpus
+// `near-copy-corpus.jsonl` attached to dispatch://INFRA-1160, and prints the false-refusal and
+// nudge rates at each bar and at the two constants below. It is a tool that holds them to no
+// ceiling, and no CI step runs it (near_copy_replay_test.go), so nothing fails when the numbers
+// below go stale. A change to the term picker, to the project's term statistics or to the
+// scoring statement invalidates this calibration, and the replay is the recalibration to run
+// after it.
 const (
 	// duplicateRefuseScore is the score at or above which a create is refused 409
 	// POSSIBLE_DUPLICATE. At most 5% of the creates the replay judges not duplicates may reach it

@@ -517,12 +517,11 @@ func TestEveryDeploymentRowIsMeasured(t *testing.T) {
 	}
 }
 
-var updateGolden = flag.Bool("update", false, "rewrite the golden this package writes for scripts/e2e")
+var updateGolden = flag.Bool("update", false, "rewrite this package's golden under testdata")
 
-// The web-search row as `legion state --json` carries it when tree 3's planner, in its issue pod,
-// reports web_search off: the row Stage 4b's full-agent-negative checkpoint reads
-// (web_search_open_for in scripts/e2e/stage4b-sandbox-tree.sh), written here from the producer so
-// scripts/e2e/lib/stage4b-capabilities.test.ts runs that predicate on what the daemon renders.
+// The web-search row as `legion state --json` carries it when a planner, in its issue pod, reports
+// web_search off, written here from the producer so a change to how the daemon renders an open
+// live row is a change to this golden.
 func TestWebSearchOpenRowGolden(t *testing.T) {
 	d := satisfied
 	d.Sessions = []Session{podSession("LEGSMOKE-3", claim.RolePlanner, measured, map[Name]string{WebSearch: "web_search is not a registered tool"})}

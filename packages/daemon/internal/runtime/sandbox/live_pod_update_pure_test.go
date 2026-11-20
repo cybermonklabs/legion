@@ -1,6 +1,6 @@
-// The Stage 4a update-round check's pure logic. Neither function touches a cluster, so, unlike
-// live_pod_update_test.go's own `//go:build e2e`, this file carries no build tag: ordinary
-// `go test ./...` compiles and exercises it directly (live_pod_update_unit_test.go).
+// The Stage 4a update-round check's pure logic. Neither function touches a cluster, so it sits
+// apart from live_pod_update_test.go, which the kind job runs whole, and daemon-go exercises it
+// directly (live_pod_update_unit_test.go).
 package sandbox
 
 import (
@@ -13,16 +13,13 @@ import (
 // podUpdateRunIssue is pod-update's issue key in the run whose project is project, seeded by that
 // project and this check's own name (runIssue), so it is neither cache-b's key
 // (cacheRunIssue) nor another run's. Both workers of the issue push its branch, legion/<issue>,
-// onto the run's repository, which every Stage 4a run shares, so each run only ever creates and
-// deletes its own; the key keeps cache-b's `legion/S4A-<digits>` shape, so a branch a killed run
-// left is swept by cache-lost-volume's own sweep (staleRunBranches).
+// onto the run's repository, a branch no other check of the run pushes.
 func podUpdateRunIssue(project string) string { return runIssue(project + " pod-update") }
 
 // podUpdateFleetRunIssue is pod-update-fleet's second issue key in the run whose project is
 // project, seeded as podUpdateRunIssue's is but by this check's own name, so the two issues the
 // one template change drifts at once are two issues, each pushing a branch of its own onto the
-// repository every Stage 4a run shares. It keeps the same `legion/S4A-<digits>` shape, so a
-// branch a killed run left is swept by cache-lost-volume's own sweep (staleRunBranches).
+// run's repository.
 func podUpdateFleetRunIssue(project string) string { return runIssue(project + " pod-update-fleet") }
 
 // movedPodShape is the recorded shape with its disk moved one gibibyte up, and the one reason the

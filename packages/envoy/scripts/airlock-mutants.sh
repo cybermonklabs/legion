@@ -36,7 +36,9 @@
 # applies them where patch is not installed), and, for the model mutants, lake from the Lean
 # toolchain this environment names (ELAN_HOME and PATH are taken as they are); a missing
 # lake exits 2. The Go mutants need the built model, and the proxy mutants need neither. One
-# PASS: or FAIL: line per mutant, and a non-zero exit when any mutant was not caught.
+# `CHECK <mutant>: PASS` line, after the line naming what caught it, or `CHECK <mutant>: FAIL:
+# <why>` line per mutant, and a non-zero exit when any mutant was not caught. The `airlock-lean`
+# job of `ci.yaml` runs it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,9 +65,10 @@ those tests alone.
            go-carries-value or proxy-connect-carried); with no name, every mutant of both
            directories
 
-No patch is ever applied to this repository. It prints one PASS: or FAIL: line per mutant and
-a last line saying how many were caught, exits non-zero when a mutant was not caught, and
-exits 2 when go, lake or both patch and git are missing.
+No patch is ever applied to this repository. It prints one `CHECK <mutant>: PASS` or
+`CHECK <mutant>: FAIL: <why>` line per mutant and a last line saying how many were caught,
+exits non-zero when a mutant was not caught, and exits 2 after a `CHECK setup: FAIL` when go,
+lake or both patch and git are missing.
 EOF
 }
 
@@ -77,13 +80,24 @@ case "${1:-}" in
 esac
 
 if ! command -v go >/dev/null 2>&1; then
-	echo "airlock-mutants: go is not on PATH" >&2
+	echo "CHECK setup: FAIL: go is not on PATH"
 	exit 2
 fi
 if ! command -v patch >/dev/null 2>&1 && ! command -v git >/dev/null 2>&1; then
-	echo "airlock-mutants: neither patch nor git is on PATH, so no mutant can be applied" >&2
+	echo "CHECK setup: FAIL: neither patch nor git is on PATH, so no mutant can be applied"
 	exit 2
 fi
+
+# caught prints what caught mutant <name> and its PASS line; missed prints its FAIL line and
+# counts it.
+caught() {
+	echo "   $1 — $2"
+	echo "CHECK $1: PASS"
+}
+missed() {
+	echo "CHECK $1: FAIL: $2"
+	failures=$((failures + 1))
+}
 
 # apply_patch applies one mutant inside the copy, never in the repository. GNU patch is the
 # tool the patches are written for; git apply reads the same unified diff, and is what this
@@ -134,13 +148,11 @@ for name in "${mutants[@]}"; do
 done
 
 if [[ "$needs_lake" == true ]] && ! command -v lake >/dev/null 2>&1; then
-	echo "airlock-mutants: lake is not on PATH, so the model mutants cannot be built." >&2
-	echo "  Put the Lean toolchain on PATH (ELAN_HOME/bin), or name only the go-* mutants." >&2
+	echo "CHECK setup: FAIL: lake is not on PATH, so the model mutants cannot be built; put the Lean toolchain on PATH (ELAN_HOME/bin), or name only the go-* mutants"
 	exit 2
 fi
 if [[ "$needs_model" == true && ! -x "$MODEL" ]]; then
-	echo "airlock-mutants: no built model at $MODEL" >&2
-	echo "  Build it: (cd $AIRLOCK_PKG_DIR/lean && lake build)" >&2
+	echo "CHECK setup: FAIL: no built model at $MODEL; build it: (cd $AIRLOCK_PKG_DIR/lean && lake build)"
 	exit 2
 fi
 
@@ -163,11 +175,16 @@ copy_envoy() {
 }
 
 # compare runs the comparison fuzz test over the seed corpus in <copy>, against <model>, and
-# answers 0 when the two sides disagreed, 1 when they agreed, 2 when the test did not run.
+# answers 0 when the two sides disagreed, 1 when they agreed, 2 when the test did not run. The go
+# command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh reads what
+# a script's go command compiles.
 compare() {
 	local copy="$1" model="$2" log="$3"
-	if (cd "$copy/packages/envoy" && GOWORK=off AIRLOCK_MODEL="$model" \
-		go test -count=1 -run FuzzAirlock ./internal/broker/airlock/) >"$log" 2>&1; then
+	if (
+		cd "$copy/packages/envoy" || exit 2
+		export GOWORK=off AIRLOCK_MODEL="$model"
+		go test -count=1 -run FuzzAirlock ./internal/broker/airlock/
+	) >"$log" 2>&1; then
 		return 1
 	fi
 	# A non-zero exit is the mutant caught only when the comparison itself failed; a copy
@@ -194,8 +211,13 @@ must_fail() {
 # that does not build, or a name no test of the suite has. MISSED is set to the ones that passed or
 # did not run.
 proxy_tests() {
-	local copy="$1" log="$2" tests="$3" test verdict=0
-	(cd "$copy/packages/envoy" && GOWORK=off go test -count=1 -v -run "^($(paste -sd '|' <<<"$tests"))\$" ./internal/broker/airlockproxy/) >"$log" 2>&1
+	local copy="$1" log="$2" tests="$3" test verdict=0 pattern
+	pattern="^($(paste -sd '|' <<<"$tests"))\$"
+	(
+		cd "$copy/packages/envoy" || exit 2
+		export GOWORK=off
+		go test -count=1 -v -run "$pattern" ./internal/broker/airlockproxy/
+	) >"$log" 2>&1
 	MISSED=""
 	while read -r test; do
 		if ! grep -q "^=== RUN   $test\$" "$log"; then
@@ -219,16 +241,14 @@ for name in "${mutants[@]}"; do
 	*) copy_envoy "$copy" false ;;
 	esac
 	if ! apply_patch "$copy" "$(mutant_file "$name")" "$log"; then
-		echo "FAIL: $name — the patch does not apply: $(head -n 3 "$log" | tr '\n' ' ')"
-		failures=$((failures + 1))
+		missed "$name" "the patch does not apply: $(head -n 3 "$log" | tr '\n' ' ')"
 		continue
 	fi
 
 	if [[ "$name" == proxy-* ]]; then
 		tests="$(must_fail "$(mutant_file "$name")")"
 		if [ -z "$tests" ]; then
-			echo "FAIL: $name — the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
-			failures=$((failures + 1))
+			missed "$name" "the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
 			continue
 		fi
 		set +e
@@ -236,15 +256,9 @@ for name in "${mutants[@]}"; do
 		verdict=$?
 		set -e
 		case "$verdict" in
-		0) echo "PASS: $name — caught by each test it names: $(tr '\n' ' ' <<<"$tests")($((SECONDS - started))s)" ;;
-		1)
-			echo "FAIL: $name — not caught by every test it names:$MISSED ($((SECONDS - started))s)"
-			failures=$((failures + 1))
-			;;
-		*)
-			echo "FAIL: $name — a test it names did not run:$MISSED; $(tail -n 3 "$log" | tr '\n' ' ')"
-			failures=$((failures + 1))
-			;;
+		0) caught "$name" "caught by each test it names: $(tr '\n' ' ' <<<"$tests")($((SECONDS - started))s)" ;;
+		1) missed "$name" "not caught by every test it names:$MISSED ($((SECONDS - started))s)" ;;
+		*) missed "$name" "a test it names did not run:$MISSED; $(tail -n 3 "$log" | tr '\n' ' ')" ;;
 		esac
 		continue
 	fi
@@ -252,7 +266,7 @@ for name in "${mutants[@]}"; do
 	if [[ "$name" == lean-* ]]; then
 		if ! (cd "$copy/packages/envoy/internal/broker/airlock/lean" && lake build) >"$log" 2>&1; then
 			reason="$(grep -m1 -E 'error:' "$log" | cut -c1-120)"
-			echo "PASS: $name — caught by lake build, a proof no longer holds: ${reason:-see the build log} ($((SECONDS - started))s)"
+			caught "$name" "caught by lake build, a proof no longer holds: ${reason:-see the build log} ($((SECONDS - started))s)"
 			continue
 		fi
 		model="$copy/packages/envoy/internal/broker/airlock/lean/.lake/build/bin/airlock-model"
@@ -265,15 +279,9 @@ for name in "${mutants[@]}"; do
 	verdict=$?
 	set -e
 	case "$verdict" in
-	0) echo "PASS: $name — caught by the comparison fuzz test on seed $(failing_seed "$log") ($((SECONDS - started))s)" ;;
-	1)
-		echo "FAIL: $name — nothing caught it: the mutated code still agrees with the model ($((SECONDS - started))s)"
-		failures=$((failures + 1))
-		;;
-	*)
-		echo "FAIL: $name — the comparison did not run: $(tail -n 3 "$log" | tr '\n' ' ')"
-		failures=$((failures + 1))
-		;;
+	0) caught "$name" "caught by the comparison fuzz test on seed $(failing_seed "$log") ($((SECONDS - started))s)" ;;
+	1) missed "$name" "nothing caught it: the mutated code still agrees with the model ($((SECONDS - started))s)" ;;
+	*) missed "$name" "the comparison did not run: $(tail -n 3 "$log" | tr '\n' ' ')" ;;
 	esac
 done
 

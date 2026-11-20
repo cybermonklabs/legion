@@ -263,8 +263,8 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     them and the entry it reads is the same one; each refusal names the file the restore is in.
 
     The key and the paths are held for every other workflow of the directory too: a release
-    build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
-    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra) and this
+    workflow's own lookups restore the entries it fills,
     and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
     the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
     another workflow restores is still a fill ci.yaml does not read."""

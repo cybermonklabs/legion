@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -304,9 +305,9 @@ func TestManifestGoldens(t *testing.T) {
 }
 
 // The root issue pod under the Go live harnesses' operator pod (deploy/kubernetes/operator-route/
-// pod.yml), which Stage 4b's pod shape (shape_problems in scripts/e2e/stage4b-sandbox-tree.sh)
-// judges: the golden is the pod a live run's daemon builds from that fixture, so the shape's rules
-// are run against what the renderer puts where (scripts/e2e/lib/stage4b-pods.test.ts).
+// pod.yml): the golden is the pod a live run's daemon builds from that fixture, which the kind
+// job's Stage 4b test holds to the issue pod's shape (stage4bPodShape in
+// internal/daemon/stage4b_kind_live_test.go).
 func TestOperatorRouteGolden(t *testing.T) {
 	opts := goldenOptions()
 	opts.Pod = operatorRouteFixture(t)
@@ -535,9 +536,8 @@ func TestPIShellPrefixIsTmuxsFormOverThePodsDirectories(t *testing.T) {
 // git runs `git credential fill` in a directory that is no repository, with a stand-in `legion`
 // first on PATH, for a workflow role and the controller alike.
 func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git in this environment")
-	}
+	_, err := exec.LookPath("git")
+	testprereq.Require(t, err == nil, "daemon-go", "no git in this environment")
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)

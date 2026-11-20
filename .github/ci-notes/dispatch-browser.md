@@ -11,21 +11,23 @@ first sections below.
 
 ## The suite, its two lanes and the budget rule every job follows
 
-Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
-with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
-on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
-the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+Every browser job of the Dispatch suite, in one place, and the job of the suite's Bun rows that
+need a PostgreSQL. ci.yaml's dispatch-browser job calls it with the pull-request lane on a pull
+request that carries no `full-ci` label and the full lane on everything else, and the nightly
+workflow calls it with the full lane. The rows are spread over four shard machines, the three
+`-alone` projects get a machine each, the Bun rows that need a PostgreSQL, the re-recording of
+the stubbed rows, the two-process job, the fake-embedder job and the containerised visual
+review take one each, and one merge job joins what the shard and alone legs wrote into a single
+report and publishes the run's flake rate.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
-fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-parallel project, the three `-alone` ones, the two-process job, the visual review and that
-same embedder job, over every row. So an unlabelled pull request pays for the rows that
-answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-run pay for the rest, each of which has the wall time for them.
+fake-embedder job and the Bun rows' job, each of which holds a check of the pull request it is
+on; `full` runs every parallel project, the three `-alone` ones, the re-recording of the stubbed
+rows, the two-process job, the visual review and those same two jobs, over every row. So an
+unlabelled pull request pays for the rows that answer it, and the merge queue, a labelled pull
+request, a workflow_dispatch and the nightly run pay for the rest, each of which has the wall
+time for them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -670,9 +672,9 @@ pgvector; the binaries directory is set on the command line, not in this step's
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
 legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both wall-clock specs (`clockSpecNames` in e2e/configurations.ts:
-heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
-that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
+chromium-alone runs the four specs of `clockSpecNames` in e2e/configurations.ts, the
+list `clockSpecPattern` is built from, which is that project's `testMatch`;
+firefox-alone and webkit-alone run heavy-bodies alone.
 And e2e/harness-pool.ts's `stackBucket` (:183) makes no bucket at one stack: it
 answers `undefined` on `count === 1` (:190). A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is
@@ -694,6 +696,11 @@ The step's budget, `timeout-minutes: 3`, is the 3 minutes the job's head derives
 run, and the containerised reading taken on sha256:ba003193 does not move it: the most
 this step took over the nine legs the job's head lists is 69 s, well under
 webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s.
+e2e/failed-room.e2e.ts joined chromium-alone after those readings, one row of about
+3 s (2.8 s in job 135123723304, where the whole step took 40 s): over the nine full
+lanes of dispatch-browser-nightly.yaml from 2026-11-17T20:27Z to 2026-11-18T12:52Z this
+step took 34 to 50 s on chromium-alone (job 134435368009 the most), so with that row it
+is about 55 s, and 141 s is still the maximum the rule reads.
 
 ## Why the alone job's blob upload is always
 
@@ -720,6 +727,141 @@ The traces of the rows that failed, which the "What the run left behind" step do
 under the checkout, so this path needs no translation and stays as it was. A row that
 fails fails the leg, and the trace it carries is of its one attempt, which the config's
 `trace: 'retain-on-first-failure'` keeps. A green run's upload is small.
+
+## The Bun rows that need a PostgreSQL, and why they are a job of this file
+
+The Bun rows of packages/dispatch/e2e/__tests__ that need a PostgreSQL, which are no browser
+rows: psql-session.test.ts, whose rows read psql's answers to real statements on a database
+of their own; harness-stacks.test.ts, whose psql row reads which stack's database a worker's
+psql reaches; and second-global-setup.test.ts, whose one row starts two stacks' Postgres in
+one process, as Playwright's UI mode does. They are packages/dispatch's `bun run
+test:postgres`, which its `bun run test` leaves out, so ci.yaml's dispatch-ui job, which has
+no Postgres, runs the rest of that directory and not these
+(.github/workflows/ci-job-dispatch-ui.yaml says so beside its test step).
+
+Here because this file's image is the one that carries a PostgreSQL 18 with pgvector
+(.github/docker/browser.Dockerfile): the step "Test the dashboard's rows that need a
+PostgreSQL", whose body is .github/scripts/dispatch-browser-postgres-rows.sh, starts a server
+of that PostgreSQL for the first two files, and the third starts its stacks' own through
+DISPATCH_E2E_PG_BIN. Those stacks run the binaries job's server and broker, which the step
+hands the third file's child (DISPATCH_E2E_SERVER_BIN, DISPATCH_E2E_BROKER_BIN_DIR and
+DISPATCH_E2E_PG_CONNECTIONS; the file says why each travels), so this job runs no go command,
+and .github/ci-notes/dispatch-browser.md#the-shard-job-its-stacks-and-its-container says why a
+job in this container may run none. The hook the third file drives refuses a run whose
+Chromium is not downloaded, and this image carries it.
+
+On both lanes, as the embedder job is: a change to e2e/psql.ts or to the stacks' contract
+breaks these rows on the pull request that makes it, which is where it is cheapest to read,
+and the job costs one machine for a couple of minutes. The container, the `sh -e {0}` rule
+and the `env:` rule of the shard job's head hold here too, and so do their reasons; the
+container takes the shard job's `--user 1001` and `--init` and not `--ipc=host`, which is
+shared memory for a browser, and no row here opens one.
+
+It writes no blob report, as the embedder job writes none: its rows are Bun's, which print
+each row's pass by name in the step's own log. It joins `merge`'s `needs:`, the verdict
+step's results (.github/scripts/dispatch-browser-verdict.sh) and the name filter of
+.github/scripts/dispatch-browser-run-reads.sh instead, which gives it a null leg.
+
+The budgets. No run of this job has been read yet, so the test step's is derived from the
+same command in an issue pod of 2 CPUs shared with five other agents, against the same
+binaries built as the binaries job builds them and the same PostgreSQL 18: its 18 rows passed
+in 26.6 s. 26.6 x 1.15 = 31 s, which this file's rule raises to the two-minute floor; the
+first runs replace that reading with one of their own, as this file's head requires. The
+job's budget is that step's 2 minutes, the two download attempts' 2 minutes each, and the
+steps without a budget at the shard job's maxima, the image pull at its busy-hour
+355 s among them - 2 + 355 + 8 + 1 + 1 + 19 + 62 for the steps through `bun install` and
+1 + 1 + 1 for the two post steps and the container's stop - which is 451 s:
+120 + 240 + 451 = 811 s, 13 min 31 s, rounded up to 14 minutes.
+
+## What the Bun rows' and the recordings jobs download in place of a Go build
+
+The shard job's steps of these names say why each download attempt carries its own
+budget and directory and why there is a second, and why the binaries are placed and made
+executable
+(.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build and
+the two sections after it); the four steps are the same in the postgres-rows job and in the
+recordings job.
+
+## The recordings job, the guard on the stubbed layer's recordings
+
+The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3): every stubbed row is
+recorded again against the real harness, and the job fails where a route no longer answers as
+its committed recording holds. A recording is a snapshot of a server that keeps moving, so the
+stubbed rows the shard legs replay rest on this, and the full lane is where it runs: the merge
+group meets it on the tree a change lands as, and a pull request carrying `full-ci` meets it
+before then. It stood as a job of dispatch-browser-nightly.yaml on a schedule of its own until
+this lane took it.
+
+It compares the status of each route and nothing else - never a body's values and never its
+shape - which is the third of four guards, each watching what the others cannot: the
+generated contract holds client and server to one shape at compile time
+(dispatch://INFRA-1406), the contract test holds every committed recording's body to that
+shape on every pull request (packages/dispatch/e2e/__tests__/stub-recordings.test.ts), this
+watches the status of each route, and the rows that stayed on the real stack hold the
+server's behaviour. `statusDrift` in packages/dispatch/e2e/stub/recording.ts is the whole of
+the judgement and says why a comparison of values would be red on every run for nothing.
+
+Its steps are the alone job's up to the browser step, and in the same container, for the
+reasons that job and the shard job give: the rows launch Chromium (`stub-phone` is an iPhone
+13 on Chromium), their stacks start the image's PostgreSQL 18 through DISPATCH_E2E_PG_BIN,
+and the servers and brokers they start are the binaries job's, so this job runs no go
+command. One worker, so one stack, as the run this guard was proven on had: the nightly's
+re-record took the configuration's default of one, and no file store, which that run had
+none of either (e2e/harness-pool.ts's `stackBucket` makes no bucket at one stack).
+
+It writes no blob report, as the multiprocess and visual jobs write none: its rows are the
+`stub` and `stub-phone` rows the shard legs already report, run here in record mode against
+another origin, and the merge job's row accounting would count them twice. It joins `merge`'s
+`needs:`, the verdict step's results (.github/scripts/dispatch-browser-verdict.sh) and the
+name filter of .github/scripts/dispatch-browser-run-reads.sh instead, which gives it a null
+leg. Its artifact is named so that no pattern of the merge job's download matches it.
+
+The budgets. The recording step is measured on the nightly's re-record job, the same Playwright
+command over the same two projects at one worker, on the bare runner with the stack's
+Postgres from DISPATCH_E2E_PG_IMAGE: nine runs from 2026-11-17T21:01Z to 2026-11-18T13:03Z
+read 192 to 247 s, the most in job 134717361423 of run 44279855587. That job built the broker's
+three commands inside this step (e2e/run-broker.sh) where this one runs the binaries job's, so
+the reading is an upper one. 247 x 1.15 = 284 s -> 5 min. The comparison read 0 to 1 s in
+those jobs and carries no budget. The job's budget is that 5 minutes, the two download
+attempts' 2 minutes each, and the steps without a budget at the shard job's maxima, the
+image pull at its busy-hour 355 s among them - 2 + 355 + 8 + 1 + 1 + 19 + 62 + 34 for the
+steps through the dashboard build, 1 for the contracts build (the alone job's reading), 1
+for the comparison and 4 + 1 + 1 + 1 for the upload, the two post steps and the container's
+stop - which is 491 s: 300 + 240 + 491 = 1,031 s, 17 min 11 s, rounded up to 18 minutes.
+
+## What the recordings job's dashboard build serves
+
+The SPA the harness's server serves, which every stubbed row loads its page from while it
+records. The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose
+license cannot be determined; the listing shows the build shipped it.
+
+## Where the recording step writes the fresh set
+
+Into a directory of its own, never over the committed set: a recording compared with
+itself can never differ, so a committed recording that no row writes any more - a row
+deleted, or one that stopped reading what it read - would be found by nobody.
+DISPATCH_E2E_STUB_RECORDINGS is what moves it (packages/dispatch/e2e/stub/
+recordings.ts), and the comparison step, "Fail where a route no longer answers as its
+recording holds", refuses the committed directory. Every name is exported on the command
+line, not in an `env:`, for the reason the shard job's head gives, and the config's own
+reporters print each row by name.
+
+## Why the comparison runs even where the recording failed
+
+Run even where the recording step failed, which is the usual way drift arrives: a route that
+answers 404 where its recording holds 200 fails the row that reads it, so the recording
+run is red, and without this the job would name the failed row and never the route.
+`!cancelled()` and not `always()`, so a cancelled run stops here.
+
+## Why the recordings job uploads the fresh set on failure alone
+
+The fresh set, on a failure alone, which is when a person needs it: the comparison names
+each route that moved, and a person who agrees with the move replaces
+packages/dispatch/e2e/__recordings__ with this artifact (compare-recordings.ts prints how)
+or records the set again on their own machine (packages/dispatch/README.md). One path
+line, which is the one a `container:` job translates. `dispatch-browser-recordings-` is
+the name compare-recordings.ts gives the reader, and it is no `dispatch-browser-blob-*`,
+which the merge job downloads every leg's report by.
 
 ## What the two-process job runs
 
@@ -896,9 +1038,9 @@ on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second s
 A lane that skipped it would leave the claim unread until the merge queue.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
-shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
-job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
-null leg and is passed over by reading one, exactly as multiprocess is.
+shard and alone legs. It is in the merge job's `needs`, in that job's verdict pairs, which
+fail the run when it is red, and in that job's name filter, where it gets a null leg and is
+passed over by reading one, exactly as multiprocess is.
 
 No budget measured on this file's own runs yet, so the embedder job's two step budgets are derived from the
 multiprocess job's measured steps, which are the same steps on the same machine: its install
@@ -1099,7 +1241,7 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
 report, publishes four readings of it - the rows, the flake rate, the legs that did not
 succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not seven.
+and not nine.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It

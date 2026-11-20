@@ -130,4 +130,37 @@ describe("install-plugin-profile.sh's Oh My Pi", () => {
     expect(r.stderr).toContain("--omp needs a value");
     expect(r.calls).toEqual([]);
   });
+
+  // A CI job's Oh My Pi is the binary install-omp exported, run by its path with no mise: the
+  // binary records each call and answers the listing itself, and mise is never asked.
+  test("runs the binary --omp-path names, by its absolute path and with no mise, for the install and the verification", () => {
+    const binary = join(dir, `omp-path-${runs + 1}`);
+    const recorded = `${binary}.calls`;
+    writeFileSync(
+      binary,
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>${JSON.stringify(recorded)}
+if [ "$1 $2" = "plugin list" ]; then
+  printf '{"npm":[{"name":"@sjawhar/pi-envoy","version":"0.0.0-test","enabled":true,"path":"%s"}]}\\n' "$PWD"
+fi
+`,
+      { mode: 0o755 }
+    );
+    const r = install(["--omp-path", binary]);
+    expect(r.stderr).toContain("enabled in OMP profile legion-e2e-test");
+    expect(r.code).toBe(0);
+    expect(readFileSync(recorded, "utf8").trim().split("\n")).toEqual([
+      `plugin install ${r.dest}`,
+      "plugin list --json",
+    ]);
+    expect(r.calls).toEqual([]);
+    expect(r.wrapperRan).toBe(false);
+  });
+
+  test("refuses --omp beside --omp-path, running nothing", () => {
+    const r = install(["--omp", repoPin, "--omp-path", "/bin/true"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("--omp and --omp-path name the same Oh My Pi two ways");
+    expect(r.calls).toEqual([]);
+  });
 });

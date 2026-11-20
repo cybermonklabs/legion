@@ -51,7 +51,7 @@ test("Omp.start hands the Oh My Pi it starts the run's mark, and records its pid
   const dir = dirs();
   const rig = rigOf(dir);
   process.env.LEGION_E2E_RUN = join(dir, "run");
-  const omp = await Omp.start(rig, {}, "marked", null);
+  const omp = await Omp.start(rig, "marked", null);
   pids.push(omp.pid);
   expect(readFileSync(join(dir, "mark"), "utf8")).toBe(join(dir, "run"));
   const start = readFileSync(`/proc/${omp.pid}/stat`, "utf8")
@@ -66,7 +66,7 @@ test("Omp.start refuses to start an Oh My Pi without the run's mark, or with an 
     const rig = rigOf(dir);
     if (value === undefined) delete process.env.LEGION_E2E_RUN;
     else process.env.LEGION_E2E_RUN = value;
-    await expect(Omp.start(rig, {}, "unmarked", null)).rejects.toThrow(/LEGION_E2E_RUN is not set/);
+    await expect(Omp.start(rig, "unmarked", null)).rejects.toThrow(/LEGION_E2E_RUN is not set/);
     expect(() => readFileSync(rig.pidFile, "utf8")).toThrow();
   }
 });

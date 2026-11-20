@@ -511,11 +511,14 @@ const parallelProjects = [
  * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
  * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
  * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
- * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
+ * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`), and
+ * as does `failed-room.e2e.ts`, whose one row was opt-in until it came here: a writer queued
+ * behind a failing room is told before its client gives up at 30 s, while a trigger holds the
+ * room's append for 20 s, which is a claim on the clock that three other workers would move.
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
- * asserts, because what puts it here is that its claim is a wall-clock time, and
+ * asserts, because what puts it here is that its claim rests on a wall-clock time, and
  * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
  *
  * Each also sets `retries: 0`, which Playwright takes per project as it takes `workers`,

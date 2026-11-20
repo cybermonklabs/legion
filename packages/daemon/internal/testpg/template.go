@@ -51,17 +51,14 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's
-// is.
+// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, or failed on GitHub
+// Actions, as testdb.Database's is (testdb.DSN).
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("testpg.Clone needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(testpg.Main(\"<template prefix>\", m.Run)) }. Main's prefix names the one template of this test binary, which no clone's prefix has to equal: a package may clone under prefixes of its own, and does.")
 	}
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
+	dsn := testdb.DSN(t)
 	shared.once.Do(func() { shared.err = prepare(dsn) })
 	if shared.err != nil {
 		t.Fatal(shared.err)

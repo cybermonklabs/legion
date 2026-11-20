@@ -306,3 +306,62 @@ func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 	h.report(3, true, "refused after the restart")
 	h.wantState(StateFailed)
 }
+
+// The plugin's report of a turn and that turn's prompt result on the worker stream travel apart,
+// and either can reach the daemon first. Here the ladder keeps the task through refused turns
+// whose results came first, and the report that spends the run reaches the daemon before the
+// newest turn's result: while that turn still runs, or after its end and before its result. The
+// claim fails as it would after that result, and keeps the task for whoever retries it
+// (TestAFailureKeepsTheTaskTheLadderKept): unconfirmed, under a new id. The result that arrives
+// late names the id the task has left, and is dropped as stale.
+func TestARunSpentBeforeItsPromptsResultKeepsTheTask(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before func(*harness)
+	}{
+		{"the report before the turn's end", func(*harness) {}},
+		{"the report between the turn's end and its result", func(h *harness) {
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := workingClaim(t)
+			limit := testLimits().LaunchFailures
+			h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+			owed := h.pending()
+			h.report(1, true, "overloaded_error")
+			for turn := 2; turn < limit; turn++ {
+				h.climbs(turn-1, promptRetryDelay(turn-1))
+				h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+				h.report(uint64(turn), true, "overloaded_error")
+			}
+			h.climbs(limit-1, promptRetryDelay(limit-1))
+			running := h.pending()
+			if running.ConfirmedAt.IsZero() {
+				t.Fatalf("the task is %+v in the last turn, want that turn to have confirmed it", running)
+			}
+			tc.before(h)
+
+			h.report(uint64(limit), true, "overloaded_error")
+
+			h.wantState(StateFailed)
+			p := h.claim().Pending
+			if p == nil || p.Task != owed.Task || !p.ConfirmedAt.IsZero() || p.ID == running.ID {
+				t.Fatalf("the failed claim holds %+v, want the task %s it owes, unconfirmed under a new id", p, owed.ID)
+			}
+			if d, ok := h.store.delivery(testToken); !ok || d.Task != owed.Task || d.ID != p.ID {
+				t.Errorf("the store holds %+v (%t) for the failed claim, want the owed task under id %s", d, ok, p.ID)
+			}
+
+			h.must(StreamPromptResult{Claim: h.token, DeliveryID: running.ID, AgentInvoked: true,
+				Error: "overloaded_error", HTTPStatus: 529})
+
+			if kept := h.pending(); kept.ID != p.ID || !kept.ConfirmedAt.IsZero() {
+				t.Fatalf("after the late result the failed claim holds %+v, want the owed task %s as it was", kept, p.ID)
+			}
+			if lines := h.logs.lines("dropped a stale event", "event=StreamPromptResult", running.ID); len(lines) != 1 {
+				t.Errorf("the late result was dropped %d times, want once as stale: %v", len(lines), lines)
+			}
+		})
+	}
+}

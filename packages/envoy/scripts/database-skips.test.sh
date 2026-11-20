@@ -27,10 +27,11 @@
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
 #      passed test) and the unfinished test, and fails; without --timeout the same run passes;
-#   5. a copy of the counter with TestSearchLatencyOnCorpus's EXPECTED_SKIPS line deleted, in a
-#      temporary checkout of this commit (git worktree add; Go's -overlay replaces Go files alone,
-#      so it cannot reach the script's table), run on ./internal/dispatch/api/, prints that test's
-#      SKIP line and fails, where the counter itself passes the same run; a copy whose table line
+#   5. a copy of the counter with TestGrowsLinearlyRejectsQuadraticFinalRungHelper's
+#      EXPECTED_SKIPS line deleted, in a temporary checkout of this commit (git worktree add; Go's
+#      -overlay replaces Go files alone, so it cannot reach the script's table), run on
+#      ./internal/dispatch/api/, prints that test's SKIP line and fails, where the counter itself
+#      passes the same run; a copy whose table line
 #      gives no reason is refused; and with either of `--var DISPATCH_TEST_DATABASE_URL --var
 #      BROKER_TEST_DATABASE_URL` unset or empty beside the other set, the counter prints
 #      `database_skips=UNKNOWN` naming that one and runs no test.
@@ -317,7 +318,7 @@ git -C "$ENVOY" worktree add --detach --quiet "$TREE" "${snapshot:-HEAD}"
 tree_envoy="$TREE/${ENVOY#"$(git -C "$ENVOY" rev-parse --show-toplevel)/"}"
 copy="$tree_envoy/scripts/database-skips.sh"
 # The copy is of the counter under test, which a working tree may hold uncommitted.
-grep -v "^$API TestSearchLatencyOnCorpus " "$COUNTER" >"$copy"
+grep -v "^$API TestGrowsLinearlyRejectsQuadraticFinalRungHelper " "$COUNTER" >"$copy"
 judge "$([ "$(($(wc -l <"$COUNTER") - $(wc -l <"$copy")))" = 1 ] && echo 0 || echo 1)" \
   "control 5: the copy differs from the counter by exactly the deleted line" \
   "$(($(wc -l <"$COUNTER") - $(wc -l <"$copy"))) lines fewer"
@@ -325,16 +326,16 @@ api_run="^($API_ANCHOR|$api_expected)$"
 count deleted env GOFLAGS="-run=$api_run" bash "$copy" \
   --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL ./internal/dispatch/api/
 judge "$([ "$(code deleted)" = 1 ] && [ "$(grep -c '^SKIP ' "$WORK/deleted.out")" = 1 ] &&
-  grep -qxF "SKIP $API TestSearchLatencyOnCorpus" "$WORK/deleted.out" && echo 0 || echo 1)" \
-  "control 5: without its EXPECTED_SKIPS line, TestSearchLatencyOnCorpus's skip is counted" "$(seen deleted)"
+  grep -qxF "SKIP $API TestGrowsLinearlyRejectsQuadraticFinalRungHelper" "$WORK/deleted.out" && echo 0 || echo 1)" \
+  "control 5: without its EXPECTED_SKIPS line, TestGrowsLinearlyRejectsQuadraticFinalRungHelper's skip is counted" "$(seen deleted)"
 count kept env GOFLAGS="-run=$api_run" bash "$COUNTER" \
   --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL ./internal/dispatch/api/
 judge "$([ "$(code kept)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/kept.out" && echo 0 || echo 1)" \
   "control 5: the counter itself passes the same run, the table's tests skipping as expected" "$(seen kept)"
 noreason="$tree_envoy/scripts/database-skips-noreason.sh"
-sed "s|^\($API TestSearchLatencyOnCorpus\) .*|\1|" "$COUNTER" >"$noreason"
+sed "s|^\($API TestGrowsLinearlyRejectsQuadraticFinalRungHelper\) .*|\1|" "$COUNTER" >"$noreason"
 count noreason bash "$noreason" --report "$WORK/quiet.json" "${QUIET[@]}"
-judge "$([ "$(code noreason)" = 1 ] && said noreason "EXPECTED_SKIPS line \"$API TestSearchLatencyOnCorpus\" gives no reason" && echo 0 || echo 1)" \
+judge "$([ "$(code noreason)" = 1 ] && said noreason "EXPECTED_SKIPS line \"$API TestGrowsLinearlyRejectsQuadraticFinalRungHelper\" gives no reason" && echo 0 || echo 1)" \
   "control 5: a copy whose EXPECTED_SKIPS line gives no reason is refused when it starts" "$(seen noreason)"
 # Each of the two variables, unset and then empty, beside the other set: a counter that kept only
 # the first or only the last --var fails one of these.

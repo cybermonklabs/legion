@@ -1,9 +1,7 @@
-//go:build e2e
-
 // The Stage 4a harness's session-store check: the runtime under runtime.kubernetes.session_store
 // postgres — a store that keeps sessions in a database, as the daemon requires, and the one every
-// runtime of the run is built on — against the scratch Postgres the script started on the devbox's
-// private address (LEGION_E2E_SESSION_DB_PORT). The rig is live_test.go.
+// runtime of the run is built on — against the rig's PostgreSQL in the cluster. The rig is
+// live_test.go.
 
 package sandbox
 
@@ -17,8 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-// liveSessionsSecretKey is the providers Secret's key the script writes the scratch database's URL
-// under: the run's runtime.kubernetes.session_dsn_secret.
+// liveSessionsSecretKey is the providers Secret's key newKindLiveEnv writes the rig's PostgreSQL's
+// URL under: the run's runtime.kubernetes.session_dsn_secret.
 const liveSessionsSecretKey = "stage4a_sessions"
 
 // postgres-resume: the run keeps every session in the scratch database (session_store postgres,

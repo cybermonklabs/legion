@@ -176,7 +176,7 @@ jobs:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          go test -tags twobuild -count=1 -timeout 30m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -353,7 +353,7 @@ jobs:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          go test -tags twobuild -count=1 -timeout 30m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

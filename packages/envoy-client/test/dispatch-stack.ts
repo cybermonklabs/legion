@@ -3,10 +3,12 @@ import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
+import { z } from "zod";
 import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
+  type EnvoyStack,
   type PortChosen,
   type ReadyBudget,
   startOnHeldPort,
@@ -62,9 +64,27 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * The Envoy stack the server runs on, which turns its NATS on: it publishes its events to that
+   * natsd (`NATS_URLS`) and delivers its targeted messages and mentions through that listener
+   * (`ENVOY_URL`), as a deployment's server does, so a real session on the same stack is sent
+   * what a person writes. Without it the server runs with NATS off (`DISPATCH_NATS_DISABLED=1`).
+   */
+  readonly envoy?: Pick<EnvoyStack, "envoyUrl" | "natsUrl">;
+  /**
+   * The session windows the server judges a role route's holder by, as Go durations: its
+   * `ENVOY_SESSION_LIVE_WINDOW` and `ENVOY_SESSION_GONE_HORIZON` (cmd/dispatch's
+   * RoleHolderWindows). The server reads the holder's session itself, by these windows and not by
+   * the listener's, so a rig whose listener runs with windows of its own gives the server the
+   * same ones, and the two read a stalled holder the same. Unset, the server runs with its own
+   * defaults.
+   */
+  readonly sessionWindows?: { readonly liveWindow: string; readonly goneHorizon: string };
   /** Called with the port the stack chooses for the server, before the server starts. */
   readonly portChosen?: PortChosen;
 }
+
+const HealthSchema = z.object({ nats: z.boolean().nullable() });
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
 // The server migrates a database of its own as it boots, and a cold `go build` of ./cmd/dispatch
@@ -85,15 +105,17 @@ function testDatabaseServer(): string {
 /**
  * Starts a real Dispatch server, built from this checkout, on a loopback port and a database of
  * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
- * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
- * when `go` or the DSN is missing, the build fails, or the server does not come up.
+ * migrates itself as it boots. It resolves once `GET /api/v1` answers 200 and, on an Envoy stack,
+ * once `/healthz` says its NATS is connected, and throws, naming why, when `go` or the DSN is
+ * missing, the build fails, or the server does not come up.
  *
- * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
- * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
- * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below and nothing else. It serves on a
- * socket the stack holds from the choice of its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}),
- * so no other program can take the port before it serves.
+ * The server runs with header identity on (`X-Dispatch-User`), as `startScratchDispatchOn` runs it
+ * for the daemon's own tests: a person's write is the header alone. Its NATS is off unless
+ * `options.envoy` names the stack it runs on, so by default no event leaves the process. Nothing
+ * of the caller's Dispatch, Envoy or NATS environment reaches it, since the child is given the
+ * environment below and nothing else. It serves on a socket the stack holds from the choice of
+ * its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}), so no other program can take the port
+ * before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -148,7 +170,15 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
           DISPATCH_AGENT_TOKEN: token,
           DISPATCH_IDENTITY: "header:X-Dispatch-User",
           DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-          DISPATCH_NATS_DISABLED: "1",
+          ...(options.envoy === undefined
+            ? { DISPATCH_NATS_DISABLED: "1" }
+            : { NATS_URLS: options.envoy.natsUrl, ENVOY_URL: options.envoy.envoyUrl }),
+          ...(options.sessionWindows === undefined
+            ? {}
+            : {
+                ENVOY_SESSION_LIVE_WINDOW: options.sessionWindows.liveWindow,
+                ENVOY_SESSION_GONE_HORIZON: options.sessionWindows.goneHorizon,
+              }),
           // With DISPATCH_LISTEN_FD these name the held socket's address, which the server checks.
           DISPATCH_LISTEN_HOST: "127.0.0.1",
           DISPATCH_PORT: String(port),
@@ -162,7 +192,12 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     const url = `http://127.0.0.1:${started.port}`;
     await awaitReady("Dispatch", started.child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
-      return response.ok;
+      if (!response.ok) return false;
+      if (options.envoy === undefined) return true;
+      // On an Envoy stack the server is ready once its publisher is connected, so the first event
+      // a caller makes goes to the bus rather than waiting in the outbox for it.
+      const health = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2_000) });
+      return HealthSchema.safeParse(await health.json()).data?.nats === true;
     });
     return { url, token, stop };
   } catch (error) {

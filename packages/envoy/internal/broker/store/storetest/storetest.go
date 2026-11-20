@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -31,13 +32,12 @@ const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 
 // serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
 // when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state.
+// contract URL, Open and DatabaseURL all state, except on GitHub Actions, where each job that runs
+// a broker test names its Postgres service and the test fails (testprereq.Require).
 func serverURL(t testing.TB) string {
 	t.Helper()
 	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed broker tests")
-	}
+	testprereq.Require(t, raw != "", "envoy-go, envoy-go-race-api or broker-multiprocess", "%s must be set to run Postgres-backed broker tests", DatabaseURLEnv)
 	return raw
 }
 

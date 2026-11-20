@@ -1,12 +1,12 @@
-//go:build e2e
-
 // The live proof's driver for the record of each step of an issue: the whole daemon writes each
 // start and each end of a step onto the issue in Dispatch, and a person reads them back with the
-// real `dispatch steps` command. scripts/e2e/step-records.sh builds this driver with `-tags e2e`
-// and owns the nats-server and the PostgreSQL it runs against.
+// real `dispatch steps` command. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server, with the job's bun and its frozen install for the `dispatch` CLI, and with the job's git
+// and jj 0.38 or later, which the daemon's boot refuses to start without.
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
-// (startHandoffDispatch, as handoff-records.sh's driver starts it), on a database of its own on
+// (startHandoffDispatch, as handoff_records_live_test.go starts it), on a database of its own on
 // LEGION_TEST_PG_DSN's server, with NATS off; it is stopped and started again on the same database
 // and port for the outage. The daemon is the whole daemon (run, the function `legion start` calls,
 // through startDaemonWithin) with dispatch_url at that server, so every step record it writes goes
@@ -39,7 +39,6 @@ import (
 
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -64,7 +63,7 @@ type stepRecordsLive struct {
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
-	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
+	l := newStepRecordsLive(t, 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
@@ -74,15 +73,13 @@ func TestStepRecordsLive(t *testing.T) {
 }
 
 // newStepRecordsLive is the run a live driver of the walk makes around its steps: the broker the
-// script names (or a skip naming script), the checkout its script runs from and bun on PATH
+// package's other tests take (newLiveProof), the checkout the CLI runs from and bun on PATH
 // (liveCLICheckout), the walk's rig over issues issues on a Dispatch this checkout builds, the
 // person's CLI home, and a personal token named reader minted for the person, which every read of
-// the CLI carries. The broker comes first, as newHandoffRecordsLive takes it, so a run that names
-// none skips before it needs bun.
-func newStepRecordsLive(t *testing.T, script string, issues int, reader string) *stepRecordsLive {
+// the CLI carries.
+func newStepRecordsLive(t *testing.T, issues int, reader string) *stepRecordsLive {
 	t.Helper()
-	fixtureenv.Live(t)
-	proof := newLiveProof(t, script)
+	proof := newLiveProof(t)
 	root := liveCLICheckout(t)
 	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
 	l.mintReader(reader)
@@ -436,44 +433,4 @@ func printedType(w stepWant) string {
 // review attempt 1 … failed`.
 func lineName(w stepWant) string {
 	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
-}
-
-// The driver's end check, which the proof runs over what `dispatch steps` prints: a line ends its
-// run only when it prints a moment as its end. steps.ts prints `running` there, and as the result,
-// for a run that has not ended; `-`, which a printer that wrote the end through orDash would print,
-// and any other word are no end either, so each fails the walk's read, naming the line. The control
-// is the same ten lines with every end a moment, which the check passes.
-func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
-	const key = "SR-1"
-	printed := func(end, result string) string {
-		lines := []string{key + ": 10 steps in 1 tasks"}
-		for _, w := range stepRecordsTen {
-			model, lineEnd, lineResult := "-", "2026-11-20T09:40:00.123456Z", w.result
-			if w.kind == "step" {
-				model = stepRecordsModel
-			}
-			if w.kind == "step" && w.step == 2 && w.attempt == 2 {
-				lineEnd, lineResult = end, result
-			}
-			lines = append(lines, fmt.Sprintf("default %d %s %s %s attempt %d agent-%s %s 2026-11-20T09:00:00Z %s %s",
-				w.step, w.kind, w.role, printedType(w), w.attempt, w.role, model, lineEnd, lineResult))
-		}
-		return strings.Join(lines, "\n") + "\n"
-	}
-	read := func(out string) error {
-		parsed, err := parseSteps(key, out)
-		if err != nil {
-			t.Fatalf("parse %q: %v", out, err)
-		}
-		return holdsTen(parsed)
-	}
-	if err := read(printed("2026-11-20T09:40:00Z", "passed")); err != nil {
-		t.Fatalf("control: the ten lines, each ended at a moment, read as %v, want the walk's ten", err)
-	}
-	for _, no := range []struct{ end, result string }{{"running", "running"}, {"-", "passed"}, {"unknown", "passed"}} {
-		err := read(printed(no.end, no.result))
-		if err == nil || !strings.Contains(err.Error(), "2 step implementer implementation attempt 2") || !strings.Contains(err.Error(), "an end") {
-			t.Errorf("the ten lines with implementing's second run ending %q %q read as %v, want an error naming that run and its end", no.end, no.result, err)
-		}
-	}
 }

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -23,9 +24,11 @@ import (
 
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
 // in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
-// neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
-// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
-// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// neither skips, as the other gh-backed tests do, and fails on GitHub Actions, whose runner ships
+// gh (testprereq.Require). A gh on PATH that is a script is no real gh either, under the same rule:
+// it is a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH,
+// which is the `legion gh` this test puts there), as boot refuses one for the real gh
+// (daemon.RefuseScriptGH).
 //
 // It also puts this test binary's own `legion gh` first on the test's PATH
 // (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
@@ -39,12 +42,9 @@ func realGHForCapture(t *testing.T) string {
 	path := os.Getenv("LEGION_GH_PATH")
 	if path == "" {
 		found, err := exec.LookPath("gh")
-		if err != nil {
-			t.Skip("no real gh on this machine: the capture test drives one")
-		}
-		if err := daemon.RefuseScriptGH(found); err != nil {
-			t.Skip(err)
-		}
+		testprereq.Require(t, err == nil, "daemon-go", "no real gh on this machine: the capture test drives one")
+		refused := daemon.RefuseScriptGH(found)
+		testprereq.Require(t, refused == nil, "daemon-go", "%v", refused)
 		path = found
 	}
 	ghWrapperFirstOnPath(t)
@@ -93,9 +93,7 @@ func ghWrapperFirstOnPath(t *testing.T) {
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("no git on this machine")
-	}
+	testprereq.Require(t, err == nil, "daemon-go", "no git on this machine")
 	proxy := startCaptureProxy(t)
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
@@ -190,9 +188,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// on PATH that does not — a wrapper of the machine's own that routes credentials elsewhere —
 	// is no real gh to prove the wrapper against, and LEGION_GH_PATH names the real one.
 	run(nil, gh, "api", "repos/acme/widgets")
-	if control := proxy.take(); len(control) == 0 || control[0].auth != "token "+tokens["acme"] {
-		t.Skipf("%s sent %+v for acme's directory: it does not read GH_CONFIG_DIR; set LEGION_GH_PATH to the real gh", gh, control)
-	}
+	control := proxy.take()
+	testprereq.Require(t, len(control) > 0 && control[0].auth == "token "+tokens["acme"], "daemon-go",
+		"%s sent %+v for acme's directory: it does not read GH_CONFIG_DIR; set LEGION_GH_PATH to the real gh", gh, control)
 
 	// acme's directory, the issue owner's, holds gh aliases of its own beside gh's default co
 	// (which an aliases key of the file's own replaces, so it is listed again): one naming

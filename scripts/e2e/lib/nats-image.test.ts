@@ -76,14 +76,6 @@ const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
 
 /** The drivers known to start a NATS server, a floor under the scan: a scan finding none fails. */
 const knownDrivers = [
-  "scripts/e2e/stage3-devbox-workflow.sh",
-  "scripts/e2e/claude-backend-tmux.sh",
-  "scripts/e2e/claude-backend-sandbox.sh",
-  "scripts/e2e/controller-start-tmux.sh",
-  "scripts/e2e/dispatch-user-turns.sh",
-  "scripts/e2e/parked-decision-devbox.sh",
-  "scripts/e2e/stage2-tmux-supervision.sh",
-  "scripts/e2e/verifiers-staging-token.sh",
   "docs/site/media/walkthroughs/legion-operator/record-casts.sh",
   "packages/pi-legion/scripts/skill-scenarios/rig.sh",
 ];
@@ -198,11 +190,7 @@ const pinFiles = gitNames(
 /** Files known to pin a host nats-server, one of each form: a floor under the scan. */
 const knownPins = [
   "skills/legion-worker/references/tools.md",
-  "packages/claude-envoy/README.md",
-  "packages/claude-envoy/scripts/smoke-session-title.sh",
   "docs/solutions/testing/the-daemons-nats-tests-run-in-a-docker-less-pod-against-a-local-nats-server-named-by-two-variables-INFRA-388.md",
-  "scripts/e2e/lib/live-daemon-proof.sh",
-  "scripts/e2e/dispatch-session-settings.sh",
 ];
 
 describe("lib/nats-image.sh", () => {

@@ -1,3 +1,4 @@
+// legion: tool - reads from the corpus alone the person's request-changes rate in every stratum an agent could name before deciding, for the person who judges what any approval-review arm could reach.
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The Stage 4a harness's update-round check (INFRA-484): a running issue pod whose configuration
 // has drifted is kept while the workers in it still hold unpushed work, and is replaced only once
 // each of them has pushed that work and answered. The rig is live_test.go.
@@ -250,9 +248,7 @@ func (r *liveRig) checkPodUpdate() error {
 // issue's workspace, commits it there, pushes it to the issue's branch through the clone's own
 // `legion git-credential` helper — its own App's credentials, never the harness's — and reports
 // that branch's head at origin, which is the `head` the op carries. The head it reports is read
-// straight back from GitHub as the same App, so a head no push landed fails here. The branch is
-// deleted when the run ends, and only while it still names the commit this push put on it
-// (deleteBranchAt), so a run never deletes a branch it did not write.
+// straight back from GitHub as the same App, so a head no push landed fails here.
 func (r *liveRig) answerUpdate(c *liveClaim, dir workspace.Workspace) (string, error) {
 	url := "https://github.com/" + r.env.repo.String()
 	work := fmt.Sprintf("%s's work on %s, unpushed until its update message, at %s", c.role, c.issue, time.Now().UTC().Format(time.RFC3339Nano))
@@ -277,11 +273,6 @@ func (r *liveRig) answerUpdate(c *liveClaim, dir workspace.Workspace) (string, e
 	if len(head) != 40 || strings.Trim(head, "0123456789abcdef") != "" {
 		return "", fmt.Errorf("%s's push reported %q as the head of %s, want the commit id it pushed", c.name, oneLine(out), dir.Bookmark)
 	}
-	r.t.Cleanup(func() {
-		if err := r.deleteBranchAt(dir.Bookmark, head); err != nil {
-			fmt.Printf("teardown: could not delete branch %s of %s: %v\n", dir.Bookmark, r.env.repo, err)
-		}
-	})
 	note("operator", "as %s's own agent: jj commit in %s, then git push %s %s:refs/heads/%s through the clone's own credential helper",
 		c.name, dir.Dir, url, short(head), dir.Bookmark)
 	read, err := r.branchHead(c, dir)

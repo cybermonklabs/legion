@@ -106,13 +106,22 @@ engineRead "$corpus" "$out/engine.jsonl" md
 # The third pass: the same corpus through the read-only engine, which is what a reader is shown
 # and what the head's display read is held to (the cross-reader gate, above).
 engineRead "$corpus" "$out/engine-readonly.jsonl" md --read-only
+# Each test binary runs with -test.v, so its result line names the test: each dump's goes to its
+# log and is printed after it, each prefixed with its side, and the comparison's is printed as it
+# runs, so a CI log reads `--- PASS: TestDifferentialDump` twice and `--- PASS:
+# TestDifferentialCompare` once.
 pids=()
 for side in base head; do
   PMDOC_DIFF_CORPUS=$corpus PMDOC_DIFF_ENGINE=$out/engine.jsonl PMDOC_DIFF_OUT=$out/$side.jsonl \
-    "$out/$side.test" -test.run '^TestDifferentialDump$' -test.count=1 -test.timeout=0 > "$out/$side.log" 2>&1 &
+    "$out/$side.test" -test.run '^TestDifferentialDump$' -test.count=1 -test.timeout=0 -test.v > "$out/$side.log" 2>&1 &
   pids+=($!)
 done
-waitAll "${pids[@]}" || { tail -n 20 "$out"/base.log "$out"/head.log >&2; exit 1; }
+dumped=0
+waitAll "${pids[@]}" || dumped=1
+for side in base head; do
+  sed -n "s/^--- /$side: --- /p" "$out/$side.log"
+done
+[ "$dumped" = 0 ] || { tail -n 20 "$out"/base.log "$out"/head.log >&2; exit 1; }
 pids=()
 for side in base head; do
   engineRead "$out/$side.jsonl" "$out/$side-engine.jsonl" render engine_render &
@@ -127,7 +136,7 @@ PMDOC_DIFF_CORPUS=$corpus PMDOC_DIFF_ENGINE=$out/engine.jsonl PMDOC_DIFF_BASE=$o
   PMDOC_DIFF_BASE_ENGINE=$out/base-engine.jsonl PMDOC_DIFF_HEAD_ENGINE=$out/head-engine.jsonl \
   PMDOC_DIFF_ENGINE_READONLY=$out/engine-readonly.jsonl \
   PMDOC_DIFF_REPORT=$out/report.jsonl \
-  "$out/head.test" -test.run '^TestDifferentialCompare$' -test.count=1 -test.timeout=0 \
+  "$out/head.test" -test.run '^TestDifferentialCompare$' -test.count=1 -test.timeout=0 -test.v \
   2>&1 | tee "$out/compare.log" || compare=$?
 if ! grep -q '^GATE ' "$out/compare.log"; then
   echo "differential.sh: the comparison judged nothing (no GATE line in $out/compare.log): the head binary holds no TestDifferentialCompare" >&2

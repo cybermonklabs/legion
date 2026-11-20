@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
-# The probe of scripts/e2e/leak-guard-image-job.sh, run inside the worker image by a Kubernetes
-# Job. One argument: the arm — `head` for an image whose wrappers must refuse, `control` for the
-# base branch's image, which has none and must let everything through — so one probe serves both
-# and the expectations are stated once. Every check prints `CHECK <name>: got [x] want [y]`, and
-# the last line is `JOB-RESULT pass` or `JOB-RESULT fail`, which is the verdict the harness reads;
-# a Job's own phase says only that the container exited 0
-# (skills/legion-worker/references/tools.md).
+# The test of the worker image's leak guard, run inside the image ci.yaml's worker-image job has
+# just built: that job's step after the build runs it with `docker run` on the pushed digest. The
+# image's `git` and `jj` wrappers must send every push through the root-owned pre-push hook to
+# `legion leak-check`, so that a push naming a private host is refused under `git push` and under
+# each shape of `jj git push`, and a push naming nothing lands (k1 of dispatch://INFRA-1527), and
+# a shared check that cannot be found or cannot finish refuses even the clean push (its k7).
 #
-# It is no proof of its own and nothing runs it from a checkout: a Job holds no checkout, so the
-# harness beside this file reads this text in and writes it into the Job's command, which is the
-# only way the probe reaches the container. The two files are one recipe; read them together, and
-# change neither alone.
+# It runs two arms in the one image. `head` takes the image's own PATH, where the wrappers lead.
+# `bypassed` is the control: the same image with /opt/legion/bin taken off PATH, so the real git and
+# jj run with no wrapper in front of them and every push lands, which says that what refuses on
+# the head arm is the wrappers and nothing else of the image or of this probe.
 #
-# No `set -e`: a refused push is a non-zero status this reads rather than an end of the run. Every
-# step that must succeed goes through `must`, which ends the run with `JOB-RESULT fail` when it
-# does not, so a probe that could not build its fixtures never reads as a pass.
+# Each check prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <got and wanted>`, and the run
+# exits 1 after any FAIL. No `set -e`: a refused push is a non-zero status this reads rather than
+# an end of the run. Every step that must succeed goes through `must`, which fails the run with a
+# `CHECK setup` line when it does not, so a probe that could not build its fixtures never passes.
 set -u
 
-arm=${1:-}
-case "$arm" in
-  head | control) ;;
-  *) echo "probe: the arm must be head or control, not '${arm}'"; echo "JOB-RESULT fail"; exit 2 ;;
-esac
+if [ "$#" -ne 0 ]; then
+  echo "usage: leak-guard-image-probe.sh (no arguments: it runs both arms)" >&2
+  exit 2
+fi
 
-scratch=/scratch
+# The run's own scratch, all of it under the container's temporary directory.
+root_scratch=$(mktemp -d "${TMPDIR:-/tmp}/leak-guard-probe.XXXXXX") || {
+  echo "CHECK setup: FAIL: mktemp could not make the run's scratch directory"
+  exit 1
+}
+scratch=$root_scratch
+# The image's own PATH, which the head arm takes, and the same PATH without the wrappers'
+# directory, which the bypassed arm takes.
+image_path=$PATH
+bypassed_path=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx /opt/legion/bin | paste -sd: -)
+legion=/opt/legion/bin/legion
 
 # The host every refusable case carries. It is of the shape a Tailscale MagicDNS name takes and is
 # built here from two pieces, so no line of this file carries such a name whole: the words are
@@ -48,22 +57,21 @@ refusable_line="the probe box answers at $refusable_host"
 real_git=/usr/bin/git
 
 checks=0
-mismatches=0
+failures=0
 
 check() { # check <name> <got> <want>
   checks=$((checks + 1))
   if [ "$2" = "$3" ]; then
-    echo "CHECK $1: got [$2] want [$3]"
+    echo "CHECK $1: PASS"
   else
-    mismatches=$((mismatches + 1))
-    echo "CHECK $1: got [$2] want [$3] MISMATCH"
+    failures=$((failures + 1))
+    echo "CHECK $1: FAIL: got [$2] want [$3]"
   fi
 }
 
 die() {
-  echo "SETUP FAILED: $*"
-  echo "JOB-RESULT fail"
-  exit 2
+  echo "CHECK setup: FAIL: $*"
+  exit 1
 }
 
 must() {
@@ -80,42 +88,36 @@ says() {
   esac
 }
 
-echo "== the image this Job is running"
-echo "arm: $arm"
+echo "== the image under test"
 echo "uname: $(uname -a)"
 echo "id: $(id)"
 echo "processors: $(nproc)"
-legion version || echo "legion version: exit $?"
+"$legion" version || echo "legion version: exit $?"
 "$real_git" --version
 /usr/local/bin/jj --version
 
-echo
-echo "== the wrappers the image puts first on PATH"
-# On the head's image the two wrappers lead PATH with the real binaries behind them, and the
-# pre-push hook is root's in a directory no role can write. On the base's image none of that
-# exists, which is the whole of why the control lets the five cases through.
-if [ "$arm" = head ]; then
-  want_git=/opt/legion/bin/git
-  want_jj=/opt/legion/bin/jj
-  want_hook='0:0 755'
-  want_leak_check=present
-else
-  want_git=/usr/bin/git
-  want_jj=/usr/local/bin/jj
-  want_hook='no hook'
-  want_leak_check=absent
-fi
-check "the git on PATH" "$(command -v git || echo 'no git at all')" "$want_git"
-check "the jj on PATH" "$(command -v jj || echo 'no jj at all')" "$want_jj"
-check "the pre-push hook" "$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push 2> /dev/null || echo 'no hook')" "$want_hook"
-if legion leak-check --help > /dev/null 2>&1; then
-  check "legion leak-check" present "$want_leak_check"
-else
-  check "legion leak-check" absent "$want_leak_check"
-fi
+# wrappers_on_path <arm> checks what the arm's PATH resolves. On the head arm the two wrappers lead
+# PATH with the real binaries behind them; on the bypassed arm the real binaries are first. The
+# pre-push hook is root's in a directory no role can write, and `legion leak-check` answers, on
+# both arms: the image is the same, and only the PATH differs.
+wrappers_on_path() {
+  local want_git=/usr/bin/git want_jj=/usr/local/bin/jj
+  if [ "$1" = head ]; then
+    want_git=/opt/legion/bin/git
+    want_jj=/opt/legion/bin/jj
+  fi
+  check "$1 the git on PATH" "$(command -v git || echo 'no git at all')" "$want_git"
+  check "$1 the jj on PATH" "$(command -v jj || echo 'no jj at all')" "$want_jj"
+  check "$1 the pre-push hook" "$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push 2> /dev/null || echo 'no hook')" '0:0 755'
+  if "$legion" leak-check --help > /dev/null 2>&1; then
+    check "$1 legion leak-check" present present
+  else
+    check "$1 legion leak-check" absent present
+  fi
+}
 
 echo
-echo "== the run's own environment, all of it on the Job's emptyDir"
+echo "== the run's own environment, all of it under $scratch"
 export HOME=$scratch/home
 export XDG_CONFIG_HOME=$scratch/config
 export TMPDIR=$scratch/tmp
@@ -132,10 +134,11 @@ must mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$scratch/runs" "$scratch/emp
 echo "HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME TMPDIR=$TMPDIR"
 
 echo
-echo "== the stand-in shared public leak check this Job writes for itself"
-# A Job runs no launcher, so the daemon pushes it no copy of the private shared check. These
-# stand-ins are what PUBLIC_LEAK_CHECK names instead. The clearing one passes every call, so every
-# verdict below is the embedded rule file's alone; the other two are k7's two shared-check failures.
+echo "== the stand-in shared public leak check this run writes for itself"
+# A container started from the image runs no launcher, so the daemon pushes it no copy of the
+# private shared check. These stand-ins are what PUBLIC_LEAK_CHECK names instead. The clearing one
+# passes every call, so every verdict below is the embedded rule file's alone; the other two are
+# k7's two shared-check failures.
 check_dir=$scratch/leak-check
 must mkdir -p "$check_dir"
 clears=$check_dir/public-leak-check.sh
@@ -171,13 +174,13 @@ echo "jj git push lists: $(echo "$listed" | tr '\n' ' ')"
 for shape in --all --change --named --deleted --dry-run; do
   case $'\n'"$listed"$'\n' in
     *$'\n'"$shape"$'\n'*) ;;
-    *) die "jj git push no longer lists $shape, which this harness drives" ;;
+    *) die "jj git push no longer lists $shape, which this probe drives" ;;
   esac
 done
 # The branch-name case under --change needs jj's own setting for the generated bookmark name,
 # because --change names the bookmark itself.
 if ! grep -q 'templates.git_push_bookmark' "$help"; then
-  die "jj git push no longer names templates.git_push_bookmark, which this harness sets to drive the branch-name case under --change"
+  die "jj git push no longer names templates.git_push_bookmark, which this probe sets to drive the branch-name case under --change"
 fi
 echo "driven here: the bare shape, --all, --change, --named, --deleted"
 # The other options that select what a push sends are named rather than silently left out, and
@@ -335,8 +338,8 @@ jj_dry_run() { # jj_dry_run <shape> <workspace> <branch>
 #   variant=internal-error k7: the shared check exits 2.
 run_case() { # run_case <shape> <case> <variant>
   local shape=$1 kase=$2 variant=$3
-  local id="$shape/$kase/$variant"
-  local dir=$scratch/runs/$shape-$kase-$variant
+  local id="$arm $shape/$kase/$variant"
+  local dir=$scratch/runs/$arm-$shape-$kase-$variant
   local bare=$dir/origin.git workspace=$dir/work seed=$dir/seed
   local branch
   branch=$(branch_of "$kase")
@@ -410,9 +413,9 @@ run_case() { # run_case <shape> <case> <variant>
   if [ "$status" -eq 0 ]; then status_word=zero; else status_word=non-zero; fi
   if [ "$before" = "$after" ]; then remote_word=unchanged; else remote_word=changed; fi
 
-  # What this arm calls for. On the head's image every case but the clean one is refused, and the
+  # What this arm calls for. On the head arm every case but the clean one is refused, and the
   # clean one is refused too under either of k7's two failures, since a check that did not run has
-  # cleared nothing. On the base's image there is no wrapper, so everything lands.
+  # cleared nothing. On the bypassed arm no wrapper runs, so everything lands.
   local refuse_it=no
   if [ "$arm" = head ] && { [ "$kase" != clean ] || [ "$variant" != clears ]; }; then
     refuse_it=yes
@@ -446,46 +449,55 @@ run_case() { # run_case <shape> <case> <variant>
   fi
 }
 
-echo
-echo "======== k1: the five cases, under git push and under each jj shape"
-for shape in git jj-bare jj-all jj-change jj-named; do
-  for kase in message author line branch clean; do
-    run_case "$shape" "$kase" clears
-  done
-done
-echo
-echo "---- jj-deleted carries two of the five"
-echo "A deletion sends a ref change and no commit, so the message, the author identity and the"
-echo "added line have no form under --deleted; the four shapes above drive them. What a ref change"
-echo "can carry is the ref name, which is the branch-name case, and a name that holds nothing,"
-echo "which is the clean case; both are driven here."
-for kase in branch clean; do
-  run_case jj-deleted "$kase" clears
-done
+# run_arm <arm> drives every case on that arm's PATH: k1's five cases under git push and under each
+# jj shape, then k7's two shared-check failures at the same call sites.
+run_arm() {
+  arm=$1
+  if [ "$arm" = head ]; then PATH=$image_path; else PATH=$bypassed_path; fi
+  export PATH
+  echo
+  echo "================ the $arm arm: PATH=$PATH"
+  wrappers_on_path "$arm"
 
-echo
-echo "======== k7: the two shared-check failures, at k1's own call sites"
-echo "The rule file is embedded in the legion binary (//go:embed private-names.toml) and the"
-echo "engine is linked into it as a library, so k7's other two failures — the rule file absent,"
-echo "and the rule file present but unparseable — cannot be met in this image at all: there is no"
-echo "file for it to lose and no parse for it to fail. They are driven in the release lane, which"
-echo "reads the rule file from a checkout. These two can be met here, and both are driven under"
-echo "git push and under every jj shape, on the clean case, so the only reason to refuse is the"
-echo "failure itself."
-for variant in no-check internal-error; do
-  for shape in git jj-bare jj-all jj-change jj-named jj-deleted; do
-    run_case "$shape" clean "$variant"
+  echo
+  echo "======== k1: the five cases, under git push and under each jj shape"
+  for shape in git jj-bare jj-all jj-change jj-named; do
+    for kase in message author line branch clean; do
+      run_case "$shape" "$kase" clears
+    done
   done
-done
+  echo
+  echo "---- jj-deleted carries two of the five"
+  echo "A deletion sends a ref change and no commit, so the message, the author identity and the"
+  echo "added line have no form under --deleted; the four shapes above drive them. What a ref"
+  echo "change can carry is the ref name, which is the branch-name case, and a name that holds"
+  echo "nothing, which is the clean case; both are driven here."
+  for kase in branch clean; do
+    run_case jj-deleted "$kase" clears
+  done
+
+  echo
+  echo "======== k7: the two shared-check failures, at k1's own call sites"
+  echo "The rule file is embedded in the legion binary (//go:embed private-names.toml) and the"
+  echo "engine is linked into it as a library, so k7's other two failures — the rule file absent,"
+  echo "and the rule file present but unparseable — cannot be met in this image at all: there is"
+  echo "no file for it to lose and no parse for it to fail. They are driven in the release lane,"
+  echo "which reads the rule file from a checkout. These two can be met here, and both are driven"
+  echo "under git push and under every jj shape, on the clean case, so the only reason to refuse"
+  echo "is the failure itself."
+  for variant in no-check internal-error; do
+    for shape in git jj-bare jj-all jj-change jj-named jj-deleted; do
+      run_case "$shape" clean "$variant"
+    done
+  done
+}
+
+run_arm head
+run_arm bypassed
 
 echo
 echo "======== summary"
-echo "arm: $arm"
-echo "checks: $checks"
-echo "mismatches: $mismatches"
-if [ "$mismatches" -eq 0 ]; then
-  echo "JOB-RESULT pass"
-  exit 0
+echo "checks: $checks, failed: $failures"
+if [ "$failures" -ne 0 ]; then
+  exit 1
 fi
-echo "JOB-RESULT fail"
-exit 1

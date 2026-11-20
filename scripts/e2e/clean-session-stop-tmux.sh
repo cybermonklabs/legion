@@ -9,82 +9,52 @@
 # `legion worker-shim`, and Claude Code under `legion claude-bridge`, which the shim runs in Oh My
 # Pi's place for a role `worker_backends` puts on claude.
 #
-# The run carries its own negative control. A session the daemon never launched — one this script
-# starts beside the daemon, outside any shim — is SIGKILLed too, and must still be waiting out the
-# gone horizon ten seconds later, reaching `gone` only past it. Without that control the ten
-# seconds would measure nothing: a horizon short enough to run in a proof would pass on its own.
+# The measurement's control — a session no daemon launched, killed the same way, waits out the
+# gone horizon — is no part of this run: packages/envoy-client/test/session-stall.ts holds it ("a
+# killed session stays unresponsive until the gone horizon, then reads gone"), against the same
+# listener. What keeps the ten seconds here a measurement of the daemon's stop rather than of the
+# listener's reaper is the horizon this run sets, nine times the limit, and the daemon's own line
+# for each stop (clean_stop_recorded, below).
 #
-# It is not a CI job. It runs a real `legion start` daemon under `runtime: tmux`, real agent
-# processes of both harnesses, and a model route, which a Legion pod has and a hosted runner does
-# not. Its row in .github/e2e-scripts.json is therefore under `elsewhere`.
+# The agent-harness job's tmux-scripts part runs it as a step
+# (.github/workflows/ci-job-agent-harness.yaml):
 #
-#   LEGION_E2E_MODEL_BASE_URL=… LEGION_E2E_MODEL_KEY_FILE=… LEGION_E2E_MODEL_ID=anthropic/… \
-#     LEGION_E2E_CLAUDE_MODEL=… CLEAN_SESSION_STOP_PG_DSN=… \
+#   LEGION_TEST_OMP=… LEGION_TEST_CLAUDE=… LEGION_TEST_PG_DSN=… \
 #     bash scripts/e2e/clean-session-stop-tmux.sh
 #
-# Nothing that names a deployment is defaulted: the model endpoint, its key file, the model ids and
-# the PostgreSQL are the operator's to name, and an unset one is refused by name before the run
-# starts anything. This repository is public, so no endpoint, host, tailnet, account or private
-# repository name is written here.
-#
 # ---- inputs ---------------------------------------------------------------------------------------
-# - LEGION_E2E_MODEL_BASE_URL (required; an http:// or https:// URL with no credentials in it) is
-#   the Anthropic-compatible endpoint this pod's own model route answers on. Both harnesses call
-#   it, so no Anthropic key is needed.
-# - LEGION_E2E_MODEL_KEY_FILE (required) names a file holding that endpoint's key. It is copied
-#   once (0600) into the run's work directory and preflighted (lib/model-endpoint.sh) before
-#   anything starts: the endpoint must accept it, and must refuse a call with no key. No pane
-#   carries the key in its environment: the Oh My Pi profile and the Claude Code claim directory
-#   each name a key command that prints the copy.
-# - LEGION_E2E_MODEL_ID (required) is the `anthropic/<id>` the Oh My Pi panes run; it reaches the
-#   endpoint through their Anthropic provider.
-# - LEGION_E2E_CLAUDE_MODEL (required) is the model id the Claude Code pane runs.
-# - CLEAN_SESSION_STOP_PG_DSN (required) is a loopback PostgreSQL the run creates the daemon's own
-#   database in and drops on exit. This script starts no database.
-# - LEGION_E2E_OMP_PATH (default the first `omp` on PATH that is the program itself, past any
-#   wrapper script or mise shim, else the worker image's /opt/omp/bin/omp) is the Oh My Pi the
-#   daemon runs in every Oh My Pi pane and in its own boot gate. The proof knows the agent's
-#   process by the program the kernel records it runs, so a wrapper named here is refused.
-# - LEGION_E2E_CLAUDE_CODE_PIN (default the worker image's /opt/legion/claude-code) is the
-#   directory holding the package.json and package-lock.json that pin @anthropic-ai/claude-code.
-#   The image carries the pin and no Claude Code, so the run installs that exact release under
-#   $TMPDIR with `npm ci` and holds its --version to the pin.
+# - LEGION_TEST_OMP (required) is the Oh My Pi the daemon runs in every Oh My Pi pane and in its
+#   own boot gate: the build .omp-pin pins, which .github/actions/install-omp installs in CI.
+# - LEGION_TEST_CLAUDE (required) is the Claude Code binary the Claude Code pane runs, by an
+#   absolute path: the release .claude-code-pin pins, which .github/actions/install-claude-code
+#   installs in CI.
+#   The proof knows each agent's process by the program the kernel records it runs, so a wrapper
+#   script or a mise shim named in either is refused.
+# - LEGION_TEST_PG_DSN (required) is a loopback PostgreSQL the run creates the daemon's own database
+#   in and drops on exit. This script starts no database.
 # - CLEAN_SESSION_STOP_CHECKS, or --checks <names>, is the comma-separated list of named checks to
 #   run; unset, every check runs. --list prints every name with what it needs. A selection is an
 #   operator's explicit choice and the summary line says which selection ran.
 # - CLEAN_SESSION_STOP_EVIDENCE_DIR (default a fresh directory under $TMPDIR, kept and printed)
 #   holds the run's transcript, every service's log, the daemon's log and each check's answers.
 # - CLEAN_SESSION_STOP_HEARTBEAT_MS (default 5000) is how often every session of the run
-#   heartbeats its registration, the panes' ENVOY_HEARTBEAT_MS and the control's. The window
-#   section below says what it is for; 5000 is the value the rig used before this input existed,
-#   so a caller that names none runs what it always ran.
+#   heartbeats its registration, the panes' ENVOY_HEARTBEAT_MS. The window section below says what
+#   it is for; 5000 is the value the rig used before this input existed, so a caller that names
+#   none runs what it always ran.
 #
-# Everything the run installs — the Go binaries, Claude Code and the two plugin builds — goes under
-# $TMPDIR, never /tmp and never the home directory: a pod's own disk is small, and filling it
-# evicts the pod with every role in it.
-#
-# ---- the tmux this needs, and where a pod gets one ----------------------------------------------
-# `legion start` refuses to boot without tmux on PATH. A worker image from dispatch://INFRA-3257 on
-# carries Debian trixie's tmux at /usr/bin/tmux, and the run uses it as it stands. A Legion pod on
-# an older digest has no tmux, no root and no package manager, so there the run builds one from
-# source:
-#   PATH="$(bash scripts/e2e/lib/build-tmux.sh):$PATH"
-# That script is idempotent and pins every tarball by version and sha256. It builds, under
-# ${TMUX_BUILD_PREFIX:-$TMPDIR/tmux-build}, GNU make 4.4.1 first through its own bootstrap, since
-# the pod has gcc and no make, then ncurses 6.5, byacc 20240109 (tmux's configure requires a yacc
-# and the pod has none), libevent 2.1.12-stable and tmux 3.5a; a cold build takes about nine
-# minutes and a built one prints its bin directory at once. This run calls it itself, and only
-# when no tmux is on PATH, so a caller that has not built tmux needs no step of its own. The panes
-# of a built tmux read terminfo from that prefix's own share/terminfo, which ncurses installs in
-# full, rather than from the image's /usr/share/terminfo.
+# Nothing else comes from outside the runner. The model both harnesses call is
+# lib/messages-standin.ts, an Anthropic Messages stand-in on loopback that answers every turn
+# `ready` and refuses a request without the placeholder key of the run's own; no pane carries that
+# key in its environment: the Oh My Pi profile and the Claude Code claim directory each name a key
+# command that prints it. NATS is natsd, built from this checkout. Everything the run builds goes
+# under $TMPDIR, as does everything it writes.
 #
 # ---- the windows, and why they are these numbers ------------------------------------------------
 # The listener judges every record with
 #   ENVOY_SESSION_LIVE_WINDOW=30s     a pane that stops heartbeating reads unresponsive six
 #                                     heartbeats after its last one
-#   ENVOY_SESSION_GONE_HORIZON=90s    the control's wait, and the boundary the clean stop must beat
-#                                     by an order of magnitude; ten minutes would measure it no
-#                                     better and would hold the run for half an hour
+#   ENVOY_SESSION_GONE_HORIZON=90s    the boundary the clean stop must beat by an order of
+#                                     magnitude; ten minutes would measure it no better
 #   ENVOY_SESSION_REAP_INTERVAL=10s   the reaper acts promptly once a record passes the horizon
 # and every pane heartbeats at ENVOY_HEARTBEAT_MS, CLEAN_SESSION_STOP_HEARTBEAT_MS's 5000 by
 # default (runtime.tmux.pane_env), so a live pane refreshes six times inside the live window; the
@@ -101,17 +71,17 @@
 # the numbers above whatever it is.
 #
 # ---- the named checks ---------------------------------------------------------------------------
-# Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
-# before it did, and the last line says how many ran and how many passed.
+# Each prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>`, every selected check runs
+# whatever the one before it did, and the last line says how many ran and how many passed; the run
+# exits 1 when any failed. The setup steps before them print a CHECK line each as well, and a
+# failed one ends the run there.
 #   clean-stop-of-an-omp-role        an architect on Oh My Pi, killed under `legion worker-shim`
 #   clean-stop-of-a-claude-role      an implementer `worker_backends` puts on claude, killed under
 #                                    `legion claude-bridge`
-#   unseen-kill-waits-out-the-horizon   the control: a session of this script's own, outside any
-#                                    shim, killed the same way
 #
 # ---- what the run starts, and what stops it ------------------------------------------------------
-# A NATS server (internal/testnats/cmd/natsd), one Envoy listener, one `legion start` daemon with a
-# private tmux server of its own, the panes that daemon launches, and the control session. Every
+# The model stand-in, a NATS server (internal/testnats/cmd/natsd), one Envoy listener, one `legion
+# start` daemon with a private tmux server of its own, and the panes that daemon launches. Every
 # one of them is stopped on any exit, by the pid it was started as; the daemon's tmux server is
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
@@ -129,16 +99,12 @@ set -Eeuo pipefail
 # This script's own inputs are read first: the sweep below drops every variable of those families
 # from the caller's environment, so that nothing the run starts inherits a Legion pane's real
 # daemon, listener, bus or Oh My Pi profile, and it would otherwise drop these with them.
-pg_dsn=${CLEAN_SESSION_STOP_PG_DSN:-}
+pg_dsn=${LEGION_TEST_PG_DSN:-}
 wanted=${CLEAN_SESSION_STOP_CHECKS:-}
 evidence=${CLEAN_SESSION_STOP_EVIDENCE_DIR:-}
 heartbeat_ms=${CLEAN_SESSION_STOP_HEARTBEAT_MS:-5000}
-model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
-model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
-model_id=${LEGION_E2E_MODEL_ID:-}
-claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
-omp_bin=${LEGION_E2E_OMP_PATH:-}
-claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
+omp_bin=${LEGION_TEST_OMP:-}
+claude_bin=${LEGION_TEST_CLAUDE:-}
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
 # scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 for variable in $(compgen -e); do
@@ -169,7 +135,6 @@ declare -A latencies=()
 checks=(
   "clean-stop-of-an-omp-role an Oh My Pi pane the daemon launched"
   "clean-stop-of-a-claude-role a Claude Code pane the daemon launched"
-  "unseen-kill-waits-out-the-horizon a session of this script's own, outside any shim"
 )
 
 usage() {
@@ -233,10 +198,13 @@ export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
 fail() {
-  echo "FAIL $check: $*" >&2
+  echo "CHECK $check: FAIL: $*"
   exit 1
 }
-begin() { echo "== $1"; }
+begin() {
+  check=$1
+  echo "== $1"
+}
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
@@ -264,84 +232,42 @@ fi
 
 # ---- the run's state ----------------------------------------------------------------------------
 natsd_pid=
+standin_pid=
 listener_pid=
 listener_keeper_pid=
 daemon_pid=
 daemon_keeper_pid=
-control_pid=
-control_fd=
 database=
 nats_port=
 nats_url=
+standin_port=
 listener_port=
 daemon_port=
-claude_bin=
-claude_version=
 project=
 ptoken=
 state_dir=$work/state
 omp_home=$work/omp-home
 profile=clean-session-stop-$$
+# The model id both harnesses name, which the stand-in answers whatever it is: the Oh My Pi panes as
+# anthropic/<it>, the Claude Code pane as <it>.
+model_id=standin-model
 # The windows the listener judges every record against; the header says why each is this number.
 # The heartbeat every session of the run keeps is CLEAN_SESSION_STOP_HEARTBEAT_MS, read above.
 live_window=30s
 gone_horizon=90s
-gone_horizon_seconds=90
 reap_interval=10s
 # The acceptance this proof measures: a role's record is gone this many seconds after the kill.
 clean_stop_limit_seconds=10
 
-# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
-# time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
-# COMMAND's own). The control session needs one: it is killed by pid, and a process in the run's own
-# process group would take this script's group signals with it. The pid comes back through a file
-# because `setsid --fork` returns at once and `$!` is the pid of a process that has already gone.
-own_session() {
-  local pidfile=$1
-  shift
-  setsid --fork sh -c "$record_pid_sh" record-pid "$pidfile" "$@"
-}
-
-# agent_pid PIDFILE VAR waits for the pid and start the new session wrote (record_pid_sh,
-# lib/process-tree.sh), assigns the pid to VAR and records its start (started_at), which
-# stop_agent's signals are held to.
-agent_pid() {
-  local waited=0 pid start
-  while [ ! -s "$1" ]; do
-    waited=$((waited + 1))
-    [ "$waited" -lt 60 ] || return 1
-    sleep 0.5
-  done
-  read -r pid start <"$1" || return 1
-  [ -n "$start" ] || return 1
-  started_at[$pid]=$start
-  printf -v "$2" '%s' "$pid"
-}
-
-# stop_agent PID ends the control session, and only while it still carries the run's mark
-# (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
-# is never signalled: a shell that works under this run's work directory names it in its PWD and on
-# its command line, and carries no mark. It leads a session of its own (own_session), so the TERM to
-# its group (signal_group) reaches what it started. A member that outlives that TERM is left to
-# cleanup's sweep (stop_marked_processes): a group is signalled only while its leader is still the
-# process recorded, and stop_pid has ended the leader.
-stop_agent() {
-  [ -n "${1:-}" ] || return 0
-  names_dir "$work" "${run_marks[@]}" "$1" || return 0
-  signalable "$1" || return 0
-  signal_group "$1" TERM
-  stop_pid "$1"
-}
-
 cleanup() {
   local status=$1 p name
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM ERR
   set +e
-  stop_agent "$control_pid"
   stop_pid "$daemon_pid"
   [ -z "$ptoken" ] || TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
   stop_pid "$natsd_pid"
+  stop_pid "$standin_pid"
   stop_pid "$daemon_keeper_pid"
   stop_pid "$listener_keeper_pid"
   # Any process of the run's the daemon's tmux server left: each carries the run's mark, and nothing
@@ -366,6 +292,8 @@ cleanup() {
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+# Any command that fails outside a check's own assertions still names the step it ended.
+trap 'echo "CHECK $check: FAIL: line $LINENO exited $?: $BASH_COMMAND"' ERR
 
 # ---- running a check ----------------------------------------------------------------------------
 # A check is a function that returns 0, or sets `reason` and returns 1. run_check reports it and
@@ -379,9 +307,9 @@ run_check() {
   ran=$((ran + 1))
   if "check_${name//-/_}"; then
     passed=$((passed + 1))
-    echo "PASS $name"
+    echo "CHECK $name: PASS"
   else
-    echo "FAIL $name: ${reason:-no reason recorded}" >&2
+    echo "CHECK $name: FAIL: ${reason:-no reason recorded}"
   fi
 }
 
@@ -433,12 +361,6 @@ session_state() {
 
 # state_is SESSION WANT is session_state as a predicate, for wait_until.
 state_is() { session_state "$1" && [ "$state" = "$2" ]; }
-
-# last_seen SESSION prints the session's last registration in epoch milliseconds.
-last_seen() {
-  api GET "/v1/registry/$1?include=unresponsive" || return 1
-  jq -er '.last_seen' "$answer"
-}
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
 
@@ -621,60 +543,31 @@ kill_the_agent() {
 # ---- prerequisites --------------------------------------------------------------------------------
 begin prerequisites
 note "selection: $selection (${#selected[@]} checks)"
-# A pod on a worker image from before dispatch://INFRA-3257 carries no tmux, so there the run
-# builds one rather than refusing for it; a tmux already on PATH, the image's own from that change
-# on, is used as it stands, and the build prints its bin directory at once once it is built.
-if ! command -v tmux >/dev/null; then
-  note "no tmux on PATH; building one (scripts/e2e/lib/build-tmux.sh), which takes about nine minutes the first time"
-  tmux_bin=$(bash "$root/scripts/e2e/lib/build-tmux.sh") ||
-    fail "tmux could not be built: scripts/e2e/lib/build-tmux.sh named its own failure above"
-  PATH="$tmux_bin:$PATH"
-  export PATH
-  note "tmux $(tmux -V | awk '{print $2}') from $tmux_bin"
-fi
-for tool in bun curl go jq npm od psql python3 setsid tar tmux; do
+for tool in bun curl go jq od psql python3 tar tmux; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
-[ -n "$model_base_url" ] ||
-  fail "LEGION_E2E_MODEL_BASE_URL is required: the Anthropic-compatible endpoint this pod's model route answers on, which both harnesses call"
-if why=$(model_base_url_refusal "$model_base_url") && [ -n "$why" ]; then
-  fail "LEGION_E2E_MODEL_BASE_URL $why: name the model endpoint's base URL"
-fi
-[ -n "$model_key_file" ] ||
-  fail "LEGION_E2E_MODEL_KEY_FILE is required: a file holding the key the model endpoint accepts"
-[ -r "$model_key_file" ] ||
-  fail "LEGION_E2E_MODEL_KEY_FILE names $model_key_file, which cannot be read"
-[ -n "$model_id" ] || fail "LEGION_E2E_MODEL_ID is required: the anthropic/<id> the Oh My Pi panes run"
-[[ $model_id =~ ^anthropic/[^[:space:]]+$ ]] ||
-  fail "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>, the provider Oh My Pi reaches the endpoint through"
-[ -n "$claude_model" ] ||
-  fail "LEGION_E2E_CLAUDE_MODEL is required: the model id Claude Code runs against that endpoint"
 [[ $heartbeat_ms =~ ^[1-9][0-9]*$ ]] ||
   fail "CLEAN_SESSION_STOP_HEARTBEAT_MS is '$heartbeat_ms'; it must be a positive whole number of milliseconds"
 [ -n "$pg_dsn" ] ||
-  fail "CLEAN_SESSION_STOP_PG_DSN is required: a loopback PostgreSQL the run creates the daemon's own database in"
+  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL the run creates the daemon's own database in (the agent-harness job's service in CI)"
 case $pg_dsn in
   postgres://* | postgresql://*) ;;
-  *) fail "CLEAN_SESSION_STOP_PG_DSN must be a postgres:// or postgresql:// URL" ;;
+  *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
-require_loopback_dsn db_host CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
+require_loopback_dsn db_host LEGION_TEST_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
 # The proof kills the agent's own process, which it knows by the program the kernel records it runs
-# (agent_descendant), so the Oh My Pi it names is the binary itself (native_program,
-# lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise shim's runs the
-# version mise picks, and the Oh My Pi either starts runs another file. With LEGION_E2E_OMP_PATH
-# unset it is the first omp on PATH that is one (first_native), as a devbox's dotfiles omp wrapper
-# itself takes the first omp on PATH that is no wrapper, else the worker image's.
-if [ -z "$omp_bin" ] && ! omp_bin=$(first_native omp); then
-  [ -x /opt/omp/bin/omp ] ||
-    fail "LEGION_E2E_OMP_PATH is required: $omp_bin, and the worker image's /opt/omp/bin/omp is absent"
-  omp_bin=/opt/omp/bin/omp
-fi
-[ -x "$omp_bin" ] || fail "LEGION_E2E_OMP_PATH names $omp_bin, which is not an executable file"
-omp_bin=$(native_program "$omp_bin") || fail "LEGION_E2E_OMP_PATH: $omp_bin"
-{ [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
-  fail "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code; the worker image carries that pin and no Claude Code"
-claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
-  fail "$claude_pin/package.json pins no @anthropic-ai/claude-code"
+# (agent_descendant), so the Oh My Pi and the Claude Code it is given are the binaries themselves
+# (native_program, lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise
+# shim's runs the version mise picks, and the agent either starts runs another file.
+[ -n "$omp_bin" ] ||
+  fail "LEGION_TEST_OMP is required: the Oh My Pi every Oh My Pi pane runs (.github/actions/install-omp exports it in CI)"
+[ -x "$omp_bin" ] || fail "LEGION_TEST_OMP names $omp_bin, which is not an executable file"
+omp_bin=$(native_program "$omp_bin") || fail "LEGION_TEST_OMP: $omp_bin"
+[ -n "$claude_bin" ] ||
+  fail "LEGION_TEST_CLAUDE is required: the Claude Code binary the Claude Code pane runs (.github/actions/install-claude-code exports it in CI)"
+[[ $claude_bin == /* ]] && [ -x "$claude_bin" ] || fail "LEGION_TEST_CLAUDE names $claude_bin, which is not an absolute path to an executable file"
+claude_native=$(native_program "$claude_bin") || fail "LEGION_TEST_CLAUDE: $claude_native"
+installed=$("$claude_bin" --version) || fail "the Claude Code LEGION_TEST_CLAUDE names does not run"
 
 mkdir -p "$work/bin" "$work/tmp" "$work/tmux" "$work/xdg" "$omp_home/.omp" "$state_dir"
 chmod 0700 "$work/tmux" "$state_dir"
@@ -683,26 +576,21 @@ chmod 0700 "$work/tmux" "$state_dir"
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token"
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/operator-token"
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header"
-  tr -d '[:space:]' <"$model_key_file" >"$work/model-key"
+  # The placeholder key the model stand-in holds every request to.
+  printf 'clean-session-stop-standin-%s\n' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')" >"$work/model-key"
 )
-[ -s "$work/model-key" ] || fail "LEGION_E2E_MODEL_KEY_FILE ($model_key_file) holds no key"
-model_key_preflight "$model_base_url" "$work/model-key" "$work/model-header" \
-  "LEGION_E2E_MODEL_KEY_FILE ($model_key_file)"
-note "the model endpoint accepts the key; the Oh My Pi panes run $model_id, the Claude Code pane $claude_model"
 project=CSS$(od -An -N4 -tu4 /dev/urandom | tr -d ' \n')
 project=${project:0:10}
 ptoken=${project,,}
 tree=CSS-1
 note "work $work; evidence $evidence; project $project"
-echo "ok prerequisites"
+echo "CHECK prerequisites: PASS"
 
 # ---- builds ----------------------------------------------------------------------------------------
 begin build
-go -C "$root/packages/daemon" build -o "$work/bin/legion" ./cmd/legion || fail "./cmd/legion did not build"
-go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener ||
-  fail "./cmd/listener did not build"
-go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
-  fail "./internal/testnats/cmd/natsd did not build"
+go -C "$root/packages/daemon" build -o "$work/bin/legion" ./cmd/legion
+go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener
+go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd
 while IFS= read -r line; do note "$line"; done < <(
   bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/bin/legion" "$work/bin/envoy-listener"
 ) || fail "lib/built-from.sh could not say what the run built"
@@ -745,50 +633,51 @@ install_plugin() { # install_plugin <pi-envoy|pi-legion>
 install_plugin pi-envoy
 install_plugin pi-legion
 
-# The panes' model route: the endpoint the key file's key is for, keyed by a command that reads the
-# run's 0600 copy, so no key is in a pane's environment, its argv or its transcript.
-mkdir -p "$omp_home/.omp/profiles/$profile/agent"
-{
-  printf 'providers:\n  anthropic:\n'
-  printf '    baseUrl: %s\n' "$model_base_url"
-  printf '    auth: apiKey\n    api: anthropic-messages\n'
-  printf "    apiKey: '!cat %s'\n" "$work/model-key"
-  printf '    models:\n'
-  printf '      - {id: %s, name: %s, reasoning: true, input: [text], contextWindow: 200000, maxTokens: 8192}\n' \
-    "${model_id#*/}" "${model_id#*/}"
-} >"$omp_home/.omp/profiles/$profile/agent/models.yml"
-{
-  echo 'defaultThinkingLevel: low'
-  echo 'modelRoles:'
-  for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
-    echo "  $role: anthropic/${model_id#*/}"
-  done
-} >"$omp_home/.omp/profiles/$profile/agent/config.yml"
+# The panes' model route: the stand-in (started with the services, below) as the anthropic
+# provider, keyed by a command that reads the run's 0600 placeholder, so no key is in a pane's
+# environment, its argv or its transcript. It is written once the stand-in has its port.
+write_omp_route() {
+  mkdir -p "$omp_home/.omp/profiles/$profile/agent"
+  {
+    printf 'providers:\n  anthropic:\n'
+    printf '    baseUrl: %s\n' "$model_base_url"
+    printf '    auth: apiKey\n    api: anthropic-messages\n'
+    printf "    apiKey: '!cat %s'\n" "$work/model-key"
+    printf '    models:\n'
+    printf '      - {id: %s, name: %s, reasoning: true, input: [text], contextWindow: 200000, maxTokens: 8192}\n' \
+      "$model_id" "$model_id"
+  } >"$omp_home/.omp/profiles/$profile/agent/models.yml"
+  {
+    echo 'defaultThinkingLevel: low'
+    echo 'modelRoles:'
+    for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
+      echo "  $role: anthropic/$model_id"
+    done
+  } >"$omp_home/.omp/profiles/$profile/agent/config.yml"
+}
 
-# Claude Code itself: the pinned release, installed from the image's own pin with `npm ci` into a
-# directory of the run's own under $TMPDIR, its cache under $TMPDIR too — the install a pod's
-# launch makes, held to the same version check.
-mkdir -p "$work/claude-code" "$work/npm-cache"
-cp "$claude_pin/package.json" "$claude_pin/package-lock.json" "$work/claude-code/" ||
-  fail "could not copy the Claude Code pin out of $claude_pin"
-(cd "$work/claude-code" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --cache "$work/npm-cache") \
-  >"$evidence/logs/npm-claude-code.log" 2>&1 ||
-  fail "installing the Claude Code $claude_version that $claude_pin pins failed; see $evidence/logs/npm-claude-code.log"
-claude_bin=$work/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude
-[ -x "$claude_bin" ] || fail "the install left no executable at $claude_bin"
-installed=$("$claude_bin" --version) || fail "the installed Claude Code does not run"
-[ "${installed%% *}" = "$claude_version" ] ||
-  fail "the installed Claude Code prints --version '$installed'; $claude_pin pins $claude_version"
 # The claude-envoy plugin a Claude Code pane loads, built from this checkout outside it: a pull
 # request's tree carries no fresh dist/ or legion/.
 bun "$root/packages/claude-envoy/scripts/build.ts" --out "$work/claude-envoy" \
   >"$evidence/logs/build-claude-envoy.log" 2>&1 ||
   fail "packages/claude-envoy did not build; see $evidence/logs/build-claude-envoy.log"
-note "Claude Code $installed from $claude_pin, with this checkout's claude-envoy as its pane plugin"
-echo "ok build"
+note "Claude Code $installed at $claude_bin, with this checkout's claude-envoy as its pane plugin"
+echo "CHECK build: PASS"
 
 # ---- services ---------------------------------------------------------------------------------------
 begin services
+# The model both harnesses call, on a port it reports, every request it answered or refused kept
+# in the evidence directory.
+start_process standin bun "$root/scripts/e2e/lib/messages-standin.ts" "$work/standin.port" "$work/model-key" \
+  "$evidence/answers/standin-requests.jsonl"
+await_port_file standin "$work/standin.port" standin_port
+model_base_url=http://127.0.0.1:$standin_port
+# The preflight holds the stand-in to the key: GET /v1/models answers 200 to it and refuses a call
+# without it, so a pane's model turn is proof its key command ran (lib/model-endpoint.sh).
+model_key_preflight "$model_base_url" "$work/model-key" "$work/model-header" "the run's placeholder key ($work/model-key)"
+write_omp_route
+note "the model stand-in on $model_base_url answers both harnesses: the Oh My Pi panes run anthropic/$model_id, the Claude Code pane $model_id"
+
 start_process natsd "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
 nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
@@ -807,23 +696,22 @@ note "the listener on 127.0.0.1:$listener_port judges records with a ${live_wind
 
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
-  fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
-run_database_url database_url CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
+  fail "could not create database $database on LEGION_TEST_PG_DSN's server"
+run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
   "the run creates and drops a database there" || fail "$database_url"
 # That string holds spaces and single quotes, so the daemon's configuration file takes it as a
 # single-quoted YAML scalar, in which a single quote is written twice.
 daemon_dsn=${database_url//\'/\'\'}
 note "the daemon's store is the run's own database $database"
-echo "ok services"
+echo "CHECK services: PASS"
 
 # ---- the daemon ---------------------------------------------------------------------------------------
 begin daemon
 keep_port daemon_keeper daemon_port
-# omp_invocation is left out of the file: it takes the `mise x <tool> -- omp` form alone, and a pod
-# on a worker image from before dispatch://INFRA-3257 has no mise, while the image's mise since
-# then holds no Oh My Pi until it downloads one, so the Oh My Pi under proof is named by
-# LEGION_OMP_PATH in the daemon's own environment (omplaunch.ResolveInvocation), which the daemon
-# resolves to its real path for every pane and for its own boot gate.
+# omp_invocation is left out of the file: it takes the `mise x <tool> -- omp` form alone, so the Oh
+# My Pi under proof is named by LEGION_OMP_PATH in the daemon's own environment
+# (omplaunch.ResolveInvocation), which the daemon resolves to its real path for every pane and for
+# its own boot gate.
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port
@@ -855,7 +743,7 @@ claude_claim_dir=$state_dir/claude/legion-$ptoken-css-2-implementer
   umask 077
   mkdir -p "$claude_claim_dir"
   printf '#!/bin/sh\nexec cat %s\n' "$work/model-key" >"$work/claude-key-command"
-  jq -n --arg helper "$work/claude-key-command" --arg model "$claude_model" \
+  jq -n --arg helper "$work/claude-key-command" --arg model "$model_id" \
     '{apiKeyHelper: $helper, model: $model}' >"$claude_claim_dir/settings.json"
 )
 chmod 0700 "$work/claude-key-command"
@@ -871,7 +759,7 @@ await_start daemon "$daemon_pid" 300 "the daemon to answer /healthz" \
 note "the daemon serves on 127.0.0.1:$daemon_port, its private tmux server is legion-$ptoken under $work/tmux"
 note "$(jq -R -c 'fromjson? | select(.msg == "legion daemon resolved Claude Code for the roles worker_backends puts on claude") | {claude, plugin}' \
   "$evidence/logs/daemon.log" | sed -n 1p)"
-echo "ok daemon"
+echo "CHECK daemon: PASS"
 
 # ---- 1. an Oh My Pi role, killed under its worker shim ---------------------------------------------------
 # The clause itself, on the harness every role runs by default. The architect's pane is `legion
@@ -923,64 +811,6 @@ check_clean_stop_of_a_claude_role() {
   wait_until 30 "the daemon to record its clean stop of $session" \
     clean_stop_recorded "$session" || return 1
   note "the daemon recorded the clean stop of $session: $stop_record"
-}
-
-# ---- 3. the control: a kill the daemon never sees --------------------------------------------------------
-# One Oh My Pi of this script's own, registered against the same listener and supervised by nobody.
-# Killed the same way, it must still be waiting ten seconds later, and reach gone only past the
-# horizon. That is what makes the two checks above a measurement of the daemon's clean stop rather
-# than of a horizon short enough to fit in a proof.
-check_unseen_kill_waits_out_the_horizon() {
-  local session killed_ms killed_at reading registered horizon_elapsed gone_at
-  mkdir -p "$work/control-home/.omp" "$work/control-agent"
-  ln -sfT "$natives" "$work/control-home/.omp/natives"
-  cp "$omp_home/.omp/profiles/$profile/agent/models.yml" "$omp_home/.omp/profiles/$profile/agent/config.yml" \
-    "$work/control-agent/"
-  rm -f "$work/control.in" "$work/control.pid"
-  mkfifo "$work/control.in"
-  : >"$work/control.out"
-  own_session "$work/control.pid" \
-    env -i PATH="$PATH" HOME="$work/control-home" TMPDIR="$work/tmp" LEGION_E2E_RUN="$work" \
-    PI_CODING_AGENT_DIR="$work/control-agent" \
-    ENVOY_URL="http://127.0.0.1:$listener_port" ENVOY_TOKEN_FILE="$work/envoy-token" \
-    ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
-    ENVOY_MACHINE_ID="clean-session-stop-control-$$" \
-    "$omp_bin" --extension "$work/pi-envoy" --mode rpc \
-    <"$work/control.in" >"$work/control.out" 2>"$evidence/logs/control.stderr.log" &
-  exec {control_fd}<>"$work/control.in"
-  agent_pid "$work/control.pid" control_pid ||
-    refuse "the control session wrote no pid" || return 1
-  wait_until 300 "the control session to print ready" grep -q '"type":"ready"' "$work/control.out" || return 1
-  printf '%s\n' '{"type":"get_state","id":"control"}' >&"$control_fd"
-  wait_until 60 "the control session to answer get_state" \
-    grep -q '"id":"control"' "$work/control.out" || return 1
-  session=$(jq -r -R 'fromjson? | select(.id == "control") | .data.sessionId' "$work/control.out" | sed -n 1p)
-  [ -n "$session" ] || refuse "the control session named no id" || return 1
-  wait_until 180 "the control session to register live" state_is "$session" live || return 1
-  registered=$(last_seen "$session") ||
-    refuse "no last_seen for the control session while it is live" || return 1
-  exec {control_fd}>&-
-  control_fd=
-  kill -KILL "$control_pid" || refuse "could not kill the control session" || return 1
-  killed_ms=$(date +%s%3N)
-  killed_at=$((killed_ms / 1000))
-  note "SIGKILLed the control session (pid $control_pid, session $session), whose last registration was $registered"
-  sleep "$clean_stop_limit_seconds"
-  session_state "$session" || refuse "the listener would not answer for the control session" || return 1
-  reading=$state
-  [ "$reading" != gone ] ||
-    refuse "the control session was gone ${clean_stop_limit_seconds}s after a kill nothing reported, so the ten seconds above measure the horizon rather than the daemon's clean stop" || return 1
-  note "${clean_stop_limit_seconds}s after the kill the control session reads '$reading', not gone: nothing told the listener"
-  wait_until 300 "the control session to reach gone past its ${gone_horizon} horizon" \
-    state_is "$session" gone || return 1
-  gone_at=$(date +%s)
-  horizon_elapsed=$((gone_at - registered / 1000))
-  measured="$((gone_at - killed_at))s"
-  latencies[$check]="$measured (the horizon, not a clean stop)"
-  note "the control session reached gone ${measured} after the kill, and ${horizon_elapsed}s after its last registration (gone horizon $gone_horizon, a reaper pass every $reap_interval)"
-  [ "$horizon_elapsed" -ge "$gone_horizon_seconds" ] ||
-    refuse "the control session read gone ${horizon_elapsed}s after its last registration, inside its own $gone_horizon horizon" || return 1
-  control_pid=
 }
 
 # ---- the run -----------------------------------------------------------------------------------------

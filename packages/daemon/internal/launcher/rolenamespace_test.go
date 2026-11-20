@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // The helpers every test of a role's namespaces shares: roleInitEnv carries role-init's flags to
@@ -25,8 +27,8 @@ const (
 // in, or cannot mount inside them. Unprivileged user namespaces are refused on a host whose
 // AppArmor sysctl restricts them (Ubuntu 24.04's default), and the job that must run these
 // tests turns the restriction off and proves it (the daemon-go job of
-// .github/workflows/ci.yaml), so a refusal under GITHUB_ACTIONS is a failure and never a skip,
-// as namespace_test's rig has it.
+// .github/workflows/ci.yaml), so a refusal under GITHUB_ACTIONS is a failure and never a skip
+// (testprereq.Require), as namespace_test's rig has it.
 func requireRoleNamespaces(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -44,21 +46,7 @@ func requireRoleNamespaces(t *testing.T) {
 		probe.SysProcAttr = attr
 		output, err = probe.CombinedOutput()
 	}
-	if err == nil {
-		return
-	}
-	skipOutsideCI(t, "a role's namespaces: %v: %s", err, output)
-}
-
-// skipOutsideCI skips a role-namespace test this machine cannot run, and fails it under
-// GITHUB_ACTIONS: the job that must run these tests is set up to run them, so anything that would
-// make it skip is a broken runner, never a green job with the proof gone from it.
-func skipOutsideCI(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatalf(format, args...)
-	}
-	t.Skipf(format, args...)
+	testprereq.Require(t, err == nil, "daemon-go", "a role's namespaces: %v: %s", err, output)
 }
 
 // namespaceScratch is a directory for a test whose role mounts its own /tmp over the container's:
@@ -70,9 +58,7 @@ func namespaceScratch(t *testing.T) string {
 		return dir
 	}
 	home := os.Getenv("HOME")
-	if home == "" {
-		skipOutsideCI(t, "no directory outside /tmp for the role's layout: TMPDIR is under /tmp and HOME is unset")
-	}
+	testprereq.Require(t, home != "", "daemon-go", "no directory outside /tmp for the role's layout: TMPDIR is under /tmp and HOME is unset")
 	dir, err := os.MkdirTemp(home, "legion-launcher-")
 	if err != nil {
 		t.Fatal(err)

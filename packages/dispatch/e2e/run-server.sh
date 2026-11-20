@@ -222,9 +222,8 @@ fi
 
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
-# (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
-# scripts/e2e/dispatch-two-builds.sh gives the build of an older commit so a base build and this
-# one run against one database, and which the browser harness gives B from DISPATCH_E2E_BINARY_B,
+# (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which the browser
+# harness gives B from DISPATCH_E2E_BINARY_B,
 # a previous release's build (packages/envoy/scripts/build-dispatch-build.sh), so a browser drives
 # two builds at once. That build gets the same environment: a release ignores a setting it does
 # not know and refuses only the ones it removed, none of which is set here. A build the harness

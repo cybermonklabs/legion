@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: not a test - the merge queue's cancel act, run by ci.yaml's cancel-started job.
 # The merge-group runs the queue has replaced, force-cancelled: this reads the run list of
 # ci.yaml's merge_group runs, hands it to .github/scripts/merge-group-cancels.sh, which decides
 # and prints one `cancel <run id>` line per run in the order to act on them, and makes one

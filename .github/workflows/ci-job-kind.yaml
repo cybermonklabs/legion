@@ -1,0 +1,1013 @@
+name: CI job kind
+
+# The steps of ci.yaml's `kind` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own but
+# the call mode of its image job below. That `if:` tests an output the merge queue and the
+# `full-ci` label hold back, as they hold back the slow suites (the comment on ci.yaml's `kind`
+# output says why).
+#
+# The tests here run Legion's Sandbox runtime against a real API server and kubelet: a kind
+# cluster on the runner with Agent Sandbox's controller and gVisor, a registry the node pulls
+# from, and the fake GitHub of packages/daemon/internal/fakegithub, which the cluster's pods reach
+# as github.com and api.github.com through a CoreDNS rule. packages/daemon/internal/kindtest
+# brings that rig up from the test process, and every pin of it is
+# scripts/e2e/lib/kind-sandbox.sh's: kind v0.33.0 built with `go install`, the node, registry,
+# busybox, NFS server and PostgreSQL images by the digests of their .github/ci-images.yaml rows,
+# Agent Sandbox's vendored manifest and gVisor's dated release.
+#
+# image builds the worker image under test, once per run, when the caller hands none. On a pull
+# request whose worker-image job built the head, ci.yaml hands that job's pushed reference
+# (`worker-image`), this job is skipped, and each part pulls that reference: the image the pull
+# request publishes is the image its kind tests run. On every other run (a merge group, a
+# dispatched run, a pull request that changed none of the image's inputs) this job builds
+# packages/daemon/docker/worker.Dockerfile as worker-image.yaml's build does, from the same
+# context, BuildKit and layer cache scope, and publishes nothing: the image goes into a docker
+# archive, which each part downloads as an artifact. Its gate is the call mode
+# `inputs.worker-image == ''`, which .github/scripts/check-image-trigger-paths.sh admits, and
+# ci.yaml's kind filter names every file the build reads, which that check holds it to: the
+# worker_image filter's own paths, so a change the image is built from runs this job whichever
+# of the two builds the run's image comes from.
+#
+# Every other job of this file is a part, a literal job of its own, not a leg of a matrix: the
+# readers of ci.yaml (check-ci-filters.sh, ci-ok's report) read each job of this file by its id and
+# expand no matrix. Each part runs its tests by name with -v, each test on a rig of its own, uploads
+# its tests' state when it fails, ends with the ci-ok-report step, and stays within the time of
+# daemon-go's median green run, about 24 minutes, its setup included; the comment on each part says
+# its budget and the run it was measured in. .github/scripts/ci_job_reads.py's KIND_PARTS is the one
+# list of what each part but the tree parts runs, and KIND_TREE_PARTS theirs, one test of
+# KIND_TREE_FILES each; it builds each part's test step from them, and daemon-go's two `-skip`s from
+# their union (KIND_TESTS), and holds each step to what it builds.
+#
+# rig runs the rig's measuring test, which times each piece of the rig by name (the pinned kind's
+# build, the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull
+# or load, the build FROM it of the image that trusts the fake GitHub's authority, the push of both
+# into the registry and the load into the node), then runs a Burstable Sandbox under gVisor that
+# clones a private repository from the fake GitHub and a gVisor pod that mounts an NFS share of a
+# server in the cluster, and logs `df -h` before the rig and with it up. shares runs
+# internal/daemon's share test, which launches an issue pod that mounts NFS shares through the
+# Sandbox runtime the daemon builds from a legion.yaml, and probes the image against broken shares.
+# The two have a part each: one after the other in one part they took 24.8 minutes in CI run
+# 44635427552, past the part budget.
+# burstable-and-sweep runs internal/daemon's two other live tests, which launch issue pods and a
+# project controller the same way, with small explicit reservations.
+#
+# runtime-root, runtime-roles, runtime-image, runtime-issues and runtime-pod-update each run one
+# group of the Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, whose checks run as subtests
+# of their group's (internal/runtime/sandbox/live_test.go's liveGroups), against a restricted
+# identity of the cluster's own, PostgreSQL in the cluster and this repository's own broker in the
+# test process. A part selects its group by -run alone. Each group brings up a rig of its own and
+# redoes first what its checks need of the state another group's checks leave, so no part depends
+# on another. tree-claude, tree-stage4b, tree-stage4b-restart and tree-stage4b-move each run one of
+# internal/daemon's whole-tree tests, which boot the whole daemon on the rig with real agents in
+# issue pods: tree-claude the Claude Code backend's in an issue pod, and the other three Stage 4b's
+# tree, whose checkpoints one rig runs past the part budget, so three tests hold them, each on a
+# rig of its own: tree-stage4b the tree through one role's end and its pod's loss,
+# tree-stage4b-restart the daemon's restarts at the same addresses, at another address of the
+# listener and under `controller: daemon`, and tree-stage4b-move its restart onto a moved worker
+# stream, then every pod's shape.
+#
+# A failed test leaves the cluster's pods, Sandboxes, events, logs and the Agent Sandbox
+# controller's log, the fake GitHub's requests and the test's own logs under kind-logs, which the
+# step after it uploads.
+#
+# Each job's last step reports ci-ok for the caller: on a merge-group run that job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end each job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      worker-image:
+        description: >-
+          The worker image under test, by digest, which the worker-image job of the same run
+          pushed; empty where that job did not run, and the image job builds the image itself.
+        type: string
+        required: false
+        default: ""
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  image:
+    if: inputs.worker-image == ''
+    runs-on: ubuntu-24.04
+    # worker-image.yaml's build has 30 minutes; the archive's upload is the rest.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # worker-image.yaml's builder: provenance-add-gha=false keeps the run's event out of every
+      # predicate, and image= is the driver's own BuildKit, ghcr.io/cybermonklabs/legion/ci's copy
+      # of moby/buildkit:buildx-stable-1 (.github/ci-images.yaml).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: |
+            provenance-add-gha=false
+            image=ghcr.io/cybermonklabs/legion/ci@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      # worker-image.yaml's build of the same Dockerfile and context, reading main's layer cache
+      # under the same scope and writing none, with the version label and the plugin versions
+      # left to their pull-request defaults. The two env names keep the run's event out of the
+      # metadata the action logs, as that build's comment says.
+      - name: Build the worker image into a docker archive
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/daemon/docker/worker.Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          push: false
+          outputs: type=docker,dest=${{ runner.temp }}/worker-image.tar
+          tags: legion-worker:kind
+          cache-from: type=gha,scope=worker-image
+          build-args: |
+            LEGION_REVISION=${{ github.sha }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+
+      # Layers a docker archive holds are compressed already, so the artifact stores them as
+      # they are. A day is long enough for a re-run of the part that reads it.
+      - name: Upload the worker image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/worker-image.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  rig:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, from CI run 44635427552 (job 135956925916), where the measuring test and the share
+    # test ran in one part, one after the other: the steps before its tests took 3 min 6 s, 78 s of
+    # it the disk's and 89 s the image archive's download; internal/kindtest's test binary took 64 s
+    # to build; and the measuring test took 397 s, 97 s of it its rig's first load of the image's
+    # archive on the runner. About 11 minutes in all, within the part budget of about 24. The test
+    # binary's -timeout is 15m, more than half again over 397 s; the job has that, the setup's four
+    # minutes on top, and five more for a failed test's upload, so a hung test's own -timeout ends
+    # it first and its state still uploads: 25 minutes.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # What the rig runs beside Go and git is the runner image's own, and nothing here installs
+      # it: Docker 28.0.4, kubectl 1.37.2, zstd 1.5.7 (gVisor's release is a .tar.zstd), curl, GNU
+      # tar and sha512sum, as actions/runner-images' Ubuntu2404-Readme.md lists them for image
+      # 20261111.370.1. kind is the one tool it does not take from there: the rig builds kind
+      # v0.33.0 with `go install` itself. internal/kindtest fails naming any of them it cannot
+      # find on PATH.
+
+      # The rig holds the worker image, several gigabytes, in Docker, in the registry and in the
+      # node's containerd while it loads it (kindtest drops Docker's copies once the registry has
+      # them). The runner image's Android SDK, .NET, Haskell and CodeQL toolchains, which no step
+      # here uses, go first; `df -h` before and after says what that gave, and the measuring test
+      # logs it again before the rig and with the rig up.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The test builds its package's test binary, and the rig's library builds kind with `go
+      # install`, which reads only kind's own module.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_PARTS and
+      # holds the step to it. The image comes by the caller's reference or the image job's archive
+      # (internal/kindtest's ImageEnv and ImageArchiveEnv), and a failed test's state goes to
+      # kind-logs.
+      - name: Run the rig's measuring test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 15m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub)$' ./internal/kindtest/
+        working-directory: packages/daemon
+
+      # A failed test's state, in a directory of the test's own: the cluster's nodes, pods, the
+      # legion namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS
+      # and PostgreSQL servers', every event, the Agent Sandbox controller's log and the fake
+      # GitHub's requests.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-rig-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  shares:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, from the same job of CI run 44635427552: the share test took 727 s there (675 s in run
+    # 44561190194), loading the image's archive warm (15 s) after the measuring test's rig; this
+    # part's rig loads it cold, as the measuring test's did (97 s), so about 810 s. Around it, the
+    # steps before the tests, about three minutes, and internal/daemon's test binary built cold,
+    # which with internal/kindtest's took 173 s under -p 1 in run 44635427552: about 20 minutes in
+    # all, within the part budget of about 24. The test binary's -timeout is 25m, more than half
+    # again over 810 s; the job has that, the setup's six minutes on top, five more for a failed
+    # test's upload and room to spare, so a hung test's own -timeout ends it first and its state
+    # still uploads: 40 minutes.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The test builds its package's test binary, and the rig's library builds kind with `go
+      # install`, which reads only kind's own module.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as the rig part runs its own.
+      - name: Run the share test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 25m -run '^(TestShareVolumesMountInAnIssuePodLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as the rig part uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-shares-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  burstable-and-sweep:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, from the one part that ran every kind test but the tree's in CI run 44561190194 (job
+    # 135697731228): the burstable test took 336 s and the controller sweep 318 s, each loading the
+    # image's archive warm there (9 s); this part's first rig loads it cold, as the measuring test's
+    # did (85 s), so about 12 minutes of tests. Around them, the steps before the tests, about two
+    # and a half minutes, and internal/daemon's test binary built cold, which with
+    # internal/kindtest's took 210 s under -p 1 there: about 18 minutes in all. 40 minutes, as the
+    # shares part.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The tests build their package's test binary, and the rig's library builds kind with `go
+      # install`, which reads only kind's own module.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The tests, by name, as the rig part runs its own.
+      - name: Run the burstable pod and controller sweep tests
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive|TestTheControllerOrphanSweepLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, one directory per test, as the rig part uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-burstable-and-sweep-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The four parts of the Sandbox runtime's live test, one group of its checks each. The sums
+  # below are from the same job of CI run 44561190194, where TestStage4aSandboxRuntimeLive ran
+  # every check on one rig: its rig and the run's setup took 263 s with a warm load of the image's
+  # archive (4 s; a part's first rig loads it cold, 85 s), its teardown 23 s, and its 41 checks
+  # 2458 s between them, each check's time on its own `--- PASS` line. Around them, the steps
+  # before the tests took 2 min 37 s, Bun's 7 s of it, and the package's test binary 54 s to build
+  # under -p 1 after internal/daemon's had built most of what it compiles; built cold and alone,
+  # estimated at three minutes. So each part is about 12 minutes of setup, rig and teardown, and
+  # its group's checks.
+  runtime-root:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: the root group's checks took 571 s, root-ready's launch of the run's first issue pod,
+    # which makes the repository cache, among them; about 21 minutes in all. A hung check's
+    # -timeout ends it first; 40 minutes lets the first runs finish and say so rather than be cut
+    # off.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The run's setup packs this checkout's pi-envoy and pi-legion through
+      # scripts/e2e/lib/pack-plugin.sh, which builds each bundle over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The test builds its package's test binary, the rig's library builds kind with `go
+      # install`, which reads only kind's own module, and the run's setup builds the checkout's
+      # agent-secrets in packages/envoy.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, the test's subtest of its name, and every check of it with it.
+      # .github/scripts/ci_job_reads.py builds this text from KIND_PARTS, holds the group to the
+      # ones live_test.go's liveGroups declares and the step to what it builds. The image comes as
+      # the rig part's does, and a failed check's state goes to kind-logs.
+      - name: Run the Sandbox runtime's root group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^root$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state: the rig part's upload, and the runtime's own log beside it.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-root-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  runtime-roles:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: the roles group's checks took 533 s. Its setup launches the root and the worker,
+    # which root-ready and worker-shares-issue-pod did there in 68 s and 31 s, and re-adopt makes
+    # the orphan's first pod, which secrets-old-uid-and-revocation had made before it there,
+    # estimated at a minute: about 11 minutes of setup and checks, about 23 in all. 40 minutes, as
+    # runtime-root.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Bun and Go, for what runtime-root's comments say.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, as runtime-root runs its own.
+      - name: Run the Sandbox runtime's roles group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^roles$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state, as runtime-root uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-roles-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  runtime-image:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: the image group's four checks took 191 s of the 1,008 s the image-and-issues group's
+    # test took in CI run 44766893801, whose part ran 1,463 s, past the part budget of 1,461, with
+    # the disk's clearing at 243 s; this part is that run's less the issues' 451 s of checks, about
+    # 17 minutes. 40 minutes, as runtime-root.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Bun and Go, for what runtime-root's comments say.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, as runtime-root runs its own.
+      - name: Run the Sandbox runtime's image group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^image$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state, as runtime-root uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-image-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  runtime-issues:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: the issues group's four checks took 451 s in CI run 44766893801, in a part that ran
+    # 1,463 s with the image's checks; without them, about 21 minutes. 40 minutes, as runtime-root.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Bun and Go, for what runtime-root's comments say.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, as runtime-root runs its own.
+      - name: Run the Sandbox runtime's issues group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^issues$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state, as runtime-root uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-issues-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  runtime-pod-update:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: pod-update took 250 s and pod-update-fleet 450 s, and pod-update's launch makes the
+    # run's repository cache, estimated at half a minute more: about 12 minutes of checks, about 24
+    # in all, the longest of the four. 40 minutes, as runtime-root.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Bun and Go, for what runtime-root's comments say.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, as runtime-root runs its own.
+      - name: Run the Sandbox runtime's pod-update group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^pod-update$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state, as runtime-root uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-pod-update-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-claude:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, from the one part that ran both whole-tree tests in one binary, one after the other:
+    # the Claude Code backend's test, three checks over one issue pod, took 732 s in CI run
+    # 44615479190 (job 135889669379), all three passing, and 706 s in run 44625956146 (job
+    # 135928071024), where the steps before the test step took 98 s; with them and the test
+    # binary's build the setup took about five minutes: about 17 minutes in all, within the part
+    # budget of about 24. The test binary's -timeout is 20m, more than half again over 732 s; the
+    # job has that, the setup's five minutes on top, and five more for a failed test's upload, so a
+    # hung test's own -timeout ends it first and its state still uploads: 30 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The test builds its package's test binary, and its rig (kind_tree_rig_live_test.go) the
+      # `legion` every pod's launcher and the fence's worker-shim are, and Dispatch, the Envoy
+      # listener and natsd from packages/envoy.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_PARTS,
+      # whose tests daemon-go's two `-skip`s name with the other parts', and holds the step to it.
+      # The image comes as the rig part's does, and a failed test's state goes to kind-logs.
+      - name: Run the Claude Code backend's tree test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state: the rig part's upload, and the daemon's, Dispatch's and the
+      # listener's own logs beside it.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-claude-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, measured in CI run 44766893801 (job 136406642077), where this part's ten checkpoints
+    # all ran: 17.4 minutes in all, the test 778 s of it, the rig 500 s to the first checkpoint, two
+    # minutes of that the daemon's image probe. The fourteen checkpoints on one rig, with four daemon
+    # restarts of about two minutes of image probe each, come to about 30 minutes, past the part
+    # budget of 24 minutes 21 seconds, so this part runs the ten that need no restart, and
+    # tree-stage4b-restart and tree-stage4b-move run the four restarts. The test binary's -timeout
+    # is 20m, more than half again over the test's 778 s; the job has that, the setup's five minutes
+    # on top, and five more for a failed test's upload, so a hung test's own -timeout ends it first
+    # and its state still uploads: 30 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Go, for what tree-claude's comments say: the test's rig is the same.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's tree test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 20m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as tree-claude uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-stage4b-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b-restart:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, measured in CI run 44766893801 (job 136406642255): restart-mid-tree took 187 s and
+    # address-moved-env-same-pod 146 s, the test 848 s and the part 18.5 minutes in all; controller,
+    # which took 185 s in that run's tree-stage4b-move (job 136406642222), comes to about 1,033 s of
+    # test and 21.6 minutes of part, within the part budget of 24 minutes 21 seconds, where with the
+    # stream move it took 24.0. The test binary's -timeout is 26m, more than half again over the
+    # test's 1,033 s; the job has that, the setup's five minutes on top, and five more for a failed
+    # test's upload: 36 minutes.
+    timeout-minutes: 36
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Go, for what tree-claude's comments say: the test's rig is the same.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's restart test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 26m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as tree-claude uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-stage4b-restart-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b-move:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, measured in CI run 44766893801 (job 136406642222), where this part also ran
+    # controller: 24.0 minutes in all, the test 1,028 s of it, address-moved-stream-new-pod 177 s
+    # and controller 185 s. With controller in tree-stage4b-restart, the part comes to about 20.9
+    # minutes and the test to about 843 s. The test binary's -timeout is 25m, more than half again
+    # over that; the job has that, the setup's five minutes on top, and five more for a failed
+    # test's upload: 35 minutes.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Go, for what tree-claude's comments say: the test's rig is the same.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's stream move test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 25m -run '^(TestStage4bStreamMoveOnTheKindRigLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as tree-claude uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-stage4b-move-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

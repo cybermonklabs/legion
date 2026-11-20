@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { hostTool } from "@legion/test-fixtures/host-tools";
+import { hostTool, requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { startStacks } from "../harness-pool";
@@ -180,21 +180,20 @@ test("a run of more than one stack refuses to start without a Postgres provider"
 
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is
-// skipped, as e2e/__tests__/psql-session.test.ts's cases are, and its two halves are composed
-// into one line for the reason that file gives. The case runs `select 1` and writes nothing, so
-// it runs on the server's own database rather than one of its own.
+// skipped, as e2e/__tests__/psql-session.test.ts's cases are, and on GitHub Actions it fails, and
+// its two halves are composed into one line for the reason that file gives. The case runs
+// `select 1` and writes nothing, so it runs on the server's own database rather than one of its
+// own.
 const live = (process.env.LEGION_TEST_PG_DSN ?? "").trim();
 const missingForDatabase = [
   ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
   ...(live === "" ? ["LEGION_TEST_PG_DSN, naming a server this run may read"] : []),
 ];
-const withoutDatabase = missingForDatabase.length > 0;
-if (withoutDatabase) {
-  console.warn(
-    `Skipped the test in ${import.meta.path} that needs a database. This run does not have: ` +
-      `${missingForDatabase.join("; ")}. Supply what is missing and run the tests again.`
-  );
-}
+const withoutDatabase = requireOrSkip(
+  missingForDatabase.join("; "),
+  missingForDatabase.length === 0,
+  "dispatch-browser"
+);
 
 test.skipIf(withoutDatabase)(
   "psql reads its own stack's database",

@@ -3,8 +3,8 @@
  * whose box stalls it is `unresponsive`, not dead, and keeps its record, its role claim and its
  * messages until the gone horizon.
  *
- * It runs no agent, so it runs where CI runs: no model route and no agent process. The stalled
- * session is a child Bun process of this file (`runSessionChild`) carrying this package's real
+ * Its first two rigs run no agent and need no model route. The stalled session is a child Bun
+ * process of this file (`runSessionChild`) carrying this package's real
  * registration and heartbeat — `createEnvoyClient(...).subscribe`, the call every plugin's
  * heartbeat repeats (`registerSession`, packages/pi-envoy/extensions/envoy.ts), with the real
  * role claim and the real session consumer beside it: the child subscribes its relay subject and
@@ -13,18 +13,49 @@
  * from this checkout. The stall is `SIGSTOP`, which stops exactly what a loaded box stops: the
  * heartbeat, with nothing closed and nothing deregistered.
  * `SIGCONT` resumes it and `SIGKILL` ends it with no deregistration, as a killed pane leaves it.
+ * The first rig holds the states themselves; the second, what a stalled session keeps across a
+ * second listener and its restart, an outage of the bus, and a Dispatch server that reads the
+ * holder of a routed event's role before it hands the event over. The third runs the pinned Oh
+ * My Pi and Claude Code themselves against a model stand-in, for what a host does with the
+ * session it leaves.
  *
  * Run it from packages/envoy-client with `bun test ./test/session-stall.ts` and
- * LEGION_E2E_ENVOY_STACK=1 (the envoy-session-stall job sets it).
+ * LEGION_E2E_ENVOY_STACK=1, with LEGION_E2E_DISPATCH_STACK=1 and DISPATCH_TEST_DATABASE_URL for
+ * the second rig and LEGION_TEST_OMP and LEGION_TEST_CLAUDE for the third (the
+ * envoy-session-stall job sets all of them). The kernel must let a test stop its child with
+ * SIGSTOP without hanging up the test's own process group, which gVisor does not.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdir, writeFile } from "node:fs/promises";
+import * as path from "node:path";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
+// Relative rather than by package name: @legion/pi-shared depends on this package, so this package
+// cannot depend on it, and the harness is test code that only this rig and the plugins' own tests
+// run (scripts/e2e/lib/messages-standin.ts imports it the same way).
+import {
+  type Block,
+  type Cleanup,
+  messageStream,
+  ompRoot,
+  serveStandin,
+  spawnRpc,
+  writeStandinProfile,
+} from "../../pi-shared/test/omp-harness";
 import { createConsumerDelivery } from "../src/consumer-delivery";
 import { createDeliveryLedger } from "../src/delivery-ledger";
 import { createEnvoyClient, type EnvoyClient, type SessionState } from "../src/transport";
+import {
+  type DispatchStack,
+  dispatchStackEnabled,
+  startDispatchStack,
+  useDispatchStackDirectory,
+} from "./dispatch-stack";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -33,7 +64,14 @@ import {
 } from "./envoy-stack";
 
 // Destructured: claude-envoy's typecheck, which compiles this directory, forbids `process.env.X`.
-const { ENVOY_SESSION_STALL_CHILD } = process.env;
+// LEGION_TEST_OMP and LEGION_TEST_CLAUDE name the pinned Oh My Pi and Claude Code the third rig
+// runs (install-omp and install-claude-code set them in the envoy-session-stall job).
+const {
+  ENVOY_SESSION_STALL_CHILD,
+  LEGION_TEST_OMP,
+  LEGION_TEST_CLAUDE,
+  PATH: SHELL_PATH = "",
+} = process.env;
 
 /**
  * The windows the listener runs with here, the deployment's shape in seconds instead of hours so
@@ -247,6 +285,14 @@ if (ENVOY_SESSION_STALL_CHILD !== undefined) {
 // `describe` below has stopped the stack, whether or not the suite reached `stop` (a SIGKILL'd
 // child, a failed start).
 const stackDirectory = useEnvoyStackDirectory();
+// The second rig's: an Envoy stack of its own and a Dispatch server on it (the describe below the
+// first one).
+const keptStackDirectory = useEnvoyStackDirectory();
+const keptDispatchDirectory = useDispatchStackDirectory();
+// The third rig's: an Envoy stack of its own, and the real hosts' homes, profiles and the
+// claude-envoy plugin built from this checkout.
+const hostsStackDirectory = useEnvoyStackDirectory();
+const hostsDirectory = temporaryDirectory("session-stall-hosts");
 
 /** A session process the rig can stall, as the parent holds it. */
 interface StalledSession {
@@ -342,15 +388,15 @@ interface Sighting {
 }
 
 async function sighting(envoyUrl: string, sessionID: string): Promise<Sighting> {
-  const path = `/v1/registry/${encodeURIComponent(sessionID)}?include=unresponsive`;
-  const response = await fetch(`${envoyUrl}${path}`);
+  const route = `/v1/registry/${encodeURIComponent(sessionID)}?include=unresponsive`;
+  const response = await fetch(`${envoyUrl}${route}`);
   const body: unknown = await response.json();
   if (response.ok) {
     const row = SessionRowSchema.parse(body);
     return { state: row.state, lastSeen: row.last_seen };
   }
   if (response.status !== 404) {
-    throw new Error(`GET ${path} answered ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`GET ${route} answered ${response.status}: ${JSON.stringify(body)}`);
   }
   const refusal = NoLiveSessionSchema.parse(body);
   return { state: refusal.state, lastSeen: refusal.last_seen ?? 0 };
@@ -390,13 +436,37 @@ type RoleAnswer =
   | { readonly status: number; readonly holder: z.infer<typeof RoleHolderSchema> }
   | { readonly status: number; readonly refusal: z.infer<typeof RoleRefusalSchema> };
 
-/** `GET /v1/roles/<role>`: its holder, or the 404 naming why the listener routes nothing there. */
+/** `GET /v1/roles/<role>`: its holder, or the 404 naming why the listener routes nothing there.
+ *  Any other answer names neither - the 503 of a bus the listener could not read the claim or its
+ *  holder's session through (writeBusUnavailable, packages/envoy/cmd/listener/api.go), or the 500
+ *  of an unreadable claim - and is thrown with its status and body. */
 async function roleAnswer(envoyUrl: string, role: string): Promise<RoleAnswer> {
-  const response = await fetch(`${envoyUrl}/v1/roles/${encodeURIComponent(role)}`);
+  const route = `/v1/roles/${encodeURIComponent(role)}`;
+  const response = await fetch(`${envoyUrl}${route}`);
   const body: unknown = await response.json();
-  return response.ok
-    ? { status: response.status, holder: RoleHolderSchema.parse(body) }
-    : { status: response.status, refusal: RoleRefusalSchema.parse(body) };
+  if (response.ok) return { status: response.status, holder: RoleHolderSchema.parse(body) };
+  if (response.status !== 404) {
+    throw new Error(`GET ${route} answered ${response.status}: ${JSON.stringify(body)}`);
+  }
+  return { status: response.status, refusal: RoleRefusalSchema.parse(body) };
+}
+
+/** A role lookup that waits out the listener's 503 once the bus is back, as awaitStateThrough
+ *  waits out the session read: the lookup reads the claim from the bus itself, within one
+ *  request's budget, and is refused until that read is served again. */
+async function roleAnswerThrough(
+  envoyUrl: string,
+  role: string,
+  deadline: number
+): Promise<RoleAnswer> {
+  for (;;) {
+    try {
+      return await roleAnswer(envoyUrl, role);
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+    }
+    await Bun.sleep(POLL_MS);
+  }
 }
 
 /** The claim the role bucket holds, or undefined once something released it. */
@@ -651,3 +721,759 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     expect(await roleClaim(claims, child.role)).toBeUndefined();
   }, 240_000);
 });
+
+/**
+ * The second rig: what a stalled session keeps across the rest of the stack — a second listener
+ * and that listener's restart, an outage of the bus itself, and Dispatch, which reads the session's
+ * state from the listener before it hands an event routed to the session's role. Its listener's
+ * gone horizon is three minutes rather than one, because the outage below stalls two sessions for
+ * longer than the first rig's horizon.
+ */
+const KEPT_GONE_HORIZON_MS = 180_000;
+/** How long the bus stays down under two stalled sessions. */
+const OUTAGE_MS = 20_000;
+/** How long a count waits after the copy it waited for, so that a second copy would be counted. */
+const SETTLE_MS = 10_000;
+/** How long Dispatch is given to push an event at a stalled holder, which it must not do. */
+const HOLD_MS = 20_000;
+/** How long the held event may take to reach its holder once it answers again: the outbox's own
+ *  back-off (internal/dispatch/retry), which caps one wait at five minutes, and a margin. */
+const HELD_FORWARD_MS = 360_000;
+/** The person each Dispatch write is made as, under the stack's header identity. */
+const PERSON = "alice";
+/** The prefix of the dedupe key every role forward of Dispatch's outbox carries. */
+const ROLE_FORWARD_KEY = "envoy.role.forward.";
+
+const IssueSchema = z.object({ key: z.string() });
+const IssueClaimSchema = z.object({
+  claim: z.object({ actor: z.object({ id: z.string() }) }).nullable(),
+  holder_state: StateSchema.optional(),
+});
+
+/** A sighting that waits out an answer the listener cannot give yet: after the bus comes back the
+ *  listener reads its bucket again, and answers 503 until it stands behind its copy. */
+async function awaitStateThrough(
+  envoyUrl: string,
+  sessionID: string,
+  want: SessionState,
+  deadline: number
+): Promise<Sighting> {
+  let last = "no answer";
+  for (;;) {
+    try {
+      const seen = await sighting(envoyUrl, sessionID);
+      if (seen.state === want) return seen;
+      last = seen.state;
+    } catch (error) {
+      last = String(error);
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`${sessionID} still reads ${last}, not ${want}, at the deadline`);
+    }
+    await Bun.sleep(POLL_MS);
+  }
+}
+
+describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
+  "what a stalled session keeps across a second listener, a bus outage and Dispatch",
+  () => {
+    let stack: EnvoyStack | undefined;
+    let dispatch: DispatchStack | undefined;
+    let nats: NatsConnection | undefined;
+    let claims: KV | undefined;
+    const project = `STALL${String(process.pid).slice(-4)}`;
+
+    const rig = () => {
+      if (stack === undefined || dispatch === undefined || claims === undefined) {
+        throw new Error("the kept-claims rig did not start");
+      }
+      return { stack, dispatch, claims };
+    };
+
+    /** A write to Dispatch as the person, or as a machine over the stack's agent bearer. */
+    const write = async (
+      as: "person" | "machine",
+      method: string,
+      route: string,
+      body?: unknown
+    ): Promise<unknown> => {
+      const { dispatch } = rig();
+      const response = await fetch(`${dispatch.url}${route}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          ...(as === "person"
+            ? { "X-Dispatch-User": PERSON }
+            : { Authorization: `Bearer ${dispatch.token}` }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text}`);
+      return JSON.parse(text) as unknown;
+    };
+
+    const newIssue = async (title: string): Promise<string> =>
+      IssueSchema.parse(
+        await write("person", "POST", "/api/v1/issues", {
+          project,
+          title,
+          spec: `# ${title}\n\nThe session-stall rig's own issue.\n`,
+          force: true,
+        })
+      ).key;
+
+    /** A stalled-session child on this rig, under a session id and a role of the test's own. The
+     *  role spells the name's `_` as `-`: Dispatch takes a role route only when the role is
+     *  `[a-z0-9-]` (roleRoutePattern, packages/envoy/internal/dispatch/model/model.go), and the
+     *  row that routes an issue to the holder's role would be refused 400 ROUTE_INVALID. */
+    const session = (name: string): Promise<StalledSession> => {
+      const { stack } = rig();
+      return startStalledSession({
+        envoyUrl: stack.envoyUrl,
+        natsUrl: stack.natsUrl,
+        sessionID: `ses_${name}_${process.pid}`,
+        role: `session-stall-${name.replaceAll("_", "-")}`,
+        directory: `/test/session-stall/${name}`,
+        title: `Session ${name}`,
+        heartbeatMs: HEARTBEAT_MS,
+      });
+    };
+
+    beforeAll(async () => {
+      const started = await startEnvoyStack({
+        work: keptStackDirectory,
+        listenerEnv: {
+          ENVOY_SESSION_LIVE_WINDOW: goDuration(LIVE_WINDOW_MS),
+          ENVOY_SESSION_GONE_HORIZON: goDuration(KEPT_GONE_HORIZON_MS),
+          ENVOY_SESSION_REAP_INTERVAL: goDuration(REAP_INTERVAL_MS),
+          ENVOY_ROLE_CLAIM_REAP_INTERVAL: goDuration(REAP_INTERVAL_MS),
+          ENVOY_SESSION_MAX_AGE: goDuration(SESSION_MAX_AGE_MS),
+        },
+      });
+      stack = started;
+      // Dispatch reads a role route's holder from the session bucket by windows of its own, so it
+      // is given the listener's: with its 5-minute default it would read a stalled holder live and
+      // hand it the event the row below holds.
+      dispatch = await startDispatchStack({
+        work: keptDispatchDirectory,
+        envoy: { envoyUrl: started.envoyUrl, natsUrl: started.natsUrl },
+        sessionWindows: {
+          liveWindow: goDuration(LIVE_WINDOW_MS),
+          goneHorizon: goDuration(KEPT_GONE_HORIZON_MS),
+        },
+      });
+      // The observer outlives the outage below: it reconnects for as long as the bus is down.
+      nats = await connect({
+        servers: [started.natsUrl],
+        name: "session-stall-kept-observer",
+        maxReconnectAttempts: -1,
+        reconnectTimeWait: 500,
+      });
+      claims = await nats.jetstream().views.kv(ROLE_CLAIM_BUCKET, { bindOnly: true });
+      await write("person", "POST", "/api/v1/projects", { key: project, name: "Session stall" });
+    }, 600_000);
+
+    afterAll(async () => {
+      await nats?.close();
+      await dispatch?.stop();
+      await stack?.stop();
+    }, 120_000);
+
+    // Two listeners judge one session by the one record they both read, so a stalled session is
+    // never live on one and unresponsive on the other; and a listener that has only just started,
+    // and read the bucket afresh, says what the one that watched all along says.
+    test("two listeners read a stalled session the same, and so does one restarted while it is stalled", async () => {
+      const { stack } = rig();
+      const child = await session("two_listeners");
+      let second = await stack.startListener();
+      try {
+        const frozenAt = child.freeze();
+        const onFirst = await awaitState(
+          stack.envoyUrl,
+          child.sessionID,
+          "unresponsive",
+          frozenAt + LIVE_WINDOW_MS + 20_000
+        );
+        const onSecond = await awaitState(
+          second.url,
+          child.sessionID,
+          "unresponsive",
+          Date.now() + 20_000
+        );
+        expect(onSecond.lastSeen).toBe(onFirst.lastSeen);
+
+        await second.stop();
+        second = await stack.startListener();
+        const restarted = await awaitStateThrough(
+          second.url,
+          child.sessionID,
+          "unresponsive",
+          Date.now() + 30_000
+        );
+        expect(restarted.lastSeen).toBe(onFirst.lastSeen);
+
+        child.thaw();
+        const liveFirst = await awaitState(
+          stack.envoyUrl,
+          child.sessionID,
+          "live",
+          Date.now() + HEARTBEAT_MS * 3 + 20_000
+        );
+        const liveSecond = await awaitState(
+          second.url,
+          child.sessionID,
+          "live",
+          Date.now() + 20_000
+        );
+        expect(liveFirst.lastSeen).toBeGreaterThan(onFirst.lastSeen);
+        expect(liveSecond.lastSeen).toBeGreaterThan(onFirst.lastSeen);
+      } finally {
+        await second.stop();
+        await child.kill();
+      }
+    }, 180_000);
+
+    // Dispatch reads an event's role holder from the listener before it hands the event over. A
+    // live holder is handed it once, which is this test's control; a stalled holder's event is held
+    // rather than pushed at a session that cannot read it, the claim and its claimed_at stand, and
+    // once the holder answers again the event is handed over exactly once.
+    test(
+      "Dispatch holds an event routed to a stalled holder's role and forwards it once when the holder answers",
+      async () => {
+        const { stack, claims } = rig();
+        const holder = await session("routed_holder");
+        const watcher = await connect({ servers: [stack.natsUrl], name: "session-stall-forwards" });
+        const codec = StringCodec();
+        const forwards: string[] = [];
+        // The holder's own agent subject, where a role forward lands; this subscriber answers none
+        // of them, since the stream's acknowledgement is the forward's answer.
+        const subscription = watcher.subscribe(legacyAgentSubject(holder.sessionID));
+        void (async () => {
+          for await (const message of subscription) forwards.push(codec.decode(message.data));
+        })();
+        await watcher.flush();
+        const forwarded = (text: string): number =>
+          forwards.filter((one) => one.includes(text) && one.includes(ROLE_FORWARD_KEY)).length;
+        try {
+          const issue = await newIssue("A role route reaches its holder");
+          await write("machine", "PATCH", `/api/v1/issues/${issue}`, {
+            route: `role:${holder.role}`,
+            actor: { id: holder.sessionID, kind: "session" },
+          });
+          const comments = `/api/v1/issues/${issue}/comments`;
+          const marker = `stall-routed-${crypto.randomUUID()}`;
+
+          await write("person", "POST", comments, { body: `live ${marker}` });
+          await until(
+            "the live holder's role forward",
+            Date.now() + 60_000,
+            () => forwarded(`live ${marker}`) >= 1
+          );
+          await Bun.sleep(SETTLE_MS);
+          expect(forwarded(`live ${marker}`)).toBe(1);
+
+          const claimed = await roleClaim(claims, holder.role);
+          expect(claimed?.holder_session_id).toBe(holder.sessionID);
+          const frozenAt = holder.freeze();
+          await awaitState(
+            stack.envoyUrl,
+            holder.sessionID,
+            "unresponsive",
+            frozenAt + LIVE_WINDOW_MS + 20_000
+          );
+          await write("person", "POST", comments, { body: `stalled ${marker}` });
+          await Bun.sleep(HOLD_MS);
+          expect(forwarded(`stalled ${marker}`)).toBe(0);
+          expect(await roleClaim(claims, holder.role)).toEqual(claimed);
+          const lookup = await roleAnswer(stack.envoyUrl, holder.role);
+          expect("refusal" in lookup ? lookup.refusal : undefined).toMatchObject({
+            reason: "holder_lapsed",
+            holder: holder.sessionID,
+            holder_state: "unresponsive",
+            claim_released: false,
+          });
+
+          holder.thaw();
+          await awaitState(
+            stack.envoyUrl,
+            holder.sessionID,
+            "live",
+            Date.now() + HEARTBEAT_MS * 3 + 20_000
+          );
+          await until(
+            "the held event's role forward",
+            Date.now() + HELD_FORWARD_MS,
+            () => forwarded(`stalled ${marker}`) >= 1
+          );
+          await Bun.sleep(SETTLE_MS);
+          expect(forwarded(`stalled ${marker}`)).toBe(1);
+          expect(await roleClaim(claims, holder.role)).toEqual(claimed);
+        } finally {
+          subscription.unsubscribe();
+          await watcher.close();
+          await holder.kill();
+        }
+      },
+      HELD_FORWARD_MS + 180_000
+    );
+
+    // The failure this rig exists for is a box under load, where the bus suffers too. With the bus
+    // down around two stalled sessions, neither loses its claim: one holds a role and the other an
+    // issue in Dispatch, and a claim is released only for a holder past the gone horizon.
+    test("a bus outage under two stalled sessions takes neither the role claim of one nor the issue claim of the other", async () => {
+      const { stack, claims } = rig();
+      const roleHolder = await session("outage_role");
+      const issueHolder = await session("outage_issue");
+      try {
+        const issue = await newIssue("A bus outage keeps the claims");
+        await write("machine", "POST", `/api/v1/issues/${issue}/claim`, {
+          actor: { kind: "session", id: issueHolder.sessionID },
+        });
+        const claimed = await roleClaim(claims, roleHolder.role);
+        expect(claimed?.holder_session_id).toBe(roleHolder.sessionID);
+
+        const frozenAt = Math.min(roleHolder.freeze(), issueHolder.freeze());
+        for (const child of [roleHolder, issueHolder]) {
+          await awaitState(
+            stack.envoyUrl,
+            child.sessionID,
+            "unresponsive",
+            frozenAt + LIVE_WINDOW_MS + 20_000
+          );
+        }
+
+        await stack.restartNats(OUTAGE_MS);
+
+        for (const child of [roleHolder, issueHolder]) {
+          await awaitStateThrough(
+            stack.envoyUrl,
+            child.sessionID,
+            "unresponsive",
+            Date.now() + 60_000
+          );
+        }
+        const lookup = await roleAnswerThrough(
+          stack.envoyUrl,
+          roleHolder.role,
+          Date.now() + 60_000
+        );
+        expect("refusal" in lookup ? lookup.refusal : undefined).toMatchObject({
+          holder: roleHolder.sessionID,
+          holder_state: "unresponsive",
+          claim_released: false,
+        });
+        expect(await roleClaim(claims, roleHolder.role)).toEqual(claimed);
+        const read = IssueClaimSchema.parse(
+          await write("person", "GET", `/api/v1/issues/${issue}`)
+        );
+        expect(read.claim?.actor.id).toBe(issueHolder.sessionID);
+        expect(read.holder_state).toBe("unresponsive");
+      } finally {
+        await roleHolder.kill();
+        await issueHolder.kill();
+      }
+    }, 240_000);
+  }
+);
+
+/**
+ * The third rig: the two real hosts' own sessions, on a listener with the first rig's short
+ * windows. What a host does with the id it leaves when it starts another session is the host's and
+ * its plugin's, and no stand-in can say it: Oh My Pi's `new_session` and Claude Code's `/clear`
+ * each leave the id they replace gone at once rather than unresponsive until the horizon, and a
+ * `claude --resume` of a session gets back the topics it had subscribed. The model is a stand-in
+ * that answers both hosts; the listener and natsd are built from this checkout.
+ */
+const hostsSkipped =
+  !envoyStackEnabled ||
+  requireOrSkip(
+    "LEGION_TEST_OMP and LEGION_TEST_CLAUDE, naming the pinned Oh My Pi and Claude Code",
+    LEGION_TEST_OMP !== undefined && LEGION_TEST_CLAUDE !== undefined,
+    "envoy-session-stall"
+  );
+/** How soon an id a host left must read gone: well inside the gone horizon, which is what "at
+ *  once" is set against. */
+const LEFT_GONE_MS = 20_000;
+/** The bound on one host turn, and on a session's first registration. */
+const HOST_TURN_MS = 120_000;
+const PI_ENVOY_EXTENSION = path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts");
+const CLAUDE_ENVOY_BUILD = path.resolve(import.meta.dir, "../../claude-envoy/scripts/build.ts");
+
+const RegistryTopicsSchema = z.object({ topics: z.array(z.string()) });
+const SessionListSchema = z.array(
+  z.object({ session_id: z.string(), dir: z.string(), topics: z.array(z.string()).nullish() })
+);
+
+/** The live rows `GET /v1/sessions` lists for one project directory. */
+async function sessionsOf(
+  envoyUrl: string,
+  directory: string
+): Promise<z.infer<typeof SessionListSchema>> {
+  const response = await fetch(`${envoyUrl}/v1/sessions`);
+  if (!response.ok) throw new Error(`GET /v1/sessions answered ${response.status}`);
+  return SessionListSchema.parse(await response.json()).filter((row) => row.dir === directory);
+}
+
+/** Whether the session's live registry row carries `topic`. */
+async function holdsTopic(envoyUrl: string, sessionID: string, topic: string): Promise<boolean> {
+  const response = await fetch(`${envoyUrl}/v1/registry/${encodeURIComponent(sessionID)}`);
+  if (!response.ok) return false;
+  return RegistryTopicsSchema.parse(await response.json()).topics.includes(topic);
+}
+
+/** The text of a Messages request's last user message, its tool results left out. */
+function lastUserText(body: Record<string, unknown>): string {
+  const messages = z
+    .array(z.object({ role: z.string(), content: z.unknown() }))
+    .catch([])
+    .parse(body.messages);
+  const last = messages.filter((message) => message.role === "user").at(-1);
+  if (last === undefined) return "";
+  if (typeof last.content === "string") return last.content;
+  return z
+    .array(z.object({ type: z.string(), text: z.string().optional() }))
+    .catch([])
+    .parse(last.content)
+    .map((block) => (block.type === "text" ? (block.text ?? "") : ""))
+    .join("\n");
+}
+
+/** Whether the request's newest message carries a tool result, which is the turn after a call. */
+function answersACall(body: Record<string, unknown>): boolean {
+  const messages = z
+    .array(z.object({ content: z.unknown() }))
+    .catch([])
+    .parse(body.messages);
+  return JSON.stringify(messages.at(-1)?.content ?? "").includes('"tool_result"');
+}
+
+/** The name under which the request offers a tool whose own name is `name`: Claude Code offers an
+ *  MCP server's tool as `mcp__<server>__<name>`. */
+function offeredTool(body: Record<string, unknown>, name: string): string | undefined {
+  return z
+    .array(z.object({ name: z.string() }))
+    .catch([])
+    .parse(body.tools)
+    .map((tool) => tool.name)
+    .find((offered) => offered === name || offered.endsWith(`__${name}`));
+}
+
+describe.skipIf(hostsSkipped)(
+  "the real hosts' own sessions on a listener with short windows",
+  () => {
+    let stack: EnvoyStack | undefined;
+    const cleanup: Cleanup = [];
+    let modelBase = "";
+    /** One line per Messages request the stand-in answered, which a failure below quotes. */
+    const exchanges: string[] = [];
+    const topic = `notifications.team.session-stall-${process.pid}.all`;
+
+    const rig = () => {
+      if (stack === undefined) throw new Error("the real-hosts rig did not start");
+      return stack;
+    };
+
+    beforeAll(async () => {
+      stack = await startEnvoyStack({
+        work: hostsStackDirectory,
+        listenerEnv: {
+          ENVOY_SESSION_LIVE_WINDOW: goDuration(LIVE_WINDOW_MS),
+          ENVOY_SESSION_GONE_HORIZON: goDuration(GONE_HORIZON_MS),
+          ENVOY_SESSION_REAP_INTERVAL: goDuration(REAP_INTERVAL_MS),
+          ENVOY_ROLE_CLAIM_REAP_INTERVAL: goDuration(REAP_INTERVAL_MS),
+          ENVOY_SESSION_MAX_AGE: goDuration(SESSION_MAX_AGE_MS),
+        },
+      });
+      // One model for both hosts: a turn that asks for envoy_subscribe gets the call, once, and every
+      // other turn a word. Oh My Pi reaches it under /anthropic (writeStandinProfile), Claude Code at
+      // the root (ANTHROPIC_BASE_URL); any other read is answered empty.
+      let served = 0;
+      modelBase = serveStandin(cleanup, (url, body) => {
+        if (!url.pathname.endsWith("/v1/messages")) return Response.json({ data: [] });
+        served += 1;
+        const subscribe = offeredTool(body, "envoy_subscribe");
+        const asked = lastUserText(body);
+        const blocks: readonly Block[] =
+          subscribe !== undefined && asked.includes("envoy_subscribe") && !answersACall(body)
+            ? [{ type: "tool_use", name: subscribe, input: { topics: [topic] } }]
+            : [{ type: "text", text: "Done." }];
+        exchanges.push(
+          `${served}: offered ${subscribe ?? "no envoy_subscribe"} among ${
+            z.array(z.unknown()).catch([]).parse(body.tools).length
+          } tools; asked ${JSON.stringify(asked.slice(-120))}; answered ${blocks
+            .map((block) => block.type)
+            .join(", ")}`
+        );
+        if (body.stream !== true) {
+          return Response.json({
+            id: `msg_${served}`,
+            type: "message",
+            role: "assistant",
+            model: body.model,
+            content: blocks,
+            stop_reason: blocks.some((block) => block.type === "tool_use")
+              ? "tool_use"
+              : "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 5, output_tokens: 1 },
+          });
+        }
+        return new Response(messageStream(blocks, `msg_${served}`), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }).base;
+    }, 300_000);
+
+    afterAll(async () => {
+      for (const step of cleanup.splice(0).reverse()) await step();
+      await stack?.stop();
+    }, 120_000);
+
+    test("Oh My Pi's new_session leaves the id it replaces gone at once, and the new one live", async () => {
+      const stack = rig();
+      const binary = LEGION_TEST_OMP ?? "";
+      const { home, workspace, sessions } = await ompRoot(binary, "session-stall-omp-", cleanup);
+      await writeStandinProfile(home, modelBase);
+      const answers = new Map<string, Record<string, unknown>>();
+      const rpc = spawnRpc(
+        binary,
+        {
+          extensions: [PI_ENVOY_EXTENSION],
+          home,
+          workspace,
+          sessions,
+          env: {
+            ENVOY_URL: stack.envoyUrl,
+            ENVOY_NATS_URL: stack.natsUrl,
+            ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
+            ENVOY_MACHINE_ID: "session-stall-hosts",
+          },
+          onFrame: (frame) => {
+            const answer = z
+              .object({ type: z.literal("response"), id: z.string() })
+              .passthrough()
+              .safeParse(frame);
+            if (answer.success) answers.set(answer.data.id, answer.data);
+          },
+        },
+        cleanup
+      );
+      let asked = 0;
+      const ask = async (type: string): Promise<Record<string, unknown>> => {
+        asked += 1;
+        const id = `session-stall-${asked}`;
+        rpc.send({ type, id });
+        await until(`Oh My Pi to answer ${type}`, Date.now() + HOST_TURN_MS, () => answers.has(id));
+        return answers.get(id) ?? {};
+      };
+      const sessionOf = async (): Promise<string> =>
+        z.object({ data: z.object({ sessionId: z.string() }) }).parse(await ask("get_state")).data
+          .sessionId;
+
+      const before = await sessionOf();
+      await awaitState(stack.envoyUrl, before, "live", Date.now() + HOST_TURN_MS);
+      await ask("new_session");
+      await awaitState(stack.envoyUrl, before, "gone", Date.now() + LEFT_GONE_MS);
+      const after = await sessionOf();
+      expect(after).not.toBe(before);
+      await awaitState(stack.envoyUrl, after, "live", Date.now() + HOST_TURN_MS);
+      await rpc.end();
+    }, 300_000);
+
+    test("Claude Code's /clear leaves the id it replaces gone at once, registers the id it mints under its own direct subject alone, and claude --resume gets back the session's topics", async () => {
+      const stack = rig();
+      const binary = LEGION_TEST_CLAUDE ?? "";
+      const [home, config, workspace] = ["home", "claude-config", "workspace"].map((name) =>
+        path.join(hostsDirectory, name)
+      );
+      for (const directory of [home, config, workspace])
+        await mkdir(directory, { recursive: true });
+      // The plugin the session loads, built from this checkout outside it, since a pull request's
+      // tree carries no built dist/ or legion/.
+      const plugin = path.join(hostsDirectory, "claude-envoy");
+      const build = Bun.spawn(["bun", CLAUDE_ENVOY_BUILD, "--out", plugin], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if ((await build.exited) !== 0) {
+        throw new Error(`claude-envoy did not build: ${await new Response(build.stderr).text()}`);
+      }
+      // The channel server is told the plugin data directory Claude Code hands this plugin's hooks
+      // (`<config>/plugins/data/<plugin>-inline` for a plugin loaded by --plugin-dir): the hook writes
+      // there the id `/clear` mints, and the server adopts it from there.
+      const mcpConfig = path.join(hostsDirectory, "claude-mcp.json");
+      await writeFile(
+        mcpConfig,
+        JSON.stringify({
+          mcpServers: {
+            legion: {
+              command: process.execPath,
+              args: [path.join(plugin, "dist", "envoy-channel.js")],
+              env: {
+                CLAUDE_PLUGIN_DATA: path.join(config, "plugins", "data", "claude-envoy-inline"),
+              },
+            },
+          },
+        })
+      );
+      const session = crypto.randomUUID();
+
+      /** One Claude Code process in stream-json both ways, as a Legion worker's bridge runs it. */
+      const start = (flag: "--session-id" | "--resume") => {
+        const child = Bun.spawn(
+          [
+            binary,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+            "--strict-mcp-config",
+            "--mcp-config",
+            mcpConfig,
+            "--plugin-dir",
+            plugin,
+            "--plugin-dir",
+            path.join(plugin, "legion"),
+            flag,
+            session,
+          ],
+          {
+            cwd: workspace,
+            env: {
+              PATH: SHELL_PATH,
+              HOME: home,
+              CLAUDE_CONFIG_DIR: config,
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+              // Every MCP tool offered with the turn rather than behind a tool search, so the
+              // stand-in can call envoy_subscribe by the name the turn offers it under.
+              ENABLE_TOOL_SEARCH: "false",
+              ANTHROPIC_BASE_URL: modelBase,
+              ANTHROPIC_API_KEY: fixtureSecret("standin"),
+              ENVOY_URL: stack.envoyUrl,
+              ENVOY_NATS_URL: stack.natsUrl,
+              ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
+              ENVOY_MACHINE_ID: "session-stall-hosts",
+            },
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "pipe",
+            // A session of its own, so Claude Code leads a process group that holds what it
+            // starts (its stdio MCP servers) and stop can end that group whole. This row stops no
+            // member, so the session's orphaned group sends it no SIGHUP
+            // (scripts/e2e/lib/own-group.ts says when that matters).
+            detached: true,
+          }
+        );
+        let results = 0;
+        let output = "";
+        void (async () => {
+          const decoder = new TextDecoder();
+          // A line can reach this read split across two chunks, so a line is counted once its
+          // newline has come: what follows a chunk's last newline waits for the chunks after it,
+          // and is a whole line of its own when the output ends.
+          let partial = "";
+          const result = '"type":"result"';
+          for await (const chunk of child.stdout) {
+            const text = decoder.decode(chunk, { stream: true });
+            output += text;
+            const lines = (partial + text).split("\n");
+            partial = lines.pop() ?? "";
+            results += lines.filter((line) => line.includes(result)).length;
+          }
+          if (partial.includes(result)) results += 1;
+        })();
+        const stderr = new Response(child.stderr).text();
+        // groupLives is whether any process of Claude Code's group still runs: kill(2) with signal 0
+        // to the group's id answers ESRCH once its last member has gone.
+        const groupLives = () => {
+          try {
+            process.kill(-child.pid, 0);
+            return true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+            throw error;
+          }
+        };
+        const endGroup = () => {
+          if (groupLives()) process.kill(-child.pid, "SIGKILL");
+        };
+        // stop ends the input, which ends Claude Code's run and closes its MCP servers' stdin, and
+        // waits up to 10 s for the whole group to go before it kills what is left of it. The
+        // SIGKILL of Claude Code alone would leave its MCP servers running with no end of input,
+        // beside the `--resume` of the same session that follows (cybermonklabs/legion#4357's
+        // case), so the fallback ends the group, and nothing of this process runs once stop returns.
+        const stop = async () => {
+          child.stdin.end();
+          const timer = setTimeout(endGroup, 10_000);
+          await child.exited;
+          const deadline = Date.now() + 10_000;
+          while (groupLives() && Date.now() < deadline) await Bun.sleep(POLL_MS);
+          clearTimeout(timer);
+          endGroup();
+        };
+        cleanup.push(stop);
+        return {
+          /** Sends one user turn and waits for that turn's result line. */
+          turn: async (text: string) => {
+            const before = results;
+            child.stdin.write(
+              `${JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } })}\n`
+            );
+            child.stdin.flush();
+            const deadline = Date.now() + HOST_TURN_MS;
+            while (results <= before) {
+              if (child.exitCode !== null || Date.now() > deadline) {
+                throw new Error(
+                  `Claude Code ended no turn for ${JSON.stringify(text)}:\n${output}\n${await stderr}`
+                );
+              }
+              await Bun.sleep(POLL_MS);
+            }
+          },
+          stop,
+        };
+      };
+
+      const first = start("--session-id");
+      await first.turn(`Call the envoy_subscribe tool for the topic ${topic}.`);
+      await awaitState(stack.envoyUrl, session, "live", Date.now() + HOST_TURN_MS);
+      await until("the session to hold its subscribed topic", Date.now() + HOST_TURN_MS, () =>
+        holdsTopic(stack.envoyUrl, session, topic)
+      ).catch((error: unknown) => {
+        throw new Error(`${String(error)}\n${exchanges.join("\n")}`);
+      });
+      await first.turn("/clear");
+      await awaitState(stack.envoyUrl, session, "gone", Date.now() + LEFT_GONE_MS);
+      // The id /clear minted registers from the same project directory, within the 10 s the
+      // channel server's poll of its handoff file allows, and its row lists its own direct subject
+      // and never the one it replaced - at once, and again two heartbeats later, since a later
+      // registration must not bring the old subject back.
+      let minted = "";
+      await until("the id /clear minted to register", Date.now() + 10_000, async () => {
+        const rows = await sessionsOf(stack.envoyUrl, workspace);
+        minted = rows.find((row) => row.session_id !== session)?.session_id ?? "";
+        return minted !== "";
+      });
+      for (const wait of [0, 2 * HEARTBEAT_MS + 1_000]) {
+        await Bun.sleep(wait);
+        const rows = await sessionsOf(stack.envoyUrl, workspace);
+        expect(rows.map((row) => row.session_id)).toEqual([minted]);
+        expect(rows[0]?.topics ?? []).toContain(`notifications.agent.${minted}`);
+        expect(rows[0]?.topics ?? []).not.toContain(`notifications.agent.${session}`);
+      }
+      await first.stop();
+
+      const resumed = start("--resume");
+      await resumed.turn("Reply with one word.");
+      await until("the resumed session to get its topic back", Date.now() + HOST_TURN_MS, () =>
+        holdsTopic(stack.envoyUrl, session, topic)
+      );
+      await resumed.stop();
+    }, 420_000);
+  }
+);

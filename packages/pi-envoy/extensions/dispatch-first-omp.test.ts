@@ -13,13 +13,18 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
 // nothing a `context` handler returns, so what reaches the model can only be read off the requests
 // the binary sends. LEGION_TEST_OMP names the binary, as in legion-phase-stall-omp.test.ts: the
 // fork pin CI's pi-envoy job installs. A run without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
+const withoutOmp = requireOrSkip(
+  "LEGION_TEST_OMP, naming the Oh My Pi binary of .omp-pin",
+  omp !== undefined,
+  "pi-envoy"
+);
 /** The Dispatch token a session with Dispatch is handed. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");
 
@@ -144,10 +149,10 @@ async function runSession(
 // A `context` insertion lives only in the one request it was made for, so a skill inserted once
 // would reach the first turn and be gone from the second. The compaction case is the other way
 // it could drop out: the summary replaces the history the skill sat at the head of.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "a session with Dispatch carries the dispatch-first skill once in every turn, after a compaction too",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
     const summary = "SUMMARY-OF-THE-FIRST-TWO-TURNS";
     const session = await runSession(
       omp,
@@ -175,10 +180,10 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(withoutOmp)(
   "a session without Dispatch configured carries no dispatch-first skill",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
     const session = await runSession(omp, [{ prompt: "First question." }], { dispatch: false });
 
     expect(session.turns).toHaveLength(1);

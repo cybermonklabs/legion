@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -27,14 +28,15 @@ import {
 // This file imports no `nats`, so the package's shared test process serves it: envoy.test.ts's
 // `mock.module("nats", …)` replaces that module for this process alone, and the session's NATS
 // connection is the binary's own, in a process of its own, which no mock here reaches.
-const ompNats = ompNatsGuard();
+const ompNats = ompNatsGuard("pi-envoy");
 const tmuxBinary = Bun.which("tmux");
-const skip = ompNats.skip || (tmuxBinary === null && !ompNats.onActions);
+const withoutTmux = skipWithout(["tmux"], "pi-envoy");
+const skip = ompNats.skip || withoutTmux;
 
-/** The binary, NATS server and tmux a case runs against; throws on GitHub Actions without them. */
+/** The binary, NATS server and tmux a case runs against, for a case `skip` let run. */
 function setup(): { readonly binary: string; readonly nats: string; readonly tmux: string } {
   const run = ompNats.setup();
-  if (tmuxBinary === null) throw new Error("no tmux is on PATH on GitHub Actions");
+  if (tmuxBinary === null) throw new Error("no tmux is on PATH");
   return { ...run, tmux: tmuxBinary };
 }
 

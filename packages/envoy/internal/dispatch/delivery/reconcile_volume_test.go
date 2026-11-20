@@ -123,7 +123,7 @@ func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[s
 }
 
 // parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends.
-func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
+func parseCreatedWindow(t testing.TB, created string) (time.Time, time.Time) {
 	t.Helper()
 	bounds := strings.SplitN(created, "..", 2)
 	if len(bounds) != 2 {

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - the read-only Dispatch client harvest.py and run_search.py read a Dispatch server with, for a person who measures keyword search on a harvest of production Dispatch.
 """The read-only Dispatch client the search-measure scripts share.
 
 Every call here is a GET. The server is DISPATCH_URL and the bearer is the trimmed contents of

@@ -1,3 +1,4 @@
+// legion: tool - reads how often arms on different models agree on a round's report slice and how wrong they are where they agree, for the person who decides whether the approval review should abstain where models disagree.
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";

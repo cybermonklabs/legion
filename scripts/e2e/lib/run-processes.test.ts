@@ -19,9 +19,9 @@ const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
+const skip = skipWithout(["perl"], "test");
 // python3: the newline-name row renames its process through prctl (ctypes).
-const withoutPython = skipWithout("python3");
+const withoutPython = skipWithout(["python3"], "test");
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {

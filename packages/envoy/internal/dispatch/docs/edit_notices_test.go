@@ -392,7 +392,7 @@ func makeEditNoticeDue(t *testing.T, database *store.Store, document string) {
 }
 
 // versionMarkdown is the stored markdown of version number of document.
-func versionMarkdown(t *testing.T, database *store.Store, document string, number int) string {
+func versionMarkdown(t testing.TB, database *store.Store, document string, number int) string {
 	t.Helper()
 	var markdown string
 	if err := database.Pool.QueryRow(context.Background(),

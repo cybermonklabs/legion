@@ -33,7 +33,7 @@ import { awaitSettled, transcriptEntries } from "./transcript-entries";
 
 /** The binary (LEGION_TEST_OMP) and the NATS server (LEGION_TEST_NATS_URL) every case here runs
  *  against: a run without both skips, except on GitHub Actions, where it throws (`ompNatsGuard`). */
-const ompNats = ompNatsGuard();
+const ompNats = ompNatsGuard("pi-legion");
 
 /** What the cases in extensions/legion-stall-watchdog-omp.test.ts pass `test.skipIf`. */
 export const skip = ompNats.skip;

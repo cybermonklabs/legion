@@ -1,9 +1,20 @@
-//go:build e2e
-
 // The live proof of what a provider error does to a worker's task (dispatch://INFRA-956 R2) and
 // of the operator's hand on the claims it leaves (R3), driven against real Oh My Pi panes under
-// the real daemon. scripts/e2e/provider-error-retry.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// the real daemon. CI's agent-harness job runs it by name
+// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it, the
+// package's test NATS server and the job's git and jj 0.38 or later, which the daemon's boot
+// refuses to start without.
+//
+// The daemon fails a claim once its run of refused turns reaches `launch_failure_limit`
+// (supervise/turnoutcome.go), whose shipped default is 3. This proof runs on that default, so the
+// ladder it walks ends at the third refused turn, which fails the claim, and the operator's retry
+// is what comes after it. The ladder's sends after that turn and its notice to the project's
+// controller at the sixth are held by the unit tests
+// TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder and
+// TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
+// (internal/supervise/providererror_test.go). A separate change removes the failure at three
+// refused turns, as the retry ladder's own design says, and changes this proof and
+// claim_compaction_live_test.go with it.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go),
@@ -40,12 +51,9 @@
 // `runtime.tmux.pi_config_files` carries), so the host walks no fallback chain of its own and
 // every failed turn reaches the daemon.
 //
-// How long it takes. The ladder's first ladderWaitedOut rungs are waited out where they are real:
-// 30 s, 60 s and 120 s of wall clock, measured between the daemon's sends. Every rung above them
-// is driven on the daemon's own clock (ladderDriven, ladderClock), because waiting the fourth and
-// fifth out would add twelve minutes and measure the same ladder twice. With the pod's Oh My Pi
-// the whole driver runs in about eight minutes, inside the twenty-minute bound
-// scripts/e2e/lib/live-daemon-proof.sh gives it.
+// How long it takes. The ladder's rungs before the turn that fails the claim are waited out where
+// they are real: 30 s and 60 s of wall clock at the fixture's `launch_failure_limit` of 3,
+// measured between the daemon's sends.
 //
 // What the daemon already holds when it boots. Each issue is seeded holding its tree's admission
 // slot, in a worker phase, with that worker's claim mid-launch and the task that phase's start
@@ -61,15 +69,14 @@
 // The ladder's claim is seeded with the task step 1 measures, and step 1 reads the daemon's own
 // first send of it rather than making one. That also keeps the repair off the planner for the
 // whole run: a provider error takes the task back unconfirmed (supervise's takeBackPending), so
-// it is still worked at every rung and while step 5 leaves the claim stopped. The other two
-// claims are seeded with a warm-up task their stand-in answers (providerStandin.arm), so each is
-// idle and live — a state the repair passes over too — by the time its own step delivers the
-// task that step drives, exactly as those steps always have.
+// it is still worked at every rung, and the claim keeps it when it fails and while step 5 leaves
+// it stopped. The other two claims are seeded with a warm-up task their stand-in answers
+// (providerStandin.arm), so each is idle and live — a state the repair passes over too — by the
+// time its own step delivers the task that step drives, exactly as those steps always have.
 package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -77,7 +84,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,9 +95,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -108,30 +112,10 @@ const (
 	malformedProvider  = "malformed"
 )
 
-// ladderSends is how many times the daemon sends the ladder's task: the first send and five
-// re-sends, so the sixth turn's error is the one that reaches providerErrorRunTold and tells the
-// controller.
-const ladderSends = 6
-
-// ladderWaitedOut is how many of the ladder's rungs the proof waits out where they are real: its
-// first three. Every rung above them is driven (ladderDriven).
-const ladderWaitedOut = 3
-
-// ladderDrivenSpan is what a driven rung is armed for instead: short enough that the two rungs
-// cost seconds rather than twelve minutes, long enough that the send is the timer's and not a
-// race with the turn that armed it.
-const ladderDrivenSpan = 2 * time.Second
-
-// ladderDriven says whether wait is a rung of the ladder the proof drives on the daemon's clock
-// rather than waits out, and the span it is armed for instead. The rungs are read off ladderDelays
-// (live_agent_proof_test.go), so a ladder that grows a step or changes one is still shortened
-// above ladderWaitedOut rather than leaving a literal duration behind that matches nothing.
-func ladderDriven(wait time.Duration) (time.Duration, bool) {
-	if slices.Contains(ladderDelays[ladderWaitedOut:], wait) {
-		return ladderDrivenSpan, true
-	}
-	return 0, false
-}
+// ladderSends is how many times the daemon sends the ladder's task: the first send and one more
+// at each rung, until the turn that makes the claim's run of refused turns
+// `launch_failure_limit` long, which fails the claim (supervise's turnOutcome).
+func (r *providerErrorLive) ladderSends() int { return r.cfg.LaunchFailureLimit }
 
 // ladderTolerance is how much longer than its armed wait a send-to-send gap may be: the turn whose
 // error armed the wait runs inside the gap, and so does the agent's own start of the next one.
@@ -142,7 +126,6 @@ const ladderTolerance = 45 * time.Second
 type providerErrorLive struct {
 	liveAgentProof
 	built *built
-	clock *ladderClock
 	// ladder, refused and failing are the three issues, each in the phase its one worker works.
 	ladder, refused, failing string
 	// stands is each stand-in by its provider name.
@@ -152,20 +135,19 @@ type providerErrorLive struct {
 	// in the seed and in the step that reads them back (seededIssue).
 	seeded []seededIssue
 	// ladderTask is the task the planner holds pending from the moment the daemon boots, which
-	// step 1 measures the ladder's sends of, the ladder keeps on the claim, and the operator's
-	// retry in step 5 sends to the fresh session.
+	// step 1 measures the ladder's sends of, the ladder keeps on the claim through its failure,
+	// and the operator's retry in step 5 sends to the fresh session.
 	ladderTask string
 }
 
 // TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive drives the five steps in the
-// order each one's state follows from the last: the ladder a 529 walks, the controller's notice at
-// the sixth turn, a content filter's refusal that carries no status, an error that cannot clear,
-// and the operator's commands over the claims the first and the fourth leave.
+// order each one's state follows from the last: the ladder a 529 walks, the refused turn that
+// ends it by failing the claim, a content filter's refusal that carries no status, an error that
+// cannot clear, and the operator's commands over the claims the second and the fourth leave.
 func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newProviderErrorLive(t)
-	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder", r.ladderWalks)
-	r.step("step2-the-sixth-turn-in-a-row-tells-the-controller", r.controllerIsTold)
+	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-ladder", r.ladderWalks)
+	r.step("step2-the-third-refused-turn-in-a-row-fails-the-claim-and-holds-the-issue", r.refusedRunFails)
 	r.step("step3-a-content-filter-carries-no-status-and-the-task-goes-again", r.refusalGoesAgain)
 	r.step("step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue", r.cannotClearFails)
 	r.step("step5-the-operator-stops-retries-and-reads-the-claims", r.operatorDrivesTheClaims)
@@ -177,16 +159,13 @@ func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *test
 // worker's task pending on its claim (seed), and the daemon booted over the local runtime.
 func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
+	proof := newLiveProof(t)
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{}, clock: &ladderClock{},
-		ladder: proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
+		built:          &built{},
+		ladder:         proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
 		stands: map[string]*providerStandin{},
 	}
 	r.seeded = []seededIssue{
@@ -205,8 +184,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()
@@ -227,40 +205,12 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
-	r.registerController()
 	return r
 }
 
-// registerController registers a controller session for the project. The daemon tells a
-// controller nothing while none is registered (admit's wakeController), and the notice a run of
-// provider errors earns is the one thing step 2 reads, so a session is registered here as `legion
-// controller start` registers the operator's own (ControllerLaunchOperator). No controller process
-// runs: the proof reads what the daemon published to the listener for it, never what an agent did
-// with it.
-func (r *providerErrorLive) registerController() {
-	t := r.t
-	t.Helper()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
-	if status != http.StatusOK {
-		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
-	}
-	var capability api.ControllerSecretResponse
-	if err := json.Unmarshal(body, &capability); err != nil {
-		t.Fatalf("decode the controller's boot secret %s: %v", body, err)
-	}
-	session := "ses_controller_" + randomSuffix(t)
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
-	}, false); status != http.StatusOK {
-		t.Fatalf("register the controller = %d %s, want 200", status, body)
-	}
-	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
-}
-
 // overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// ladder's clock, the API listener the fixture holds, and the workflow's App tokens stood in for.
+// API listener the fixture holds, and the workflow's App tokens stood in for. The clock is the
+// real one: every rung this proof reaches is waited out where it is real.
 func (r *providerErrorLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
@@ -271,7 +221,6 @@ func (r *providerErrorLive) overrides() overrides {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
 		},
-		clock:          r.clock,
 		listen:         heldListen,
 		workflowTokens: &workflowTokenRecorder{},
 	}
@@ -378,8 +327,9 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 
 // ---- the steps ---------------------------------------------------------------------------------
 
-// ladderWalks drives the first half of R2: the task a 529 takes back stays on the claim, goes to
-// the same session again after 30 s, 60 s and 120 s, and the claim neither fails nor loses it.
+// ladderWalks drives the first half of R2 as far as the daemon takes it: the task a 529 takes back
+// stays on the claim and goes to the same session again after 30 s and then 60 s, and nothing
+// fails the claim or holds its issue before the ladder's last send.
 //
 // The task is the one the planner's claim has held pending since the daemon booted, which is
 // what its phase's start left there (seed), so the first send is the daemon's own and this step
@@ -390,19 +340,20 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
+	sends := r.ladderSends()
+	if sends < 2 || sends > len(ladderDelays)+1 {
+		t.Fatalf("launch_failure_limit is %d, and this step measures a rung of the ladder before each send after the first, "+
+			"of which ladderDelays names %d", sends, len(ladderDelays))
+	}
 	r.awaitReady(token)
-	marker, task := r.seededFor(r.ladder).marker, r.ladderTask
+	task := r.ladderTask
 	sent := []time.Time{r.awaitFirstSend(token, task)}
 	r.note("the daemon held the task %q for %s from the moment it booted and sent it at %s",
 		task, token, sent[0].Format(time.RFC3339))
 
-	for attempt := 1; attempt < ladderSends; attempt++ {
+	for attempt := 1; attempt < sends; attempt++ {
 		delay := ladderDelays[attempt-1]
-		within := delay + ladderTolerance
-		if driven, ok := ladderDriven(delay); ok {
-			within = driven + ladderTolerance
-		}
-		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
+		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), delay+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
 				record.at.After(sent[attempt-1])
 		})
@@ -419,80 +370,113 @@ func (r *providerErrorLive) ladderWalks() {
 		now := time.Now()
 		gap := now.Sub(sent[attempt-1])
 		sent = append(sent, now)
-		if driven, ok := ladderDriven(delay); ok {
-			r.note("send %d came %s after send %d; its %s wait was driven on the daemon's clock to %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, driven)
-			continue
-		}
 		if gap < delay || gap > delay+ladderTolerance {
 			t.Fatalf("send %d of the ladder came %s after send %d, want between %s and %s",
 				attempt+1, gap.Round(time.Second), attempt, delay, delay+ladderTolerance)
 		}
 		r.note("send %d came %s after send %d, and the daemon had armed %s (cause %q)",
 			attempt+1, gap.Round(time.Second), attempt, delay, armed.Attrs["cause"])
+		if attempt+1 == sends {
+			break
+		}
+		// Before the last send the claim's run of refused turns is short of the limit whatever
+		// the turn this send started does, so the claim and its issue are read here and not after
+		// the last send, whose turn is the one that fails the claim (step 2).
+		held := r.claim(token)
+		if held.State == string(supervise.StateFailed) || held.Pending == nil || held.Pending.Task != task {
+			t.Fatalf("%s is %s holding %+v at send %d, want it live and holding the task it was given", token, held.State, held.Pending, attempt+1)
+		}
+		if issue := r.issue(r.ladder); issue.Phase == phase.Held {
+			t.Fatalf("%s was held while the ladder ran: %+v", r.ladder, issue)
+		}
 	}
 
 	errors := r.logs(func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage &&
 			record.Attrs["httpStatus"] == float64(529)
 	})
-	if len(errors) < ladderSends-1 {
-		t.Fatalf("the daemon read %d turns ending in a 529, want at least %d", len(errors), ladderSends-1)
+	if len(errors) < sends-1 {
+		t.Fatalf("the daemon read %d turns ending in a 529, want at least %d", len(errors), sends-1)
 	}
 	r.note("every turn ended in a 529 the pane reported retryable=%v on model %v",
 		errors[0].Attrs["retryable"], errors[0].Attrs["model"])
+	if failed := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: claim failed" && record.Attrs["claim"] == string(token) &&
+			record.at.Before(sent[len(sent)-1])
+	}); len(failed) != 0 {
+		t.Fatalf("%s failed before the ladder's send %d: %+v", token, sends, failed[0].Attrs)
+	}
+	r.note("%s held its task through %d sends and was neither failed nor held for its architect before the last of them",
+		token, sends)
+}
+
+// refusedRunFails reads where the daemon ends the ladder: the turn of the ladder's last send is
+// the claim's `launch_failure_limit`-th refused turn in a row, as its plugin reports each turn
+// (supervise's turnOutcome), so the claim fails with the cause provider_error and a sentence that
+// names the run, keeps the task the ladder kept, and the workflow holds the issue for its
+// architect.
+func (r *providerErrorLive) refusedRunFails() {
+	t := r.t
+	token := r.token(r.ladder, claim.RolePlanner)
+	limit := r.ladderSends()
+	// The failure follows the last send's turn by milliseconds, so it is read from the start of
+	// the log rather than from a mark this step takes.
+	failure := r.awaitLogFrom("the failure of "+string(token)+" at its run of refused turns", 0, 2*time.Minute,
+		func(record loggedRecord) bool {
+			return record.Message == "supervise: claim failed" && record.Attrs["claim"] == string(token)
+		})
+	why, _ := failure.Attrs["why"].(string)
+	ran := fmt.Sprintf("the provider refused %d turns in a row", limit)
+	if failure.Attrs["cause"] != string(supervise.CauseProviderError) || !strings.HasPrefix(why, ran) {
+		t.Fatalf("%s failed with cause %v: %q, want %s and a sentence that opens %q",
+			token, failure.Attrs["cause"], why, supervise.CauseProviderError, ran)
+	}
+	// The plugin reported every turn of the ladder refused, and the run those reports make is
+	// what failed the claim: one report a turn, the run one longer at each, the last of them at
+	// the limit and before the failure.
+	reports := r.logs(func(record loggedRecord) bool {
+		_, counted := record.Attrs["refusedRun"]
+		return record.Message == "supervise: a turn ended" && record.Attrs["claim"] == string(token) && counted
+	})
+	runs := make([]any, 0, len(reports))
+	for _, report := range reports {
+		runs = append(runs, report.Attrs["refusedRun"])
+	}
+	if len(reports) != limit {
+		t.Fatalf("the plugin reported %d turns of %s, with the runs %v, want the %d the ladder sent", len(reports), token, runs, limit)
+	}
+	for i, report := range reports {
+		if report.Attrs["refused"] != true || report.Attrs["refusedRun"] != float64(i+1) {
+			t.Fatalf("report %d of %s's turns is %+v, want it refused with the run at %d", i+1, token, report.Attrs, i+1)
+		}
+	}
+	if last := reports[limit-1]; last.at.After(failure.at) {
+		t.Fatalf("%s failed at %s, before the report that made its run %d long at %s", token, failure.at, limit, last.at)
+	}
+	r.note("the plugin reported each of the %d turns refused, with the runs %v, and the daemon failed %s at the last: %q",
+		limit, runs, token, why)
 
 	held := r.claim(token)
-	if held.Pending == nil || held.Pending.Task != task {
-		t.Fatalf("%s holds pending %+v, want the task it was given", token, held.Pending)
+	if held.State != string(supervise.StateFailed) || held.Failure == nil || held.Failure.Cause != supervise.CauseProviderError {
+		t.Fatalf("%s is %s with the failure %+v, want it failed with the cause %s", token, held.State, held.Failure, supervise.CauseProviderError)
 	}
-	if held.State == string(supervise.StateFailed) {
-		t.Fatalf("%s failed while the ladder ran: %+v", token, held)
+	if held.Pending == nil || held.Pending.Task != r.ladderTask {
+		t.Fatalf("the failed %s holds pending %+v, want the task the ladder kept", token, held.Pending)
 	}
-	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
-		t.Fatalf("%s was held while the ladder ran: %+v", r.ladder, issue)
-	}
-	r.note("%s is %s, still holding its task (%d re-sends counted on the delivery), and %s is %s",
-		token, held.State, ladderSends-1, r.ladder, r.issue(r.ladder).Phase)
-	if got := r.stands[overloadedProvider].requestsHolding(marker); got < ladderSends {
-		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, ladderSends)
+	var issue api.Issue
+	r.await(r.ladder+" to be held for its architect", 2*time.Minute, func() bool {
+		issue = r.issue(r.ladder)
+		return issue.Phase == phase.Held
+	})
+	notices := r.waitArchitectNotices(r.ladder, "held", 1)
+	r.note("%s is %s, still holding the task the ladder kept, and %s is %s with its architect told once: %q",
+		token, held.State, r.ladder, issue.Phase, notices[0].Message)
+	marker := r.seededFor(r.ladder).marker
+	if got := r.stands[overloadedProvider].requestsHolding(marker); got < limit {
+		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, limit)
 	}
 	r.note("the overloaded stand-in answered 529 to %d requests, %d of them carrying the task itself",
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
-}
-
-// controllerIsTold reads the one notice the run of provider errors earns: at the sixth turn in a
-// row, the project's controller is told, once, and nothing is held.
-func (r *providerErrorLive) controllerIsTold() {
-	t := r.t
-	topic := notify.ControllerTopic(r.project)
-	var told []listenerPublish
-	r.await("the controller's notice of a run of provider errors", 3*time.Minute, func() bool {
-		told = nil
-		for _, published := range r.notices.acceptedOn(topic) {
-			var payload struct {
-				Kind   string `json:"kind"`
-				Reason string `json:"reason"`
-			}
-			if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
-				t.Fatalf("decode the controller notice %q: %v", published.Payload, err)
-			}
-			if payload.Kind == string(record.ProviderErrorsNotice) {
-				published.Payload = payload.Reason
-				told = append(told, published)
-			}
-		}
-		return len(told) == 1
-	})
-	r.note("the controller was told once on %s: %q", topic, told[0].Payload)
-	if !strings.Contains(told[0].Payload, strconv.Itoa(ladderSends)+" turns in a row") {
-		t.Fatalf("the controller's notice does not name the run of %d turns: %q", ladderSends, told[0].Payload)
-	}
-	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
-		t.Fatalf("%s was held by the run of provider errors: %+v", r.ladder, issue)
-	}
-	r.note("%s is still %s: the notice is the one exit from a run, and no attempt limit holds the issue",
-		r.ladder, r.issue(r.ladder).Phase)
 }
 
 // refusalGoesAgain drives the second half of R2: a turn a content filter ended carries no HTTP
@@ -611,9 +595,9 @@ func (r *providerErrorLive) cannotClearFails() {
 	r.note("%s is %s and its architect was told once: %q", r.failing, issue.Phase, notices[0].Message)
 }
 
-// operatorDrivesTheClaims drives R3 with the `legion` binary this checkout built: the stop of a
-// phase worker that is still working, its retry in a fresh session, and the same retry of the
-// claim the malformed provider failed.
+// operatorDrivesTheClaims drives R3 with the `legion` binary this checkout built: the stop of the
+// phase worker its run of refused turns failed, which a stop reaches as it reaches a live one, its
+// retry in a fresh session, and the same retry of the claim the malformed provider failed.
 func (r *providerErrorLive) operatorDrivesTheClaims() {
 	t := r.t
 	planner := r.token(r.ladder, claim.RolePlanner)
@@ -626,14 +610,19 @@ func (r *providerErrorLive) operatorDrivesTheClaims() {
 	r.note("`legion claims list` now reads:\n%s", indentOutput(r.legionClaims("list")))
 
 	r.note("%s", r.legionClaims("retry", "--claim", string(planner), "--fresh-session"))
-	// The stopped planner still holds the task its ladder kept, so the fresh session is sent that
-	// task, and the restart's own phase task waits in the outbox behind it ("a delivery is already
-	// pending") until the kept one is retired. That is R2 and R3 together: a provider error takes
-	// the task away from nobody, and neither does a stop and a retry.
+	// The stopped planner still holds the task its ladder kept, through the failure and the stop,
+	// so the fresh session is sent that task, and the restart's own phase task waits in the
+	// outbox behind it ("a delivery is already pending") until the kept one is retired. That is
+	// R2 and R3 together: a provider error takes the task away from nobody, and neither does the
+	// failure its refused turns end in, a stop or a retry.
 	sent := r.awaitFreshSession(planner, before.Session)
 	if sent != r.ladderTask {
 		t.Fatalf("the planner's fresh session was sent %q, want the task its ladder kept, %q", sent, r.ladderTask)
 	}
+	if issue := r.issue(r.ladder); issue.Phase != phase.Planning {
+		t.Fatalf("%s is %s after its worker's retry, want it back in planning", r.ladder, issue.Phase)
+	}
+	r.note("%s left its hold and is %s again", r.ladder, r.issue(r.ladder).Phase)
 
 	failing := r.token(r.failing, claim.RoleTester)
 	stale := r.claim(failing)
@@ -879,23 +868,4 @@ func (s *providerStandin) streamCompletion(w http.ResponseWriter, finish string)
 	if flusher != nil {
 		flusher.Flush()
 	}
-}
-
-// ---- the daemon's clock --------------------------------------------------------------------------
-
-// ladderClock is the wall clock with the ladder's driven rungs shortened: a timer armed for one
-// of them (ladderDriven, read off ladderDelays) fires after ladderDrivenSpan instead, because
-// waiting the fourth and fifth rungs out would add twelve minutes and prove the same doubling the
-// first three do. Every other duration the daemon arms — its probe interval, its registration
-// deadline, and the ladder's own waited-out rungs — passes through untouched, so what the proof
-// measures is measured where it is real.
-type ladderClock struct {
-	supervise.RealClock
-}
-
-func (c *ladderClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
-	if driven, ok := ladderDriven(d); ok {
-		d = driven
-	}
-	return c.RealClock.AfterFunc(d, f)
 }

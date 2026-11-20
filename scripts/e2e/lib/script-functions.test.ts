@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
@@ -96,26 +96,4 @@ describe("nameMissingHelpers", () => {
     expect(result.stderr.toString()).not.toContain("harness: no definition");
     expectNoMissingHelpers(result.stdout.toString(), result.stderr.toString());
   });
-});
-
-// The mirror of that rule: a stage script may define no helper nothing calls. A cutover that
-// leaves one behind leaves a reader to work out which of two ways is the live one.
-describe("every helper a stage script defines is called", () => {
-  const e2e = join(import.meta.dir, "..");
-  const readers = [
-    ...new Bun.Glob("*.sh").scanSync({ cwd: e2e, absolute: true }),
-    ...new Bun.Glob("lib/*.{sh,ts,py,jq}").scanSync({ cwd: e2e, absolute: true }),
-  ].map((file) => readFileSync(file, "utf8"));
-
-  for (const name of ["stage4b-sandbox-tree.sh", "stage4a-sandbox-runtime.sh"]) {
-    test(name, () => {
-      const text = readFileSync(join(e2e, name), "utf8");
-      const defined = [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm)].map((m) => m[1]);
-      const dead = defined.filter((helper) => {
-        const word = new RegExp(`\\b${helper}\\b`, "g");
-        return readers.reduce((seen, file) => seen + (file.match(word)?.length ?? 0), 0) < 2;
-      });
-      expect(dead).toEqual([]);
-    });
-  }
 });

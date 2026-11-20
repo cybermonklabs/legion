@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - the MRR of duplicate-issue and paraphrase queries on a copy of the production Dispatch database, for a person who changes search ranking or its embedder and compares builds to choose one.
 # Scores a Dispatch build against LEGION-386/LEGION-549's duplicate-issue and paraphrase query
 # sets on a real corpus copy (corpus-copy.sh): for each `query<TAB>target_key` line of a queries
 # file, searches query and records the 1-indexed rank at which an issue hit named target_key

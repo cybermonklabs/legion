@@ -1,3 +1,4 @@
+// legion: tool - prints the report of one approval-eval round's judgements across its model and recipe arms, for the person who chooses the approval-review recipe and model from it; it exits 1 on a round of too few arms or models for the report to mean anything.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";

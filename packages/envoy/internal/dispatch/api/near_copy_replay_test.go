@@ -1,5 +1,7 @@
 package api
 
+// legion: tool - replays a project's exported history of creates against the near-copy gate and prints what each bar refuses and nudges and what the gate costs, for a person who changes the gate's scoring and must set duplicateRefuseScore and duplicateNudgeScore again; run with DISPATCH_NEARCOPY_CORPUS=<scripts/near-copy-replay.sh's file> go test -count=1 -run '^$' -bench '^BenchmarkNearCopyRefusalReplay$' -benchtime 1x -timeout 60m ./internal/dispatch/api
+
 import (
 	"bufio"
 	"cmp"
@@ -18,19 +20,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestNearCopyRefusalReplay replays a project's history against the near-copy gate, to set and to
-// keep the two bars in duplicates.go. It is env-gated, so CI never runs it.
+// BenchmarkNearCopyRefusalReplay replays a project's history against the near-copy gate and prints
+// the rates at the two bars in duplicates.go, for the person who sets them. It holds no ceiling of
+// its own - the rates are the reading, which a change to the gate's scoring moves - and no CI step
+// passes -bench. Run it once, with -benchtime 1x: each run of its body is the whole replay.
 //
 // The corpus is what scripts/near-copy-replay.sh exported, and it is frozen: a second export
 // holds more issues and gives another false-refusal rate, which would no longer match the
 // threshold in code. The corpus this tree calibrated on is attached to dispatch://INFRA-1160.
 //
-// DISPATCH_NEARCOPY_CORPUS   the corpus file (required; without it the test skips)
+// DISPATCH_NEARCOPY_CORPUS   the corpus file (its input; without it the benchmark skips)
 // DISPATCH_TEST_DATABASE_URL a Postgres of the run's own (required by every store test)
 // DISPATCH_NEARCOPY_DUPLICATES
 //
 //	the comma-separated keys of the replayed creates the implementer marked real duplicates,
-//	which the 5% ceiling leaves out. The pairs the corpus names are always marked.
+//	which the false-refusal rate leaves out. The pairs the corpus names are always marked.
 //
 // The project's term statistics are refreshed on the corpus's own clock, every
 // SearchTermStatsInterval of replayed time, which is the cadence a live server keeps
@@ -82,7 +86,7 @@ type nearCopyCorpus struct {
 	pairs   []nearCopyRecord
 }
 
-func readNearCopyCorpus(t *testing.T, path string) nearCopyCorpus {
+func readNearCopyCorpus(t testing.TB, path string) nearCopyCorpus {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -224,8 +228,8 @@ type nearCopyScore struct {
 const nearCopyGateBound = time.Minute
 
 // nearCopyMarkedDuplicates are the replayed creates the implementer read and marked real
-// duplicates of the issue the gate named, on 2026-11-05 over the INFRA corpus. k4's 5% ceiling
-// is of the creates that are not duplicates, so these are left out of it, and
+// duplicates of the issue the gate named, on 2026-11-05 over the corpus the bars were set on. The
+// false-refusal rate is of the creates that are not duplicates, so these are left out of it, and
 // dispatch://INFRA-1160/artifact/near-copy-replay-md carries the reason for each. The four
 // pairs the corpus names are marked by their own record and are not repeated here.
 //
@@ -238,12 +242,12 @@ var nearCopyMarkedDuplicates = []string{
 	"INFRA-451", "INFRA-756", "INFRA-454", "INFRA-757", "INFRA-70", "INFRA-453",
 }
 
-func TestNearCopyRefusalReplay(t *testing.T) {
+func BenchmarkNearCopyRefusalReplay(b *testing.B) {
 	path := os.Getenv("DISPATCH_NEARCOPY_CORPUS")
 	if path == "" {
-		t.Skip("DISPATCH_NEARCOPY_CORPUS must name a file scripts/near-copy-replay.sh wrote")
+		b.Skip("DISPATCH_NEARCOPY_CORPUS must name a file scripts/near-copy-replay.sh wrote")
 	}
-	corpus := readNearCopyCorpus(t, path)
+	corpus := readNearCopyCorpus(b, path)
 	marked := map[string]bool{}
 	for _, pair := range corpus.pairs {
 		marked[pair.Query] = true
@@ -258,14 +262,14 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, deps, served := newRegisteredTestServer(b, testServerOptions{})
 	// The related-item check is not what is being measured, and it runs on every create: give it
 	// no time, so each create answers that it was not made and the replay pays only for the gate.
 	served.suggestionTimeout = time.Millisecond
 	served.duplicateBound = nearCopyGateBound
 	srv := directServer(deps)
 	srv.duplicateBound = nearCopyGateBound
-	createSuggestionProject(t, handler, corpus.project)
+	createSuggestionProject(b, handler, corpus.project)
 
 	queries := map[string]bool{}
 	for _, key := range corpus.queries {
@@ -282,44 +286,44 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 		// the corpus's own time, before the create that first passes the interval, so each
 		// replayed create meets statistics no older than production's.
 		if refreshedAt.IsZero() || event.at.Sub(refreshedAt) >= SearchTermStatsInterval {
-			refreshNearCopyStats(t, ctx, database, corpus.project)
+			refreshNearCopyStats(b, ctx, database, corpus.project)
 			refreshedAt = event.at
 			refreshes++
 		}
 		switch event.kind {
 		case "create":
 			if queries[event.key] {
-				scores = append(scores, replayNearCopyGate(t, srv, corpus, event.key))
+				scores = append(scores, replayNearCopyGate(b, srv, corpus, event.key))
 			}
-			insertNearCopyIssue(t, ctx, database, handler, corpus, event, present)
+			insertNearCopyIssue(b, ctx, database, handler, corpus, event, present)
 			present[event.key] = true
 			created++
 		case "title":
-			execNearCopy(t, ctx, database, `update issues set title = $2, updated_at = $3 where key = $1`,
+			execNearCopy(b, ctx, database, `update issues set title = $2, updated_at = $3 where key = $1`,
 				event.key, event.title, event.at)
 		case "status":
 			closedAt := any(nil)
 			if event.status == "done" {
 				closedAt = event.at
 			}
-			execNearCopy(t, ctx, database,
+			execNearCopy(b, ctx, database,
 				`update issues set status = $2, closed_at = $3, updated_at = $4 where key = $1`,
 				event.key, event.status, closedAt, event.at)
 		case "parent":
 			if event.parent == nil || present[*event.parent] {
-				execNearCopy(t, ctx, database, `update issues set parent_key = $2 where key = $1`,
+				execNearCopy(b, ctx, database, `update issues set parent_key = $2 where key = $1`,
 					event.key, event.parent)
 			}
 		case "spec":
-			insertNearCopySpec(t, ctx, database, event.key, event.version)
+			insertNearCopySpec(b, ctx, database, event.key, event.version)
 		}
 	}
-	refreshNearCopyStats(t, ctx, database, corpus.project)
-	t.Logf("replayed %d creates over %d issues in %v (term statistics refreshed %d times, every %v of replayed time)",
+	refreshNearCopyStats(b, ctx, database, corpus.project)
+	b.Logf("replayed %d creates over %d issues in %v (term statistics refreshed %d times, every %v of replayed time)",
 		len(scores), len(corpus.issues), time.Since(started).Round(time.Second), refreshes, SearchTermStatsInterval)
 
-	measureNearCopyGate(t, ctx, srv, database, corpus)
-	reportNearCopyReplay(t, corpus, scores, marked, refreshes)
+	measureNearCopyGate(b, ctx, srv, database, corpus)
+	reportNearCopyReplay(b, corpus, scores, marked, refreshes)
 }
 
 // measureNearCopyGate times the gate on the loaded project, which holds the whole history the
@@ -327,7 +331,7 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 // three parts the gate is made of beside the whole of it, for an ordinary text and for a very
 // long spec, and prints the scoring statement's plan.
 func measureNearCopyGate(
-	t *testing.T, ctx context.Context, srv *server, database *store.Store, corpus nearCopyCorpus,
+	t testing.TB, ctx context.Context, srv *server, database *store.Store, corpus nearCopyCorpus,
 ) {
 	t.Helper()
 	const runs = 20
@@ -436,7 +440,7 @@ func measureNearCopyGate(
 
 // replayNearCopyGate runs the real gate for one create, against the project as the walk has left
 // it: the create's own issue is not inserted yet, so it is no competitor of its own text.
-func replayNearCopyGate(t *testing.T, srv *server, corpus nearCopyCorpus, key string) nearCopyScore {
+func replayNearCopyGate(t testing.TB, srv *server, corpus nearCopyCorpus, key string) nearCopyScore {
 	t.Helper()
 	issue := corpus.issues[key]
 	started := time.Now()
@@ -463,14 +467,14 @@ func replayNearCopyGate(t *testing.T, srv *server, corpus nearCopyCorpus, key st
 	return score
 }
 
-func execNearCopy(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments ...any) {
+func execNearCopy(t testing.TB, ctx context.Context, database *store.Store, statement string, arguments ...any) {
 	t.Helper()
 	if _, err := database.Pool.Exec(ctx, statement, arguments...); err != nil {
 		t.Fatalf("%s: %v", strings.SplitN(strings.TrimSpace(statement), "\n", 2)[0], err)
 	}
 }
 
-func refreshNearCopyStats(t *testing.T, ctx context.Context, database *store.Store, project string) {
+func refreshNearCopyStats(t testing.TB, ctx context.Context, database *store.Store, project string) {
 	t.Helper()
 	if _, err := refreshSearchTermStats(ctx, database.Pool, project); err != nil {
 		t.Fatalf("refresh the term statistics: %v", err)
@@ -482,7 +486,7 @@ func refreshNearCopyStats(t *testing.T, ctx context.Context, database *store.Sto
 // filed in. The create is forced, so the gate never refuses one; its own gate run is the price
 // of going through the real write path.
 func insertNearCopyIssue(
-	t *testing.T, ctx context.Context, database *store.Store, handler http.Handler,
+	t testing.TB, ctx context.Context, database *store.Store, handler http.Handler,
 	corpus nearCopyCorpus, event nearCopyEvent, present map[string]bool,
 ) {
 	t.Helper()
@@ -517,7 +521,7 @@ func insertNearCopyIssue(
 
 // insertNearCopySpec adds one later version of an issue's primary document, as the server's own
 // write does; the document_search trigger keeps the latest version's vector.
-func insertNearCopySpec(t *testing.T, ctx context.Context, database *store.Store, key string, version nearCopyVersion) {
+func insertNearCopySpec(t testing.TB, ctx context.Context, database *store.Store, key string, version nearCopyVersion) {
 	t.Helper()
 	execNearCopy(t, ctx, database, `
 		insert into artifact_versions (artifact_id, number, markdown, authors, created_at, doc_update_version)
@@ -529,7 +533,7 @@ func insertNearCopySpec(t *testing.T, ctx context.Context, database *store.Store
 	`, key, version.Number, version.Markdown, version.CreatedAt)
 }
 
-func nearCopyNumber(t *testing.T, key string) int {
+func nearCopyNumber(t testing.TB, key string) int {
 	t.Helper()
 	number, err := strconv.Atoi(key[strings.LastIndex(key, "-")+1:])
 	if err != nil {
@@ -538,10 +542,10 @@ func nearCopyNumber(t *testing.T, key string) int {
 	return number
 }
 
-// reportNearCopyReplay prints the report the pull request and the artifact carry, then holds the
-// two bars in code to what it measured.
+// reportNearCopyReplay prints the report the pull request and the artifact carry, ending with the
+// rates at the two bars in code, which it holds to nothing: the person who sets the bars reads them.
 func reportNearCopyReplay(
-	t *testing.T, corpus nearCopyCorpus, scores []nearCopyScore, marked map[string]bool, refreshes int,
+	t testing.TB, corpus nearCopyCorpus, scores []nearCopyScore, marked map[string]bool, refreshes int,
 ) {
 	t.Helper()
 	// A create whose gate ran past its bound got no check at all, so it is no evidence of a bar:
@@ -609,8 +613,8 @@ func reportNearCopyReplay(
 	}
 
 	// Every create the gate would name, for the implementer to mark a duplicate or not. The
-	// report artifact carries the markings, and every create not marked counts against the 5%
-	// ceiling.
+	// report artifact carries the markings, and every create not marked counts as a false
+	// refusal where it reaches the refuse bar.
 	named := make([]nearCopyScore, 0, len(scores))
 	for _, score := range scores {
 		if score.score >= duplicateNudgeScore {
@@ -676,19 +680,8 @@ func reportNearCopyReplay(
 		"A change to any of those invalidates this calibration.",
 		relatedTermLimit, relatedMatchBudget, relatedCommonFloor, duplicateMinTerms)
 
-	for _, pair := range corpus.pairs {
-		if byKey[pair.Query].score < duplicateRefuseScore {
-			t.Errorf("the named pair %s against %s scores %.3f, under the refuse bar %.2f",
-				pair.Query, pair.Target, byKey[pair.Query].score, duplicateRefuseScore)
-		}
-	}
 	_, falseRefusals := rateAt(duplicateRefuseScore)
-	if share := float64(falseRefusals) / float64(notDuplicates); share > 0.05 {
-		t.Errorf("the refuse bar %.2f refuses %.2f%% of the creates not marked duplicates, over the 5%% ceiling",
-			duplicateRefuseScore, 100*share)
-	}
-	if share := float64(nudgedAt(duplicateNudgeScore, duplicateRefuseScore)) / float64(total); share > 0.15 {
-		t.Errorf("the nudge bar %.2f nudges %.2f%% of the creates, over the 15%% ceiling",
-			duplicateNudgeScore, 100*share)
-	}
+	t.Logf("at the bars in code: the refuse bar %.2f refuses %.2f%% of the %d creates not marked duplicates, and the nudge bar %.2f nudges %.2f%% of the %d creates",
+		duplicateRefuseScore, 100*float64(falseRefusals)/float64(notDuplicates), notDuplicates,
+		duplicateNudgeScore, 100*float64(nudgedAt(duplicateNudgeScore, duplicateRefuseScore))/float64(total), total)
 }

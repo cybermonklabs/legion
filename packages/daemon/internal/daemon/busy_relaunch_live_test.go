@@ -1,12 +1,10 @@
-//go:build e2e
-
 // The live proof of dispatch://INFRA-3276 R4 and R3 on the binary that has them: a worker in a
 // turn is sent its task once and again only after that turn, the turn that serves a task settles
 // it, a newer task takes its place, and a relaunched process reads, in the first prompt it is
 // sent, what the relaunch ended of its subagents, its background jobs and its turn.
-// scripts/e2e/busy-relaunch-delivery.sh builds this driver with `-tags e2e` and owns the
-// nats-server and the PostgreSQL it runs against; with `--base-commit` it lays this one file over
-// a `git archive` of that commit and runs it there, which is the proof's negative control.
+// CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
+// PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
+// later, which the daemon's boot refuses to start without.
 //
 // It is a sibling of claim_compaction_live_test.go and provider_error_retry_live_test.go, and it
 // takes what they share as it is: liveAgentProof's reads of a claim and of the daemon's own log
@@ -14,9 +12,8 @@
 // checkout, paneStandin (claim_compaction_live_test.go), which answers every turn alike and tells
 // the plugin's side question and a compaction's summary apart, and the local runtime that starts a
 // pane where there is no tmux (localruntime_live_test.go). Every stand-in this proof adds is in
-// this file, so the file compiles over the base commit, where none of the shared files has it.
-// The list below names those stand-ins and the two shared helpers the proof calls besides, which
-// the negative control's base commit must hold, as 7df0a64c does:
+// this file. The list below names those stand-ins and the two shared helpers the proof calls
+// besides:
 //
 //   - a Hindsight stand-in (hindsightStandin). One pane's overlay turns Oh My Pi's memory backend
 //     on at it, and a step arms it to hold the recall of the next prompt. At the pin Oh My Pi
@@ -34,8 +31,8 @@
 //     tag), and 0 turns the pause off. The memory overlay sets it to 0 (writeOverlays), so each
 //     prompt after a 503 recalls again, as on the pin that read was made on.
 //   - a scripted answer in front of paneStandin (scriptedStandin): a `tool_use` answer, which the
-//     live proofs' shared streamAnthropicToolUse writes (live_agent_proof_test.go; at 7df0a64c,
-//     late_completion_live_test.go) as the plugins' own pane harness scripts one
+//     live proofs' shared streamAnthropicToolUse writes (live_agent_proof_test.go) as the
+//     plugins' own pane harness scripts one
 //     (packages/pi-shared/test/omp-harness.ts, messageStream), so a turn starts a `task` subagent
 //     or an `async` bash job, and a held answer, so a turn — the late turn, a turn of the agent's
 //     own, a subagent's own request — stays open until the step lets it go or the process that
@@ -44,16 +41,14 @@
 //     (live_agent_proof_test.go), which answers that registration with a consumer of the
 //     session's own, as a session has needed since cybermonklabs/legion#2603.
 //
-// Each step runs as a subtest of its own (run), so a step that fails ends there and the next
-// step still runs: the negative control's one run shows every step's own failure, each at the
-// assertion the step names (fails). Each step drives a claim no earlier step left in a state of
-// its own, and waits for it to hold no task and run no turn before it drives it (awaitQuiet), so
-// a step that failed leaves the next one a claim it can read.
+// Each step runs as a subtest of its own (run), so a step that fails ends there, at the assertion
+// the step names (fails), and the next step still runs. Each step drives a claim no earlier step
+// left in a state of its own, and waits for it to hold no task and run no turn before it drives it
+// (awaitQuiet), so a step that failed leaves the next one a claim it can read.
 //
-// What a step reads of the relaunch it reads where no new Go symbol is needed: the words of the
-// sentence as literals (relaunchDiedWords and its siblings), and the claim row's `ended_work`
-// through SQL (readEndedWork), so over the base commit, whose schema has no such column, the read
-// itself is the failure of the assertion that reads it rather than a driver that does not build.
+// What a step reads of the relaunch it reads as the daemon wrote it: the words of the sentence as
+// literals (relaunchDiedWords and its siblings), and the claim row's `ended_work` through SQL
+// (readEndedWork).
 package daemon
 
 import (
@@ -81,7 +76,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -120,9 +114,9 @@ const busyOwnJobSeconds = 20
 const busyOwnTurnWatch = 2*localObserveInterval + liveSettle
 
 // relaunchFirstPromptWithin is how long a relaunch step waits, from the relaunched process's
-// ready, for the first prompt that process is sent. At this head the prompt goes at the ready
-// (supervise's queueRelaunch, or the held task itself); the bound is what lets the base, which
-// sends a root architect holding nothing no prompt at all, fail the step rather than the run.
+// ready, for the first prompt that process is sent. The prompt goes at the ready (supervise's
+// queueRelaunch, or the held task itself); the bound lets a daemon that sends that process no
+// prompt fail the step rather than the run.
 const relaunchFirstPromptWithin = 90 * time.Second
 
 // relaunchReportWithin bounds the wait for the pane's activity report to reach the store. The
@@ -137,9 +131,8 @@ const relaunchReportWithin = time.Minute
 const deepWorkerSystemLine = "You are an autonomous coding worker"
 
 // The words of the relaunch sentence a step reads, as supervise's relaunchSentence
-// (supervise/relaunch.go) writes them at this head for a death (endDied, supervise/endedwork.go).
-// They are literals rather than calls of supervise.RelaunchSentence because this driver is also
-// built over the base commit, which has no such function, and a sentence whose words change fails
+// (supervise/relaunch.go) writes them for a death (endDied, supervise/endedwork.go). They are
+// literals rather than calls of supervise.RelaunchSentence, so a sentence whose words change fails
 // this proof here, naming the words it looked for.
 const (
 	// relaunchDiedWords is the cause, in either sentence: "Your previous process ended because
@@ -187,8 +180,6 @@ type busyRelaunchLive struct {
 	overlays map[claim.Token][]string
 	// hindsight is the memory backend the late pane's overlay names.
 	hindsight *hindsightStandin
-	// failedAt is the assertion the running step failed at (fails), which run prints.
-	failedAt string
 }
 
 // busyPane is one live claim of the proof: the issue it works, the phase that issue stands in,
@@ -210,7 +201,6 @@ type busyPane struct {
 // recall, a turn of the agent's own, a newer task in a late turn, a worker in no turn, and the
 // three relaunches.
 func TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newBusyRelaunchLive(t)
 	r.run("busy-late-turn", r.busyLateTurn)
 	r.run("busy-own-turn", r.busyOwnTurn)
@@ -227,12 +217,9 @@ func TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive(t *testing.T
 // the local runtime, and waits for every pane to answer what its seed left pending.
 func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/busy-relaunch-delivery.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/busy-relaunch-delivery.sh")
+	proof := newLiveProof(t)
 	key := func(n int) string { return fmt.Sprintf("%s-%d", proof.cfg.Project, n) }
 	r := &busyRelaunchLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -268,8 +255,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	r.note("the daemon, legion and both plugins are this checkout's: %s", root)
@@ -389,34 +375,22 @@ func (r *busyRelaunchLive) seed() {
 // run runs one step as a subtest of its own, between its `== name` and `ok name (<s>s)` lines,
 // with the proof's reads failing that subtest rather than the whole run: every read of
 // liveAgentProof goes through r.t, which is the step's own testing.T while the step runs. A step
-// that fails prints `FAIL name at <assertion> (<s>s)`, naming the assertion it failed at (fails),
-// and the next step runs.
+// that fails ends at the assertion it names (fails), and the next step runs.
 func (r *busyRelaunchLive) run(name string, body func()) {
 	parent := r.t
 	parent.Run(name, func(t *testing.T) {
-		r.t, r.failedAt = t, ""
+		r.t = t
+		defer func() { r.t = parent }()
 		started := time.Now()
-		defer func() {
-			r.t = parent
-			if t.Failed() {
-				at := r.failedAt
-				if at == "" {
-					at = "none of its named assertions (a wait or a read of its own)"
-				}
-				fmt.Printf("FAIL %s at %s (%ds)\n", name, at, int(time.Since(started).Seconds()))
-			}
-		}()
 		fmt.Printf("== %s\n", name)
 		body()
 		fmt.Printf("ok %s (%ds)\n", name, int(time.Since(started).Seconds()))
 	})
 }
 
-// fails ends the running step at its named assertion, which run prints and the script's negative
-// control reads back.
+// fails ends the running step at its named assertion, which the failure's message opens with.
 func (r *busyRelaunchLive) fails(assertion, format string, args ...any) {
 	r.t.Helper()
-	r.failedAt = assertion
 	r.t.Fatalf(assertion+": "+format, args...)
 }
 
@@ -425,9 +399,9 @@ func (r *busyRelaunchLive) fails(assertion, format string, args ...any) {
 // busyLateTurn is R4's measured case: a phase worker's task whose turn waits on a held recall,
 // past the daemon's own wait for it. That wait runs out and takes the task back, the next sweep
 // sends it again into the recall, Oh My Pi answers that send busy, and the turn of the first
-// prompt starts late. At this head that late turn is the task's own: at most one busy answer, the
-// turn confirms the task while it runs and its prompt's result retires it, and nothing is sent
-// after it. The base drops that result at the fence and sends the task again at the turn's end
+// prompt starts late. That late turn is the task's own: at most one busy answer, the turn
+// confirms the task while it runs and its prompt's result retires it, and nothing is sent after
+// it. A daemon that dropped that result at the fence would send the task again at the turn's end
 // (stale-result).
 func (r *busyRelaunchLive) busyLateTurn() {
 	pane := r.pane(r.late)
@@ -465,8 +439,7 @@ func (r *busyRelaunchLive) busyLateTurn() {
 	r.note("the daemon's own wait for the turn ran out at +%s and charged the prompt: %q",
 		waited.at.Sub(sent).Round(100*time.Millisecond), waited.Attrs["why"])
 	// What the step read of the busy answers and the turns is noted before any of it is judged, so
-	// a run that fails at the first assertion below — the base's, at stale-result — still prints
-	// the loop it measured.
+	// a run that fails at the first assertion below still prints the loop it measured.
 	busy := r.busyDeliveries(pane.token, from)
 	turns := pane.stand.promptsCarrying(marker)
 	r.note("the agent answered %d sends of the task busy; %d turns carried the task, at %v; the late turn ended at +%s",
@@ -554,9 +527,9 @@ func (r *busyRelaunchLive) busyOwnTurn() {
 
 // newerTask queues an operator's task (`legion claims deliver`) while a late turn of the claim's
 // task runs — a second held recall, on the pane busy-late-turn drove — and holds that it is taken,
-// and sent after that turn ends. At this head the late turn confirmed its task, so the newer task
-// takes its place (supervise's queue, "the pending task was taken by a turn"); the base confirms
-// nothing in a late turn and refuses it `a delivery is already pending` (accepted).
+// and sent after that turn ends. The late turn confirmed its task, so the newer task takes its
+// place (supervise's queue, "the pending task was taken by a turn"); a daemon that confirmed
+// nothing in a late turn would refuse it `a delivery is already pending` (accepted).
 func (r *busyRelaunchLive) newerTask() {
 	pane := r.pane(r.late)
 	r.awaitQuiet(pane.token, 3*time.Minute)
@@ -895,9 +868,8 @@ func (r *busyRelaunchLive) catchUpOpensWithTheSentence(pane *busyPane, told int)
 }
 
 // claimRowHolds reads the claim row's `ended_work` and holds that it records a death and that want
-// holds of it, which says whether a report covers the process's last turn (Reported). The read is
-// SQL, so over the base commit — whose schema has no such column — the read's own error is this
-// assertion's failure.
+// holds of it, which says whether a report covers the process's last turn (Reported). The read's
+// own error is this assertion's failure.
 func (r *busyRelaunchLive) claimRowHolds(token claim.Token, want func(endedWorkRow) bool) endedWorkRow {
 	r.t.Helper()
 	ended, err := readEndedWork(r.st, token)
@@ -966,9 +938,9 @@ func (r *busyRelaunchLive) busyDeliveries(token claim.Token, from int) []string 
 }
 
 // busyRefusal matches the daemon's lines for Oh My Pi's busy answer to a send of the claim's task:
-// supervise's refused, lateRefused and promptResulted, at the base and at this head alike, and
-// this head's waitedOutAnswer, which reads such an answer to a prompt whose wait for its turn had
-// already run out and names Oh My Pi's own words in its why.
+// supervise's refused, lateRefused and promptResulted, and its waitedOutAnswer, which reads such
+// an answer to a prompt whose wait for its turn had already run out and names Oh My Pi's own words
+// in its why.
 func busyRefusal(token claim.Token) func(loggedRecord) bool {
 	return func(record loggedRecord) bool {
 		if record.Attrs["claim"] != string(token) || !strings.HasPrefix(record.Message, "supervise: ") {
@@ -1056,8 +1028,8 @@ func firstParagraph(text string) string {
 // ---- the claim row's record of a relaunch ----------------------------------------------------------
 
 // endedWorkRow is the claim row's `ended_work` as this driver reads it: the JSON supervise's
-// EndedWork is stored as (supervise/endedwork.go), decoded here field by field so the driver
-// names no symbol the base commit lacks.
+// EndedWork is stored as (supervise/endedwork.go), decoded here field by field, so the proof
+// holds the names the row stores rather than the Go type that writes them.
 type endedWorkRow struct {
 	At         time.Time `json:"at"`
 	Cause      string    `json:"cause"`

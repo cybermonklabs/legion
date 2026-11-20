@@ -1,27 +1,27 @@
-//go:build e2e
-
-// The implement App the Stage 4a harness mints provisioning tokens from. The rig is live_test.go.
+// The implement App the Stage 4a harness mints provisioning tokens from: the fake GitHub's, through
+// a token command the fake takes (kindtest.Rig.AppTokenCommand). The rig is live_test.go.
 
 package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/fakegithub"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // implementTokens is the harness's ProvisionTokens: the implement App's installation token on
 // the owner of the repository it is minted for, narrowed to reading, from the token command the
-// script hands the harness (resolveApp), so the harness holds no App key. repos are the run's
+// rig hands the harness (resolveApp), so the harness holds no App key. repos are the run's
 // repositories, the first the run's own. installed and left are the two records the bundles
 // write and the directory set reads — the owners each App's last bundle read installed, and
 // what those mints find GitHub refuses — as the daemon's three share one pair
@@ -89,15 +89,16 @@ func (t implementTokens) ProjectDirs(repo ghrepo.Repository, roles []appauth.App
 // repositories is the run's repositories, as the daemon's mapping would serve them.
 func (t implementTokens) repositories() []ghrepo.Repository { return t.repos }
 
-// resolveApp mints the implement App's tokens through the token command the script hands the
-// harness (LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND): lib/github-apps.sh's own app_token_command,
-// which asks the secrets broker's github-app secret for a release of installation tokens, so the
-// broker client's argv lives in the lib alone, as real_github_test.go's liveProofImplementApp runs the same
-// lib's output. The token manager runs it in token mode (appauth's TokenCommand) for each of the
-// run's two repositories' owners, and with those tokens reads each repository's default branch as
-// GitHub names it, the base every launch on it provisions at. No key reaches the harness.
+// resolveApp mints the implement App's tokens through the token command newKindLiveEnv set up,
+// which releases the fake GitHub's installation tokens as the secrets broker's github-app secret
+// releases the real App's. The token manager runs it in token mode (appauth's TokenCommand) for
+// each of the run's two repositories' owners, reading the App's identity from the fake GitHub as
+// GitHub's API, and with those tokens reads each repository's default branch as GitHub names it,
+// the base every launch on it provisions at. No key reaches the harness.
 func (r *liveRig) resolveApp() (err error) {
-	apps := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: r.env.appID, TokenCommand: r.env.appTokenCommand}}, appauth.Options{})
+	github := r.env.github.Client()
+	apps := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: r.env.appID, TokenCommand: r.env.appTokenCommand}},
+		appauth.Options{BaseURL: fakegithub.API, HTTPClient: github})
 	// The rig owns the manager once it is stored in r.tokens, and closes it in close; until then a
 	// failure closes it here, so a token command still running never outlives the harness.
 	defer func() {
@@ -112,7 +113,7 @@ func (r *liveRig) resolveApp() (err error) {
 		if err != nil {
 			return fmt.Errorf("minting the implement App's installation token for %s: %w", repo.Owner(), err)
 		}
-		if branches[i], err = ghbranch.DefaultBranch(r.ctx, githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI("", repo)}, repo); err != nil {
+		if branches[i], err = defaultBranch(r.ctx, github, lease.Token, repo); err != nil {
 			return err
 		}
 		if i == 0 {
@@ -123,4 +124,26 @@ func (r *liveRig) resolveApp() (err error) {
 		installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
 	r.identity, r.defaultBranch, r.secondDefaultBranch = identity, branches[0], branches[1]
 	return nil
+}
+
+// defaultBranch is repo's default branch as GitHub's REST API names it (GET /repos/{owner}/{name}),
+// read with token through client.
+func defaultBranch(ctx context.Context, client *http.Client, token string, repo ghrepo.Repository) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fakegithub.API+"/repos/"+repo.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("read %s's default branch: %w", repo, err)
+	}
+	defer response.Body.Close()
+	var answer struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil || response.StatusCode != http.StatusOK || answer.DefaultBranch == "" {
+		return "", fmt.Errorf("GET /repos/%s answered %d naming default branch %q (%v)", repo, response.StatusCode, answer.DefaultBranch, err)
+	}
+	return answer.DefaultBranch, nil
 }

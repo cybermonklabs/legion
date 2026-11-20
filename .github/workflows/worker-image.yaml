@@ -288,6 +288,19 @@ jobs:
             echo "Pin \`runtime.kubernetes.image\` to the digest reference above; the daemon refuses a tag."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The leak guard's test inside the image this build pushed: the image's `git` and `jj`
+      # wrappers send each push through the pre-push hook to `legion leak-check`, and a run with
+      # the wrappers taken off PATH is its control (the probe's header says what each arm holds).
+      # It runs the image by the digest the step above recorded, which `docker run` pulls under the
+      # login above, as the user the image names, and prints one CHECK line per check.
+      - name: Leak guard test of the built image
+        env:
+          REF: ${{ steps.record.outputs.ref }}
+        run: >-
+          docker run --rm --entrypoint /bin/bash
+          --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro"
+          "$REF" /probe/leak-guard-image-probe.sh
+
       # ci.yaml's pull_request call only, and inert there. The router asks the job of every
       # workflow it calls to end with the report step, and check-ci-filters.sh holds it there:
       # the step exists so that a merge-group run this job's result decides gets its failing

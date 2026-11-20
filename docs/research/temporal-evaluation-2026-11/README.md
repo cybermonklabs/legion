@@ -102,7 +102,7 @@ Set `TMPDIR` to a directory on a volume with about 300 MB free; the script refus
 Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the twenty-one need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
 Run one at a time: two runs share one directory under `$TMPDIR` and collide.
 
-To build or test the Go program by hand, from this directory:
+To vet the prototype's Go program on its own, outside `run.sh`, from this directory:
 
 ```sh
 cd prototype && GOWORK=off go vet ./...

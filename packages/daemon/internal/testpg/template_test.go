@@ -20,9 +20,7 @@ const cloneChildVariable = "LEGION_TESTPG_CLONE_CHILD"
 // `testpg: migrated template` line, the line prepare logs; a second line is a second migration
 // run, which is the regression this guards — a template rebuilt per test, or per clone.
 func TestTwoClonesInOneProcessBuildOneTemplate(t *testing.T) {
-	if os.Getenv("LEGION_TEST_PG_DSN") == "" {
-		t.Skip(testdb.SkipMessage)
-	}
+	testdb.DSN(t)
 	if os.Getenv(cloneChildVariable) != "" {
 		first, second := Clone(t, "legion_testpg_clone_test"), Clone(t, "legion_testpg_clone_test")
 		if first == second {

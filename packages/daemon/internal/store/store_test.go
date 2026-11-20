@@ -15,7 +15,6 @@ import (
 	"math/big"
 	"net"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -37,17 +36,13 @@ import (
 //
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
-// cycle in this package's test binary. internal/testpg's own skip message holds the pinned
-// Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
-// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
-// tests can take it where they cannot take internal/testpg.
+// cycle in this package's test binary. internal/testpg/testdb imports no package of this module,
+// so this package's own tests take from it what every other package's tests take: DSN, whose skip
+// holds the whole recipe and the image to run and which fails the test on GitHub Actions, and
+// Drop, which waits an autovacuum worker out and is the one copy of that wait.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
-	}
-	return dsn
+	return testdb.DSN(t)
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a

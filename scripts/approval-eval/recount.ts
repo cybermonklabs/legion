@@ -1,3 +1,4 @@
+// legion: tool - counts a built approval corpus a second time from Dispatch's ask and event-log routes and says whether the two readings agree, for the person who decides whether a corpus build can be read.
 import { parseArgs } from "node:util";
 import type { AskOption, CaseKind, CaseRow, CaseVerdict } from "./build-corpus";
 import {

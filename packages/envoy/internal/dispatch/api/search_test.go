@@ -19,12 +19,12 @@ import (
 // searchRequestOn is one search sent to one of the two paths the search handler serves
 // (routes_table.go): GET /api/v1/search, which declares the four members every build has read,
 // and GET /api/v1/search/results, which declares all nine.
-func searchRequestOn(t *testing.T, handler http.Handler, path, query string) *httptest.ResponseRecorder {
+func searchRequestOn(t testing.TB, handler http.Handler, path, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodGet, path+"?"+query, nil, "alice")
 }
 
-func searchRequest(t *testing.T, handler http.Handler, query string) *httptest.ResponseRecorder {
+func searchRequest(t testing.TB, handler http.Handler, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	return searchRequestOn(t, handler, "/api/v1/search", query)
 }

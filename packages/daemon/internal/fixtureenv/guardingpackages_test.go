@@ -32,6 +32,7 @@ var guardingPackages = []string{
 	"cmd/legion",
 	"internal/api",
 	"internal/daemon",
+	"internal/fakegithub",
 	"internal/fixtureenv",
 	"internal/launcher",
 	"internal/leakguard",
@@ -252,7 +253,7 @@ func moduleRoot(t *testing.T) string {
 
 // packageGuardFault is why the package at pkg, under the module root, does not guard its test
 // process, as a sentence that follows the package's name, and "" when it does. Every test file of
-// the package is read, the e2e-tagged ones included, since a TestMain guards every test of the
+// the package is read, the build-tagged ones included, since a TestMain guards every test of the
 // package and not the tests of its own file; a TestMain the file's own build constraint keeps out
 // of the default build is a fault of its own, since the build a plain go test makes then declares
 // no TestMain at all and guards nothing.

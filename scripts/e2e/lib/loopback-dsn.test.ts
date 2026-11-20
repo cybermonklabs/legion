@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { requireOrSkip, skipWithout } from "@legion/test-fixtures/host-tools";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
@@ -58,16 +58,16 @@ function rewrite(dsn: string, database: string): { code: number; url: string; re
   };
 }
 
-const withoutPython = skipWithout("python3");
+const withoutPython = skipWithout(["python3"], "test");
 // The helper refuses every DSN where this host has no libpq, and says so in that refusal.
 const withoutLibpq =
-  !withoutPython && guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq");
-if (withoutLibpq) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. The helper reads each DSN with libpq, and ` +
-      `ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  !withoutPython &&
+  requireOrSkip(
+    'libpq, which the helper reads each DSN with: ctypes.util.find_library("pq") finds none on ' +
+      "this host; install libpq5",
+    !guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq"),
+    "test"
   );
-}
 const skip = withoutPython || withoutLibpq;
 
 describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {

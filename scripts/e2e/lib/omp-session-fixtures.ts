@@ -1,5 +1,5 @@
-// An Oh My Pi session transcript's entries, built as Oh My Pi writes them, for the tests of the live
-// proofs' readers that omp-tool-calls.jq serves. Oh My Pi gives the model four ways to call a tool,
+// An Oh My Pi session transcript's entries, built as Oh My Pi writes them, for the tests of the
+// scripts' readers of a session's transcript. Oh My Pi gives the model four ways to call a tool,
 // and a reader must count each: the tool itself, a write to its xd://<name> device whose content is
 // the arguments' JSON, eval code that calls tool.<name>(...), and eval code that calls the generic
 // tool.write(...) naming that device.

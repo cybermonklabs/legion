@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The live proof's driver for the completion route's entry fence on a completion behind its phase
 // entry: a completion of an entry the issue has moved past is taken when the commit it names is the
 // head the daemon's record holds, because a verdict is a fact about a head and the phase was
@@ -24,8 +22,10 @@
 // only step 5 is taken. Step 6 is what follows a taken one: step 5's completion moved the issue to
 // reviewing and left the tester's claim serving the entry it was behind on, so the same completion
 // sent again, and one naming a newer record of the phase, each meet the fence in a phase the
-// tester no longer works. scripts/e2e/behind-entry-fence.sh builds this driver with `-tags e2e`
-// and owns the nats-server and the PostgreSQL it runs against.
+// tester no longer works. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
+// without.
 //
 // The forward entry of step 2 is raised on the path the daemon has for it: the tester asks for the
 // work back with its own backward move to implementing and ends its turn, and the implementer
@@ -59,8 +59,8 @@
 // unchanged; and in step 6 the tester's completions the daemon recorded as processed
 // (processed_events), which a refusal before the fact adds none to.
 //
-// What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// What the proof stands in for lies outside the rule. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is the harness's REST stand-in for the
 // one pull request the proof drives (liveGitHub, in live_issue_proof_test.go), at the head the
 // implementer last pushed. Dispatch is the board the package's whole-daemon live proofs share
 // (liveDispatch, in live_proof_test.go), which holds the handoff record each completion names, and
@@ -142,14 +142,14 @@ func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *
 	r.step("behind after a backward move", r.behindAfterABackwardMove)
 }
 
-// newBehindEntryFenceLive boots the daemon over the script's broker with the issue already
+// newBehindEntryFenceLive boots the daemon over the package's test broker with the issue already
 // recorded: one root implementing on an open pull request, holding its tree's admission slot, and
 // its implementer's claim as a launch a previous daemon began and never recorded, which this boot
 // relaunches. That last one is how the proof reaches a live implementer session, serving run 1,
 // without an operator's spawn.
 func newBehindEntryFenceLive(t *testing.T) *behindEntryFenceLive {
 	t.Helper()
-	r := &behindEntryFenceLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/behind-entry-fence.sh",
+	r := &behindEntryFenceLive{liveIssueProof: newLiveIssueProof(t,
 		behindFenceBase, "the issue whose tester reports behind its entry")}
 	r.serveGitHub(&liveGitHub{sha: behindFenceFirstHead})
 	r.seed()

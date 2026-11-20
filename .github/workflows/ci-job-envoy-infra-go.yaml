@@ -102,7 +102,7 @@ jobs:
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check
       # job's: a change to only what they read must not start this job, and they must not run
-      # twice. scripts/race-unit.sh lists the packages, drops that one and runs go test -count=1
+      # twice. scripts/race-unit.sh lists the packages, drops that one and runs go test -v -count=1
       # -race over the rest; ci-caches.yaml's envoy-infra fill runs the same script's compile mode,
       # so the race objects the cache holds are the ones this step links, and neither caller can
       # name another package or flag than the other. .github/scripts/ci_job_reads.py pins this
@@ -126,7 +126,7 @@ jobs:
         run: |
           for pkg in ./core ./seed ./gcp; do
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+            go test -count=1 -timeout 30m -tags natslive -run "$pattern" -v "$pkg"
           done
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run

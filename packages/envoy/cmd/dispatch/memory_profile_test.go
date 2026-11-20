@@ -2,6 +2,8 @@
 
 package main
 
+// legion: tool - heap profiles of a cold one-word edit of the heaviest documents and its settlement, for a person who changes the document read or the settlement and must see where its memory goes; run with DISPATCH_EDIT_PROFILE_OUT=<dir> go test -tags memory -count=1 -run '^$' -bench '^BenchmarkProfileTheColdEditOfTheHeaviestDocuments$' -benchtime 1x -timeout 2h ./cmd/dispatch
+
 import (
 	"fmt"
 	"net/http"
@@ -17,7 +19,7 @@ import (
 )
 
 // Profiling the cold edit (LEGION-504). Not a bound: a measurement the memory tests' servers take
-// when DISPATCH_EDIT_PROFILE_OUT names a directory.
+// when DISPATCH_EDIT_PROFILE_OUT names a directory. No CI step passes -bench, so CI never runs it.
 
 const (
 	editProfileOutEnv     = "DISPATCH_EDIT_PROFILE_OUT"
@@ -110,27 +112,64 @@ func writeProfile(path, name string) {
 }
 
 // coldEditDocument is a document the profile edits: the heaviest the element limit admits of a
-// shape, or one of the repository's own.
+// shape, one of the repository's own, or the generated guide.
 type coldEditDocument struct {
 	name, markdown, artifactID string
 }
 
-// TestProfileTheColdEditOfTheHeaviestDocuments stores the heaviest documents of every shape the
-// element limit admits, and some of the repository's own, then makes a same-length one-word edit
-// of each on servers that have not loaded it: repeats of the edit and of the settlement after it,
-// each peak logged above idle, then one run that samples the server's live heap.
-// DISPATCH_EDIT_PROFILE_REPEATS sets the repeats (3), and DISPATCH_EDIT_PROFILE_SHAPES, a comma-
-// separated list of names, keeps only those documents.
-func TestProfileTheColdEditOfTheHeaviestDocuments(t *testing.T) {
+// generatedGuideName names generatedGuide among the profile's documents, for
+// DISPATCH_EDIT_PROFILE_SHAPES.
+const generatedGuideName = "a generated guide"
+
+// generatedGuideBytes is about the length of the longest guides of the repository.
+const generatedGuideBytes = 640 << 10
+
+// generatedGuide is a guide in the shape of the repository's long ones - sections of a heading,
+// prose with inline code, links and emphasis, a list, a fenced block and now and then a table -
+// to about generatedGuideBytes, generated so the document the profile edits is the same at every
+// revision, where a guide of the repository changes as the repository does. It weighs about
+// 53,000 elements, under pmdoc.MaxDocumentElements, so the server stores it.
+func generatedGuide() string {
+	var guide strings.Builder
+	guide.WriteString("# A generated guide\n\n")
+	for step := 1; guide.Len() < generatedGuideBytes; step++ {
+		fmt.Fprintf(&guide, "## Step %d\n\n", step)
+		fmt.Fprintf(&guide, "The step runs `scripts/step-%d.sh` against the box it is given, and it fails on the first line of its check that does not hold.\n", step)
+		fmt.Fprintf(&guide, "It reads [the notes of step %d](#step-%d) before it starts, writes **one report** each run, and keeps every log it took under `$TMPDIR/step-%d`.\n", step, step, step)
+		guide.WriteString("A run that stops early names the line it stopped on, and the next run starts again from that line rather than from the top.\n\n")
+		guide.WriteString("Each run reads the box's own state first, and a box that is not in the state the step expects is refused before anything is written there.\n")
+		guide.WriteString("The refusal names what it read and what it wanted, so the person who runs it can put the box right and run the step again with the same arguments.\n")
+		guide.WriteString("Nothing the step writes outlives the run except the report and the logs, which the next run of the same step replaces.\n\n")
+		guide.WriteString("- It needs `go`, `jq` and `curl` on `PATH`, and refuses to start without one.\n")
+		guide.WriteString("- It reads no credential, and no variable but `STEP_ROUNDS` and `STEP_LOG`.\n\n")
+		fmt.Fprintf(&guide, "```sh\nbash scripts/step-%d.sh --box <name>   # step %d: PASS, exit 0\n```\n\n", step, step)
+		if step%4 == 0 {
+			guide.WriteString("| Variable | Default | What it sets |\n| --- | --- | --- |\n")
+			guide.WriteString("| `STEP_ROUNDS` | 3 | how many rounds the run makes |\n")
+			guide.WriteString("| `STEP_LOG` | `$TMPDIR/step.log` | where the run's log goes |\n\n")
+		}
+	}
+	return guide.String()
+}
+
+// BenchmarkProfileTheColdEditOfTheHeaviestDocuments stores the heaviest documents of every shape
+// the element limit admits, some of the repository's own and the generated guide, then makes a
+// same-length one-word edit of each on servers that have not loaded it: repeats of the edit and
+// of the settlement after it, each peak logged above idle, then one run that samples the server's
+// live heap. It is a tool, not a test: DISPATCH_EDIT_PROFILE_OUT, the directory the profiles go
+// to, is its input, and it skips without it. DISPATCH_EDIT_PROFILE_REPEATS sets the repeats (3),
+// and DISPATCH_EDIT_PROFILE_SHAPES, a comma-separated list of names, keeps only those documents.
+// Run it once, with -benchtime 1x: each run of its body is the whole profile.
+func BenchmarkProfileTheColdEditOfTheHeaviestDocuments(b *testing.B) {
 	out := os.Getenv(editProfileOutEnv)
 	if out == "" {
-		t.Skip(editProfileOutEnv + " names where the profiles go")
+		b.Skip(editProfileOutEnv + " names where the profiles go")
 	}
 	repeats := 3
 	if value := os.Getenv(editProfileRepeatsEnv); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
-			t.Fatal(err)
+			b.Fatal(err)
 		}
 		repeats = parsed
 	}
@@ -141,78 +180,79 @@ func TestProfileTheColdEditOfTheHeaviestDocuments(t *testing.T) {
 		}
 	}
 	var documents []coldEditDocument
-	for _, shape := range heaviestAdmittedShapes(t) {
-		documents = append(documents, coldEditDocument{name: shape.name, markdown: withSentinelWord(t, shape.markdown)})
+	for _, shape := range heaviestAdmittedShapes(b) {
+		documents = append(documents, coldEditDocument{name: shape.name, markdown: withSentinelWord(b, shape.markdown)})
 	}
-	for _, path := range []string{"docs/superpowers/plans/2026-09-05-dispatch-conversations.md", "scripts/e2e/README.md", "packages/envoy/README.md"} {
+	for _, path := range []string{"docs/superpowers/plans/2026-09-05-dispatch-conversations.md", "packages/envoy/README.md"} {
 		text, err := os.ReadFile(filepath.Join("..", "..", "..", "..", path))
 		if err != nil {
-			t.Fatal(err)
+			b.Fatal(err)
 		}
 		documents = append(documents, coldEditDocument{name: path, markdown: string(text) + "\n\nThe " + sentinelWord + " ends it.\n"})
 	}
-	memory := newMemoryHarness(t)
-	writer := memory.start(t)
+	documents = append(documents, coldEditDocument{name: generatedGuideName, markdown: generatedGuide() + "\n\nThe " + sentinelWord + " ends it.\n"})
+	memory := newMemoryHarness(b)
+	writer := memory.start(b)
 	var stored []coldEditDocument
 	for _, document := range documents {
 		if len(only) > 0 && !only[document.name] {
 			continue
 		}
-		upload := writer.upload(t, "json", memory.issue, document.markdown)
+		upload := writer.upload(b, "json", memory.issue, document.markdown)
 		if upload.status != http.StatusCreated {
-			t.Logf("%s: upload answered %d %.300s; not profiled", document.name, upload.status, upload.body)
+			b.Logf("%s: upload answered %d %.300s; not profiled", document.name, upload.status, upload.body)
 			continue
 		}
-		memory.waitForSettlement(t, upload)
+		memory.waitForSettlement(b, upload)
 		document.artifactID = upload.artifactID
 		stored = append(stored, document)
 	}
-	writer.stop(t)
+	writer.stop(b)
 	words := [2]string{sentinelWord, "wird"}
 	edits := map[string]int{}
 	edit := func(server *memoryServer, document coldEditDocument) time.Duration {
 		find, with := words[edits[document.name]%2], words[(edits[document.name]+1)%2]
 		edits[document.name]++
 		started := time.Now()
-		answer := server.edit(t, document.artifactID, map[string]any{"op": "replace", "find": find, "with": with})
+		answer := server.edit(b, document.artifactID, map[string]any{"op": "replace", "find": find, "with": with})
 		if answer.status != http.StatusOK {
-			t.Fatalf("%s: the edit answered %d %.300s", document.name, answer.status, answer.body)
+			b.Fatalf("%s: the edit answered %d %.300s", document.name, answer.status, answer.body)
 		}
 		return time.Since(started).Round(time.Millisecond)
 	}
 	for _, document := range stored {
 		for run := range repeats {
-			server := memory.start(t)
+			server := memory.start(b)
 			var elapsed time.Duration
-			editPeak := server.peakAboveIdle(t, func() { elapsed = edit(server, document) })
-			settlePeak := server.peakAboveIdle(t, func() { memory.waitForSettled(t, document.artifactID) })
-			server.stop(t)
-			t.Logf("RESULT\t%s\trun %d\tedit %d MiB in %s\tsettlement %d MiB", document.name, run, editPeak>>20, elapsed, settlePeak>>20)
+			editPeak := server.peakAboveIdle(b, func() { elapsed = edit(server, document) })
+			settlePeak := server.peakAboveIdle(b, func() { memory.waitForSettled(b, document.artifactID) })
+			server.stop(b)
+			b.Logf("RESULT\t%s\trun %d\tedit %d MiB in %s\tsettlement %d MiB", document.name, run, editPeak>>20, elapsed, settlePeak>>20)
 		}
 		dir := filepath.Join(out, strings.NewReplacer("/", "_", " ", "_").Replace(document.name))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
+			b.Fatal(err)
 		}
 		setPhase := func(phase string) {
 			if err := os.WriteFile(filepath.Join(dir, "phase"), []byte(phase), 0o644); err != nil {
-				t.Fatal(err)
+				b.Fatal(err)
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
 		setPhase("idle")
 		memory.env = []string{heapProfileDirEnv + "=" + dir}
-		server := memory.start(t)
+		server := memory.start(b)
 		memory.env = nil
 		time.Sleep(500 * time.Millisecond)
 		setPhase("edit")
 		elapsed := edit(server, document)
 		setPhase("settle")
-		memory.waitForSettled(t, document.artifactID)
+		memory.waitForSettled(b, document.artifactID)
 		setPhase("done")
 		time.Sleep(2 * time.Second)
 		setPhase("final")
 		time.Sleep(time.Second)
-		server.stop(t)
-		t.Logf("PROFILED\t%s\tedit in %s\t%s", document.name, elapsed, dir)
+		server.stop(b)
+		b.Logf("PROFILED\t%s\tedit in %s\t%s", document.name, elapsed, dir)
 	}
 }

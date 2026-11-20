@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - the psql calls load_fixture.py and run_search.py make on the keyword-search fixture, for a person who measures keyword search with them.
 """The psql calls the search-measure scripts share.
 
 Rows come back as JSON, one object per line: a document's markdown holds every character a text

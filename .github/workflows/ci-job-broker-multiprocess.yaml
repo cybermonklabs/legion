@@ -32,7 +32,13 @@ env:
 jobs:
   broker-multiprocess:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # The two-process tests hold a 20-minute bound of their own. The airlock's check k9 below, on
+    # a merge group or a pull request labelled `full-ci`, takes about twenty-five minutes in a
+    # Legion pod (ten minutes of load, a minute of baseline, two stack starts, two 90-second gaps
+    # and the six binaries its stack builds with no Go cache here), so the limit holds both with
+    # headroom. No runner has timed k9 yet: the first merge group that runs it measures it, and
+    # this limit becomes that time with headroom.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -60,6 +66,40 @@ jobs:
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/broker)
           go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/broker
         working-directory: packages/envoy
+      # Check k9 of the airlock's verification document (dispatch://INFRA-1352): under ten minutes
+      # of generated load no call fails, the proxy adds at most 100 ms at the median, and each
+      # broker process stays within half its wall time in CPU and 1 GiB of memory. It takes
+      # about twenty-five minutes, so a merge group runs it, and a pull request only with the
+      # `full-ci` label; the `if:` reads the caller's event, as a called workflow's `github`
+      # context is its caller's. The script prints one CHECK line per property.
+      #
+      # Its stack (packages/envoy/scripts/dev-airlock.sh) makes a database of its own on this
+      # job's Postgres through psql, and serves each bound host on port 443 of a loopback address
+      # of its own, which the runner's user may bind only once the kernel lets it.
+      - name: Install psql for the airlock check
+        if: github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Airlock check k9 under load
+        if: github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+        # The stack's database URL is set on the command, not in an env: block, which would leave
+        # .github/scripts/check-ci-filters.sh unable to read what dev-broker.sh's go build compiles.
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+          DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/airlock-check.sh k9
+
+      # The airlock stack's pod session outlives its lease
+      # (packages/envoy/scripts/dev-airlock-lease.test.sh): the stack k9 runs on, with one broker at
+      # the shortest lease it starts with, a 30-minute grant used before and after three leases
+      # pass. It prints one PASS: or FAIL: line per property and takes the stack's start and about
+      # five minutes more, so it is held to the same events as k9, on the same stack: the job's
+      # Postgres, and port 443 of loopback addresses of its own.
+      - name: Airlock session outlives its lease
+        if: github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+          DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/dev-airlock-lease.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

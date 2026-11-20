@@ -21,10 +21,6 @@ import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 // one minute.
 setDefaultTimeout(60_000);
 
-// The judge runs in a Docker container; every other row here needs no container. Read once, so
-// one warning names docker for the whole file.
-const withoutDocker = skipWithout("docker");
-
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
@@ -547,7 +543,7 @@ describe("next_run", () => {
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
 // arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
 // perl: each row's processes and harness start through ownGroup (scripts/e2e/lib/own-group.ts).
-const withoutPerl = skipWithout("perl");
+const withoutPerl = skipWithout(["perl"], "pi-legion");
 describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
   const processTree = path.join(root, "scripts/e2e/lib/process-tree.sh");
@@ -919,13 +915,12 @@ echo done
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
-  // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
-  // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
-  // Docker, and a runner that lost it must fail these rows rather than quietly skip them.
+  // worker's pod) skips those rows and the rest of the file still runs. On GitHub Actions, whose
+  // ubuntu-24.04 runners have Docker, a runner that lost it fails here instead, and the rest of
+  // the file still runs. Read once, so one line names docker for every row of the describe.
   // The bad-argument row is not skipped: judge-omp refuses its arguments before it looks for
   // Docker, so it runs anywhere.
-  const onActions = process.env.GITHUB_ACTIONS === "true";
-  const skip = withoutDocker && !onActions;
+  const skip = skipWithout(["docker"], "pi-legion");
   // Staged in a hook: Bun runs this body even where the rows do not run, and a write here would
   // make the suite's work directory and leave it behind.
   let work = "";

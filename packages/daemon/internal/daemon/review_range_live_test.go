@@ -1,12 +1,12 @@
-//go:build e2e
-
 // The live proof's driver for the commit a later review round is told: the task the daemon prompts
 // the reviewer with in its second review round holds ` Last reviewed commit: <sha>.`, the head the
 // reviewer's own deciding review of the first round read, a review whose footer names the entry of
 // that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
 // namingTheReviewRound names), and the task of the first round names `none` in that sentence.
-// scripts/e2e/review-range.sh builds this driver with `-tags e2e` and owns the nats-server and the
-// PostgreSQL it runs against.
+// The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
+// PostgreSQL and the package's test NATS server, with the job's bun and its frozen install for the
+// `dispatch` CLI, and with the job's git and jj 0.38 or later, which the daemon's boot refuses to
+// start without.
 //
 // The rig is the handoff records proof's (startOnDispatch, in handoff_records_live_test.go): the
 // real Dispatch server of the checkout on a database of its own, the whole daemon booted with
@@ -33,6 +33,18 @@
 // Each check reads the reviewer's task of its round, and first holds that it is that task: it says
 // `Phase: reviewing.` and names the tester's handoff of that round by its version. Without that, a
 // check of a task naming no commit would pass on a task of another round.
+//
+// The proof's controls, each a change to the daemon the test fails on: with the commit's sentence
+// taken out of Sentences (internal/reviewround/reviewround.go), round-1-names-no-commit fails,
+// since a first round's task carries that sentence too; with the write of phases.reviewed_head
+// taken out of workflow's review and the check before it left out, control-no-record-no-commit
+// fails before its clear, the column empty where it should hold the first head; with workflow's
+// review judging who decides a round by the session of the claim the reviewer's phases row names,
+// round-2-names-the-commit-of-round-1 times out waiting for implementing, since that row names no
+// claim before the reviewer's first completion; and with workflow's review comparing the review's
+// submission time with the moment the reviewer's row took its entry, in place of the footer's
+// entry, round-2-names-the-commit-of-round-1 fails naming no commit, since GitHub's submission time
+// is to the second and the review reads as submitted before the entry it decides.
 package daemon
 
 import (
@@ -48,7 +60,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
@@ -85,7 +96,6 @@ type reviewRangeIssue struct {
 
 // TestReviewRangeLive drives the proof's four checks against one booted daemon and one Dispatch.
 func TestReviewRangeLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newReviewRangeLive(t)
 	r.step("round-1-names-no-commit", r.roundOneNamesNoCommit)
 	r.step("round-2-names-the-commit-of-round-1", r.roundTwoNamesTheCommitOfRoundOne)
@@ -97,7 +107,7 @@ func TestReviewRangeLive(t *testing.T) {
 // pull requests, and boots the daemon at Dispatch with reviewRangeGitHub as GitHub.
 func newReviewRangeLive(t *testing.T) *reviewRangeLive {
 	t.Helper()
-	r := &reviewRangeLive{handoffRecordsLive: startOnDispatch(t, "scripts/e2e/review-range.sh", "RR", "Review range live proof")}
+	r := &reviewRangeLive{handoffRecordsLive: startOnDispatch(t, "RR", "Review range live proof")}
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
 		t.Fatal(err)

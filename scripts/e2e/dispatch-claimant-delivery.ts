@@ -6,9 +6,10 @@
 //   CLAIMANT_E2E_AGENT_TOKEN=<token> bun scripts/e2e/dispatch-claimant-delivery.ts \
 //     <dispatch-url> <nats-url> <fake-envoy-url>
 //
-// Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; every case
-// runs, a summary line follows, and the exit status is 1 when any case failed. A step outside the
-// cases that fails (the sign-in, the project, the fake listener's seed) exits 2 naming it.
+// Each case prints `== <case>`, what it read, then `CHECK <case>: PASS` or
+// `CHECK <case>: FAIL: <why>`; every case runs, a summary line follows, and the exit status is 1
+// when any case failed. A step outside the cases that fails (the sign-in, the project, the fake
+// listener's seed) exits 2 naming it.
 import { connect, StringCodec } from "nats";
 
 const [dispatchUrl, natsUrl, envoyUrl] = process.argv.slice(2);
@@ -307,7 +308,7 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
     failure = error instanceof Error ? error.message : String(error);
   }
   results.push({ name, ok: failure === undefined });
-  console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
+  console.log(failure === undefined ? `CHECK ${name}: PASS` : `CHECK ${name}: FAIL: ${failure}`);
 }
 
 // --- setup -------------------------------------------------------------------------------------

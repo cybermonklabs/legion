@@ -1,3 +1,4 @@
+// legion: tool - cuts an approval corpus in two at a date and shows the dating rule the recipes judge under, for the person who runs an approval-eval round.
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";

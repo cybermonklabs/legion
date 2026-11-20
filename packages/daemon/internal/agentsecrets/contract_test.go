@@ -3,14 +3,15 @@
 // byte-compatibility proof for jws.go and the token login, judged by the broker's own
 // record.VerifyRequestObject, its Kubernetes token verifier against the rig's local OIDC issuer, and
 // its proof.Verifier, not by a reimplementation of the wire contract by inspection. It skips without
-// BROKER_TEST_DATABASE_URL (brokertest.NewRig's own skip), except on GitHub Actions, where the Tests
-// workflow's test job sets it and a skip would hide that it stopped (newBrokerRig).
+// BROKER_TEST_DATABASE_URL, except on GitHub Actions, where ci.yaml's daemon-go job sets it and a
+// skip would hide that it stopped (newBrokerRig).
 //
 // This is the only file in this package that imports anything under github.com/sjawhar/envoy/...:
 // those imports are test-only, never leaking into the agent-secrets client's build. It imports
-// packages/envoy/brokertest, a thin public facade over the internal rig, and
-// packages/envoy/brokerclient, the broker clients' own trade, because Go's internal-package rule
-// refuses this module an import under github.com/sjawhar/envoy/internal/...
+// packages/envoy/brokertest, a thin public facade over the internal rig,
+// packages/envoy/brokerclient, the broker clients' own trade, and packages/envoy/testprereq, the
+// prerequisite rule both modules' tests follow, because Go's internal-package rule refuses this
+// module an import under github.com/sjawhar/envoy/internal/...
 package agentsecrets
 
 import (
@@ -27,16 +28,16 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/testprereq"
 )
 
-// newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when
-// BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service
-// there, and a silent skip would let the contract tests stop running unnoticed.
+// newBrokerRig is brokertest.NewRig behind the repository's prerequisite rule
+// (testprereq.Require): without BROKER_TEST_DATABASE_URL it skips, and on GitHub Actions it fails
+// naming ci.yaml's daemon-go job, which names its Postgres service there, so the contract tests
+// cannot stop running unnoticed.
 func newBrokerRig(t *testing.T) *brokertest.Rig {
 	t.Helper()
-	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
-	}
+	testprereq.Require(t, os.Getenv("BROKER_TEST_DATABASE_URL") != "", "daemon-go", "BROKER_TEST_DATABASE_URL must be set to run the broker contract tests")
 	return brokertest.NewRig(t)
 }
 

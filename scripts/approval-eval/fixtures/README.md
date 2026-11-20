@@ -50,13 +50,15 @@ and both answered `verdict: passed`: every kind held ten in ten, the root case o
 ten of ten, and every ordinary document was decided.
 
 Either set is driven again with the command that wrote those records, which asks the definition
-alone and calls no agent half:
+alone and calls no agent half.
+The command holds no bar of its own, so the plan's ten in ten that those runs were held to is
+passed as `--bar 1`:
 
 ```
 bun scripts/approval-eval/refusals.ts \
   --fixtures scripts/approval-eval/fixtures/refusal-fixtures-blind-one.json \
   --corpus <a directory build-corpus.ts wrote, with the draw beside it> \
-  --no-agent --out <a directory outside this repository's workspace>
+  --no-agent --bar 1 --out <a directory outside this repository's workspace>
 ```
 
 ## What the documents name

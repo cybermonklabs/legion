@@ -400,7 +400,8 @@ func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasse
 // is still the claim's work, not one the claim owes with nothing left to send it, so the phase
 // restart's own task waits behind it (ErrDeliveryPending) until the turn on the owed task
 // retires it. Only the task R2 names is replaced (replaceable);
-// scripts/e2e/provider-error-retry.sh step 5 is this case live.
+// step 5 of internal/daemon's TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive
+// is this case live.
 func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

@@ -154,7 +154,7 @@ func planTreeOf(
 // statement is written, so without those two the plan says nothing about the statement's shape.
 // So this proves that the statement's shape permits the index scan, which is the claim under
 // test, not what a real corpus's planner would choose. No test measures this statement on a real
-// corpus: search_bench_test.go's TestSearchLatencyOnCorpus times GET /api/v1/search alone.
+// corpus: search_bench_test.go's BenchmarkSearchLatencyOnCorpus times GET /api/v1/search alone.
 func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 	embedder := newCrossProjectEmbedder()
 	embedder.vectors[crossProjectQuestion] = queryVector()

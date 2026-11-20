@@ -105,9 +105,9 @@ var unguarded []string
 // TestMain before m.Run, after the branch where the test binary runs as a helper child: that child
 // keeps the variables its test hands it. Code under test that names its own transport
 // (workspace's GIT_ALLOW_PROTOCOL=https) still does; a git that names none can reach no network
-// remote. Guard does the same in every build, the e2e one included, whose untagged tests are the
-// same fixtures; a live proof of that build, which reaches a real cluster and GitHub on purpose,
-// takes the process's own environment back for its own run with Live.
+// remote. Guard does the same in every build; a kind test, which drives the kind cluster of its
+// rig with the runner's own tools and environment on purpose, takes the process's own environment
+// back for its own run with Live.
 func Guard(keep ...string) error {
 	first := guardedKeep == nil
 	for _, entry := range os.Environ() {
@@ -162,8 +162,8 @@ func guardFailed(err error) {
 
 // Live gives the test the process's own values back of every variable Guard took out or set, its
 // PATH included, and leaves GIT_ALLOW_PROTOCOL unset when the process had none; the guarded
-// environment returns when the test ends. Only a live proof's entry point calls it: an e2e-tagged
-// test that reaches a real cluster and GitHub with the operator's credentials and configuration.
+// environment returns when the test ends. Only a kind test's entry point calls it: a test that
+// drives the kind cluster of its rig with the runner's own tools and environment.
 // Like t.Setenv, it cannot run in a parallel test. Without a Guard it changes nothing.
 func Live(t testing.TB) {
 	t.Helper()
@@ -178,15 +178,6 @@ func Live(t testing.TB) {
 		key, value, _ := strings.Cut(entry, "=")
 		t.Setenv(key, value)
 	}
-}
-
-// Kept is the names the last Guard kept beyond the test inputs, nil before any Guard. A TestMain
-// that reads it immediately after its own Guard holds what that Guard was handed, which a Guard a
-// test runs later cannot change: a package whose gated proofs read an operator's variables can
-// then assert that its entry point kept them, where reading the live state would pass on whatever
-// the test that ran first had set.
-func Kept() []string {
-	return slices.Clone(guardedKeep)
 }
 
 // RequireGuarded fails the test unless the package's TestMain ran Guard and the process holds

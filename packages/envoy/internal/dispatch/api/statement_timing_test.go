@@ -1,5 +1,8 @@
 package api
 
+// legion: tool - BenchmarkStatementTimings times each of this package's changed statements against the text it replaced (EXPLAIN ANALYZE on one connection, the median of runs 2 to 12, both plans printed) on a cmd/dispatch-seed database, for the author of a change to those statements, who compares the new statement with the old one at a seed scale of their choosing, 0.03 or more; run with DISPATCH_BENCH_DATABASE_URL=<seeded database> go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 90m ./internal/dispatch/api
+// legion: tool - BenchmarkRelatedTermsRefreshTiming times one whole related-terms refresh of this build against the released full rebuild, and eleven rounds after a hundred item writes each, on a cmd/dispatch-seed database, for the author of a change to the refresh, who compares it with the old one on a seed of 0.03 or more (it writes 1,100 items, so run it after BenchmarkStatementTimings); run with DISPATCH_BENCH_DATABASE_URL=<seeded database> go test -count=1 -run '^$' -bench '^BenchmarkRelatedTermsRefreshTiming$' -benchtime 1x -timeout 90m ./internal/dispatch/api
+
 import (
 	"context"
 	"fmt"
@@ -28,10 +31,12 @@ const (
 	relatedTermsRefreshWrites = 20
 )
 
-// TestStatementTimings measures this package's changed statements on the seeded measurement
-// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI never sets that variable, so
-// CI never runs a measurement; search_bench_test.go and related_recall_test.go are gated the
-// same way.
+// BenchmarkStatementTimings measures this package's changed statements on the seeded measurement
+// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names, and skips without it: a tool,
+// whose command is the file's tool line. It is a benchmark and not a test because its pairs hold
+// only on a seed of 0.03 or more, which takes minutes to write, and no CI job's time holds that;
+// internal/dispatch/docs' and refs' statement timings hold at 0.01 and stay tests, which envoy-go
+// runs. search_bench_test.go and related_recall_test.go are gated the same way.
 //
 // Which protocol each statement is under, and why:
 //
@@ -64,7 +69,13 @@ const (
 // issue_children_test.go and document_search_oracle_test.go - read from there rather than
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
 // package's equality tests are held to.
-func TestStatementTimings(t *testing.T) {
+func BenchmarkStatementTimings(b *testing.B) {
+	statementTimings(b)
+}
+
+// statementTimings is BenchmarkStatementTimings' body: each measurement is a sub-benchmark of its
+// own, named as it is reported.
+func statementTimings(t testing.TB) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -292,12 +303,16 @@ func TestStatementTimings(t *testing.T) {
 // The parameters are numbered for this statement rather than for the check's, whose $3 and $5
 // to $8 only the parts left out here read: Postgres cannot parse a statement whose parameters
 // have a gap, having no type for the one nothing reads. q.term is a literal for the same
-// reason, no arm reading it.
+// reason, no arm reading it, and so are search's three filters, which the after text's arm reads
+// (searchRowFilters) and which the related-item check never narrows by: relatedQOpener writes the
+// same three empty values.
 //
 // Parameters: $1 the tsquery, $2 the project, $3 the chosen lexemes, $4 their idf.
 func documentLegStatement(documentLeg string, termWeights func(lexemes int) string) string {
 	return `
-with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key),
+with q as materialized (select $1::tsquery as tsq, ''::text as term, ''::text as own_key,
+                               ''::text as status_filter, ''::text as author_filter,
+                               null::timestamptz as updated_since),
 ` + termWeights(3) + `document_arm as (
 ` + documentLeg + `
 )
@@ -317,7 +332,7 @@ var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank
 // that release's text of them, and a database at this release's schema runs both texts. The
 // table is read from the catalogue rather than from a caught error, so a statement that fails
 // for its own reason still fails the run.
-func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
+func databaseHoldsDocumentSearch(t testing.TB, runner *benchtime.Runner) bool {
 	t.Helper()
 	var present bool
 	if err := runner.Conn().QueryRow(context.Background(), `
@@ -331,9 +346,11 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 	return present
 }
 
-// TestRelatedTermsRefreshTiming is protocol 3, the refresh's own, and it is a Go test rather
-// than a measurement script because the pass it times is Go: refreshSearchTermStats is
-// unexported in this package, and nothing outside it can run one pass of this build.
+// BenchmarkRelatedTermsRefreshTiming is protocol 3, the refresh's own, and it is a Go benchmark
+// rather than a measurement script because the pass it times is Go: refreshSearchTermStats is
+// unexported in this package, and nothing outside it can run one pass of this build. It is a
+// tool, whose command is the file's tool line: its eleven rounds need more issues than a seed
+// below 0.03 holds, which no CI job's time can write.
 //
 // The refresh has no statement pair. The released refresh is a per-project ts_stat rebuild and
 // this build's is a drain whose time follows the queue depth, so an empty queue would make it
@@ -345,38 +362,43 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // pass before.
 //
 // It writes 1,100 items to the database it measures and leaves them there, which is what the
-// protocol asks for: run it after the statement timings, and re-seed before measuring a row
+// protocol asks for: run it after BenchmarkStatementTimings, and re-seed before measuring a row
 // count or a checksum. The settling pass between the released rebuild and the first timed pass
 // is untimed on purpose: that rebuild moves refreshed_at and writes no snapshot, so the pass
 // after it counts every project in full by this build's own rule, and timing that would measure
 // a first-use full build rather than the steady state.
-func TestRelatedTermsRefreshTiming(t *testing.T) {
+func BenchmarkRelatedTermsRefreshTiming(b *testing.B) {
+	relatedTermsRefreshTiming(b)
+}
+
+// relatedTermsRefreshTiming is BenchmarkRelatedTermsRefreshTiming's body.
+func relatedTermsRefreshTiming(t testing.TB) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
 	database := openRefreshTimingStore(t)
 	projects := refreshTimingProjects(t, database)
 
 	before := mainRefreshPass(t, database, projects)
-	t.Logf("one whole pass, the released full rebuild, %d projects: %v", len(projects), before)
+	benchtime.Logf(t, "one whole pass, the released full rebuild, %d projects: %v", len(projects), before)
 
 	settling, settlingNote := refreshTimingPass(t, database, projects)
-	t.Logf("the settling pass after the released rebuild, untimed by the protocol: %v (%s)", settling, settlingNote)
+	benchtime.Logf(t, "the settling pass after the released rebuild, untimed by the protocol: %v (%s)", settling, settlingNote)
 
 	noChange, noChangeNote := refreshTimingPass(t, database, projects)
-	t.Logf("one whole pass, this build with no change: %v (%s)", noChange, noChangeNote)
+	benchtime.Logf(t, "one whole pass, this build with no change: %v (%s)", noChange, noChangeNote)
 
 	rounds := make([]time.Duration, 0, relatedTermsRefreshRounds)
 	for round := range relatedTermsRefreshRounds {
 		writeRefreshTimingRound(t, database, project, round)
 		took, note := refreshTimingPass(t, database, projects)
-		t.Logf("round %d, after %d writes to %s: %v (%s)",
+		benchtime.Logf(t, "round %d, after %d writes to %s: %v (%s)",
 			round+1, 5*relatedTermsRefreshWrites, project, took, note)
 		rounds = append(rounds, took)
 	}
 	sorted := slices.Clone(rounds)
 	slices.Sort(sorted)
 	median := sorted[len(sorted)/2]
-	t.Logf("the median of %d rounds of a hundred writes: %v; every round: %v",
+	benchtime.Logf(t, "the median of %d rounds of a hundred writes: %v; every round: %v",
 		len(rounds), median, rounds)
 
 	if noChange >= before {
@@ -392,7 +414,7 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 // openRefreshTimingStore opens a pool on the measurement database. The refresh takes a pool, not
 // the one connection the statement timings share: a pass runs each project in a transaction of
 // its own.
-func openRefreshTimingStore(t *testing.T) *store.Store {
+func openRefreshTimingStore(t testing.TB) *store.Store {
 	t.Helper()
 	database, err := store.Open(context.Background(), os.Getenv(benchtime.DatabaseURLEnv))
 	if err != nil {
@@ -404,7 +426,7 @@ func openRefreshTimingStore(t *testing.T) *store.Store {
 
 // refreshTimingProjects is every project a whole pass refreshes, in the order
 // RefreshEverySearchTermStats takes them.
-func refreshTimingProjects(t *testing.T, database *store.Store) []string {
+func refreshTimingProjects(t testing.TB, database *store.Store) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `select key from projects order by key`)
 	if err != nil {
@@ -430,7 +452,7 @@ func refreshTimingProjects(t *testing.T, database *store.Store) []string {
 // refreshTimingPass is one whole pass of this build: its refresh of every project, timed
 // together, with how many items it applied and how many projects it had to count in full. The
 // note is what says a pass measured the drain and not a rebuild.
-func refreshTimingPass(t *testing.T, database *store.Store, projects []string) (time.Duration, string) {
+func refreshTimingPass(t testing.TB, database *store.Store, projects []string) (time.Duration, string) {
 	t.Helper()
 	ctx := context.Background()
 	started := time.Now()
@@ -452,7 +474,7 @@ func refreshTimingPass(t *testing.T, database *store.Store, projects []string) (
 // mainRefreshPass is one whole pass as the release before this one runs it: its four-statement
 // rebuild of every project (runMainSearchTermStatsRebuild, the oracle this package already
 // holds), timed together.
-func mainRefreshPass(t *testing.T, database *store.Store, projects []string) time.Duration {
+func mainRefreshPass(t testing.TB, database *store.Store, projects []string) time.Duration {
 	t.Helper()
 	started := time.Now()
 	for _, project := range projects {
@@ -469,7 +491,7 @@ func mainRefreshPass(t *testing.T, database *store.Store, projects []string) tim
 //
 // A write that touched fewer rows than it asked for would make a round's queue shorter than the
 // protocol's hundred, so each statement is held to its row count.
-func writeRefreshTimingRound(t *testing.T, database *store.Store, project string, round int) {
+func writeRefreshTimingRound(t testing.TB, database *store.Store, project string, round int) {
 	t.Helper()
 	ctx := context.Background()
 	offset := round * relatedTermsRefreshWrites

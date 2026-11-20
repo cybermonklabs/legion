@@ -1,237 +1,113 @@
 #!/usr/bin/env bash
-# Drives the model-gated OMP acceptance scenarios against a running native Dispatch stack.
+# The two model-driven round trips between Dispatch and a real Oh My Pi session running the packed
+# pi-envoy, against a Dispatch, an Envoy listener and a NATS of the run's own:
+#
+#   E4  the session runs `dispatch ask` on an issue, a person answers the ask on Dispatch, and the
+#       answer reaches the session's transcript within five seconds;
+#   E5  an issue is routed to role:acceptance-r, the session claims that role with envoy_role_set, a
+#       person posts a message on the issue, and it reaches the session's transcript within five
+#       seconds.
+#
+#   omp-roundtrip.sh [E4|E5]     both, one session each, when neither is named
+#
+# The agent-harness job's plugin-smokes part runs it as a step. It takes the job's environment alone
+# (scripts/e2e/lib/plugin-smoke.sh): Oh My Pi from LEGION_TEST_OMP, pi-envoy packed from this
+# checkout, natsd and the Envoy listener of packages/envoy-client/test/envoy-stack.ts, Dispatch from
+# packages/envoy-client/test/dispatch-stack.ts with its NATS on that stack, on a database of its own
+# in LEGION_TEST_PG_DSN, and a model stand-in that makes the session's two tool calls. The person is
+# one of the run's own, named by the server's trusted identity header. It prints one
+# `CHECK <name>: PASS` or `CHECK <name>: FAIL: <why>` line per check and exits 1 after a FAIL.
 set -euo pipefail
-# This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
-# no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
-# NATS_NKEY_SEED or NATS_NKEY_SEED_FILE.
-unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 
-readonly mode="${1:-E4}"
+me=omp-roundtrip
+# shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/plugin-smoke.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../../scripts/e2e/lib/plugin-smoke.sh"
+
+case "${1:-}" in
+  "") scenarios=(E4 E5) ;;
+  E4 | E5) scenarios=("$1") ;;
+  *) fail "the one argument is E4 or E5, the scenario to run alone, not $1" ;;
+esac
 readonly role="acceptance-r"
 readonly answer_option="Yes"
+readonly steer_timeout=5
 
-usage() {
-  cat >&2 <<'USAGE'
-Usage: OMP_BIN=/path/to/omp DISPATCH_URL=http://127.0.0.1:8773 \
-  DISPATCH_TOKEN=token ISSUE_KEY=CORE-1 \
-  ENVOY_URL=http://127.0.0.1:9020 ENVOY_NATS_URL=nats://envoy-nats:4222 \
-  omp-roundtrip.sh E4|E5
+smoke_setup --dispatch
+dispatch_person POST /api/v1/projects '{"key":"LEGSMOKE","name":"Round trips"}' >/dev/null ||
+  fail "could not create the project LEGSMOKE"
+pass
 
-E4 asks "Ship it?", answers it as X-Dispatch-User: sjawhar, and requires the
-answer steer in the OMP transcript within five seconds.
-E5 sets ISSUE_KEY's route to role:acceptance-r, claims that role from OMP,
-posts a human message, and requires that delivery in the transcript within
-five seconds.
-
-This is a real-stack acceptance check, not the fake-Envoy browser harness:
-every service it can write to is explicit for the invocation.
-USAGE
+# new_issue TITLE prints the key of a new issue of the project, made by the person.
+new_issue() {
+  dispatch_person POST /api/v1/issues "$(jq -nc --arg t "$1" '{project: "LEGSMOKE", title: $t}')" | jq -er .key
 }
 
-require() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    printf 'required environment variable %s is unset\n' "$name" >&2
-    usage
-    exit 2
-  fi
+# in_transcript LABEL TEXT succeeds once a transcript of the session LABEL holds TEXT.
+in_transcript() {
+  grep -rFq -- "$2" "$work/sessions/$1/sessions"
 }
 
-for variable in OMP_BIN DISPATCH_URL DISPATCH_TOKEN ISSUE_KEY ENVOY_URL ENVOY_NATS_URL; do
-  require "$variable"
-done
-
-case "$mode" in
-  E4 | E5) ;;
-  *)
-    printf 'unknown scenario %q\n' "$mode" >&2
-    usage
-    exit 2
-    ;;
-esac
-
-for command in bun curl jq tmux; do
-  command -v "$command" >/dev/null || {
-    printf 'required command %s is unavailable\n' "$command" >&2
-    exit 2
-  }
-done
-[[ -x "$OMP_BIN" ]] || {
-  printf 'OMP_BIN is not executable: %s\n' "$OMP_BIN" >&2
-  exit 2
+# await_in_transcript LABEL TEXT: the transcript holds TEXT within steer_timeout seconds.
+await_in_transcript() {
+  local start=$SECONDS
+  until_true "$steer_timeout" in_transcript "$1" "$2" ||
+    fail "no transcript of the session held $2 within ${steer_timeout}s; see $logs/rpc-$1.log"
+  note "the transcript held $2 $((SECONDS - start))s later"
 }
 
-readonly script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
-readonly repo_root="$(cd -- "$script_dir/../../../.." && pwd)"
-readonly pi_envoy_dir="$repo_root/packages/pi-envoy"
-readonly extension="$pi_envoy_dir/dist/envoy.js"
-readonly session_dir="$(mktemp -d "/tmp/dispatch-omp-${mode,,}-sessions.XXXXXX")"
-readonly work_dir="$(mktemp -d "/tmp/dispatch-omp-${mode,,}-work.XXXXXX")"
-readonly tmux_session="dispatch-i1-${mode,,}-$$"
-# The acceptance runs its own tmux server on a socket in its work directory, so its cleanup can end
-# only the session it started (`tmux kill-session` on the shared default server could end anyone's),
-# and that server takes the environment exported below, where an existing server would keep its own.
-readonly tmux_socket="$work_dir/tmux.sock"
-tmux() { command tmux -S "$tmux_socket" "$@"; }
-
-export DISPATCH_URL DISPATCH_TOKEN ENVOY_URL ENVOY_NATS_URL
-
-cleanup() {
-  if tmux has-session -t "$tmux_session" 2>/dev/null; then
-    tmux kill-session -t "$tmux_session"
-  fi
-}
-trap cleanup EXIT
-
-show_diagnostics() {
-  printf '\nOMP transcript directory: %s\nOMP work directory: %s\n' "$session_dir" "$work_dir" >&2
-  printf 'tmux pane (%s):\n' "$tmux_session" >&2
-  tmux capture-pane -pt "$tmux_session" -S -100 2>/dev/null >&2 || true
-}
-
-session_files() {
-  shopt -s nullglob globstar
-  printf '%s\n' "$session_dir"/**/*.jsonl
-}
-
-await_session_file() {
-  local deadline=$((SECONDS + 10))
-  local file
-  while ((SECONDS < deadline)); do
-    while IFS= read -r file; do
-      [[ -f "$file" ]] && {
-        printf '%s\n' "$file"
-        return 0
-      }
-    done < <(session_files)
-    sleep 0.1
-  done
-  printf 'OMP did not create a persisted .jsonl session within 10 seconds\n' >&2
-  show_diagnostics
-  return 1
-}
-
-await_steer() {
-  local needle="$1"
-  local deadline=$((SECONDS + 5))
-  local file
-  while ((SECONDS < deadline)); do
-    while IFS= read -r file; do
-      if grep -Fq -- "$needle" "$file"; then
-        printf 'Observed steer %q in %s\n' "$needle" "$file"
-        return 0
-      fi
-    done < <(session_files)
-    sleep 0.1
-  done
-  printf 'No steer containing %q appeared in the OMP .jsonl within 5 seconds\n' "$needle" >&2
-  show_diagnostics
-  return 1
-}
-
-human_get_issue() {
-  curl --fail-with-body --silent --show-error \
-    -H 'X-Dispatch-User: sjawhar' \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY"
-}
-
-await_new_ask() {
-  local previous_ids="$1"
-  local deadline=$((SECONDS + 30))
-  local candidate
-  while ((SECONDS < deadline)); do
+run_e4() {
+  local issue previous candidate ask_id=""
+  begin E4-ask-opened
+  issue=$(new_issue "The session's ask") || fail "could not create the issue E4 asks on"
+  previous=$(dispatch_person GET "/api/v1/issues/${issue}" | jq -r '.open_asks[]? | .id')
+  smoke_start_omp e4 "$work/cwd-e4" -- --tools bash -e "$plugin_js"
+  smoke_prompt e4 "Run this command in your shell, then wait: dispatch ask --issue ${issue} --question 'Ship it?' --option Yes --option No"
+  new_ask() {
     while IFS= read -r candidate; do
       [[ -n "$candidate" ]] || continue
-      if ! printf '%s\n' "$previous_ids" | grep -Fqx -- "$candidate"; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
-    done < <(human_get_issue | jq -r '.open_asks[]? | select(.state == "open" and .question == "Ship it?") | .id')
-    sleep 0.1
-  done
-  printf 'OMP did not create a new open "Ship it?" ask within 30 seconds\n' >&2
-  show_diagnostics
-  return 1
+      grep -Fqx -- "$candidate" <<<"$previous" || { ask_id=$candidate; return 0; }
+    done < <(dispatch_person GET "/api/v1/issues/${issue}" |
+      jq -r '.open_asks[]? | select(.state == "open" and .question == "Ship it?") | .id')
+    return 1
+  }
+  until_true 30 new_ask || fail "the session made no new open \"Ship it?\" ask on ${issue} within 30s; see $logs/rpc-e4.log"
+  new_ask
+  note "ask ${ask_id} is open on ${issue}"
+  pass
+
+  begin E4-answer-steered
+  dispatch_person POST "/api/v1/asks/${ask_id}/answer" \
+    "$(jq -nc --arg o "$answer_option" '{selected: [$o], expected_edited_at: null}')" >/dev/null ||
+    fail "the person's answer to ask ${ask_id} was refused"
+  await_in_transcript e4 ask.answered
+  pass
 }
 
-await_role_claim() {
-  local session_id="$1"
-  local deadline=$((SECONDS + 30))
-  local holder
-  while ((SECONDS < deadline)); do
-    holder="$(curl --silent --show-error --fail "$ENVOY_URL/v1/roles/$role" 2>/dev/null | jq -r '.session_id // empty' || true)"
-    if [[ "$holder" == "$session_id" ]]; then
-      return 0
-    fi
-    sleep 0.1
-  done
-  printf 'OMP session %s did not claim role %s within 30 seconds\n' "$session_id" "$role" >&2
-  show_diagnostics
-  return 1
+run_e5() {
+  local issue message
+  begin E5-role-claimed
+  issue=$(new_issue "The role's issue") || fail "could not create the issue E5 routes"
+  dispatch_person PATCH "/api/v1/issues/${issue}" "{\"route\":\"role:${role}\"}" >/dev/null ||
+    fail "could not route ${issue} to role:${role}"
+  smoke_start_omp e5 "$work/cwd-e5" -- --tools bash -e "$plugin_js"
+  smoke_prompt e5 "Call envoy_role_set with role ${role}, then wait."
+  holds_role() { curl -fsS --max-time 5 "${envoy_url}/v1/roles/${role}" | jq -e --arg s "${omp_sid[e5]}" '.holder == $s'; }
+  until_true 30 holds_role ||
+    fail "session ${omp_sid[e5]} did not claim role ${role} within 30s: $(curl -sS --max-time 5 "${envoy_url}/v1/roles/${role}" || true)"
+  pass
+
+  begin E5-message-delivered
+  message="I1 E5 routed human message $(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  dispatch_person POST "/api/v1/issues/${issue}/messages" "$(jq -nc --arg b "$message" '{body: $b}')" >/dev/null ||
+    fail "the person's message on ${issue} was refused"
+  await_in_transcript e5 "$message"
+  pass
 }
 
-(
-  cd "$pi_envoy_dir"
-  bun run build
-)
-[[ -r "$extension" ]] || {
-  printf 'expected built Pi Envoy extension is missing: %s\n' "$extension" >&2
-  exit 1
-}
-
-previous_ask_ids=""
-if [[ "$mode" == E4 ]]; then
-  previous_ask_ids="$(human_get_issue | jq -r '.open_asks[]? | .id')"
-  prompt="Run this command in your shell, then wait: dispatch ask --issue $ISSUE_KEY --question 'Ship it?' --option Yes --option No"
-else
-  curl --fail-with-body --silent --show-error \
-    -X PATCH \
-    -H 'Content-Type: application/json' \
-    -H 'X-Dispatch-User: sjawhar' \
-    --data "{\"route\":\"role:$role\"}" \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY" >/dev/null
-  prompt="Call envoy_role_set with role $role, then wait."
-fi
-readonly previous_ask_ids
-
-readonly prompt
-readonly -a omp_args=(
-  "$OMP_BIN"
-  -p
-  --auto-approve
-  --max-time=90
-  --model anthropic/claude-fable-5-1
-  --session-dir "$session_dir"
-  --extension "$extension"
-  "$prompt"
-)
-printf -v tmux_command '%q ' "${omp_args[@]}"
-printf 'tmux session %s; watch it with: tmux -S %s attach -t %s\n' "$tmux_session" "$tmux_socket" "$tmux_session"
-tmux new-session -d -s "$tmux_session" -c "$work_dir" "$tmux_command"
-
-readonly transcript="$(await_session_file)"
-if [[ "$mode" == E4 ]]; then
-  readonly ask_id="$(await_new_ask "$previous_ask_ids")"
-  curl --fail-with-body --silent --show-error \
-    -X POST \
-    -H 'Content-Type: application/json' \
-    -H 'X-Dispatch-User: sjawhar' \
-    --data "{\"selected\":[\"$answer_option\"],\"expected_edited_at\":null}" \
-    "$DISPATCH_URL/api/v1/asks/$ask_id/answer" >/dev/null
-  await_steer 'ask.answered'
-  printf 'E4 passed: ask %s answered as %s; transcript %s\n' "$ask_id" "$answer_option" "$transcript"
-else
-  session_id="${transcript##*_}"
-  session_id="${session_id%.jsonl}"
-  readonly session_id
-  await_role_claim "$session_id"
-  readonly message="I1 E5 routed human message $tmux_session"
-  curl --fail-with-body --silent --show-error \
-    -X POST \
-    -H 'Content-Type: application/json' \
-    -H 'X-Dispatch-User: sjawhar' \
-    --data "{\"body\":\"$message\"}" \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY/messages" >/dev/null
-  await_steer "$message"
-  printf 'E5 passed: role %s received message; transcript %s\n' "$role" "$transcript"
-fi
+for scenario in "${scenarios[@]}"; do
+  case $scenario in
+    E4) run_e4 ;;
+    E5) run_e5 ;;
+  esac
+done
+ok=1

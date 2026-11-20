@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -417,9 +418,8 @@ type bundleFixture struct {
 func newBundleFixture(t *testing.T) *bundleFixture {
 	t.Helper()
 	for _, tool := range []string{"jj", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required: %v", tool, err)
-		}
+		_, err := exec.LookPath(tool)
+		testprereq.Require(t, err == nil, "daemon-go", "%s is required: %v", tool, err)
 	}
 	root := t.TempDir()
 	// Neither the workspace, the configuration, the remote nor the credential of the process that

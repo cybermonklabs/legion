@@ -32,7 +32,11 @@ env:
 jobs:
   envoy-e2e-local:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # e2e-refill.sh below took 12 minutes in a Legion pod (its builds and four scenarios 9, the
+    # refuse scenario's NATS outage, which waits out the listener's real 2-minute stale bound, 3),
+    # on top of the 10 minutes e2e-local.sh's steps were held to. No runner has timed it yet: the
+    # first run measures it, and this limit becomes that time with headroom.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,11 +67,23 @@ jobs:
       - name: Local end-to-end acceptance
         run: bash scripts/e2e-local.sh
         working-directory: packages/envoy
+      # The listener keeps its copy of a bucket while it reads the bucket again, and refuses its
+      # two list routes, with no active-sessions sample, while it cannot stand behind that copy
+      # (INFRA-261): five scenarios against a real listener and a NATS server of the script's own,
+      # each one `CHECK <scenario>` line, and a run that missed the window it was there to observe
+      # is a FAIL. Its ports (E2E_REFILL_NATS_PORT, E2E_REFILL_PORT) are its own, and the
+      # acceptance run above has stopped its servers by the time this starts.
+      - name: Bucket refill on a real listener and NATS
+        run: bash scripts/e2e-refill.sh --out out/e2e-refill
+        working-directory: packages/envoy
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
           name: envoy-e2e-local-evidence-${{ github.run_attempt }}
-          path: packages/envoy/out/e2e
+          path: |
+            packages/envoy/out/e2e
+            packages/envoy/out/e2e-refill
+            !packages/envoy/out/e2e-refill/bin
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

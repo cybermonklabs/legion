@@ -1,3 +1,4 @@
+// legion: tool - decides one live ask under the reserve of the next final approval-eval test, reading Dispatch, for the scorer that meets the ask live and must leave a reserved ask unread.
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { CannotRunError, recordOf, stringOf, UsageError } from "./corpus-io";

@@ -1227,13 +1227,25 @@ def reduce_line(line: str) -> tuple:
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
-# time by the test it governs, so go compiles the same files with them set as without.
+# time by the test it governs, so go compiles the same files with them set as without. So are
+# the variables that turn on a test's own input or bound: the corpus directories the pmdoc and
+# document-service corpus tests read (PMDOC_ANCHOR_CORPUS, DISPATCH_RENDER_CORPUS,
+# PMDOC_WALK_CORPUS, DISPATCH_TOKEN_CORPUS, DISPATCH_TEST_SPEC_CORPUS), the seeded database the
+# statement timings measure on (DISPATCH_BENCH_DATABASE_URL), the outbox load steps' switch
+# (DISPATCH_OUTBOX_LOAD_STEPS), the intake drain's bound
+# (LEGION_TEST_DRAIN_MEASURE), the kind rig's worker image, its archive and the directory a failed
+# rig's state goes to (LEGION_TEST_KIND_IMAGE, LEGION_TEST_KIND_IMAGE_ARCHIVE,
+# LEGION_TEST_KIND_LOG_DIR, which internal/kindtest reads at run time), and the base commit
+# envoy-go's pmdoc differential step hands its script (DIFFERENTIAL_BASE), which no go command reads.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
-    "DATABASE_URL",
+    "DATABASE_URL", "DIFFERENTIAL_BASE",
+    "DISPATCH_BENCH_DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
-    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
+    "DISPATCH_OUTBOX_LOAD_STEPS", "DISPATCH_PREVIOUS_BUILD", "DISPATCH_RENDER_CORPUS", "DISPATCH_TEST_DATABASE_URL",
+    "DISPATCH_TEST_SPEC_CORPUS", "DISPATCH_TOKEN_CORPUS",
+    "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
     # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
@@ -1243,12 +1255,14 @@ ENV_ALLOWED = frozenset({
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_DAEMON_LOG_DIR", "LEGION_TEST_DRAIN_MEASURE",
+    "LEGION_TEST_KIND_IMAGE", "LEGION_TEST_KIND_IMAGE_ARCHIVE", "LEGION_TEST_KIND_LOG_DIR",
+    "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
     # it picks to the command as an argument, and go reads it nowhere.
     "MIGRATION_BASE",
-    "PREVIOUS_COMMIT",
+    "PMDOC_ANCHOR_CORPUS", "PMDOC_WALK_CORPUS", "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
     # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
     # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this

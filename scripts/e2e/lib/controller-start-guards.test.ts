@@ -19,7 +19,7 @@ const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("controller-start-guards-test");
 // perl: run starts every harness in a group of its own (ownGroup, lib/own-group.ts).
-const skip = skipWithout("bash", "sleep", "sh", "env", "perl");
+const skip = skipWithout(["bash", "sleep", "sh", "env", "perl"], "test");
 const work = join(dir, "work");
 const bin = join(dir, "bin");
 beforeAll(() => {

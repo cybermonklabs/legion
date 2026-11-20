@@ -437,38 +437,26 @@ and the registration route refuses one with `409 SESSION_FIXED`.
 
 Dispatch serves that token on the routes its read list names, today
 `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every
-other route of its route table and on `GET /ws/live`. `packages/dispatch/e2e/read-token-live.ts`
-shows both against this stack. Leave the stack running. `bun run dispatch:local` runs until
-Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's exports into it
-too, as you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL`
-and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In
-that new shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where
-there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
+other route of its route table and on `GET /ws/live`. Tests in CI hold each half of that. The
+`envoy-go` job runs `TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads`
+(`packages/envoy/cmd/broker/token_exchange_test.go`), this exchange on the real broker binary. The
+`envoy-go-race-api` job runs `packages/envoy/internal/dispatch/api/read_only_token_test.go`, which
+sends such a token to every route Dispatch mounts. The `envoy-go-checks` job runs
+`packages/envoy/scripts/dev-broker.test.sh`, which holds that this script writes the read entry's
+pod token and names it in its banner.
+
+To use the token against a Dispatch of your own, leave the stack running. `bun run dispatch:local`
+runs until Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's
+exports into it too, as you pasted them into the second shell. A shell without them expands
+`$AGENT_SECRETS_URL` and `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts
+with no broker. In that new shell, from `packages/dispatch`, start a local Dispatch that reads this
+broker (where there is no Docker, also set `DATABASE_URL` to a Postgres database of its own):
 
 ```console
 $ DISPATCH_E2E_AGENT_SECRETS_URL=$AGENT_SECRETS_URL DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$AGENT_SECRETS_ACCOUNT_TOKEN_FILE bun run dispatch:local
 ```
 
-Its `Run a spec against it` line prints the variables a command reaches it by. Leave it running
-there, and run the script in the second shell, which already holds the exports, from
-`packages/dispatch`, with those variables and the broker's `AGENT_SECRETS_URL` and
-`DEV_BROKER_DIR`:
-
-```console
-$ <the variables that line prints> AGENT_SECRETS_URL=$AGENT_SECRETS_URL DEV_BROKER_DIR=$DEV_BROKER_DIR bun e2e/read-token-live.ts
-seeded EXAMPLE: architecture source example/arch, issue EXAMPLE-1
-ok   GET /api/v1/projects/EXAMPLE/architecture [read-only token]: 200 - (want 200)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
-ok   GET /api/v1/issues/EXAMPLE-1/comments [alice]: 0 comment(s) with this run's body (want 0)
-ok   GET /api/v1/issues/EXAMPLE-1 [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
-ok   POST /api/v1/issues/EXAMPLE-1/comments [named-project token]: 201 - (want 2xx)
-```
-
-The script creates the project `EXAMPLE`, an architecture source and an issue in that Dispatch. It
-sends three requests with the read-only token, reads the issue's comments as alice, and then sends
-the same comment with the account entry's token, which may write `EXAMPLE`. It exits 1 when any
-answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
-`bun run dispatch:local` started again, which empties the instance.
+Its `Run a spec against it` line prints the variables a command reaches it by.
 
 ## Read the log and the metrics
 
@@ -694,9 +682,7 @@ card.
 Starting the stack with `--judge-skip-checks` sets `BROKER_JUDGE_TEST_SKIP_CHECKS`: the judge
 still makes every check and records each, and none of them holds a request back, so the model is
 asked about a request a check would have stopped. It is the negative control of those checks, and
-a broker refuses it on a production start. `packages/envoy/scripts/judge-check.sh --help` lists
-the checks that script drives end to end, each on a stack of its own, printing what it observed
-beside what the check expected.
+a broker refuses it on a production start.
 
 ## Stop
 

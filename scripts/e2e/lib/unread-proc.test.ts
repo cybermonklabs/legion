@@ -25,13 +25,13 @@ afterEach(() => {
   }
 });
 
-// The probe runs each walk in a shell with the rigs' helpers sourced, the skill-scenario rig's two
-// and parked-decision-devbox.sh's stop_agent_daemons taken from their scripts, and prints one line a
-// walk: its name, its exit status, and the first line it wrote on stderr. `fail` is a driver's, here
-// one that prints and returns, so refuse_leftovers' report reaches the line. The two port walks ask
-// for PORT, a port this test listens on (heldPort), so the socket is found in /proc/net/tcp and
-// each walk goes on to the processes it must read; a port nothing listens on ends them earlier, with
-// 1, at "0 sockets listen".
+// The probe runs each walk in a shell with the rigs' helpers sourced and the skill-scenario rig's
+// two taken from its script, and prints one line a walk: its name, its exit status, and the first
+// line it wrote on stderr. `fail` is a driver's, here one that prints and returns, so
+// refuse_leftovers' report reaches the line. The two port walks ask for PORT, a port this test
+// listens on (heldPort), so the socket is found in /proc/net/tcp and each walk goes on to the
+// processes it must read; a port nothing listens on ends them earlier, with 1, at "0 sockets
+// listen".
 const probe = `set -u
 root=${JSON.stringify(root)} timeout_hook=
 work=$(mktemp -d "$SCRATCH/work.XXXXXX")
@@ -44,7 +44,6 @@ export LEGION_E2E_RUN=$work
 . "$root/scripts/e2e/lib/rig.sh"
 . "$root/scripts/e2e/lib/leftovers.sh"
 eval "$(sed -n '/^run_env_pids() {/p; /^stop_env_processes() {/,/^}/p' "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh")"
-eval "$(sed -n '/^stop_agent_daemons() {/,/^}/p' "$root/scripts/e2e/parked-decision-devbox.sh")"
 walk() {
   local name=$1 status=0 said
   shift
@@ -59,7 +58,6 @@ walk listening_holders listening_holders "$PORT"
 walk held_only_by held_only_by "$PORT" 4242
 walk run_env_pids run_env_pids "$work/runs"
 walk refuse_leftovers refuse_leftovers legion-e2e-unread
-walk stop_agent_daemons stop_agent_daemons
 `;
 
 type Walk = { name: string; status: number; said: string };
@@ -104,7 +102,6 @@ test("over a proc root that lists no process, every walk fails with 2 and says i
     "held_only_by",
     "run_env_pids",
     "refuse_leftovers",
-    "stop_agent_daemons",
   ]);
   for (const { name, status, said } of got) {
     expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
@@ -116,9 +113,6 @@ test("over a proc root that lists no process, every walk fails with 2 and says i
   for (const name of ["listening_holders", "held_only_by"]) {
     expect(got.find((walk) => walk.name === name)?.said).toMatch(/lists no process's fd directory/);
   }
-  expect(got.find((walk) => walk.name === "stop_agent_daemons")?.said).toMatch(
-    /could not be read \(run_processes\)/
-  );
 });
 
 // Root is used only to make the mount namespace and mount an empty tmpfs on its /proc; the probe
@@ -180,7 +174,7 @@ walk stop_tree stop_tree 4242`,
     );
     expect(ran.stderr.toString()).toBe("");
     const got = walks(ran.stdout.toString());
-    expect(got).toHaveLength(12);
+    expect(got).toHaveLength(11);
     for (const { name, status, said } of got) {
       expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
     }
@@ -523,71 +517,4 @@ echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
   expect(rig).toMatch(
     /^until_true 30 "the helper's pid" record_pid_file "\$work\/agent\/helper\.pid" helper_pid$/m
   );
-});
-
-// stop_agent (envoy-session-states.sh and clean-session-stop-tmux.sh) ends an agent by its group's
-// TERM and its own stop_pid; a member of the group that outlives the TERM cannot be reached
-// through the group once its leader has gone. The Envoy session-states stop_agent, which Claude
-// Code's mid-run stop calls before a `--resume` of the same session id, reads the agent's
-// descendants while it holds the agent stopped and ends each that outlives the TERM by its start.
-// The clean-session-stop one runs only in its cleanup, whose sweep ends that member: it carries the
-// run's mark, as every agent does. Both cleanups run the sweep. The sweep reads a proc root of the
-// row's two processes (proc-root.ts's, made in the shell), so its time is the row's and not the
-// host's process count.
-const states = scriptFunctions(join(e2e, "envoy-session-states.sh"));
-const cleanStop = scriptFunctions(join(e2e, "clean-session-stop-tmux.sh"));
-// memberRig starts an agent as the rigs do (own_session, agent_pid) whose child ignores TERM, gives
-// the walks a proc root of the two, runs STOP_AGENT's stop_agent, and then THEN.
-const memberRig = (stopAgent: string, then: string) => `${goneOrRunning}
-export LEGION_E2E_RUN=$work
-${states("own_session")}
-${states("agent_pid")}
-${stopAgent}
-printf '%s\\n' "trap '' TERM" 'echo $$ >"$1"' 'exec sleep 300' >"$work/member.sh"
-own_session "$work/agent.pid" bash -c 'bash "$1" "$2" & wait' agent "$work/member.sh" "$work/agent.member"
-agent_pid "$work/agent.pid" agent
-until_true 10 "the agent's member" test -s "$work/agent.member"
-member=$(<"$work/agent.member")
-echo "pids $agent $member"
-mkdir "$work/proc"
-ln -s "/proc/$agent" "$work/proc/$agent"
-ln -s "/proc/$member" "$work/proc/$member"
-export proc_root=$work/proc
-stop_agent "$agent"
-until_true 10 "the agent to end" gone "$agent"
-${then}`;
-test("the Envoy session-states stop_agent ends an agent's member that outlives its TERM, so nothing of a stopped Claude Code runs beside its resume", () => {
-  const r = run(
-    memberRig(
-      states("stop_agent"),
-      `until_true 10 "stop_agent to end the agent's member" gone "$member"
-echo "after stop_agent: member $(state "$member")"`
-    )
-  );
-  killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
-  expect(r.err).toBe("");
-});
-test("the clean-session-stop stop_agent leaves an agent's member that outlives its TERM to the cleanup sweep, and both agents' cleanups run the sweep", () => {
-  const r = run(
-    memberRig(
-      cleanStop("stop_agent"),
-      `echo "after stop_agent: member $(state "$member")"
-stop_marked_processes "$work"
-echo "sweep $?"
-until_true 10 "the member to end" gone "$member"
-echo "after the sweep: member $(state "$member")"`
-    )
-  );
-  killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^pids .*\n/m, "")).toBe(
-    "after stop_agent: member running\nsweep 0\nafter the sweep: member gone\n"
-  );
-  expect(r.err).toBe("");
-  for (const cleanup of [states("cleanup"), cleanStop("cleanup")]) {
-    expect(cleanup).toMatch(/^\s+stop_marked_processes "\$work"/m);
-  }
-  for (const stopAgent of [states("stop_agent"), cleanStop("stop_agent")]) {
-    expect(stopAgent).not.toMatch(/stop_pid "\$1"\n\s+signal_group/);
-  }
 });

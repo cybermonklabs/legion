@@ -1,5 +1,8 @@
 package api
 
+// legion: tool - BenchmarkRelatedRecallOnDuplicates prints how many duplicate pairs exported from a Dispatch project the related-item check lists, beside the old 40-word OR query, for a person who changes the check's ranking; run with DISPATCH_RECALL_CORPUS=<scripts/related-recall.sh's file> go test -count=1 -run '^$' -bench '^BenchmarkRelatedRecallOnDuplicates$' -benchtime 1x -timeout 60m ./internal/dispatch/api
+// legion: tool - BenchmarkRelatedCheckLatencyOnRecallCorpus prints the related-item check's stage-1 latency on that exported project, for a person who changes the term pick or the keyword query; run with DISPATCH_RECALL_CORPUS=<file> DISPATCH_RECALL_LATENCY_ISSUE=<key> go test -count=1 -run '^$' -bench '^BenchmarkRelatedCheckLatencyOnRecallCorpus$' -benchtime 1x -timeout 60m ./internal/dispatch/api
+
 import (
 	"bufio"
 	"context"
@@ -17,9 +20,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The tests in this file measure the related-item check on a corpus copied from a
-// Dispatch server by scripts/related-recall.sh. They are env-gated so CI never runs them, and they
-// set no bound by default: they print what they measured, which is quoted on the pull request.
+// The benchmarks in this file measure the related-item check on a corpus copied from a Dispatch
+// server by scripts/related-recall.sh. The corpus file (DISPATCH_RECALL_CORPUS) is their input:
+// they skip without it, and no CI step passes -bench. They set no bound by default: they print
+// what they measured, which is quoted on the pull request. Run each once, with -benchtime 1x.
 
 // recallRecord is one line of the corpus file: an issue (record "issue") or a pair of issues, one
 // closed into the other (record "pair"). Times are the server's.
@@ -67,7 +71,7 @@ type recallCorpus struct {
 	pairs   []recallRecord
 }
 
-func readRecallCorpus(t *testing.T, path string) recallCorpus {
+func readRecallCorpus(t testing.TB, path string) recallCorpus {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -144,7 +148,7 @@ func (corpus recallCorpus) queryText(pair recallRecord) string {
 	return corpus.queryTitle(pair) + "\n" + first
 }
 
-func issueNumber(t *testing.T, key string) int {
+func issueNumber(t testing.TB, key string) int {
 	t.Helper()
 	number, err := strconv.Atoi(key[strings.LastIndex(key, "-")+1:])
 	if err != nil {
@@ -163,7 +167,7 @@ func issueNumber(t *testing.T, key string) int {
 // recallStagePair sets a pair's two issues as they stood at its query's filing. Then it
 // refreshes the project's term statistics, as the leased pass would have, and answers how long
 // that took.
-func loadRecallCorpus(t *testing.T, corpus recallCorpus) (*server, *store.Store, time.Duration) {
+func loadRecallCorpus(t testing.TB, corpus recallCorpus) (*server, *store.Store, time.Duration) {
 	t.Helper()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -225,7 +229,7 @@ func loadRecallCorpus(t *testing.T, corpus recallCorpus) (*server, *store.Store,
 // the search, its issue's and its spec's vectors emptied: it is not a competitor of its own text.
 // Every other issue stays as it is now. The term statistics are refreshed after, as each pair's
 // picker would have read them over that state.
-func recallStagePair(t *testing.T, database *store.Store, corpus recallCorpus, pair recallRecord) (restore func()) {
+func recallStagePair(t testing.TB, database *store.Store, corpus recallCorpus, pair recallRecord) (restore func()) {
 	t.Helper()
 	ctx := context.Background()
 	exec := func(what, statement string, arguments ...any) {
@@ -365,7 +369,7 @@ func recallListed(ctx context.Context, srv *server, project, query string, resul
 	return listed
 }
 
-// TestRelatedRecallOnDuplicates measures the check's recall of duplicates: for each pair of issues one was
+// BenchmarkRelatedRecallOnDuplicates measures the check's recall of duplicates: for each pair of issues one was
 // closed into ("Duplicate of", "Folded into" and the other wordings related-recall.sh reads),
 // does the related-item check list the earlier-filed issue (the target), searching with the
 // later-filed one's text as it was filed (the query) against every other issue of its project?
@@ -378,17 +382,18 @@ func recallListed(ctx context.Context, srv *server, project, query string, resul
 // target already done is one the check deliberately ranks below every open item, so counting it
 // would measure the rule the check applies against the rule it does not. Every pair is still
 // replayed and printed; the pairs with a done target are counted apart.
-// DISPATCH_RECALL_REQUIRE_NO_LOSS=1 fails it if the check lists fewer targets than the old query.
-func TestRelatedRecallOnDuplicates(t *testing.T) {
+// DISPATCH_RECALL_REQUIRE_NO_LOSS=1 fails it if the check lists fewer targets than the old query:
+// a limit its runner chooses.
+func BenchmarkRelatedRecallOnDuplicates(b *testing.B) {
 	path := os.Getenv("DISPATCH_RECALL_CORPUS")
 	if path == "" {
-		t.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")
+		b.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")
 	}
-	corpus := readRecallCorpus(t, path)
+	corpus := readRecallCorpus(b, path)
 	if len(corpus.pairs) == 0 {
-		t.Fatal("the recall corpus holds no pair")
+		b.Fatal("the recall corpus holds no pair")
 	}
-	srv, database, _ := loadRecallCorpus(t, corpus)
+	srv, database, _ := loadRecallCorpus(b, corpus)
 	ctx := context.Background()
 
 	rankings := []string{"old 40-word OR query", "the check's keyword query"}
@@ -403,18 +408,18 @@ func TestRelatedRecallOnDuplicates(t *testing.T) {
 	// done counts the replayed pairs R1 leaves out: those whose target is already closed.
 	done := 0
 	for _, pair := range corpus.pairs {
-		restore := recallStagePair(t, database, corpus, pair)
+		restore := recallStagePair(b, database, corpus, pair)
 		text := corpus.queryText(pair)
 		picked, err := recallPick(ctx, srv, corpus.project, text, corpus.queryTitle(pair), pair.Query)
 		if err != nil {
-			t.Fatalf("pick terms for %s: %v", pair.Query, err)
+			b.Fatalf("pick terms for %s: %v", pair.Query, err)
 		}
 		searches := make([][]model.SearchResult, len(rankings))
 		if searches[0], err = recallOldSearch(ctx, srv, corpus.project, text); err != nil {
-			t.Fatalf("old query for %s: %v", pair.Query, err)
+			b.Fatalf("old query for %s: %v", pair.Query, err)
 		}
 		if searches[1], err = recallNewSearch(ctx, srv, corpus.project, picked); err != nil {
-			t.Fatalf("the check's keyword query for %s: %v", pair.Query, err)
+			b.Fatalf("the check's keyword query for %s: %v", pair.Query, err)
 		}
 		counted := corpus.issues[pair.Target].Status != "done"
 		if !counted {
@@ -445,7 +450,7 @@ func TestRelatedRecallOnDuplicates(t *testing.T) {
 			report = append(report, fmt.Sprintf("%s: ranked %s, %s %v", rankings[index], rank, shown, items))
 		}
 		restore()
-		t.Logf("%s %q %s, %s: query %s, target %s [%s]%s (%d terms): %s",
+		b.Logf("%s %q %s, %s: query %s, target %s [%s]%s (%d terms): %s",
 			pair.Closed, pair.Wording, pair.Survivor, pair.Direction, pair.Query, pair.Target,
 			corpus.issues[pair.Target].Status, map[bool]string{false: " not counted"}[counted],
 			len(picked.Terms), strings.Join(report, "; "))
@@ -467,7 +472,7 @@ func TestRelatedRecallOnDuplicates(t *testing.T) {
 		for index, name := range rankings {
 			parts[index] = fmt.Sprintf("%s %d of %d", name, counts[index], of)
 		}
-		t.Logf("target among the three related items, %s: %s", group, strings.Join(parts, ", "))
+		b.Logf("target among the three related items, %s: %s", group, strings.Join(parts, ", "))
 	}
 	for _, wording := range wordings {
 		totals(fmt.Sprintf("%q", wording), listed[wording], pairs[wording])
@@ -475,44 +480,44 @@ func TestRelatedRecallOnDuplicates(t *testing.T) {
 	counted := len(corpus.pairs) - done
 	totals("every pair whose target is open", total, counted)
 	totals("every pair, as a run at main counts them", everyPair, len(corpus.pairs))
-	t.Logf("pairs replayed: %d; counted (target open): %d; left out (target done): %d",
+	b.Logf("pairs replayed: %d; counted (target open): %d; left out (target done): %d",
 		len(corpus.pairs), counted, done)
 	if os.Getenv("DISPATCH_RECALL_REQUIRE_NO_LOSS") == "1" && total[1] < total[0] {
-		t.Fatalf("the check's ranking lists %d targets, the old query %d", total[1], total[0])
+		b.Fatalf("the check's ranking lists %d targets, the old query %d", total[1], total[0])
 	}
 }
 
-// TestRelatedCheckLatencyOnRecallCorpus times the check's stage 1 (term pick and keyword query)
-// on the recall corpus, loaded as TestRelatedRecallOnDuplicates loads it, for one issue's own
+// BenchmarkRelatedCheckLatencyOnRecallCorpus times the check's stage 1 (term pick and keyword query)
+// on the recall corpus, loaded as BenchmarkRelatedRecallOnDuplicates loads it, for one issue's own
 // text (DISPATCH_RECALL_LATENCY_ISSUE names it) and for a 10,000-word spec built from the
 // corpus's words: p50, p95 and max over 20 runs each, after one untimed run. It also times five
 // more refreshes of the project's term statistics.
-func TestRelatedCheckLatencyOnRecallCorpus(t *testing.T) {
+func BenchmarkRelatedCheckLatencyOnRecallCorpus(b *testing.B) {
 	path := os.Getenv("DISPATCH_RECALL_CORPUS")
 	if path == "" {
-		t.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")
+		b.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")
 	}
 	timed := os.Getenv("DISPATCH_RECALL_LATENCY_ISSUE")
 	if timed == "" {
-		t.Skip("DISPATCH_RECALL_LATENCY_ISSUE must name the corpus issue whose text is timed")
+		b.Skip("DISPATCH_RECALL_LATENCY_ISSUE must name the corpus issue whose text is timed")
 	}
-	corpus := readRecallCorpus(t, path)
+	corpus := readRecallCorpus(b, path)
 	issue, ok := corpus.issues[timed]
 	if !ok {
-		t.Fatalf("the recall corpus holds no issue %s", timed)
+		b.Fatalf("the recall corpus holds no issue %s", timed)
 	}
-	srv, database, refreshed := loadRecallCorpus(t, corpus)
+	srv, database, refreshed := loadRecallCorpus(b, corpus)
 	ctx := context.Background()
 
 	refreshes := []time.Duration{refreshed}
 	for range 5 {
 		started := time.Now()
 		if _, err := refreshSearchTermStats(ctx, database.Pool, corpus.project); err != nil {
-			t.Fatalf("refresh the term statistics: %v", err)
+			b.Fatalf("refresh the term statistics: %v", err)
 		}
 		refreshes = append(refreshes, time.Since(started))
 	}
-	t.Logf("refresh of %s's term statistics: %v", corpus.project, refreshes)
+	b.Logf("refresh of %s's term statistics: %v", corpus.project, refreshes)
 
 	// The corpus's words in the order they first appear, repeated until there are 10,000.
 	var vocabulary []string
@@ -521,7 +526,7 @@ func TestRelatedCheckLatencyOnRecallCorpus(t *testing.T) {
 	for key := range corpus.issues {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b string) int { return issueNumber(t, a) - issueNumber(t, b) })
+	slices.SortFunc(keys, func(x, y string) int { return issueNumber(b, x) - issueNumber(b, y) })
 	for _, key := range keys {
 		for _, word := range strings.Fields(corpus.issues[key].Title + " " + corpus.issues[key].Spec) {
 			if !seen[word] {
@@ -560,19 +565,19 @@ func TestRelatedCheckLatencyOnRecallCorpus(t *testing.T) {
 		}
 		results, picked, err := stageOne()
 		if err != nil {
-			t.Fatalf("stage 1 for %s: %v", run.name, err)
+			b.Fatalf("stage 1 for %s: %v", run.name, err)
 		}
 		const rounds = 20
 		latencies := make([]time.Duration, 0, rounds)
 		for range rounds {
 			started := time.Now()
 			if _, _, err := stageOne(); err != nil {
-				t.Fatalf("stage 1 for %s: %v", run.name, err)
+				b.Fatalf("stage 1 for %s: %v", run.name, err)
 			}
 			latencies = append(latencies, time.Since(started))
 		}
 		slices.Sort(latencies)
-		t.Logf("stage 1 for %s (%d words, %d terms, %d results) over %d runs: p50=%v p95=%v max=%v",
+		b.Logf("stage 1 for %s (%d words, %d terms, %d results) over %d runs: p50=%v p95=%v max=%v",
 			run.name, len(strings.Fields(run.text)), len(picked.Terms), len(results), rounds,
 			latencies[(rounds-1)/2], latencies[(rounds*95+99)/100-1], latencies[rounds-1])
 	}

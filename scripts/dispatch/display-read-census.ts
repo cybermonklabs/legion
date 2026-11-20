@@ -1,3 +1,4 @@
+// legion: tool - reads every stored text of a Dispatch server with Go's display read and with the browser engine and classes each pair, for a person who changes how Dispatch reads stored markdown and decides from the census, before the merge, whether the change drops text a reader was shown.
 // display-read-census.ts - every stored text of production Dispatch, read by Go's display read
 // and by the browser's own engine, each reading put in a class.
 //

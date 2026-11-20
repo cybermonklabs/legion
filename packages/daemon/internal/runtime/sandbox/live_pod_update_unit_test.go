@@ -1,5 +1,5 @@
-// Ordinary, always-visible unit tests for the Stage 4a update-round check's pure logic that
-// live_pod_update_pure_test.go defines with no e2e build tag.
+// Unit tests of the Stage 4a update-round check's pure logic that live_pod_update_pure_test.go
+// defines.
 package sandbox
 
 import (
@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -17,10 +16,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// Both workers of pod-update's issue push that issue's branch onto the run's repository, which
-// every Stage 4a run shares, so two runs at once must push different branches, and neither may
-// push cache-b's. The key is a claim token's issue, the same key every time the run asks for it,
-// and of the shape a later run's sweep takes a killed run's leftover by.
+// Both workers of pod-update's issue push that issue's branch onto the run's repository, so it
+// must be a branch of its own, never cache-b's, and another run's key is another branch. The key
+// is a claim token's issue, the same key every time the run asks for it.
 func TestEachRunsPodUpdateIssueNamesABranchOfItsOwn(t *testing.T) {
 	runs := []string{"s4a-20261019144300-4108", "s4a-20261019144300-4109", "s4a-20261019145627-1308"}
 	branches := map[string]string{}
@@ -43,14 +41,6 @@ func TestEachRunsPodUpdateIssueNamesABranchOfItsOwn(t *testing.T) {
 			t.Fatalf("runs %s and %s both push %s", other, project, branch)
 		}
 		branches[branch] = project
-		// A run killed past its test timeout leaves this branch behind, and the next run's
-		// cache-lost-volume sweep is what deletes it: that sweep takes the branch only at the
-		// harness's own commit and only once it is older than any run lives.
-		old := time.Now().Add(-staleRunBranchAge - time.Minute)
-		left := []runBranch{{name: branch, message: runCommitMessage(branch), committed: old}}
-		if stale := staleRunBranches(left, time.Now()); !slices.Equal(stale, []string{branch}) {
-			t.Fatalf("a killed run's %s is swept as %q, want the branch itself: its shape is not the sweep's", branch, stale)
-		}
 	}
 }
 
@@ -121,9 +111,8 @@ func TestAnUnreadableShapeIsNotMoved(t *testing.T) {
 }
 
 // pod-update-fleet drifts the pods of two issues with one change, and both issues' workers push
-// their own issue's branch onto the run's repository, which every Stage 4a run shares. The two
-// keys must therefore be two, neither of them cache-b's, and each of the shape a later run's sweep
-// takes a killed run's leftover by.
+// their own issue's branch onto the run's repository. The two keys must therefore be two, neither
+// of them cache-b's.
 func TestTheFleetRoundsTwoIssuesNameBranchesOfTheirOwn(t *testing.T) {
 	runs := []string{"s4a-20261030101500-4108", "s4a-20261030101500-4109", "s4a-20261030112233-1308"}
 	branches := map[string]string{}
@@ -151,13 +140,6 @@ func TestTheFleetRoundsTwoIssuesNameBranchesOfTheirOwn(t *testing.T) {
 				t.Fatalf("%s of run %s and %s both push %s", name, project, other, branch)
 			}
 			branches[branch] = name + " of run " + project
-			// A run killed past its test timeout leaves this branch behind, and the next run's
-			// cache-lost-volume sweep is what deletes it.
-			old := time.Now().Add(-staleRunBranchAge - time.Minute)
-			left := []runBranch{{name: branch, message: runCommitMessage(branch), committed: old}}
-			if stale := staleRunBranches(left, time.Now()); !slices.Equal(stale, []string{branch}) {
-				t.Fatalf("a killed run's %s is swept as %q, want the branch itself: its shape is not the sweep's", branch, stale)
-			}
 		}
 	}
 }

@@ -702,10 +702,9 @@ test("a kill's walk by parent pid ends where its table lists two processes as ea
 });
 
 test("a child's name hides each password libpq reads and keeps the rest", () => {
-  // Each URL that carries a password is built from its parts, as replace-blocks-guard.test.ts
-  // builds its own, so this source holds no `user:password@host` literal for a credential scanner
-  // to stop on. Every password here is made up, and the forms include each one that file gives
-  // its driver.
+  // Each URL that carries a password is built from its parts, so this source holds no
+  // `user:password@host` literal for a credential scanner to stop on. Every password here is
+  // made up.
   const withPassword = (password: string) =>
     `postgres://legion_test:${password}@127.0.0.1:5433/mine`;
   const hiddenUrl = withPassword("***");

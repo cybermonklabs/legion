@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // Go-authored bytes read back as the tree, and the browser editor loads them as the node it would
@@ -207,12 +209,8 @@ func decodeWithYProsemirror(t *testing.T, update []byte) *Node {
 // test's own check of the result is what fails on it.
 func genResult(t *testing.T, script string, args ...string) []byte {
 	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		if os.Getenv("CI") == "" {
-			t.Skipf("bun is not on PATH; %s is required in CI", script)
-		}
-		t.Fatalf("bun is required in CI: %v", err)
-	}
+	_, err := exec.LookPath("bun")
+	testprereq.Require(t, err == nil, "envoy-go", "bun is not on PATH: %s runs on it", script)
 	out := filepath.Join(t.TempDir(), "result")
 	cmd := genScript(script, append(args, out)...)
 	var stderr bytes.Buffer

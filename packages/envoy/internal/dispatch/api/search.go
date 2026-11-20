@@ -561,8 +561,8 @@ var searchMeaningScan = []string{
 // searchMeaningStatementBound is the first of those settings. It is named because two readers
 // outside the list need the very same string: the measurement of these statements, which has to
 // read what a statement costs and so cannot run under a bound that would end it
-// (TestStatementTimings), and the test that shortens the bound to prove what each caller reports
-// when the server ends a meaning statement (endMeaningStatementsAt).
+// (BenchmarkStatementTimings), and the test that shortens the bound to prove what each caller
+// reports when the server ends a meaning statement (endMeaningStatementsAt).
 const searchMeaningStatementBound = `set local statement_timeout = '15s'`
 
 // meaningStatementEnded reports whether err is Postgres ending a meaning statement itself rather

@@ -31,18 +31,23 @@
 # daemon does. dev-stack.sh restarts natsd and the listener in place on SIGUSR1 and SIGUSR2.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]
+#     bash scripts/e2e/nats-callout-sessions.sh [--binaries <dir>]
+#   LEGION_TEST_PG_DSN=… LEGION_TEST_OMP=… LEGION_TEST_CLAUDE=… LEGION_TEST_CODEX=… \
+#     bash scripts/e2e/nats-callout-sessions.sh --real-hosts [--binaries <dir>]
 #
 # It needs a Postgres server it may create two databases on and drops them on exit
 # (LEGION_TEST_PG_DSN, else DATABASE_URL, as dev-stack.sh reads them), go (unless --binaries, passed
 # on to dev-stack.sh, names the stack's binaries), bun with this checkout's node_modules
-# (`bun install`), psql, curl, jq and python3; in plugins mode no model, no container and no
-# credential, so a GitHub-hosted runner runs it. It inherits no AGENT_SECRETS_*, DISPATCH_*, ENVOY_*,
-# NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, CODEX_* or OPENAI_* variable of its caller's: a Legion
-# pod exports its deployment's, and none may reach this stack.
+# (`bun install`), psql, curl, jq and python3. In either mode it takes no container, no credential
+# and no model from outside the runner, so a GitHub-hosted runner runs it. It inherits no
+# AGENT_SECRETS_*, DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, CODEX_* or
+# OPENAI_* variable of its caller's, so none a caller's deployment exports reaches this stack; the
+# three binaries --real-hosts runs (LEGION_TEST_OMP, LEGION_TEST_CLAUDE, LEGION_TEST_CODEX) are read
+# before that sweep.
 #
-# Each check prints `PASS <name>` or `FAIL <name>: <reason>`, every check runs whatever the one
-# before it did, and the last line says how many passed; the run exits 0 only when all did. A
+# Each check prints `CHECK <name>: PASS`, with what it read on the line after it, or
+# `CHECK <name>: FAIL: <reason>`, every check runs whatever the one before it did, and the last
+# line says how many passed; the run exits 0 only when all did. A
 # message has reached a session when the session's own consumer (`s-<id>`, read from the hub's
 # /jsz) acks the stream sequence it was delivered: the listener acks only on the host's `done`,
 # which a host sends once the message is in its turn (a Codex session's once `codex queue` has
@@ -96,9 +101,9 @@
 #                 manifest, and its probe row FAILs, presenting none; codex-file's rows, which name
 #                 the credential in its envoy.json, and the Oh My Pi and Claude Code ones pass.
 #
-# Two kinds of session:
-#   default       what e2e.yaml runs on a hosted runner: each plugin's own code under a stand-in
-#                 host, as described above, with no model.
+# Two kinds of session, each a step of the nats-callout-sessions part of
+# .github/workflows/ci-job-agent-harness.yaml on a hosted runner, the default mode's first:
+#   default       each plugin's own code under a stand-in host, as described above, with no model.
 #   --real-hosts  the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
 #                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), the
 #                 pinned Claude Code under `legion claude-bridge` (built from this checkout) with
@@ -110,34 +115,29 @@
 #                 Codex home under ${XDG_CACHE_HOME:-$HOME/.cache}, outside TMPDIR, since Codex
 #                 refuses its helper binaries under a temporary directory; the plugin puts each
 #                 delivery into the session with `codex queue`. Each delivery may start a model
-#                 turn, so this mode needs model routes and the pins:
-#     LEGION_E2E_MODEL_BASE_URL   the Anthropic-compatible endpoint Oh My Pi and Claude Code call
-#     LEGION_E2E_MODEL_KEY_FILE   a file holding that endpoint's key, preflighted
-#                                 (lib/model-endpoint.sh) before anything starts
-#     LEGION_E2E_MODEL_ID         the anthropic/<id> Oh My Pi runs
-#     LEGION_E2E_CLAUDE_MODEL     the model id Claude Code runs
-#     LEGION_E2E_OMP_PATH         the omp binary (default the build .omp-pin names, where mise has
-#                                 it; else the omp on PATH; else the worker image's
-#                                 /opt/omp/bin/omp), its --version held to .omp-pin's release and,
-#                                 for a mise install of oh-my-pi, its install to .omp-pin's build
-#     LEGION_E2E_CLAUDE_CODE_PIN  the directory holding the package.json and package-lock.json that
-#                                 pin @anthropic-ai/claude-code (default the worker image's
-#                                 /opt/legion/claude-code), installed under $TMPDIR with `npm ci`
-#                                 and its --version held to the pin
-#     LEGION_E2E_CODEX_BASE_URL   the OpenAI Responses-compatible endpoint Codex calls, its /v1
-#                                 included (Codex's model provider base_url, wire_api responses)
-#     LEGION_E2E_CODEX_KEY_FILE   a file holding that endpoint's key, preflighted
-#                                 (lib/model-endpoint.sh, responses_key_preflight) before anything
-#                                 starts: its /models must answer the key 200 and list the model
-#     LEGION_E2E_CODEX_MODEL      the model id Codex runs
-#     LEGION_E2E_CODEX_PATH       the codex binary, or the @openai/codex launcher with node on PATH
-#     LEGION_E2E_CODEX_VERSION    the Codex CLI release the deployment pins (tested with 0.154.0),
-#                                 which `codex --version` must print as `codex-cli <version>`
-#                 the first six as envoy-session-states.sh takes them; a missing input refuses the
-#                 run, naming it, and this mode also needs tmux. It runs on a Legion pod, which
-#                 carries the pins and its model routes, or any box given them. The switch step
-#                 runs in the default mode alone: it drives each host's /new and /clear through
-#                 the stand-in.
+#                 turn, and every host calls the run's own model stand-in, lib/messages-standin.ts
+#                 on loopback, which answers each turn with one end-turn text (no check needs a
+#                 model to call a tool), and refuses any request without the run's placeholder key:
+#                 Oh My Pi and Claude Code over Anthropic Messages (ANTHROPIC_BASE_URL, the model
+#                 claude-haiku-4-5, anthropic/claude-haiku-4-5 to Oh My Pi), and Codex over OpenAI
+#                 Responses (a model provider of its config.toml whose base_url is the stand-in's
+#                 /v1, the model standin-codex, which the stand-in's model listing names). Before
+#                 anything else starts, lib/model-endpoint.sh's preflights hold the stand-in to the
+#                 key: model_key_preflight's GET /v1/models answers the key 200 and no key 401, and
+#                 responses_key_preflight's lists standin-codex to the key too. The binaries are
+#                 the pins the part's install actions install and export:
+#     LEGION_TEST_OMP     the omp of the build .omp-pin names (.github/actions/install-omp), its
+#                         --version held to .omp-pin's release and, for a mise install of
+#                         oh-my-pi, its install to .omp-pin's build
+#     LEGION_TEST_CLAUDE  the Claude Code of the release .claude-code-pin names, by an absolute path
+#                         (.github/actions/install-claude-code), its --version held to that release
+#     LEGION_TEST_CODEX   the native codex of the release .codex-pin names
+#                         (.github/actions/install-codex), which `codex --version` must print as
+#                         `codex-cli <release>` (tested with 0.154.0)
+#                 This mode also needs tmux, setsid and mkfifo. A missing input or tool refuses the
+#                 run, naming it, before anything starts, on a runner as anywhere: no host is ever
+#                 skipped. The switch step runs in the default mode alone: it drives each host's
+#                 /new and /clear through its stand-in host.
 #
 # NATS_CALLOUT_SESSIONS_EVIDENCE_DIR (default a fresh directory under TMPDIR, kept and printed)
 # keeps the stack's logs, each client's output and every answer the checks read.
@@ -146,6 +146,10 @@ set -Eeuo pipefail
 pg_dsn=${LEGION_TEST_PG_DSN:-${DATABASE_URL:-}}
 evidence=${NATS_CALLOUT_SESSIONS_EVIDENCE_DIR:-}
 control=${NATS_CALLOUT_SESSIONS_CONTROL:-}
+# The binaries --real-hosts runs, as the part's install actions export them.
+omp_bin=${LEGION_TEST_OMP:-}
+claude_bin=${LEGION_TEST_CLAUDE:-}
+codex_bin=${LEGION_TEST_CODEX:-}
 # --real-hosts is this script's own; every other argument is dev-stack.sh's.
 hosts=plugins
 stack_args=()
@@ -154,7 +158,7 @@ for argument in "$@"; do
 done
 for variable in $(compgen -e); do
   case $variable in
-    AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | CODEX_* | OPENAI_* | DATABASE_URL | LEGION_TEST_PG_DSN) unset "$variable" ;;
+    AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | CODEX_* | OPENAI_* | DATABASE_URL | LEGION_TEST_*) unset "$variable" ;;
   esac
 done
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -235,68 +239,47 @@ done
 note() { echo "   $*"; }
 fail() { refuse "$*"; }
 if [ "$hosts" = real ]; then
-  for tool in go npm setsid mkfifo tmux; do
-    command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
+  for tool in go setsid mkfifo tmux; do
+    command -v "$tool" >/dev/null || refuse "$tool is not on PATH, and --real-hosts needs it"
   done
-  model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
-  model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
-  model_id=${LEGION_E2E_MODEL_ID:-}
-  claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
-  omp_pin=$(<"$root/.omp-pin")
-  omp_build=${omp_pin##*@}
-  pinned_omp=$(mise where "$omp_pin" 2>/dev/null || true)
-  if [ -n "${LEGION_E2E_OMP_PATH:-}" ]; then
-    omp_bin=$LEGION_E2E_OMP_PATH
-  elif [ -n "$pinned_omp" ] && [ -x "$pinned_omp/bin/omp" ]; then
-    omp_bin=$pinned_omp/bin/omp
-  else
-    omp_bin=$(command -v omp || echo /opt/omp/bin/omp)
-  fi
-  claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
+  # The model every host names: Oh My Pi as anthropic/<it>, Claude Code as <it>; and Codex's, which
+  # the stand-in's model listing names for responses_key_preflight. The stand-in answers any.
+  model_id=claude-haiku-4-5
+  codex_model=standin-codex
   # shellcheck source=scripts/e2e/lib/model-endpoint.sh
   . "$root/scripts/e2e/lib/model-endpoint.sh"
-  [ -n "$model_base_url" ] || refuse "LEGION_E2E_MODEL_BASE_URL is required with --real-hosts: the endpoint both hosts call"
-  if why=$(model_base_url_refusal "$model_base_url") && [ -n "$why" ]; then
-    refuse "LEGION_E2E_MODEL_BASE_URL $why"
-  fi
-  [ -r "$model_key_file" ] || refuse "LEGION_E2E_MODEL_KEY_FILE names '$model_key_file', which cannot be read"
-  [[ $model_id =~ ^anthropic/[^[:space:]]+$ ]] || refuse "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>"
-  [ -n "$claude_model" ] || refuse "LEGION_E2E_CLAUDE_MODEL is required with --real-hosts: the model id Claude Code runs"
-  [[ -n "$omp_bin" && -x "$omp_bin" ]] || refuse "LEGION_E2E_OMP_PATH names '$omp_bin', which is no executable omp"
+  # shellcheck source=scripts/e2e/lib/port-file.sh
+  . "$root/scripts/e2e/lib/port-file.sh"
+  omp_pin=$(<"$root/.omp-pin")
+  omp_build=${omp_pin##*@}
+  claude_version=$(<"$root/.claude-code-pin")
+  codex_version=$(<"$root/.codex-pin")
+  [ -n "$omp_bin" ] ||
+    refuse "LEGION_TEST_OMP is required with --real-hosts: the Oh My Pi .omp-pin names ($omp_pin), which .github/actions/install-omp installs and exports"
+  [ -x "$omp_bin" ] || refuse "LEGION_TEST_OMP names '$omp_bin', which is no executable omp"
   # .omp-pin names <backend>:<owner>/oh-my-pi@<release>-<build> (github:cybermonklabs/oh-my-pi@…);
   # omp --version prints omp/<release> alone, so a mise install, whose directory is named for the
   # build, is held to the build too (omp_install_refusal).
   omp_release=${omp_build%%-*}
   omp_reported=$("$omp_bin" --version 2>/dev/null | head -n 1) || true
   [ "$omp_reported" = "omp/$omp_release" ] ||
-    refuse "$omp_bin prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_release)"
+    refuse "LEGION_TEST_OMP ($omp_bin) prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_release)"
   omp_real=$(realpath -e -- "$omp_bin")
   omp_refusal=$(omp_install_refusal "$omp_pin" "$omp_real")
   [ -z "$omp_refusal" ] || refuse "$omp_refusal"
-  { [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
-    refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code"
-  claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
-    refuse "$claude_pin/package.json pins no @anthropic-ai/claude-code"
-  # Codex's own route and pin: an OpenAI Responses-compatible endpoint, its key, the model and the
-  # binary, each named, since no image carries a Codex pin of its own.
-  codex_base_url=${LEGION_E2E_CODEX_BASE_URL:-}
-  codex_key_file=${LEGION_E2E_CODEX_KEY_FILE:-}
-  codex_model=${LEGION_E2E_CODEX_MODEL:-}
-  codex_bin=${LEGION_E2E_CODEX_PATH:-}
-  codex_version=${LEGION_E2E_CODEX_VERSION:-}
-  [ -n "$codex_base_url" ] || refuse "LEGION_E2E_CODEX_BASE_URL is required with --real-hosts: the OpenAI Responses-compatible endpoint Codex calls, its /v1 included"
-  if why=$(model_base_url_refusal "$codex_base_url") && [ -n "$why" ]; then
-    refuse "LEGION_E2E_CODEX_BASE_URL $why"
-  fi
-  [ -n "$codex_key_file" ] || refuse "LEGION_E2E_CODEX_KEY_FILE is required with --real-hosts: the file holding the key of LEGION_E2E_CODEX_BASE_URL"
-  [ -r "$codex_key_file" ] || refuse "LEGION_E2E_CODEX_KEY_FILE names '$codex_key_file', which cannot be read"
-  [ -n "$codex_model" ] || refuse "LEGION_E2E_CODEX_MODEL is required with --real-hosts: the model id Codex runs"
-  [ -n "$codex_version" ] || refuse "LEGION_E2E_CODEX_VERSION is required with --real-hosts: the Codex CLI release the deployment pins"
-  [ -n "$codex_bin" ] || refuse "LEGION_E2E_CODEX_PATH is required with --real-hosts: the codex binary of release $codex_version"
-  [ -x "$codex_bin" ] || refuse "LEGION_E2E_CODEX_PATH names '$codex_bin', which is no executable codex"
+  [ -n "$claude_bin" ] ||
+    refuse "LEGION_TEST_CLAUDE is required with --real-hosts: the Claude Code $claude_version .claude-code-pin names, which .github/actions/install-claude-code installs and exports"
+  [[ $claude_bin == /* && -x $claude_bin ]] ||
+    refuse "LEGION_TEST_CLAUDE names '$claude_bin', which is not an absolute path to an executable file"
+  claude_reported=$("$claude_bin" --version 2>/dev/null) || true
+  [ "${claude_reported%% *}" = "$claude_version" ] ||
+    refuse "LEGION_TEST_CLAUDE ($claude_bin) prints --version '$claude_reported'; .claude-code-pin names $claude_version"
+  [ -n "$codex_bin" ] ||
+    refuse "LEGION_TEST_CODEX is required with --real-hosts: the native codex of the Codex CLI $codex_version .codex-pin names, which .github/actions/install-codex installs and exports"
+  [ -x "$codex_bin" ] || refuse "LEGION_TEST_CODEX names '$codex_bin', which is no executable codex"
   codex_reported=$("$codex_bin" --version 2>/dev/null | head -n 1) || true
   [ "$codex_reported" = "codex-cli $codex_version" ] ||
-    refuse "$codex_bin prints --version '$codex_reported'; LEGION_E2E_CODEX_VERSION names codex-cli $codex_version"
+    refuse "LEGION_TEST_CODEX ($codex_bin) prints --version '$codex_reported'; .codex-pin names codex-cli $codex_version"
   natives=$HOME/.omp/natives
 fi
 
@@ -309,6 +292,7 @@ echo "nats-callout-sessions: evidence in $evidence (hosts: $hosts${control:+, co
 
 # ---- teardown -----------------------------------------------------------------------------------
 stack_pid=""
+standin_pid=""
 scenario_pids=()
 scenario_fds=()
 # The real hosts' transcripts, which the teardown keeps in the evidence.
@@ -344,6 +328,11 @@ teardown() {
     kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
   done
+  # The model stand-in, once no host is left to call it.
+  if [ -n "$standin_pid" ]; then
+    kill -TERM "$standin_pid" 2>/dev/null
+    wait "$standin_pid" 2>/dev/null
+  fi
   if [ -n "$stack_pid" ] && kill -0 "$stack_pid" 2>/dev/null; then
     kill -TERM "$stack_pid"
     wait "$stack_pid" 2>/dev/null
@@ -389,17 +378,31 @@ trap 'cleanup 143' TERM
 
 # ---- the real hosts' pieces, built from this checkout before anything starts ------------------
 if [ "$hosts" = real ]; then
-  mkdir -p "$work/bin" "$work/real" "$work/bun-cache"
-  (umask 077 && tr -d '[:space:]' <"$model_key_file" >"$work/model-key")
-  [ -s "$work/model-key" ] || refuse "LEGION_E2E_MODEL_KEY_FILE ($model_key_file) holds no key"
+  mkdir -p "$work/bin" "$work/real" "$work/bun-home"
+  # The model every host calls: lib/messages-standin.ts on loopback, on a port it reports, keyed by
+  # a placeholder of the run's own (0600), every request it answered or refused kept in the
+  # evidence.
+  (umask 077 && printf 'nats-callout-sessions-standin-%s\n' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')" >"$work/model-key")
+  env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
+    bun "$root/scripts/e2e/lib/messages-standin.ts" "$work/standin.port" "$work/model-key" \
+    "$evidence/answers/standin-requests.jsonl" ready "$codex_model" >"$work/logs/standin.log" 2>&1 &
+  standin_pid=$!
+  standin_port=""
+  read_port_file "$work/standin.port" "$standin_pid" standin_port ||
+    refuse "the model stand-in reported no port within $port_file_seconds s: $(tail -n 10 "$work/logs/standin.log")"
+  model_base_url=http://127.0.0.1:$standin_port
+  codex_base_url=$model_base_url/v1
+  # The preflights hold the stand-in to the key before anything else starts: it answers the key and
+  # refuses a call without it, so each host's model turn is proof the key its environment carries
+  # reached the model, and it lists the model Codex runs.
   model_key_preflight "$model_base_url" "$work/model-key" "$work/model-header" \
-    "LEGION_E2E_MODEL_KEY_FILE ($model_key_file)"
-  (umask 077 && tr -d '[:space:]' <"$codex_key_file" >"$work/codex-model-key")
-  [ -s "$work/codex-model-key" ] || refuse "LEGION_E2E_CODEX_KEY_FILE ($codex_key_file) holds no key"
-  responses_key_preflight "$codex_base_url" "$work/codex-model-key" "$work/codex-model-header" \
-    "LEGION_E2E_CODEX_KEY_FILE ($codex_key_file)" "$codex_model"
-  (cd "$root/packages/daemon" && go build -o "$work/bin/legion" ./cmd/legion) >"$work/logs/build-legion.log" 2>&1 ||
-    refuse "legion did not build; see $work/logs/build-legion.log"
+    "the run's placeholder key ($work/model-key)"
+  responses_key_preflight "$codex_base_url" "$work/model-key" "$work/codex-model-header" \
+    "the run's placeholder key ($work/model-key)" "$codex_model"
+  note "the model stand-in on $model_base_url answers every host: Oh My Pi anthropic/$model_id and Claude Code $model_id there, Codex $codex_model at $codex_base_url"
+  {
+    (cd "$root/packages/daemon" && go build -o "$work/bin/legion" ./cmd/legion)
+  } >"$work/logs/build-legion.log" 2>&1 || refuse "legion did not build; see $work/logs/build-legion.log"
   tarball=$(bash "$root/scripts/e2e/lib/pack-plugin.sh" pi-envoy "$work/pack" 2>"$work/logs/pack-pi-envoy.log") ||
     refuse "pi-envoy did not pack; see $work/logs/pack-pi-envoy.log"
   mkdir -p "$work/pi-envoy"
@@ -410,20 +413,7 @@ if [ "$hosts" = real ]; then
   (cd "$root" && bun packages/claude-envoy/scripts/build.ts --out "$claude_plugin") >"$work/logs/build-claude-envoy.log" 2>&1 ||
     refuse "claude-envoy did not build; see $work/logs/build-claude-envoy.log"
   [ -r "$claude_plugin/dist/envoy-channel.js" ] || refuse "$claude_plugin has no dist/envoy-channel.js"
-  # Claude Code itself: the pinned release, installed from the pin with `npm ci` into a directory
-  # of the run's own, held to the pin's version - the install a pod's launch makes.
-  mkdir -p "$work/claude-code" "$work/npm-cache"
-  cp "$claude_pin/package.json" "$claude_pin/package-lock.json" "$work/claude-code/" ||
-    refuse "could not copy the Claude Code pin out of $claude_pin"
-  (cd "$work/claude-code" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --cache "$work/npm-cache") \
-    >"$work/logs/npm-claude-code.log" 2>&1 ||
-    refuse "installing the Claude Code $claude_version that $claude_pin pins failed; see $work/logs/npm-claude-code.log"
-  claude_bin=$work/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude
-  [ -x "$claude_bin" ] || refuse "the install left no executable at $claude_bin"
-  claude_reported=$("$claude_bin" --version) || refuse "the installed Claude Code does not run"
-  [ "${claude_reported%% *}" = "$claude_version" ] ||
-    refuse "the installed Claude Code prints --version '$claude_reported'; $claude_pin pins $claude_version"
-  note "Claude Code $claude_reported from $claude_pin; $omp_reported ($omp_real) as .omp-pin names; $codex_reported ($codex_bin); pi-envoy packed, claude-envoy built, legion built"
+  note "Claude Code $claude_reported ($claude_bin) as .claude-code-pin names; $omp_reported ($omp_real) as .omp-pin names; $codex_reported ($codex_bin) as .codex-pin names; pi-envoy packed, claude-envoy built, legion built"
 fi
 
 codex_pack
@@ -443,9 +433,13 @@ stack_log=$evidence/dev-stack.log
 echo "nats-callout-sessions: starting dev-stack.sh --callout (log $stack_log)"
 # The stack's TMPDIR is short and of its own: dev-stack.sh binds unix sockets in its work directory
 # (its port keepers'), and a socket path past 107 bytes is refused, which a caller's deep TMPDIR
-# with this run's scratch directory inside it can pass.
+# with this run's scratch directory inside it can pass. Go's build scratch (GOTMPDIR, about 1 GB of
+# link output for the stack's commands) stays in the caller's own TMPDIR, read before the override,
+# so it does not land in /tmp, which holds small files alone.
 stack_tmp=$(mktemp -d /tmp/ncs-stack.XXXXXX)
-TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
+go_tmp=${TMPDIR:-/tmp}
+GOTMPDIR=$go_tmp TMPDIR=$stack_tmp \
+  bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {
@@ -623,7 +617,7 @@ else
   (close_held_fifos && isolated PATH="$PATH" HOME="$omp_home/home" TMPDIR="$omp_home/tmp" OMP_SESSION_STORAGE=file \
     ANTHROPIC_BASE_URL="$model_base_url" ANTHROPIC_API_KEY="$(<"$work/model-key")" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${omp_auth[@]}" -- \
-    setsid "$omp_bin" --mode rpc --no-ui --model "$model_id" --thinking off --cwd "$omp_home/cwd" \
+    setsid "$omp_bin" --mode rpc --no-ui --model "anthropic/$model_id" --thinking off --cwd "$omp_home/cwd" \
     --session-dir "$omp_home/sessions" --no-extensions --no-skills --no-rules --no-tools --no-lsp \
     --no-title -e "$pi_plugin") <"$omp_home/stdin" >"$omp_home/rpc.log" 2>"$omp_home/stderr.log" &
   scenario_pids+=($!)
@@ -672,7 +666,7 @@ else
     setsid "$work/bin/legion" claude-bridge -- "$claude_bin" -p --input-format stream-json \
     --output-format stream-json --verbose --replay-user-messages --permission-mode bypassPermissions \
     --strict-mcp-config --mcp-config "$claude_home/config/mcp.json" "${plugin_dirs[@]}" \
-    --session-id "$claude_session" --model "$claude_model") \
+    --session-id "$claude_session" --model "$model_id") \
     <"$claude_home/stdin" >"$claude_home/rpc.log" 2>"$claude_home/stderr.log" &
   scenario_pids+=($!)
   # One turn of its own first, in the bridge's own prompt frame (it ignores Claude Code's raw user
@@ -692,14 +686,17 @@ codex_start
 # ---- the checks ---------------------------------------------------------------------------------
 ran=0
 passed=0
+# pass NAME [DETAIL] and failed NAME REASON: one check's line, `CHECK NAME: PASS` or
+# `CHECK NAME: FAIL: REASON`; a pass's DETAIL, what it read, follows on a line of its own.
 pass() {
   ran=$((ran + 1))
   passed=$((passed + 1))
-  echo "PASS $1"
+  echo "CHECK $1: PASS"
+  [ -z "${2:-}" ] || note "$2"
 }
 failed() {
   ran=$((ran + 1))
-  echo "FAIL $1: $2"
+  echo "CHECK $1: FAIL: $2"
 }
 
 # admitted_as SESSION: the hub's connection list names a connection the auth service admitted as
@@ -830,7 +827,7 @@ message_each() {
       elif ! wait_for 15 received "$label" "$marker"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but $(not_received "$label" "$marker")"
       else
-        pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
+        pass "$step ($label)" "s-$session acked stream sequence $sequence, admitted as session/$session"
       fi
     elif received "$label" "$marker"; then
       failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor within 45 s"
@@ -936,7 +933,7 @@ mkdir -p "$work/probe-home"
 why=$(probe_served "$omp_session")
 [ -n "$why" ] || why=$(probe_refused "$omp_session" "$claude_session")
 if [ -z "$why" ]; then
-  pass "probe-refused-other-session: served notifications.envoy.deliver.$omp_session, refused: Permissions Violation for Subscription to \"notifications.envoy.deliver.$claude_session\""
+  pass probe-refused-other-session "served notifications.envoy.deliver.$omp_session, refused: Permissions Violation for Subscription to \"notifications.envoy.deliver.$claude_session\""
 else
   failed probe-refused-other-session "$why"
 fi
@@ -950,7 +947,7 @@ for label in "${codex_labels[@]}"; do
   probe_in=""
   [ -n "$why" ] || why=$(probe_refused "$omp_session" "$codex")
   if [ -z "$why" ]; then
-    pass "probe-refused-other-session ($label): in its plugin server's environment, served notifications.envoy.deliver.$codex and refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
+    pass "probe-refused-other-session ($label)" "in its plugin server's environment, served notifications.envoy.deliver.$codex and refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
   else
     failed "probe-refused-other-session ($label)" "$why"
   fi

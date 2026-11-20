@@ -44,7 +44,7 @@ func searchStatementCount(statements []string, sql string) int {
 // A query whose every word one item holds is answered by the AND of those words, in one search,
 // and that answer holds only rows holding all of them; the same words with one no item holds are
 // answered by a second search over the query's rarest words, and that answer holds the rows
-// holding some of them. The aggregate recall floors (scripts/search-measure/analyze.py) cannot
+// holding some of them. The aggregate recall scripts/search-measure/analyze.py prints cannot
 // tell those apart - a build that ORed every query's words would still find most right answers
 // somewhere on the page - so this pins the two directly, and the rows the broadened form returns
 // are what the narrow one is checked against: a build that broadens everything answers the first

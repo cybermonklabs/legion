@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -347,13 +348,11 @@ func gitHubStandIn(t *testing.T) *httptest.Server {
 }
 
 // realGit is the absolute path of this machine's git, resolved once for the test, which is
-// skipped where there is none.
+// skipped where there is none, and failed there on GitHub Actions (testprereq.Require).
 func realGit(t *testing.T) string {
 	t.Helper()
 	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("no git on this machine")
-	}
+	testprereq.Require(t, err == nil, "daemon-go", "no git on this machine")
 	return git
 }
 

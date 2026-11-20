@@ -21,8 +21,8 @@
 // write stamps the rule this build judges by; and the issue and the source that row holds now,
 // which no route answers either.
 //
-// Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
-// follows, and the exit status is 1 when any case failed. The first case,
+// Each case prints `== <case>`, what it read, then `CHECK <case>: PASS` or
+// `CHECK <case>: FAIL: <why>`; a summary follows, and the exit status is 1 when any case failed. The first case,
 // `the-results-route-is-served`, is the run's first result write, against a plain issue whose
 // spec marks nothing: when it fails, as it does against a binary built from the base commit,
 // which serves no such route, the run stops there, since every later case records a result too.
@@ -32,16 +32,16 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect, StringCodec } from "nats";
+// By path: the root package does not depend on @legion/contracts, so neither bun nor tsc resolves
+// it by name here. The type import is erased before the driver runs.
 import type {
   CheckBasis,
   CheckBlock,
   CheckResult,
   CheckResultRecorded,
   IssueSummaryPage,
-} from "@legion/contracts";
-import { connect, StringCodec } from "nats";
-// By path: the root package does not depend on @legion/contracts, so bun resolves no value from
-// it here. The type import above is erased before the driver runs.
+} from "../../packages/contracts/src/dispatch-api";
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
@@ -269,7 +269,9 @@ function standsOf(result: CheckResult): string {
 /** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
  *  "absent" where that check holds no result at that commit. */
 async function commitStandsAt(key: string, blockID: string, commit: string): Promise<string> {
-  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
+  const result = ((await checkOf(key, blockID)).results ?? []).find(
+    (row) => row.commit_sha === commit
+  );
   return result === undefined ? "absent" : standsOf(result);
 }
 
@@ -565,7 +567,7 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
     failure = error instanceof Error ? error.message : String(error);
   }
   results.push({ name, ok: failure === undefined });
-  console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
+  console.log(failure === undefined ? `CHECK ${name}: PASS` : `CHECK ${name}: FAIL: ${failure}`);
 }
 
 function summarise(stopped?: string): never {
@@ -751,16 +753,17 @@ The result read back under this check is the one that was recorded.
   note(`the pull-request body line is ${JSON.stringify(answered.line)}`);
   note(`the record's answer says it was stored at ${answered.result.created_at}`);
   const check = await checkOf(a2Issue, "a2");
+  const results = check.results ?? [];
   note(
-    `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
+    `${a2Issue} check a2 (${check.when}) holds ${results.length} result(s): ${results
       .map(
         (row) =>
           `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
-  if (check.results.length !== 1) return `the check holds ${check.results.length} results, want 1`;
-  const [recorded] = check.results;
+  if (results.length !== 1) return `the check holds ${results.length} results, want 1`;
+  const [recorded] = results;
   if (recorded?.commit_sha !== commits.a2 || recorded.verdict !== "pass") {
     return `the result read back is ${JSON.stringify(recorded)}`;
   }
@@ -912,7 +915,7 @@ A result stands while its commit is the head of a pull request of this repositor
   if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
   const compared = await checkOf(forkIssue, "fork");
   note(
-    `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
+    `the check compared with ${(compared.compared_with ?? []).length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
   );
   if (compared.compared_nothing !== "no_pull_request_or_branch") {
     return `the check compared with nothing for ${JSON.stringify(compared.compared_nothing)}`;
@@ -968,9 +971,8 @@ The pre-merge check runs before it.
     surface: "api",
   });
   note(`the after-merge result recorded: ${JSON.stringify(afterMerge.line)}`);
-  const check = await checkOf(a5Issue, "after");
-  if (check.results.length !== 1)
-    return `the after-merge check holds ${check.results.length} results, want 1`;
+  const held = (await checkOf(a5Issue, "after")).results ?? [];
+  if (held.length !== 1) return `the after-merge check holds ${held.length} results, want 1`;
 
   const { answer: beforeMerge } = await refusal("POST", issuePath(a5Issue, "/results"), {
     check: "before",
@@ -1059,11 +1061,11 @@ A result is recorded only at a commit the repository holds.
   if (!refused.error.includes(repo)) {
     return `the refusal does not name ${repo}: ${refused.error}`;
   }
-  const check = await checkOf(unheldIssue, "unheld");
-  note(`${unheldIssue} check unheld holds ${check.results.length} result(s)`);
-  return check.results.length === 0
+  const held = (await checkOf(unheldIssue, "unheld")).results ?? [];
+  note(`${unheldIssue} check unheld holds ${held.length} result(s)`);
+  return held.length === 0
     ? undefined
-    : `the refused result left ${check.results.length} row(s) under the check`;
+    : `the refused result left ${held.length} row(s) under the check`;
 });
 
 // The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
@@ -1260,7 +1262,7 @@ A default-branch result is compared with the default branch alone.
     [commits.comparedHeadA, 21],
     [commits.comparedHeadA2, 22],
   ] as const) {
-    const result = before.results.find((row) => row.commit_sha === commit);
+    const result = (before.results ?? []).find((row) => row.commit_sha === commit);
     const stands = result === undefined ? "absent" : standsOf(result);
     const stood = result?.commit_stands?.basis;
     note(
@@ -1285,7 +1287,7 @@ A default-branch result is compared with the default branch alone.
   if (branches.join(", ") !== "branch release/old, branch main") {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
-  const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
+  const merged = (after.results ?? []).find((row) => row.commit_sha === commits.comparedOnMain);
   const mergedStands = merged === undefined ? "absent" : standsOf(merged);
   const mergedBasis = merged?.commit_stands?.basis;
   if (mergedStands !== "at_basis" || mergedBasis?.branch !== "main") {
@@ -1316,7 +1318,7 @@ A default-branch result is compared with the default branch alone.
       if (bases.join(", ") !== `named ${named}`) {
         return `?at=${what}: check ${check.block_id} compares with ${comparedOf(check)}`;
       }
-      for (const result of check.results) {
+      for (const result of check.results ?? []) {
         const stands = standsOf(result);
         const wanted = result.commit_sha === named ? "at_basis" : "other_commit";
         if (stands !== wanted) {
@@ -1543,7 +1545,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     surface: "cli",
   });
   const childCheck = (await checksOf(child, commits.attributionBranch))[0];
-  const childStands = childCheck?.results.map(standsOf).join(", ") ?? "";
+  const childStands = (childCheck?.results ?? []).map(standsOf).join(", ");
   note(
     `${child} with ?at=${commits.attributionBranch.slice(0, 12)} compares with ${comparedOf(childCheck as CheckBlock)}, and its result stands ${childStands}`
   );

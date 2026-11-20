@@ -11,9 +11,10 @@ import (
 )
 
 // TestStatementTimings measures this package's changed statements on the seeded measurement
-// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI never sets that variable, so
-// CI never runs a measurement; api/search_bench_test.go and api/related_recall_test.go are gated
-// the same way.
+// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI sets that variable in one
+// step, envoy-go's statement-timing step, which seeds the database and runs this test by name;
+// envoy-go's unit step, which runs this package, skips it by name. api/search_bench_test.go and
+// api/related_recall_test.go are gated the same way.
 //
 // Which protocol each statement is under, and why:
 //

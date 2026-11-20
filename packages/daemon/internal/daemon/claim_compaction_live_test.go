@@ -1,11 +1,26 @@
-//go:build e2e
-
 // The live proof of the two operations dispatch://INFRA-956 R3 gives an operator and a project's
 // controller over a claim whose provider keeps refusing its session: `legion claims compact` and
 // the controller's `compact`, and `legion claims retry --fresh-session` and the controller's
 // `fresh_session`. Each is driven through both of its doors against real `omp --mode rpc` panes
-// under the real daemon. scripts/e2e/claim-compaction.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// under the real daemon. CI's agent-harness job runs it by name
+// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it, the
+// package's test NATS server and the job's git and jj 0.38 or later, which the daemon's boot
+// refuses to start without.
+//
+// The daemon fails a claim once its run of refused turns reaches `launch_failure_limit`
+// (supervise/turnoutcome.go), whose shipped default is 3, and a compaction does not shorten that
+// run. This proof runs on that default, so step 3 drives a claim to that failure and brings it
+// back in a fresh session, and every other step that walks the ladder ends with a turn the
+// stand-in answers, which ends the run. The ladder's sends after the third refused turn, its
+// notice to the project's controller at the sixth, and the second notice a compaction's reset of
+// that count allows are held by the unit tests
+// TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder and
+// TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
+// (internal/supervise/providererror_test.go) and
+// TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecondTime
+// (internal/supervise/compact_test.go). A separate change removes the failure at three refused
+// turns, as the retry ladder's own design says, and changes this proof and
+// provider_error_retry_live_test.go with it.
 //
 // It is a sibling of provider_error_retry_live_test.go and role_prompt_rule_live_test.go, and
 // what the three share is the live-proof
@@ -13,8 +28,8 @@
 // of the daemon's own log, the recording log handler, the model stand-in, the overlay writers,
 // the run's own database and the two plugins packed from this checkout. The local runtime that
 // starts a pane where there is no tmux is localruntime_live_test.go's. What it proves is the
-// other half of R3, so it is a script of its own rather than more steps of that one: the two
-// runs would otherwise share a wall clock, and this one starts four panes and waits out a
+// other half of R3, so it is a test of its own rather than more steps of that one: the two
+// would otherwise share a wall clock, and this one starts four panes and waits out a
 // compaction the endpoint holds for over half a minute.
 //
 // The overlays are this deployment's rendered shape, which is what makes the compaction's form
@@ -59,9 +74,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -147,16 +160,16 @@ type compactPane struct {
 // TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive drives the eight steps
 // in the order each one's state follows from the last: the overlays every pane runs under, the
 // operator's compaction of a phase worker the ladder holds, the controller's own compaction and
-// the second notice its count reset makes possible, a root architect that owes nothing, a
-// compaction the endpoint holds past the RPC timeout, every refusal through both doors, the
-// fresh sessions both doors start, and the fresh session that starts a worker whose process is
-// gone, which runs last because it kills the panes the steps before it drive.
+// the failure the run of refused turns it leaves still reaches, with the controller's fresh
+// session that brings that worker back, a root architect that owes nothing, a compaction the
+// endpoint holds past the RPC timeout, every refusal through both doors, the fresh sessions both
+// doors start, and the fresh session that starts a worker whose process is gone, which runs last
+// because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
 	r.step("step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted", r.overlaysAreTheDeployments)
 	r.step("step2-the-operator-compacts-a-phase-worker-the-ladder-holds", r.operatorCompactsAPhaseWorker)
-	r.step("step3-the-controller-compacts-and-the-run-of-errors-is-told-a-second-time", r.controllerCompactsAndIsToldTwice)
+	r.step("step3-the-controller-compacts-and-the-third-refused-turn-fails-the-claim", r.controllerCompactsAndTheRefusedRunFails)
 	r.step("step4-a-root-architect-that-owes-no-task-is-sent-nothing-and-says-already-compacted", r.architectIsSentNothing)
 	r.step("step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session", r.heldSummaryOutlastsTheTimeout)
 	r.step("step6-every-refusal-gets-its-own-message-through-both-doors", r.everyRefusalGetsItsMessage)
@@ -170,12 +183,9 @@ func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *
 // over the local runtime, and the project's controller registered.
 func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/claim-compaction.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/claim-compaction.sh")
+	proof := newLiveProof(t)
 	r := &claimCompactionLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
 		built:          &built{},
@@ -188,8 +198,8 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// The backends map is the one the API server reads through cfg.BackendFor, and it is empty
 	// while the daemon boots: boot resolves Claude Code's binary, its bun and its plugin
 	// directory for every backend the configuration names (the daemon's resolveClaude), and this
-	// pod has no Claude Code to resolve. The role is put on that backend once the daemon is up,
-	// because the refusal under test reads that map and nothing else (api's compact, over
+	// run gives the daemon no Claude Code to resolve. The role is put on that backend once the
+	// daemon is up, because the refusal under test reads that map and nothing else (api's compact, over
 	// Options.Backend, which the daemon fills from config.Config.BackendFor); the alternative
 	// would put some other binary on a real resolver's path and claim it is Claude Code. The
 	// map is written after the boot that read it because a Config's WorkerBackends is a map and
@@ -200,8 +210,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()
@@ -280,8 +289,8 @@ func (r *claimCompactionLive) token(key string, role claim.Role) claim.Token {
 // secret, which is what mints the grant the controller's own door is authenticated by
 // (controllerGrant). It registers as `legion controller start` registers the operator's own:
 // the operator's bearer buys a capability, and a session registers with it. No controller
-// process runs — the controller's door is driven as its plugin drives it, over the daemon's own
-// routes, and what the daemon publishes for the controller is read from the fixture's listener.
+// process runs: the controller's door is driven as its plugin drives it, over the daemon's own
+// routes.
 func (r *claimCompactionLive) registerController() {
 	t := r.t
 	t.Helper()
@@ -567,25 +576,35 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		"the stand-in answered %d requests carrying the task across those two turns",
 		again.at.Sub(errored.at).Round(time.Millisecond), ladderDelays[0], again.at.Sub(ended.at).Round(time.Millisecond),
 		r.pane(token).stand.turnsHolding(marker))
+
+	// The claim's run of refused turns is two long now, and the compaction did not shorten it
+	// (supervise's turnOutcome), so the ladder's next rung would send the task into a third
+	// refused turn and fail the claim the later steps drive. A task the stand-in answers takes
+	// the place of the one the ladder kept, and its clean turn ends the run.
+	r.answeredTurn(token, "CLEAR")
+	r.note("%s answered a newer task, which took the place of the one the ladder kept and ended its run of refused turns", token)
 }
 
-// controllerCompactsAndIsToldTwice drives the controller's own door — a controller grant minted
-// from its registration, then `POST /legion/v1/claims/compact` naming the issue and the role —
-// and the one thing only a compaction that ran makes possible: a second notice. The run of
-// provider-error turns reaches six, the project's controller is told once, the compaction puts
-// that run back to zero, and six more such turns tell it again.
-func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
+// controllerCompactsAndTheRefusedRunFails drives the controller's own door — a controller grant
+// minted from its registration, then `POST /legion/v1/claims/compact` naming the issue and the
+// role — at a phase worker the ladder holds, and what the daemon does with that worker's refused
+// turns after it. The compaction puts the claim's run of provider-error turns back to zero and
+// leaves the run of refused turns its plugin reports (supervise's turnOutcome), so the owed task
+// it sends again ends in the second refused turn in a row, and the turns after it fail the claim
+// at `launch_failure_limit`, with its issue held. The controller's own `fresh_session` then
+// brings the worker back in a new session, and its issue out of that hold.
+func (r *claimCompactionLive) controllerCompactsAndTheRefusedRunFails() {
 	t := r.t
 	token := r.token(r.notice, claim.RoleImplementer)
+	limit := r.cfg.LaunchFailureLimit
+	if limit < 3 {
+		t.Fatalf("launch_failure_limit is %d, and this step refuses a turn before the compaction and the compaction's own "+
+			"send after it with the run still short of the limit", limit)
+	}
 	r.awaitReady(token)
 	r.awaitStartTaskAnswered(token)
 	r.answeredTurn(token, "WARM")
-	for run := 1; run <= 6; run++ {
-		r.erroredTurn(token, run)
-	}
-	r.awaitControllerNotices(r.notice, 1)
-	told := r.controllerNotices(r.notice)
-	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	r.erroredTurn(token, 1)
 
 	from := r.daemon.count()
 	answer := r.compactedByController(r.notice, claim.RoleImplementer)
@@ -603,19 +622,70 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	if ended.Attrs["providerErrorRun"] != float64(0) {
 		t.Fatalf("the compaction left providerErrorRun %v, want it back to zero", ended.Attrs["providerErrorRun"])
 	}
-	// The owed task the compaction sent again is the first of the six turns that earn the second
-	// notice: it ends in the same 529, so the run starts over at one.
+	// The owed task the compaction sent again ends in the same 529: the run of provider-error
+	// turns starts over at one, and the run of refused turns, which the compaction left, goes on.
 	r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
-	r.note("the compaction put the run back to zero and sent the owed task again, whose turn starts the next run at 1")
-	for run := 2; run <= 6; run++ {
-		r.erroredTurn(token, run)
+	reported := r.awaitLogFrom("the report of the turn the compaction's send started", from, time.Minute,
+		func(record loggedRecord) bool {
+			return record.Message == "supervise: a turn ended" && record.Attrs["claim"] == string(token) &&
+				record.Attrs["refused"] == true && record.at.After(ended.at)
+		})
+	if reported.Attrs["refusedRun"] != float64(2) {
+		t.Fatalf("the turn the compaction's send started makes a run of %v refused turns, want 2: the compaction leaves that run",
+			reported.Attrs["refusedRun"])
 	}
-	r.awaitControllerNotices(r.notice, 2)
-	told = r.controllerNotices(r.notice)
-	if told[1] != told[0] {
-		r.note("the second notice reads %q", told[1])
+	r.note("the compaction put the run of provider-error turns back to zero and sent the owed task again, whose turn starts "+
+		"that run at 1 and makes the run of refused turns %v long", reported.Attrs["refusedRun"])
+
+	// Each refused turn after it is a newer task, which takes the place of the one the ladder
+	// kept rather than waiting out its rung, until the run reaches the limit.
+	for run := 3; run <= limit; run++ {
+		r.erroredTurn(token, run-1)
 	}
-	r.note("after six more refused turns the controller was told a second time, which only the compaction's count reset allows")
+	failure := r.awaitLogFrom("the failure of "+string(token)+" at its run of refused turns", from, time.Minute,
+		func(record loggedRecord) bool {
+			return record.Message == "supervise: claim failed" && record.Attrs["claim"] == string(token)
+		})
+	why, _ := failure.Attrs["why"].(string)
+	ran := fmt.Sprintf("the provider refused %d turns in a row", limit)
+	if failure.Attrs["cause"] != string(supervise.CauseProviderError) || !strings.HasPrefix(why, ran) {
+		t.Fatalf("%s failed with cause %v: %q, want %s and a sentence that opens %q",
+			token, failure.Attrs["cause"], why, supervise.CauseProviderError, ran)
+	}
+	failed := r.claim(token)
+	if failed.State != string(supervise.StateFailed) || failed.Failure == nil || failed.Failure.Cause != supervise.CauseProviderError {
+		t.Fatalf("%s is %s with the failure %+v, want it failed with the cause %s", token, failed.State, failed.Failure, supervise.CauseProviderError)
+	}
+	r.await(r.notice+" to be held for its architect", 2*time.Minute, func() bool {
+		return r.issue(r.notice).Phase == phase.Held
+	})
+	r.note("the turn after that one made the run %d long, and the daemon failed %s (%q) and held %s", limit, token, why, r.notice)
+
+	// The controller's own fresh session brings the worker back, its stand-in answering again,
+	// and the issue leaves its hold for the phase it was held from.
+	r.pane(token).stand.answerTurn()
+	from = r.daemon.count()
+	status, body := freshSessionDoors.controller(r, r.notice, claim.RoleImplementer)
+	if status != http.StatusOK {
+		t.Fatalf("the controller's fresh session of the failed %s = %d %s, want 200", token, status, body)
+	}
+	var started api.FreshSessionResponse
+	if err := json.Unmarshal(body, &started); err != nil {
+		t.Fatalf("decode the controller's fresh session of %s, %s: %v", token, body, err)
+	}
+	if started.PhaseNotRestarted != "" {
+		t.Fatalf("the controller's fresh session of %s restarted no phase: %s", token, started.PhaseNotRestarted)
+	}
+	r.awaitLogFrom("the daemon's record that the controller asked", from, time.Minute, func(record loggedRecord) bool {
+		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(token)
+	})
+	fresh := r.awaitFreshPane(token, failed.Session)
+	r.await(r.notice+" to leave its hold", 2*time.Minute, func() bool {
+		return r.issue(r.notice).Phase == phase.Implementing
+	})
+	r.awaitNothingOwed(token)
+	r.note("the controller's fresh session started %s in the new session %s (was %s), %s is %s again, and the worker "+
+		"answered what it was sent", token, fresh.Session, failed.Session, r.notice, r.issue(r.notice).Phase)
 }
 
 // architectIsSentNothing compacts the one claim that owes no task — an idle root architect — and
@@ -696,8 +766,12 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	from := r.daemon.count()
 	started := time.Now()
 	answered := make(chan compactRun, 1)
+	// The command waits as long as the daemon's own bound on a compaction. At the pin Oh My Pi
+	// asks for the history summary and a split turn's prefix together, then for a short summary
+	// (compaction.ts's generateShortSummary), so a held compaction takes two holds, past the
+	// one minute `legion claims` waits for by default (--wait).
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", runtime.CompactTimeout.String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
@@ -749,6 +823,10 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	r.note("the ladder's own %s rung came due while the compaction held the claim and sent nothing; the owed task went at the "+
 		"compaction's end, %s after the turn that armed the ladder, once by the daemon's own count of the turns it ran",
 		ladderDelays[0], again.at.Sub(errored.at).Round(time.Second))
+
+	// The run of refused turns is two long, as at the end of step 2, so a task the stand-in
+	// answers ends it here too, before step 6 walks the ladder on this claim again.
+	r.answeredTurn(token, "CLEAR")
 }
 
 // everyRefusalGetsItsMessage drives, through both doors, every case the compaction refuses before
@@ -761,7 +839,10 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	stand := r.pane(tester).stand
 
 	// A summary the endpoint refuses every time: reported to the caller, with the owed task sent
-	// again all the same, which is the operation's whole promise.
+	// again all the same, which is the operation's whole promise. Step 5 left the claim owing
+	// nothing, so it is first given a task whose turn the stand-in answers 529, which the ladder
+	// keeps.
+	r.erroredTurn(tester, 1)
 	stand.refuseSummary()
 	from := r.daemon.count()
 	refused := r.compactedByController(r.refusing, claim.RoleTester)
@@ -835,10 +916,10 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	r.refusedThroughBothDoors("a suspended worker", compactDoors, implementer, r.notice, claim.RoleImplementer,
 		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession)
 
-	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
-	// what its issue's phase owes a fresh session rather than the task the ladder held.
+	// The ladder's planner is finished with: step 2 ended its run with a task it answered, so it
+	// holds no task the ladder kept, and step 7 reads what its issue's phase owes a fresh session.
 	planner := r.token(r.ladder, claim.RolePlanner)
-	r.answeredTurn(planner, "CLEAR")
+	r.awaitNothingOwed(planner)
 	r.note("%s", r.legionClaims("stop", "--claim", string(planner)))
 	r.await(string(planner)+" to retire", 2*time.Minute, func() bool {
 		return r.claim(planner).State == string(supervise.StateRetired)
@@ -1406,39 +1487,6 @@ func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.
 		r.t.Fatalf("the fresh session of %s resumed %s, and a fresh session keeps no session at all", token, last.ResumeSessionFile)
 	}
 	return now
-}
-
-// controllerNotices is the reason of every provider-errors notice the daemon has published to the
-// project's controller topic for issue, oldest first. The topic carries every claim's notice, so
-// the issue is read off the notice's own summary line (noticeSummary).
-func (r *claimCompactionLive) controllerNotices(issue string) []string {
-	r.t.Helper()
-	want := noticeSummary(record.ProviderErrorsNotice, issue)
-	var reasons []string
-	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
-		if published.Message != want {
-			continue
-		}
-		var payload struct {
-			Kind   string `json:"kind"`
-			Reason string `json:"reason"`
-		}
-		if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
-			r.t.Fatalf("decode the controller notice %q: %v", published.Payload, err)
-		}
-		reasons = append(reasons, payload.Reason)
-	}
-	return reasons
-}
-
-func (r *claimCompactionLive) awaitControllerNotices(issue string, count int) {
-	r.t.Helper()
-	r.await(fmt.Sprintf("%s's provider-errors notices to number %d", issue, count), 3*time.Minute, func() bool {
-		return len(r.controllerNotices(issue)) >= count
-	})
-	if got := r.controllerNotices(issue); len(got) != count {
-		r.t.Fatalf("the controller was told %d times about %s, want %d: %v", len(got), issue, count, got)
-	}
 }
 
 // compactionEntry is a session's compaction record as this proof reads it back out of the pane's

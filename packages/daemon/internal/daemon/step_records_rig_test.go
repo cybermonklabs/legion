@@ -92,7 +92,9 @@ func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 // repository mapping and issues issues, seeds the daemon's store of proof with each issue at
 // admitted, its gate approved, on an open pull request of its own GitHub reports clean, boots the
 // daemon at Dispatch and registers each tree's architect. The admission pass then starts planning,
-// the first step of each walk. The walk's steps act on the first issue until on moves them.
+// the first step of each walk. The walk's steps act on the first issue until on moves them. The
+// live drivers (newStepRecordsLive) give it the package's broker too, and the Dispatch
+// startHandoffDispatch starts, whose log goes to the test's log directory.
 func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int) *stepRecordsRig {
 	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch

@@ -1,30 +1,30 @@
 // What every part of the dispatch-session-settings driver (dispatch-session-settings.ts) shares:
 // the run's setup as the shell script wrote it, the person the page signs in as, the transcript
-// (`== <name>`, notes, `ok <name>`, and the failure that ends a check), and the polling helpers.
+// (`== <name>`, notes, `CHECK <name>: PASS`, and the failure that ends a check), and the polling
+// helpers.
 
 export interface Rig {
   readonly work: string;
   readonly evidence: string;
   readonly omp: string;
-  readonly chromium: string;
   readonly dispatchUrl: string;
   readonly envoyUrl: string;
   readonly natsUrl: string;
-  /** The two models the caller's keys serve: the profile's default and fallback target first. */
-  readonly models: readonly [string, string];
+  /** The model stand-in every keyed provider of the profile names (lib/session-settings-model.ts). */
+  readonly standinUrl: string;
+  /** The file holding the placeholder key the stand-in takes, which the profile names. */
+  readonly standinKeyFile: string;
+  /** A loopback port held bound and never listened on, the broken provider's. */
+  readonly brokenPort: number;
   readonly plugin: string;
-  readonly releasedPlugin: string;
   readonly home: string;
+  /** The profile's agent directory, `<home>/.omp/agent`, where writeStandinProfile writes. */
   readonly agentDir: string;
   readonly sessionCwd: string;
   readonly tmp: string;
   readonly envoyTokenFile: string;
   readonly dispatchTokenFile: string;
   readonly pidFile: string;
-  /** The profile's default thinking level (config.yml `defaultThinkingLevel`). */
-  readonly defaultLevel: string;
-  /** A catalog model of a provider the run holds no key for. */
-  readonly unkeyedModel: string;
 }
 
 /** The person the held-open page is signed in as, and whose sends the checks make. */
@@ -34,7 +34,8 @@ export const PERSON = "alice";
 
 export class CheckFailure extends Error {}
 
-let current = "setup";
+// Before the first check begins, a failure (the profile could not be written) is the driver's own.
+let current = "driver";
 let checkNumber = 0;
 let checkStarted = Date.now();
 
@@ -53,15 +54,12 @@ export function begin(name: string): void {
   checkStarted = Date.now();
   process.stdout.write(`== ${name}\n`);
 }
-export function stage(name: string): void {
-  current = name;
-  process.stdout.write(`-- ${name}\n`);
-}
 export function note(text: string): void {
   process.stdout.write(`   ${text}\n`);
 }
 export function pass(): void {
-  process.stdout.write(`ok ${current} (${Math.round((Date.now() - checkStarted) / 1000)}s)\n`);
+  process.stdout.write(`   took ${Math.round((Date.now() - checkStarted) / 1000)}s\n`);
+  process.stdout.write(`CHECK ${current}: PASS\n`);
 }
 export function fail(message: string): never {
   throw new CheckFailure(message);

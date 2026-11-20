@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# legion: tool - loads a harvested corpus into a Dispatch database of this tree's own schema, the fixture on which a person who changes keyword search measures it.
 """Load a harvested corpus into a Dispatch database of this tree's own schema.
 
 usage: load_fixture.py --corpus $TMPDIR/<dir> --database searchfix \\

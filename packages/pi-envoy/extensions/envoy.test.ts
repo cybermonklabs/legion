@@ -93,6 +93,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -20237,14 +20238,19 @@ console.log(JSON.stringify(args));
   // The refusals are checked on every machine. That nothing was dialed is checked against a
   // listener of this file's own on that one port — the kernel cannot pick it, 4222 being the
   // default under proof — bound once here and held for the rows that count its connections. Where
-  // something else already listens there (a local NATS, a CI service), those rows skip, named.
+  // something else already listens there (a local NATS), those rows skip, named; every other row
+  // of this file still runs. On GitHub Actions a held port fails this describe instead, and
+  // nothing of the pi-envoy job holds it: its NATS service takes a host port Docker picks, which
+  // the job hands the omp rows as LEGION_TEST_NATS_URL (.github/workflows/ci-job-pi-envoy.yaml),
+  // and the one describe of this file that reaches a real NATS starts its own on free ports
+  // (`startEnvoyStack`); every other NATS URL here names a host no row resolves.
   const dialProbe = listenCountingDials(NATS_DEFAULT_PORT);
-  if (dialProbe === null) {
-    console.warn(
-      `127.0.0.1:${NATS_DEFAULT_PORT} is already in use: the rows that count what dials nats.js's ` +
-        "default port are skipped. Every other row of this file still runs."
-    );
-  }
+  const withoutDialProbe = requireOrSkip(
+    `127.0.0.1:${NATS_DEFAULT_PORT} free for this file's own listener, which the rows that count ` +
+      "what dials nats.js's default port read",
+    dialProbe !== null,
+    "pi-envoy"
+  );
   afterAll(() => dialProbe?.stop());
 
   for (const { slug, name, configure, why } of [
@@ -20302,7 +20308,7 @@ console.log(JSON.stringify(args));
       await bothSubscribesRefuse("refusals");
     });
 
-    test.skipIf(dialProbe === null)(
+    test.skipIf(withoutDialProbe)(
       `with ${name}, nothing dials nats.js's default 127.0.0.1:${NATS_DEFAULT_PORT}`,
       async () => {
         if (dialProbe === null) {

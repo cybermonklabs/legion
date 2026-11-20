@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads the step records of one issue a deployed Legion ran to done from that deployment's Dispatch, with the operator's own credential, for the tester who decides the production check of the release that records each step, after the merge.
 # The read, after the merge, of the step records of one issue a deployed Legion ran to done: it
 # runs `dispatch steps --issue <ISSUE>` once, prints what the command printed, and judges it. It
 # reads an issue that is done, so every step of it has ended.

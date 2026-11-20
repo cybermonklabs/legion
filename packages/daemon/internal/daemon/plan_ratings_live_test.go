@@ -1,10 +1,10 @@
-//go:build e2e
-
 // The live proof's driver for the rating of each plan: each retro of the whole daemon rates the
 // plan its issue ran, the daemon writes the plan and the rating onto the issue in Dispatch, and a
 // person lists the finished issues of the project with the real `dispatch plans` command.
-// scripts/e2e/plan-ratings.sh builds this driver with `-tags e2e` and owns the nats-server it runs
-// against; it starts no database, and the PostgreSQL is the server LEGION_TEST_PG_DSN names.
+// The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
+// PostgreSQL and the package's test NATS server, with the job's bun and its frozen install for the
+// `dispatch` CLI, and with the job's git and jj 0.38 or later, which the daemon's boot refuses to
+// start without.
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server, with NATS off.
@@ -44,7 +44,7 @@ type planRatingsLive struct {
 // its retro, whose completion is refused until it rates the plan. The fourth goes no further than
 // merging, so the read by project lists the three alone.
 func TestPlanRatingsLive(t *testing.T) {
-	l := &planRatingsLive{newStepRecordsLive(t, "scripts/e2e/plan-ratings.sh", 4, "plans-reader")}
+	l := &planRatingsLive{newStepRecordsLive(t, 4, "plans-reader")}
 	keys := make([]string, 0, len(l.issues))
 	for _, issue := range l.issues {
 		keys = append(keys, issue.key)

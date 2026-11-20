@@ -1,16 +1,11 @@
-//go:build e2e
-
 // The Stage 4a harness's agent-secrets checks: two role processes of one verified pod each enroll
-// with the production broker at a distinct role-generation slot and cannot cross-use grants; a
-// copied projected token for another pod, an old pod UID, and a self-enrollment from inside a pod
-// all fail; the daemon's revocation ends an old pod's access when the pod is gone. The harness
-// plays the daemon's part exactly as supervise.Machine does: enroll on the hello's identity with
-// its recorded PodUID and role-generation slot, hand the id to the shim over the stream, revoke on
-// Gone. The rig is live_test.go.
-//
-// secretsBlocked and shellJoin's real logic live in live_secrets_pure_test.go, which carries no
-// e2e build tag so ordinary `go test ./...` exercises it directly (live_secrets_unit_test.go);
-// secretsBlocked here is the thin e2e-tagged wrapper liveChecks' `blocked` field needs.
+// with the broker at a distinct role-generation slot and cannot cross-use grants; a copied
+// projected token for another pod, an old pod UID, and a self-enrollment from inside a pod all
+// fail; the daemon's revocation ends an old pod's access when the pod is gone. The broker is this
+// repository's own, in the harness's process (startLiveBroker), verifying the kind cluster's own
+// tokens. The harness plays the daemon's part exactly as supervise.Machine does: enroll on the
+// hello's identity with its recorded PodUID and role-generation slot, hand the id to the shim over
+// the stream, revoke on Gone. The rig is live_test.go.
 package sandbox
 
 import (
@@ -29,19 +24,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// secretsBlocked reports r.secretsBlockReason first — the broker refused the token login newLiveRig
-// ran — and falls back to agentSecretsBlockReason for a run whose inputs never attempted one at all.
+// secretsBlocked reports r.secretsBlockReason: the broker refused the token login newLiveRig ran.
 func secretsBlocked(r *liveRig) string {
-	if r.secretsBlockReason != "" {
-		return r.secretsBlockReason
-	}
-	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
+	return r.secretsBlockReason
 }
 
 // ensureEnrolled enrolls c's running role process unless the harness already did for this
 // incarnation — what the daemon's machine does on the role's hello. Every check that needs an
-// enrollment starts here, so the suspend, resume and kill checks between them, which relaunch
-// processes the harness does not enroll, leave nothing stale behind.
+// enrollment starts here, so a launch since the last enrollment of the claim (a resume, a
+// relaunch after a kill or a pod replacement), which the harness does not enroll, leaves nothing
+// stale behind.
 func (r *liveRig) ensureEnrolled(c *liveClaim) (string, error) {
 	if e, ok := r.enrollments[c.token]; ok && e.incarnation == c.loc.Incarnation {
 		return e.id, nil
@@ -205,7 +197,7 @@ func (r *liveRig) checkSecretsAutomaticGrant() error {
 	if out != r.env.agentSecretsAutoSHA {
 		return fmt.Errorf("the root's command saw a value hashing to %s, want %s", out, r.env.agentSecretsAutoSHA)
 	}
-	note("runtime", "root: agent-secrets LEGION_E2E_AUTO -- sha256sum → %s (matches the operator's hash)", out[:12])
+	note("runtime", "root: agent-secrets LEGION_E2E_AUTO -- sha256sum → %s (matches the hash of the value the broker serves)", out[:12])
 	rootGrant, _, _, err := r.agentSecrets(root, "request", "LEGION_E2E_AUTO", "--json")
 	if err != nil {
 		return err
@@ -320,7 +312,7 @@ const anyoneApprover = "anyone"
 // anyoneApprover — LEGION_E2E_APPROVAL is human tier under one owner no person holds, so its card
 // sits on that owner's page alone and on no signed-in person's. The step then cancels the request
 // it made and reads it back cancelled, and a failing assertion cancels it too: it waits for
-// nobody, prompts nobody, and leaves no pending card behind on the production broker.
+// nobody, prompts nobody, and leaves no pending card behind on the broker.
 func (r *liveRig) checkSecretsApprovalAsk() (rerr error) {
 	worker := r.claim("worker")
 	if err := r.ensureRunning(worker); err != nil {
@@ -409,7 +401,7 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	if err != nil {
 		return err
 	}
-	copied := filepath.Join(r.env.work, "worker-keydir-"+short(worker.loc.Incarnation))
+	copied := filepath.Join(r.env.scratch, "worker-keydir-"+short(worker.loc.Incarnation))
 	if err := os.MkdirAll(copied, 0o700); err != nil {
 		return err
 	}
@@ -422,14 +414,14 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 			return err
 		}
 	}
-	devbox := func() (string, int) {
-		out, code := runAgentSecretsOnDevbox(r, copied, "self", "--json")
+	harness := func() (string, int) {
+		out, code := runAgentSecretsInHarness(r, copied, "self", "--json")
 		return out, code
 	}
-	if out, code := devbox(); code != 0 || !strings.Contains(out, current) {
-		return fmt.Errorf("the copied key directory did not work from the devbox before the pod delete (exit %d: %s); the check cannot show the revocation", code, out)
+	if out, code := harness(); code != 0 || !strings.Contains(out, current) {
+		return fmt.Errorf("the copied key directory did not work from the harness's process before the pod delete (exit %d: %s); the check cannot show the revocation", code, out)
 	}
-	note("harness", "devbox: agent-secrets self with the orphan's copied key → its enrollment (the accepted boundary: the key is the pod)")
+	note("harness", "agent-secrets self with the orphan's copied key, from the harness's process → its enrollment (the accepted boundary: the key is the pod)")
 	oldUID, oldIncarnation := worker.loc.Sandbox.PodUID, worker.loc.Incarnation
 	mark := r.obs.mark()
 	if _, err := r.kubectl("delete", "pod", SandboxName(worker.token), "--wait=false"); err != nil {
@@ -445,10 +437,10 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	if err := r.revoke(worker); err != nil {
 		return err
 	}
-	if out, code := devbox(); code == 0 || !strings.Contains(out, "PROOF_INVALID") {
+	if out, code := harness(); code == 0 || !strings.Contains(out, "PROOF_INVALID") {
 		return fmt.Errorf("the dead pod's key still works after revocation: exit %d: %s", code, out)
 	}
-	note("harness", "devbox: the same copied key after DELETE /v1/enrollments → PROOF_INVALID")
+	note("harness", "the same copied key after DELETE /v1/enrollments → PROOF_INVALID")
 	worker.state = stateDead
 	since := time.Now()
 	loc, err := r.resume(worker, worker.session)
@@ -489,10 +481,10 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	return nil
 }
 
-// runAgentSecretsOnDevbox runs the checkout's agent-secrets against the broker with a copied key
+// runAgentSecretsInHarness runs the checkout's agent-secrets against the broker with a copied key
 // directory, as a process of the harness's own: the pod's environment is reproduced from the run's
-// inputs.
-func runAgentSecretsOnDevbox(r *liveRig, keyDir string, args ...string) (string, int) {
+// setup.
+func runAgentSecretsInHarness(r *liveRig, keyDir string, args ...string) (string, int) {
 	cmd := exec.CommandContext(r.ctx, r.env.agentSecretsBin, args...)
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+r.env.agentSecretsURL, "AGENT_SECRETS_KEY_DIR="+keyDir)
 	out, err := cmd.CombinedOutput()

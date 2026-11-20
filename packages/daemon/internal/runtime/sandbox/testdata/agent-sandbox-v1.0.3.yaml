@@ -1,0 +1,171 @@
+# Agent Sandbox v1.0.3's release manifest, sandbox.yaml
+# (https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.3/sandbox.yaml, sha256
+# 725fafdabe6aac202a89dc57f1cfe0e2e92f3164c8c2bd343fffca52f7039d96), which the kind rig installs
+# (scripts/e2e/lib/kind-sandbox.sh's kind_sandbox_install_agent_sandbox), with two changes:
+#   * its CustomResourceDefinition, the release file's lines 99 to 4247, is cut out. Those lines
+#     are sandboxes.agents.x-k8s.io.yaml beside this file byte for byte (both hash to
+#     bc6d66863decb675ce6da2c835ee3bb06aaaf8d73ad03aae9fe971fde5e8acce, schema_test.go's pin), and
+#     the rig applies that file before this one, so the cluster serves the very schema the
+#     runtime's schema tests read;
+#   * the controller's image, registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.3 in the
+#     release, is this repository's copy of that tag's digest, a row of .github/ci-images.yaml.
+# Everything else is the release's own text.
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: agent-sandbox-system
+
+---
+
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-controller
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+roleRef:
+  kind: ClusterRole
+  name: agent-sandbox-controller
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-controller
+spec:
+  selector:
+    app: agent-sandbox-controller
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics
+    protocol: TCP
+
+---
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-sandbox-controller
+  template:
+    metadata:
+      labels:
+        app: agent-sandbox-controller
+    spec:
+      serviceAccountName: agent-sandbox-controller
+      containers:
+      - name: agent-sandbox-controller
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:8c8f5814c16bd68631af0496a5fa4eb9bedce4d032de88b956130a041d9f438e
+        args:
+        - --leader-elect=true
+        # Uncomment to serve metrics over HTTPS with a TLS profile:
+        # - --metrics-secure-serving
+        # - --metrics-bind-address=:8443
+        # - --metrics-cert-dir=/etc/metrics-certs
+        # - --tls-min-version=VersionTLS12
+        # - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: healthz
+          containerPort: 8081
+          protocol: TCP
+        # Uncomment when --metrics-secure-serving is enabled:
+        # volumeMounts:
+        # - name: metrics-certs
+        #   mountPath: /etc/metrics-certs
+        #   readOnly: true
+      # volumes:
+      # - name: metrics-certs
+      #   secret:
+      #     secretName: agent-sandbox-metrics-tls
+
+---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-sandbox-controller
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - pods
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes/finalizers
+  - sandboxes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---

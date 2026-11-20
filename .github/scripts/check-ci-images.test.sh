@@ -101,9 +101,11 @@ fixture() {
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
-    "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
+    "$root/packages/envoy/internal/tests3" "$root/packages/envoy/cmd/agent-secrets" \
+    "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts"
+    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts" \
+    "$root/packages/daemon/internal/runtime/sandbox/testdata"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
@@ -149,6 +151,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
+YAML
+  # The worker image's build runs the image it pushed by its recorded digest, the entry IMAGE_FROM
+  # holds for worker-image.yaml, so the fixture carries that command too.
+  cat > "$root/.github/workflows/worker-image.yaml" <<YAML
+name: Worker image
+on: [workflow_call]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: docker run --rm "\$REF" /probe/leak-guard-image-probe.sh
 YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start
@@ -197,7 +210,7 @@ YAML
   local go_file
   for go_file in packages/daemon/internal/testnats/nats.go \
     packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
-    packages/envoy/internal/tests3/seaweedfs.go; do
+    packages/envoy/internal/tests3/seaweedfs.go packages/envoy/cmd/agent-secrets/secret_moto_test.go; do
     cat > "$root/$go_file" <<YAML
 package testimage
 
@@ -232,6 +245,32 @@ YAML
 #!/usr/bin/env bash
 docker run -d --name pg --cpus 2 --memory 2g \\
   -e POSTGRES_DB=legion $REGISTRY@$NATS >/dev/null
+YAML
+  # The kind rig's library, which names its images by assignment and starts its registry with a
+  # docker run of one of them, and the Agent Sandbox manifest it applies, a Kubernetes manifest
+  # whose controller's image is read from the parsed YAML.
+  cat > "$root/scripts/e2e/lib/kind-sandbox.sh" <<YAML
+# shellcheck shell=bash
+kind_registry_image=$REGISTRY@$NATS
+docker run -d --name kind-registry --network kind "\$kind_registry_image" >/dev/null
+YAML
+  cat > "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml" <<YAML
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: agent-sandbox-system
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: agent-sandbox-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: agent-sandbox-controller
+        image: $REGISTRY@$NATS
 YAML
   cat > "$root/packages/envoy/deploy/scripts/compose-2.12.2_test.sh" <<YAML
 # shellcheck shell=bash
@@ -702,6 +741,24 @@ check "a container on a digest outside the file fails" "$(is "$status" 1)"
 check "names the container it read" \
   "$(contains "$out" "this job's container image names a digest no row of .github/ci-images.yaml holds")"
 
+echo "case: an image of a Kubernetes manifest CI's reach names"
+# A manifest is read document by document from the parsed YAML, every image: at any depth, so the
+# controller the kind rig applies is held to the rows as a workflow's service is.
+root=$(fixture manifest-image)
+sed -i "s|image: $REGISTRY@$NATS|image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.3|" \
+  "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml"
+run_check tree "$root"
+check "a manifest's image on another registry fails" "$(is "$status" 1)"
+check "names the manifest's image, its file and line" \
+  "$(contains "$out" "agent-sandbox-v1.0.3.yaml:16: this manifest's image names registry.k8s.io/agent-sandbox/agent-sandbox-controller")"
+root=$(fixture manifest-image-unknown)
+sed -i "s|image: $REGISTRY@$NATS|image: $REGISTRY@$UNKNOWN|" \
+  "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml"
+run_check tree "$root"
+check "a manifest's image on a digest outside the file fails" "$(is "$status" 1)"
+check "names the manifest's image" \
+  "$(contains "$out" "this manifest's image names a digest no row of .github/ci-images.yaml holds")"
+
 echo "case: rule 7 — a reference on a golang row at another version than ARG GO_VERSION"
 # A bump's first commit lands the next Go's row beside the pinned one, and rule 3 admits it. A
 # FROM moved onto that row before the ARG would build its stage with a Go the worker's toolchain
@@ -800,7 +857,7 @@ check "a third-party default fails" "$(is "$status" 1)"
 check "names the image the build fetches" "$(contains "$out" 'docker.io/library/debian:trixie-slim')"
 
 echo "case: a file of the \`no CI job runs it\` ground, moved into CI's reach"
-# scripts/e2e/stage3-devbox-workflow.sh may name mirror.gcr.io, because no CI job runs it. The
+# packages/envoy/scripts/corpus-copy.sh may name mirror.gcr.io, because no CI job runs it. The
 # same line in stage1-skeleton.sh, which the test job runs, is refused.
 root=$(fixture mirror-in-reach-script)
 cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
@@ -835,13 +892,14 @@ check "says it is in neither list" "$(contains "$out" "in neither CI's reach nor
 check "and names both grounds" "$(contains "$out" 'no CI job runs it')"
 
 echo "case: an exception the tree outgrew"
-# scripts/e2e/README.md is in the exception list. A tree holding it without mirror.gcr.io in it
-# is a ground that holds nothing any more.
+# packages/envoy/scripts/corpus-copy.sh is in the exception list. A tree holding it without
+# mirror.gcr.io in it is a ground that holds nothing any more.
 root=$(fixture exception-stale)
-printf 'The live proofs.\n' > "$root/scripts/e2e/README.md"
+mkdir -p "$root/packages/envoy/scripts"
+printf '#!/usr/bin/env bash\necho copies the corpus\n' > "$root/packages/envoy/scripts/corpus-copy.sh"
 run_check tree "$root"
 check "fails" "$(is "$status" 1)"
-check "names the file" "$(contains "$out" 'scripts/e2e/README.md:1:')"
+check "names the file" "$(contains "$out" 'packages/envoy/scripts/corpus-copy.sh:1:')"
 check "says what to delete" "$(contains "$out" 'Delete its line from EXCEPTIONS')"
 
 echo "case: a file of CI's reach that is gone"

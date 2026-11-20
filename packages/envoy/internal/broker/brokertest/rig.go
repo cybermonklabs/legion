@@ -13,6 +13,8 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
+	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -158,6 +161,16 @@ type rigConfig struct {
 	maxConns   int
 	minters    map[string]requests.Minter
 	personPods []personPod
+	listen     string
+	cluster    *clusterIssuer
+}
+
+// clusterIssuer is a real cluster's service-account issuer a Rig verifies pod and login tokens
+// against (WithClusterIssuer).
+type clusterIssuer struct {
+	issuer, audience string
+	client           *http.Client
+	logins, services map[string]string
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -177,6 +190,29 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithListen has the broker listen on address (host:port, port 0 for any free one) rather than on
+// loopback, for a test whose broker a process elsewhere reaches: a kind cluster's pods, at the
+// address of the kind network's gateway. URL names that address.
+func WithListen(address string) Option {
+	return func(c *rigConfig) { c.listen = address }
+}
+
+// WithClusterIssuer has the broker verify every pod's enrolment token, every service login's
+// token and every listed caller's token against a real cluster's service-account issuer for
+// audience, its discovery document and keys read through client, rather than against the Rig's
+// own local issuer: the shape of cmd/broker/main.go's wiring over a cluster a test runs, a kind
+// cluster whose pods present their projected tokens. logins is its BROKER_SERVICE_LOGINS, each
+// account (system:serviceaccount:<namespace>:<name>) that may log in with its token and the
+// service it logs in as, and services its BROKER_SERVICES, each account pods run as and the
+// service whose login enrols them. The tokens the Rig mints itself (MintPodToken, UIToken and the
+// rest) are its local issuer's, so this broker takes none of them, and DaemonAccount and
+// WorkerAccount log in and enrol nothing on it.
+func WithClusterIssuer(issuer, audience string, client *http.Client, logins, services map[string]string) Option {
+	return func(c *rigConfig) {
+		c.cluster = &clusterIssuer{issuer: issuer, audience: audience, client: client, logins: maps.Clone(logins), services: maps.Clone(services)}
+	}
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -227,7 +263,16 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	cur := policytest.MeteredCurrent(t, local, registry)
 
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewUnstartedServer(mux)
+	if config.listen != "" {
+		listener, err := net.Listen("tcp", config.listen)
+		if err != nil {
+			t.Fatalf("the broker cannot listen on %s: %v", config.listen, err)
+		}
+		_ = srv.Listener.Close()
+		srv.Listener = listener
+	}
+	srv.Start()
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -251,6 +296,17 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
+	if cluster := config.cluster; cluster != nil {
+		// One key cache serves the verifier, as the broker's own wiring keeps one per issuer
+		// (oidc.NewWithKeys); its discovery and its key reads both go out through the client.
+		keys, err := oidc.NewKeys(gooidc.ClientContext(context.Background(), cluster.client), cluster.issuer)
+		if err != nil {
+			t.Fatalf("oidc.NewKeys(%s): %v", cluster.issuer, err)
+		}
+		keys.HTTPClient = cluster.client
+		podVerifier = oidc.NewWithKeys(cluster.issuer, cluster.audience, keys)
+		serviceLogins, servicesByAccount = cluster.logins, cluster.services
+	}
 	// BROKER_POD_REGISTRARS: DaemonAccount, the one registrar, listed for WorkerAccount and both
 	// accounts BROKER_EXCHANGE_ACCOUNTS lists, so a registration a test makes as that daemon reaches
 	// the step it is about rather than 403 POD_REGISTRAR_NOT_LISTED: the exchange policy's refusal
@@ -658,6 +714,17 @@ func (r *Rig) MintWorkflowToken(t *testing.T, repository, workflow, ref, runID s
 // line and redeploying the broker does.
 func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
+}
+
+// PutSecret has the broker serve name as a secret owned by owner (a person's email, or
+// policy.OwnerShared) at tier (policy.TierAgent or policy.TierHuman), holding value: written to
+// Secrets as a person writes one, then read into the live policy, as the broker's reload reads it.
+func (r *Rig) PutSecret(t *testing.T, name, owner, tier, value string) {
+	t.Helper()
+	r.Secrets.Put(policytest.Secret(name, owner, tier, value))
+	if err := r.Policy.Refresh(context.Background()); err != nil {
+		t.Fatalf("reread the policy after writing %s: %v", name, err)
+	}
 }
 
 // SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator

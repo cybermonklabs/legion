@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-# smoke-registration-stall.sh — manual live smoke for the registration-stall fix (INFRA-246).
+# smoke-registration-stall.sh — the live check of the registration-stall fix: a pane whose
+# listener record would outlive nothing but its own refreshes keeps that record past the
+# listener's live window when one refresh is wedged, and puts it back when it is removed.
 #
-# No unit test can show a real pane's listener record surviving the listener's own 300 s expiry,
-# so this drives a real headless `omp` pane against a real Envoy listener and watches the live
-# registry. Two arms, each with a negative control that must fail the way the bug failed:
+# No unit test can show a real pane's listener record surviving the listener's own expiry, so this
+# drives a real headless `omp` pane, running the packed pi-envoy, against a real Envoy listener and
+# watches the live registry. Two arms, each with a negative control that must fail the way the bug
+# failed:
 #
 #   --arm stall    a pane whose registration post is wedged forever is detected, bounded, keeps
-#                  refreshing past one live window, and says so exactly once.
+#                  refreshing past one live window, and says so exactly once. Its control
+#                  SIGKILLs the pane at the wedge, as a pane whose refresh never comes back is: its
+#                  record must leave the registry within the live window and a margin and never
+#                  return, so the window the arm watches past is one this listener enforces.
 #   --arm recover  a pane unregistered while its process runs re-registers itself, with no human
-#                  and no write from this script beyond the one delete.
+#                  and no write from this script beyond the one delete. Its control SIGKILLs the
+#                  pane before the delete, and the record must stay gone.
 #
-# The two numbers every budget below is measured in — the pane's refresh interval and the
-# listener's live window — are read at run time from `@legion/contracts`
-# (`SESSION_HEARTBEAT_MS` and `SESSION_LIVE_WINDOW_MS`, declared once each in
-# packages/contracts/src/envoy-session.ts), never copied here: a copy would go stale the moment
-# either moves and this smoke would measure against a budget the tree no longer has.
+# With no --arm it runs both arms and both controls, one pane each, which is what the
+# agent-harness job's plugin-smokes part runs. The stall control shows the window is real, not
+# that the fix is what keeps the record: a wedged pass that holds every later tick is what the
+# plugin's unit tests hold off (extensions/envoy.test.ts, "a pass stuck on a listener call that
+# never answers still lets later ticks refresh the registration" and "a whole stall says so once
+# in the pane and once in the log").
 #
-# The listener is the operator's (ENVOY_URL and ENVOY_TOKEN_FILE), or `--local-stack` builds
-# natsd and the listener from this checkout with `go build` and runs both on loopback ports of
-# its own, as scripts/smoke-role-takeover.sh does, so the run needs no deployment and no bearer.
-# Its one remaining live dependency is then the model provider the real `omp` pane turns on,
-# which the pane inherits from the caller's environment.
-#
-# Manual only, like scripts/smoke-delivery.sh and scripts/smoke-btw.sh: it needs a model provider
-# and is never wired into CI. See scripts/README.md.
+# It takes the job's environment alone (scripts/e2e/lib/plugin-smoke.sh): Oh My Pi from
+# LEGION_TEST_OMP, pi-envoy packed from this checkout, natsd and the Envoy listener of
+# packages/envoy-client/test/envoy-stack.ts, and a model stand-in for the pane's one prompt. It prints
+# one `CHECK <name>: PASS` or `CHECK <name>: FAIL: <why>` line per check and exits 1 after a FAIL; a
+# bad argument is refused with exit 2. See scripts/README.md.
 set -euo pipefail
 
 readonly wedge_at=3
@@ -34,52 +39,22 @@ readonly curl_max_time=20
 # How long a single check keeps retrying a list read that failed (the listener's refilling 503
 # asks for a retry after 5 s) before it fails for want of a list.
 readonly list_read_budget_s=60
+# The pane's refresh interval unless --heartbeat-ms names another: short, so a run watches past
+# the listener's live window in minutes rather than the deployment's five.
+readonly default_refresh_ms=20000
 
 refuse() {
   printf 'smoke-registration-stall: %s\n' "$1" >&2
   exit 2
 }
 
-note() {
-  printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$1"
-}
-
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
-repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
-readonly repo_root
-
-# The loopback stack --local-stack brings up, shared with scripts/smoke-role-takeover.sh: the
-# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
-# exhausted range the way everything else here refuses.
-local_stack_fail=refuse
-# shellcheck source=packages/pi-envoy/scripts/local-stack.sh
-source "${script_dir}/local-stack.sh"
-
-# The refresh interval and the live window, read from @legion/contracts — the one declaration
-# of each, which both languages are generated from — rather than scraped out of a source file,
-# since no pattern over program text can tell a live declaration from one inside a comment. bun
-# runs in this package's directory, where its own @legion/contracts dependency resolves from.
-command -v bun >/dev/null 2>&1 || refuse "bun is required"
-contracts_timing="$(cd -- "${repo_root}/packages/pi-envoy" &&
-  bun -e 'import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts";
-console.log(SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS);')" ||
-  refuse "reading SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS from @legion/contracts failed (the reason is above)"
-[[ "$contracts_timing" =~ ^[0-9]+[[:space:]][0-9]+$ ]] ||
-  refuse "@legion/contracts answered \"${contracts_timing}\" for SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS, which is not two whole numbers"
-read -r default_heartbeat_ms live_window_ms <<<"$contracts_timing"
-# Rounded up, as the refresh interval below is: live_window_s is a budget the session must
-# outlive, so a window with a sub-second remainder must not be waited out short.
-live_window_s=$(((live_window_ms + 999) / 1000))
-readonly contracts_timing default_heartbeat_ms live_window_ms live_window_s
-note "read from @legion/contracts: refresh interval ${default_heartbeat_ms} ms (SESSION_HEARTBEAT_MS), live window ${live_window_s}s (SESSION_LIVE_WINDOW_MS)"
 
 arm=""
 control=0
 plugin=""
 heartbeat_ms=""
-base_rev=""
-local_stack=0
 while (($# > 0)); do
   case "$1" in
     --arm)
@@ -98,319 +73,211 @@ while (($# > 0)); do
       heartbeat_ms="${2:-}"
       shift 2 || refuse "--heartbeat-ms needs a number"
       ;;
-    --base-rev)
-      base_rev="${2:-}"
-      shift 2 || refuse "--base-rev needs a revision"
-      ;;
-    --local-stack)
-      local_stack=1
-      shift
-      ;;
     *)
       refuse "unknown argument: $1"
       ;;
   esac
 done
 
-[[ "$arm" == "stall" || "$arm" == "recover" ]] ||
-  refuse "--arm stall|recover is required"
-[[ -z "$heartbeat_ms" || "$heartbeat_ms" =~ ^[0-9]+$ ]] ||
+[[ -z "$arm" || "$arm" == "stall" || "$arm" == "recover" ]] ||
+  refuse "--arm takes stall or recover"
+((control == 0)) || [[ -n "$arm" ]] || refuse "--control needs --arm: the control of which arm"
+[[ -z "$heartbeat_ms" || "$heartbeat_ms" =~ ^[1-9][0-9]*$ ]] ||
   refuse "--heartbeat-ms must be a whole number of milliseconds"
-if [[ "$arm" == "stall" && "$control" == 1 ]]; then
-  [[ -n "$base_rev" ]] ||
-    refuse "--arm stall --control needs --base-rev <rev>: the control is the plugin as it was then"
-  [[ -z "$plugin" ]] ||
-    refuse "--plugin and --base-rev are exclusive: the stall control runs the plugin at --base-rev"
-  command -v jj >/dev/null 2>&1 || refuse "jj is required to materialise --base-rev"
+readonly heartbeat_ms
+runs=()
+if [[ -n "$arm" ]]; then
+  runs=("${arm}:${control}")
 else
-  [[ -z "$base_rev" ]] || refuse "--base-rev applies only to --arm stall --control"
+  runs=(stall:0 stall:1 recover:0 recover:1)
 fi
-[[ -n "$plugin" ]] || plugin="${repo_root}/packages/pi-envoy/extensions/envoy.ts"
-readonly arm control heartbeat_ms base_rev local_stack
+readonly runs
 
-# The listener this run smokes: the operator's, or one the run builds from this checkout and
-# starts on loopback ports of its own (--local-stack), which needs no deployment and no bearer.
-# This repository is public and names no deployment, so without --local-stack the operator
-# supplies both. --local-stack ignores whatever the caller's environment names, and keeps it out
-# of the pane too: the pane's listener is the one this run started.
-envoy_url="${ENVOY_URL:-}"
-token_file="${ENVOY_TOKEN_FILE:-}"
-if ((local_stack == 1)); then
-  [[ -z "$envoy_url" && -z "$token_file" ]] &&
-    note "--local-stack: this run builds and starts its own listener" ||
-    note "--local-stack: ignoring ENVOY_URL (${envoy_url:-unset}) and ENVOY_TOKEN_FILE (${token_file:-unset}); this run builds and starts its own listener"
-  envoy_url=""
-  token_file=""
-else
-  [[ -n "$envoy_url" ]] ||
-    refuse "ENVOY_URL is required without --local-stack: set it to the base URL of the live Envoy listener to smoke"
-  [[ -n "$token_file" ]] ||
-    refuse "ENVOY_TOKEN_FILE is required without --local-stack: set it to a readable file holding the listener bearer token"
-  [[ -r "$token_file" ]] ||
-    refuse "ENVOY_TOKEN_FILE (${token_file}) is not a readable file"
-fi
-omp_bin="${OMP_BIN:-/opt/omp/bin/omp}"
-[[ -x "$omp_bin" ]] ||
-  refuse "OMP_BIN (${omp_bin}) is not an executable omp binary"
-readonly token_file omp_bin
+me=smoke-registration-stall
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/plugin-smoke.sh
+. "${script_dir}/../../../scripts/e2e/lib/plugin-smoke.sh"
+readonly repo_root="$root"
 
-required=(curl jq)
-((local_stack == 0)) || required+=(go)
-for tool in "${required[@]}"; do
-  command -v "$tool" >/dev/null 2>&1 || refuse "${tool} is required"
-done
-
-# What the pane's refresh interval will be: SESSION_HEARTBEAT_MS as @legion/contracts declares
-# it, unless the operator shortened it, which is what every "one refresh interval" budget below
-# is measured in.
-refresh_ms="${heartbeat_ms:-$default_heartbeat_ms}"
-readonly refresh_ms
+# The pane's refresh interval and the listener's live window, the two numbers every budget below
+# is measured in. Both are the run's own, kept in the arrangement @legion/contracts declares them
+# in (packages/contracts/src/envoy-session.ts): there, three refreshes and one whole listener call
+# fall short of the window, with the slack SESSION_LIVE_WINDOW_MS - 3 * SESSION_HEARTBEAT_MS
+# leaves to spare. A shorter refresh keeps that same call cost and slack, so the window is three
+# refreshes shorter for every millisecond each refresh is: SESSION_LIVE_WINDOW_MS - 3 *
+# (SESSION_HEARTBEAT_MS - refresh). The two are read from the package, never copied here, so the
+# run moves with them. The pane's pass deadline is its refresh interval, as a deployment's is (the
+# deadline is never shorter than the heartbeat, and the heartbeat there is past its 30 s floor),
+# and the listener is given the window with ENVOY_SESSION_LIVE_WINDOW.
+contracts_timing="$(cd -- "${repo_root}/packages/pi-envoy" &&
+  bun -e 'import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts";
+console.log(SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS);')" ||
+  fail "reading SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS from @legion/contracts failed (the reason is above)"
+[[ "$contracts_timing" =~ ^[0-9]+[[:space:]][0-9]+$ ]] ||
+  fail "@legion/contracts answered \"${contracts_timing}\" for SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS, which is not two whole numbers"
+read -r contract_heartbeat_ms contract_window_ms <<<"$contracts_timing"
+readonly refresh_ms="${heartbeat_ms:-$default_refresh_ms}"
+readonly live_window_ms=$((contract_window_ms - 3 * (contract_heartbeat_ms - refresh_ms)))
+# Rounded up: each is a budget the session must outlive, so a sub-second remainder must not be
+# waited out short.
 readonly refresh_s=$(((refresh_ms + 999) / 1000))
-note "this run refreshes every ${refresh_s}s"
+readonly live_window_s=$(((live_window_ms + 999) / 1000))
+((live_window_ms > 3 * refresh_ms)) ||
+  fail "a ${refresh_ms} ms refresh leaves a live window of ${live_window_ms} ms, which three refreshes do not fall short of"
 
-arm_label="$arm"
-((control == 0)) || arm_label="${arm}, control"
-readonly arm_label
+smoke_setup --listener-env "ENVOY_SESSION_LIVE_WINDOW=${live_window_ms}ms"
+[[ -n "$plugin" ]] || plugin="$plugin_js"
+note "refresh interval ${refresh_s}s and live window ${live_window_s}s (SESSION_HEARTBEAT_MS ${contract_heartbeat_ms} ms and SESSION_LIVE_WINDOW_MS ${contract_window_ms} ms, three refreshes shorter)"
+note "plugin ${plugin}"
+pass
 
-listener_gets=0
-listener_deletes=0
+# One arm, run in a subshell of its own: its verdict ends the subshell, and the subshell's exit
+# stops its pane, so the next arm starts on the same stack with nothing of this one left running.
+run_arm() {
+  local arm=$1 control=$2 arm_label scratch fixture_log sessions_json listener_gets=0 listener_deletes=0
+  arm_label="$arm"
+  ((control == 0)) || arm_label="${arm}-control"
+  scratch="$work/arm-${arm_label}"
+  fixture_log="${scratch}.fixture.log"
+  sessions_json="${scratch}.sessions.json"
+  : >"$fixture_log"
+  begin "$arm_label"
 
-verdict_pass() {
-  printf 'SMOKE %s PASS: %s\n' "$arm_label" "$1"
-  exit 0
-}
+  verdict_pass() {
+    note "$1"
+    pass
+    exit 0
+  }
+  verdict_fail() {
+    fail "$1"
+  }
+  arm_cleanup() {
+    local status=$? fd=${omp_fd[$arm_label]:-}
+    # Best effort: a pane the arm already killed answers no signal, which must not end the arm.
+    set +e
+    [[ -z "$fd" ]] || exec {fd}>&-
+    [[ -z "${omp_pid[$arm_label]:-}" ]] || stop_group "${omp_pid[$arm_label]}" 5
+    exit "$status"
+  }
+  trap arm_cleanup EXIT
+  [[ -r "$plugin" ]] || verdict_fail "plugin (${plugin}) is not readable"
 
-verdict_fail() {
-  printf 'SMOKE %s FAIL: %s\n' "$arm_label" "$1"
-  exit 1
-}
+  # Every listener call this arm makes goes through these two, which keep their result in
+  # `http_code` rather than on stdout: a command substitution would run them in a subshell and lose
+  # the counters, and the recover arm's claim that nothing but one delete wrote is an assertion
+  # about this script's own traffic, not a hope.
+  http_code=""
+  list_sessions() {
+    listener_gets=$((listener_gets + 1))
+    http_code="$(curl -sS -o "$sessions_json" -w '%{http_code}' \
+      --connect-timeout "$curl_connect_timeout" --max-time "$curl_max_time" \
+      "${envoy_url}/v1/sessions" 2>/dev/null)" || http_code="000"
+  }
 
-scratch=""
-base_plugin=""
-pane_pid=""
-pane_fd=""
-nats_pid=""
-listener_pid=""
+  delete_session() {
+    listener_deletes=$((listener_deletes + 1))
+    http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+      --connect-timeout "$curl_connect_timeout" --max-time "$curl_max_time" \
+      "${envoy_url}/v1/sessions/$1" 2>/dev/null)" || http_code="000"
+  }
 
-# stop_pid PID: TERM, then KILL after 5 s. Best effort, for the services --local-stack started.
-stop_pid() {
-  local pid=${1:-} i
-  [[ -n "$pid" ]] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for ((i = 0; i < 25; i++)); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
-
-cleanup() {
-  local status=$?
-  if [[ -n "$pane_pid" ]]; then
-    kill -KILL "$pane_pid" 2>/dev/null || true
-    wait "$pane_pid" 2>/dev/null || true
-  fi
-  [[ -z "$pane_fd" ]] || exec {pane_fd}>&- || true
-  stop_pid "$listener_pid"
-  stop_pid "$nats_pid"
-  [[ -z "$base_plugin" ]] || rm -f "$base_plugin"
-  [[ -z "$scratch" ]] || rm -rf "$scratch"
-  return "$status"
-}
-trap cleanup EXIT INT TERM
-
-# Everything this run writes goes under $TMPDIR: a hard-coded /tmp fills a container's own disk.
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/smoke-registration-stall-${arm}.XXXXXX")"
-readonly fixture_log="${scratch}/fixture.log"
-readonly pane_log="${scratch}/pane.log"
-readonly sessions_json="${scratch}/sessions.json"
-readonly header_file="${scratch}/auth-header"
-: >"$fixture_log"
-# The bearer goes through a 0600 file, never argv, which /proc exposes to every local user. With
-# --local-stack there is no bearer, and every call below goes without the header.
-auth_header=()
-if [[ -n "$token_file" ]]; then
-  (
-    umask 077
-    printf 'Authorization: Bearer %s\n' "$(cat "$token_file")" >"$header_file"
-  )
-  auth_header=(-H "@${header_file}")
-fi
-
-# --local-stack: natsd and the listener built from this checkout, on loopback ports of their own,
-# exactly as scripts/smoke-role-takeover.sh and packages/envoy-client/test/envoy-stack.ts start
-# them (scripts/local-stack.sh, which this script and the takeover smoke share). The trap above
-# stops both.
-nats_port=""
-if ((local_stack == 1)); then
-  port_range
-  mkdir -p "${scratch}/bin"
-  note "building natsd and the listener from ${repo_root}/packages/envoy"
-  build_natsd "${repo_root}/packages/envoy" "${scratch}/bin/natsd" &&
-    build_listener "${repo_root}/packages/envoy" "${scratch}/bin/listener" ||
-    refuse "go build of natsd or the listener failed (the reason is above)"
-  pick_port nats_port
-  pick_port listener_port
-  set_natsd_argv "${scratch}/bin/natsd" "$nats_port" "" "${scratch}/nats-store"
-  env -i PATH="$PATH" HOME="${scratch}/nats-home" "${natsd_argv[@]}" \
-    >"${scratch}/natsd.log" 2>&1 &
-  nats_pid=$!
-  poll_until 30 0.2 natsd_serving "${scratch}/natsd.log" ||
-    refuse "natsd did not start: $(tail -n 5 "${scratch}/natsd.log")"
-  envoy_url="http://127.0.0.1:${listener_port}"
-  set_listener_env "$listener_port" "nats://127.0.0.1:${nats_port}" "smoke-registration-stall-$$"
-  env -i PATH="$PATH" HOME="${scratch}/listener-home" "${listener_env[@]}" \
-    "${scratch}/bin/listener" >"${scratch}/listener.log" 2>&1 &
-  listener_pid=$!
-  poll_until 60 0.2 listener_healthy "$envoy_url" ||
-    refuse "the listener did not become healthy at ${envoy_url}: $(tail -n 5 "${scratch}/listener.log")"
-  note "local stack: natsd (pid ${nats_pid}) on nats://127.0.0.1:${nats_port}, listener (pid ${listener_pid}) at ${envoy_url}"
-fi
-readonly envoy_url nats_port
-
-if [[ "$arm" == "stall" && "$control" == 1 ]]; then
-  # The base plugin only resolves from the directory it shipped in: it imports `../src/...` and
-  # `./envoy-message-renderer`. The dot keeps it out of every glob, the tsconfig include list and
-  # biome's walk; the trap removes it on every exit path.
-  base_plugin="${repo_root}/packages/pi-envoy/extensions/.smoke-base-$$.ts"
-  jj -R "$repo_root" file show -r "$base_rev" packages/pi-envoy/extensions/envoy.ts >"$base_plugin" ||
-    refuse "jj file show -r ${base_rev} packages/pi-envoy/extensions/envoy.ts failed"
-  [[ -s "$base_plugin" ]] || refuse "the plugin at ${base_rev} materialised empty"
-  plugin="$base_plugin"
-fi
-readonly plugin
-[[ -r "$plugin" ]] || refuse "plugin (${plugin}) is not readable"
-
-# Every listener call this script makes goes through these two, which keep their result in
-# `http_code` rather than on stdout: a command substitution would run them in a subshell and lose
-# the counters, and the recover arm's claim that nothing but one delete wrote is an assertion
-# about this script's own traffic, not a hope.
-http_code=""
-list_sessions() {
-  listener_gets=$((listener_gets + 1))
-  http_code="$(curl -sS -o "$sessions_json" -w '%{http_code}' \
-    --connect-timeout "$curl_connect_timeout" --max-time "$curl_max_time" \
-    "${auth_header[@]}" "${envoy_url}/v1/sessions" 2>/dev/null)" || http_code="000"
-}
-
-delete_session() {
-  listener_deletes=$((listener_deletes + 1))
-  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-    --connect-timeout "$curl_connect_timeout" --max-time "$curl_max_time" \
-    "${auth_header[@]}" "${envoy_url}/v1/sessions/$1" 2>/dev/null)" || http_code="000"
-}
-
-# This run's own row among the listener's hundreds of live ones: `dir` is the scratch directory
-# the pane was launched with, which no other session can be running in. own_row returns 0 when it
-# read the list, leaving the row in `row_json` (empty when it is not listed), and 1 when it could
-# not: no answer, a non-200 such as the listener's refilling 503, or a body that is not a list. A
-# failed read says nothing about the row, so no caller may take it for absence; `list_read_error`
-# keeps the last such failure for the message.
-row_json=""
-list_read_error=""
-own_row() {
+  # This arm's own row among the listener's: `dir` is the directory the pane was launched in,
+  # which no other session runs in. own_row returns 0 when it read the list, leaving the row in
+  # `row_json` (empty when it is not listed), and 1 when it could not: no answer, a non-200 such as
+  # the listener's refilling 503, or a body that is not a list. A failed read says nothing about
+  # the row, so no caller may take it for absence; `list_read_error` keeps the last such failure
+  # for the message.
   row_json=""
-  list_sessions
-  if [[ "$http_code" == "000" ]]; then
-    list_read_error="GET /v1/sessions got no answer from ${envoy_url}"
-  elif [[ "$http_code" != "200" ]]; then
-    list_read_error="GET /v1/sessions returned ${http_code}: $(head -c 200 "$sessions_json" 2>/dev/null | tr '\n' ' ' || true)"
-  elif ! row_json="$(jq -c --arg dir "$scratch" \
-    'if type == "array" then map(select(.dir == $dir)) | first // empty else error("not a list") end' \
-    "$sessions_json" 2>/dev/null)"; then
+  list_read_error=""
+  own_row() {
     row_json=""
-    list_read_error="GET /v1/sessions answered a body that is not a session list: $(head -c 200 "$sessions_json" | tr '\n' ' ' || true)"
-  else
-    return 0
-  fi
-  note "$list_read_error"
-  return 1
-}
-
-# read_own_row retries own_row until a read of the list lands, for at most $1 seconds: 0 with the
-# row in `row_json` once one does, 1 with `list_read_error` naming the last failure when none did.
-read_own_row() {
-  local deadline=$((SECONDS + $1))
-  until own_row; do
-    ((SECONDS + fast_poll_s < deadline)) || return 1
-    sleep "$fast_poll_s"
-  done
-}
-
-last_registration() {
-  awk '$1 == "registration" && NF == 2 { n = $2 } END { print n + 0 }' "$fixture_log"
-}
-
-stall_lines() {
-  grep -c 'reconcile pass stalled' "$fixture_log" || true
-}
-
-pane_alive() {
-  [[ -n "$pane_pid" ]] && kill -0 "$pane_pid" 2>/dev/null
-}
-
-pane_tail() {
-  tail -n 5 "$pane_log" 2>/dev/null | tr '\n' ' '
-}
-
-# One real headless pane, loading the fixture ahead of the plugin so the fixture's `fetch` wrapper
-# is the one the plugin captures. Its stdin is a fifo this script holds open rather than a `sleep`
-# pipeline, so the pane is one process this script can signal exactly: the recover control needs a
-# SIGKILL that reaches `omp` itself, since a pane that exits cleanly deletes its own record and
-# there would then be nothing for the control to delete.
-start_pane() {
-  local wedge="$1"
-  local fifo="${scratch}/pane.stdin"
-  mkfifo "$fifo"
-  exec {pane_fd}<>"$fifo"
-  printf '{"type":"prompt","id":"p1","message":"Reply with the single word ok."}\n' >&"$pane_fd"
-  local -a pane_env=(
-    "ENVOY_URL=${envoy_url}"
-    "STALL_FIXTURE_LOG=${fixture_log}"
-    "STALL_FIXTURE_WEDGE_AT=${wedge}"
-  )
-  local -a pane_unset=()
-  if ((local_stack == 1)); then
-    # The listener this run started takes no bearer, and its NATS is the one it started too: a
-    # bearer or a broker the caller's environment names must not reach the pane.
-    pane_env+=("ENVOY_NATS_URL=nats://127.0.0.1:${nats_port}")
-    pane_unset=(-u ENVOY_TOKEN -u ENVOY_TOKEN_FILE)
-  else
-    pane_env+=("ENVOY_TOKEN_FILE=${token_file}")
-  fi
-  [[ -z "$heartbeat_ms" ]] || pane_env+=("ENVOY_HEARTBEAT_MS=${heartbeat_ms}")
-  env "${pane_unset[@]}" "${pane_env[@]}" "$omp_bin" --mode rpc --no-ui \
-    --cwd "$scratch" --session-dir "$scratch" --no-skills --no-rules --no-extensions --no-tools \
-    -e "${script_dir}/stall-fixture.ts" -e "$plugin" \
-    <"$fifo" >"$pane_log" 2>&1 &
-  pane_pid=$!
-  note "pane started (pid ${pane_pid}, wedge ${wedge}, refresh ${refresh_s}s) in ${scratch}"
-}
-
-# Bounded wait for this run's row to appear in `row_json`; any other outcome fails the run, and a
-# window in which no read of the list landed fails as unknown, never as an unregistered pane.
-wait_for_row() {
-  local deadline=$((SECONDS + $1)) read_any=0
-  while ((SECONDS < deadline)); do
-    if own_row; then
-      read_any=1
-      [[ -z "$row_json" ]] || return 0
+    list_sessions
+    if [[ "$http_code" == "000" ]]; then
+      list_read_error="GET /v1/sessions got no answer from ${envoy_url}"
+    elif [[ "$http_code" != "200" ]]; then
+      list_read_error="GET /v1/sessions returned ${http_code}: $(head -c 200 "$sessions_json" 2>/dev/null | tr '\n' ' ' || true)"
+    elif ! row_json="$(jq -c --arg dir "$scratch" \
+      'if type == "array" then map(select(.dir == $dir)) | first // empty else error("not a list") end' \
+      "$sessions_json" 2>/dev/null)"; then
+      row_json=""
+      list_read_error="GET /v1/sessions answered a body that is not a session list: $(head -c 200 "$sessions_json" | tr '\n' ' ' || true)"
+    else
+      return 0
     fi
-    pane_alive || verdict_fail "the pane exited before it registered under ${scratch}: $(pane_tail)"
-    sleep "$fast_poll_s"
-  done
-  ((read_any == 1)) ||
-    verdict_fail "could not read the listener's session list within $1s, so whether the pane registered under ${scratch} is unknown: ${list_read_error:-no read finished}"
-  verdict_fail "the pane never registered under ${scratch} within $1s: $(pane_tail)"
-}
+    note "$list_read_error"
+    return 1
+  }
 
-row_field() {
-  jq -r --arg field "$2" '.[$field]' <<<"$1"
-}
+  # read_own_row retries own_row until a read of the list lands, for at most $1 seconds: 0 with the
+  # row in `row_json` once one does, 1 with `list_read_error` naming the last failure when none did.
+  read_own_row() {
+    local deadline=$((SECONDS + $1))
+    until own_row; do
+      ((SECONDS + fast_poll_s < deadline)) || return 1
+      sleep "$fast_poll_s"
+    done
+  }
 
-age_s() {
-  printf '%s' "$((($(date +%s%3N) - $1) / 1000))"
+  last_registration() {
+    awk '$1 == "registration" && NF == 2 { n = $2 } END { print n + 0 }' "$fixture_log"
+  }
+
+  stall_lines() {
+    grep -c 'reconcile pass stalled' "$fixture_log" || true
+  }
+
+  pane_alive() {
+    [[ -n "${omp_pid[$arm_label]:-}" ]] && omp_running "$arm_label"
+  }
+
+  pane_tail() {
+    tail -n 5 "$logs/stderr-${arm_label}.log" 2>/dev/null | tr '\n' ' '
+  }
+
+  # One real headless pane, loading the fixture ahead of the plugin so the fixture's `fetch`
+  # wrapper is the one the plugin captures, with no tools and no other extension. Its input is a
+  # fifo this script holds open, so the pane is one process this script can signal exactly: the
+  # recover control needs a SIGKILL that reaches `omp` itself, since a pane that exits cleanly
+  # deletes its own record and there would then be nothing for the control to delete.
+  start_pane() {
+    local wedge="$1"
+    smoke_start_omp "$arm_label" "$scratch" \
+      STALL_FIXTURE_LOG="$fixture_log" STALL_FIXTURE_WEDGE_AT="$wedge" \
+      ENVOY_HEARTBEAT_MS="$refresh_ms" ENVOY_PASS_DEADLINE_MS="$refresh_ms" -- \
+      --no-tools -e "${script_dir}/stall-fixture.ts" -e "$plugin"
+    smoke_prompt "$arm_label" "Reply with the single word ok."
+    note "pane started (pid ${omp_pid[$arm_label]}, wedge ${wedge}, refresh ${refresh_s}s) in ${scratch}"
+  }
+
+  # Bounded wait for this arm's row to appear in `row_json`; any other outcome fails the arm, and a
+  # window in which no read of the list landed fails as unknown, never as an unregistered pane.
+  wait_for_row() {
+    local deadline=$((SECONDS + $1)) read_any=0
+    while ((SECONDS < deadline)); do
+      if own_row; then
+        read_any=1
+        [[ -z "$row_json" ]] || return 0
+      fi
+      pane_alive || verdict_fail "the pane exited before it registered under ${scratch}: $(pane_tail)"
+      sleep "$fast_poll_s"
+    done
+    ((read_any == 1)) ||
+      verdict_fail "could not read the listener's session list within $1s, so whether the pane registered under ${scratch} is unknown: ${list_read_error:-no read finished}"
+    verdict_fail "the pane never registered under ${scratch} within $1s: $(pane_tail)"
+  }
+
+  row_field() {
+    jq -r --arg field "$2" '.[$field]' <<<"$1"
+  }
+
+  age_s() {
+    printf '%s' "$((($(date +%s%3N) - $1) / 1000))"
+  }
+
+  if [[ "$arm" == "stall" ]]; then
+    run_stall
+  else
+    run_recover
+  fi
 }
 
 run_stall() {
@@ -438,6 +305,20 @@ run_stall() {
   local wedged_last_seen
   wedged_last_seen="$(row_field "$row" last_seen)"
   note "registration ${wedge_at} is wedged; last_seen at the wedge is ${wedged_last_seen}"
+  if ((control == 1)); then
+    # The pane whose refresh never comes back: SIGKILLed at the wedge, so nothing refreshes its
+    # record again and no clean exit deletes it. The record must still be listed after the kill,
+    # so that its leaving later is the listener's window and not the kill.
+    note "SIGKILLing the pane at the wedge, so nothing refreshes its record again"
+    kill -KILL "${omp_pid[$arm_label]}" 2>/dev/null || verdict_fail "could not SIGKILL the pane (pid ${omp_pid[$arm_label]})"
+    wait "${omp_pid[$arm_label]}" 2>/dev/null || true
+    if pane_alive; then verdict_fail "the pane is still running after SIGKILL"; fi
+    read_own_row "$list_read_budget_s" ||
+      verdict_fail "could not read the listener's session list within ${list_read_budget_s}s of the SIGKILL, so whether the killed pane's record outlived it is unknown: ${list_read_error}"
+    [[ -n "$row_json" ]] ||
+      verdict_fail "the killed pane's record was gone at once; the control needs a record only the window can remove"
+    note "the killed pane's record is still listed"
+  fi
 
   # One live window past the wedged post plus a margin: before that, a listener record that is
   # merely still inside the window proves nothing either way.
@@ -455,18 +336,18 @@ run_stall() {
     regs="$(last_registration)"
     stalls="$(stall_lines)"
     if [[ -z "$row" ]]; then
-      note "not listed; registrations=${regs} stall lines=${stalls} ($(( $(date +%s) - wedged_at ))s past the wedge)"
+      note "not listed; registrations=${regs} stall lines=${stalls} ($(($(date +%s) - wedged_at))s past the wedge)"
       ((control == 1)) ||
         verdict_fail "the session left the registry $(($(date +%s) - wedged_at))s after the wedged post; it must stay listed"
       ((gone_at != 0)) || gone_at="$(date +%s)"
       continue
     fi
     ((gone_at == 0)) ||
-      verdict_fail "the control's session returned to the registry after disappearing; only the fixed plugin refreshes itself"
+      verdict_fail "the killed pane's session returned to the registry after leaving it, with nothing left to refresh it"
     local seen
     seen="$(row_field "$row" last_seen)"
     note "listed; last_seen=${seen} (age $(age_s "$seen")s) registrations=${regs} stall lines=${stalls}"
-    pane_alive || verdict_fail "the pane exited during the watch: $(pane_tail)"
+    ((control == 1)) || pane_alive || verdict_fail "the pane exited during the watch: $(pane_tail)"
   done
 
   read_own_row "$list_read_budget_s" ||
@@ -477,11 +358,11 @@ run_stall() {
   stalls="$(stall_lines)"
   if ((control == 1)); then
     [[ -z "$row" ]] ||
-      verdict_fail "the base-rev session is still listed $(($(date +%s) - wedged_at))s after the wedged post (last_seen $(row_field "$row" last_seen)); the control must lapse"
+      verdict_fail "the killed pane's session is still listed $(($(date +%s) - wedged_at))s after the wedged post (last_seen $(row_field "$row" last_seen)), past the ${live_window_s}s live window; the record must lapse"
     ((gone_at != 0)) || gone_at="$(date +%s)"
     ((regs <= wedge_at - 1)) ||
-      verdict_fail "the base-rev pane posted registration ${regs} after the wedged ${wedge_at}; its wedge did not hold"
-    verdict_pass "the plugin at ${base_rev} left ${session_id} wedged at registration ${wedge_at}, posted nothing after it (last accepted ${regs}), and the record was gone $((gone_at - wedged_at))s after the wedged post and never returned (watched to $(($(date +%s) - wedged_at))s)"
+      verdict_fail "the killed pane posted registration ${regs} after the wedged ${wedge_at}"
+    verdict_pass "${session_id}'s pane was SIGKILLed at the wedged registration ${wedge_at} (last accepted ${regs}), its record was still listed after the kill, left the registry $((gone_at - wedged_at))s after the wedged post and never returned (watched to $(($(date +%s) - wedged_at))s) — so the ${live_window_s}s live window the stall arm's pane outlives is one this listener enforces"
   fi
 
   [[ -n "$row" ]] ||
@@ -510,10 +391,9 @@ run_recover() {
     # A pane that exits cleanly deletes its own record, so the control's pane is SIGKILLed: its
     # row outlives it, which is the row the delete then removes.
     note "SIGKILLing the pane so its record outlives it"
-    kill -KILL "$pane_pid" 2>/dev/null || verdict_fail "could not SIGKILL the pane (pid ${pane_pid})"
-    wait "$pane_pid" 2>/dev/null || true
+    kill -KILL "${omp_pid[$arm_label]}" 2>/dev/null || verdict_fail "could not SIGKILL the pane (pid ${omp_pid[$arm_label]})"
+    wait "${omp_pid[$arm_label]}" 2>/dev/null || true
     if pane_alive; then verdict_fail "the pane is still running after SIGKILL"; fi
-    pane_pid=""
     read_own_row "$list_read_budget_s" ||
       verdict_fail "could not read the listener's session list within ${list_read_budget_s}s of the SIGKILL, so whether the killed pane's record outlived it is unknown: ${list_read_error}"
     row="$row_json"
@@ -564,7 +444,7 @@ run_recover() {
       verdict_fail "could not read the listener's session list within ${list_read_budget_s}s of the ${budget}s watch ending, so that ${session_id} stayed gone is unproven: ${list_read_error}"
     [[ -z "$row_json" ]] ||
       verdict_fail "${session_id} came back $(($(date +%s) - deleted_at))s after the delete although its process was already dead; the return in the main arm would not be the pane's own refresh"
-    verdict_pass "${session_id}'s process was SIGKILLed, its record deleted, and it stayed gone for ${budget}s (one ${refresh_s}s refresh interval and a margin) — so a return in the main arm is the live pane's own refresh, not the listener restoring anything; this run made ${listener_gets} list polls and ${listener_deletes} delete, and no other request"
+    verdict_pass "${session_id}'s process was SIGKILLed, its record deleted, and it stayed gone for ${budget}s (one ${refresh_s}s refresh interval and a margin) — so a return in the main arm is the live pane's own refresh, not the listener restoring anything; this arm made ${listener_gets} list polls and ${listener_deletes} delete, and no other request"
   fi
 
   note "watching up to ${budget}s for the live pane to re-register itself"
@@ -587,7 +467,7 @@ run_recover() {
         ((regs_after > regs_before)) ||
           verdict_fail "the fixture logged no registration after the delete (${regs_before} before, ${regs_after} after); the row did not come back from the pane's own post"
         note "back after $(($(date +%s) - deleted_at))s with last_seen=${back_seen}"
-        verdict_pass "${session_id} was deleted from the registry while its process ran and re-registered itself $(($(date +%s) - deleted_at))s later (budget ${budget}s: one ${refresh_s}s refresh interval and a margin), last_seen ${before_seen} → ${back_seen} and the pane's own registration count ${regs_before} → ${regs_after}, with no human and no envoy_subscribe: the only requests this run made to the listener are ${listener_gets} GET /v1/sessions polls and the single DELETE /v1/sessions/${session_id}"
+        verdict_pass "${session_id} was deleted from the registry while its process ran and re-registered itself $(($(date +%s) - deleted_at))s later (budget ${budget}s: one ${refresh_s}s refresh interval and a margin), last_seen ${before_seen} → ${back_seen} and the pane's own registration count ${regs_before} → ${regs_after}, with no human and no envoy_subscribe: the only requests this arm made to the listener are ${listener_gets} GET /v1/sessions polls and the single DELETE /v1/sessions/${session_id}"
       fi
       note "not back yet ($(($(date +%s) - deleted_at))s)"
     fi
@@ -598,9 +478,13 @@ run_recover() {
   verdict_fail "${session_id} did not re-register within ${budget}s of the delete (one ${refresh_s}s refresh interval and a margin); the pane is still running: $(pane_tail)"
 }
 
-note "arm ${arm_label}: listener ${envoy_url}, omp ${omp_bin}, plugin ${plugin}"
-if [[ "$arm" == "stall" ]]; then
-  run_stall
-else
-  run_recover
+bad=0
+for run in "${runs[@]}"; do
+  (run_arm "${run%%:*}" "${run##*:}") || bad=1
+done
+if ((bad == 1)); then
+  # Each failed arm printed its own FAIL line.
+  failed=1
+  exit 1
 fi
+ok=1

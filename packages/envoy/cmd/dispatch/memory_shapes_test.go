@@ -129,7 +129,7 @@ type admittedShape struct {
 // heaviest document of them held 304 and 376 MiB to store. Empty callouts are not among them: an
 // upload of the most the limit admits is refused 500 by the search index of its version, whose
 // block ids make a vector past PostgreSQL's 1 MiB (LEGION-505).
-func heaviestAdmittedShapes(t *testing.T) []admittedShape {
+func heaviestAdmittedShapes(t testing.TB) []admittedShape {
 	t.Helper()
 	repeated := func(unit string) func(int) string {
 		return func(units int) string { return strings.Repeat(unit, units) }
@@ -189,7 +189,7 @@ func escapedAdmittedShapes(t *testing.T) []admittedShape {
 // between two headings, a line feed at the end - so the padding gives way to that. The rendering is
 // weighed as well as the markdown, as the server weighs a new document: an escape it writes bare
 // (`\[a` is stored `[a`) can weigh more there than as written.
-func heaviestAdmitted(t *testing.T, build func(units int) string) string {
+func heaviestAdmitted(t testing.TB, build func(units int) string) string {
 	t.Helper()
 	document := func(units int) string {
 		text := build(units) + "\n\n"

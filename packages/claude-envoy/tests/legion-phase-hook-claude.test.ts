@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { requireOrSkip } from "@legion/test-fixtures/host-tools"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -138,10 +139,9 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // LEGION_TEST_CLAUDE names the binary: the one the worker image installs from this branch's
 // `packages/daemon/docker/claude-code/package-lock.json`
 // (`node_modules/@anthropic-ai/claude-code-linux-x64/claude`; the `node_modules/.bin/claude`
-// symlink is a `.exe` shim that does not exec on Linux). A run without one skips the whole file.
-// Unlike `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts`, which also runs on
-// GitHub Actions because CI's pi-envoy job installs the Oh My Pi pin, nothing in CI installs the
-// Claude Code binary, so there is no host where a skip here would hide the only run of the check.
+// symlink is a `.exe` shim that does not exec on Linux). A run without one skips the whole file,
+// except on GitHub Actions, where CI's claude-envoy job installs Claude Code
+// (.github/actions/install-claude-code) and a skip would hide the only run of the check.
 //
 // What runs is real: a fresh `scripts/build.ts --out` build of this tree, whose generated `legion/`
 // plugin tree and built `dist/envoy-channel.js` (the pane's `legion` MCP server) are what main's
@@ -157,6 +157,11 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // document runs the real server under `sh -c exec` with its stderr redirected to a file — the
 // server stays Claude Code's own child, and nothing but the redirection differs.
 const claude = process.env["LEGION_TEST_CLAUDE"]
+const withoutClaude = requireOrSkip(
+  "LEGION_TEST_CLAUDE, naming the Claude Code binary",
+  claude !== undefined,
+  "claude-envoy",
+)
 
 /** The pane's session, the form `--session-id` takes (`claudelaunch.NewSessionID`). */
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
@@ -563,7 +568,7 @@ function syntheticMessages(run: WorkerRun): string[] {
   })
 }
 
-test.skipIf(claude === undefined)(
+test.skipIf(withoutClaude)(
   "the generated hook entries arm on the real binary: a Stop answered with a block carries the reminder into one more turn of the same session",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
@@ -635,7 +640,7 @@ test.skipIf(claude === undefined)(
   180_000,
 )
 
-test.skipIf(claude === undefined)(
+test.skipIf(withoutClaude)(
   "PostToolUse fires for the model's own tool call and for no call the hook itself makes",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
@@ -688,7 +693,7 @@ test.skipIf(claude === undefined)(
 // of a reminder, and the task's own result starts the next turn with nothing prompting it. Only
 // the real binary shows all three: that the substitution reaches an `mcp_tool` hook's input at
 // all, that the run then ends rather than continuing, and that Claude Code wakes itself.
-test.skipIf(claude === undefined)(
+test.skipIf(withoutClaude)(
   "a turn that ends with a background task running earns no reminder, and the task's result starts the next turn",
   async () => {
     if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")

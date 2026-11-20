@@ -242,7 +242,7 @@ func TestAnAgentsArtifactLookupsReadTheSessionIndex(t *testing.T) {
 
 // planReadsIndex reports whether an EXPLAIN (FORMAT JSON) plan node, or any node under it, reads
 // the named index.
-func planReadsIndex(t *testing.T, planJSON json.RawMessage, index string) bool {
+func planReadsIndex(t testing.TB, planJSON json.RawMessage, index string) bool {
 	t.Helper()
 	var node struct {
 		IndexName string            `json:"Index Name"`

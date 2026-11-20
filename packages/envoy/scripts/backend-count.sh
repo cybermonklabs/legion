@@ -8,11 +8,15 @@
 #
 #   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|...)$' [-skip "$GO_TEST_SKIP"] PACKAGE...
 #
-# and prints one line per named test, `TEST aws=N gcp=M`, N and M counting the `pass` events of
-# `TEST/aws` and `TEST/gcp` in any of the packages, then `go_test_exit=E`. It counts only the tests
-# it is given, so the `aws` and `gcp` subtests of other tests cannot stand in for a named test's,
-# and a named test that lives in none of the packages reads aws=0 gcp=0. The database broker
-# suites' skips are database-skips.sh's count, not this one's.
+# and prints its test log to stdout as the tests run: the Output of each -json event, which holds
+# each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or `--- SKIP` line, since -json runs
+# the test binary verbose (-test.v=test2json; a -v beside it would pass -test.v=true after that
+# and take test2json's framing away). Then it prints one line per named test, `TEST aws=N gcp=M`,
+# N and M counting the `pass` events of `TEST/aws` and `TEST/gcp` in any of the packages, then
+# `go_test_exit=E`. It counts only the tests it is given, so the `aws` and `gcp` subtests of other
+# tests cannot stand in for a named test's, and a named test that lives in none of the packages
+# reads aws=0 gcp=0. The database broker suites' skips are database-skips.sh's count, not this
+# one's.
 #
 # It exits 1 when no package or no test is named, when a package is not a ./ path, when a name is
 # not a Go test name, when a named test has no passing run on either backend, or when go test
@@ -54,7 +58,11 @@ trap 'rm -rf "$work"' EXIT
 events="$work/events.json"
 
 go_test_exit=0
-go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
+# tee keeps the whole stream as the events file; the reader of the log takes a line it cannot
+# parse as nothing, so it neither fails nor closes the pipe before go test ends.
+go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" 2>"$work/stderr" |
+  tee "$events" | jq --unbuffered -Rrj 'fromjson? | objects | .Output | strings' ||
+  go_test_exit=${PIPESTATUS[0]}
 if [ ! -s "$events" ]; then
   echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2
   cat "$work/stderr" >&2

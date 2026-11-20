@@ -81,7 +81,7 @@ same step before and after its change, and compares the two rows.
 | `replay_check.go` | `loadgen replay-check-seed` (each seeded document's version, version size changes, open anchored items, text and anchors against the bundle, the open-anchored-root distribution of the window's written documents, and `-out`, the results file stack.sh keeps), `replay-checksum` (row counts and an md5 of the versions and comment bodies) and `replay-logical-dump` (a seed with every uuid and timestamp masked, for `cmp`) |
 | `replay_plan.go` | The replay request source's plan (`loadgen run -source replay`, The replay below): the pure plan of a bundle's window (transactions, issue sampling, each logged write's CLI requests, read actions) and `loadgen replay-plan` |
 | `replay_run.go` | The replay's sending (`loadgen run -source replay`): the setup taken from the bundle before the step, id resolution through `public.loadtest_replay_ids` and the run's own responses, one connection and one 60 s deadline per action |
-| `replay_edit.go` | The replay's edit ops: from the logged diff (`replace` of changed words, `insert` of an added paragraph) or substitutes, each one Dispatch 35efd326's edit route accepts on the client's text (The replay below); `TestReplayEditsBundle` (with `LOADTEST_REPLAY_BUNDLE`) replays every edit `replay-plan` plans at rate 1 against a model of those rules |
+| `replay_edit.go` | The replay's edit ops: from the logged diff (`replace` of changed words, `insert` of an added paragraph) or substitutes, each one Dispatch 35efd326's edit route accepts on the client's text (The replay below); the tool `BenchmarkReplayEditsBundle` (with `LOADTEST_REPLAY_BUNDLE`) replays every edit `replay-plan` plans at rate 1 against a model of those rules |
 | `replay_record.go` | The replay's per-run record: `summary.json` `replay` (Dispatch's CPU over the window from `/proc`, cores at the full rate, idle-corrected, drain, writes, saturation) and `meta.json` `replay` |
 | `replay-seed-len16.patch` | The allocation-free `len16` that `stack.sh replay-seed` applies to Dispatch at 35efd326 for the seed, with its tests (The replay, below) |
 | `zz_loadtest_pprof.go.txt` | The pprof listener a Dispatch tree without `cmd/dispatch/pprof.go` gets when `stack.sh` builds it from another commit |
@@ -1419,11 +1419,12 @@ mapped to its local one in `public.loadtest_replay_ids` as it goes, so a killed 
   document whose needed run does not fit gets the longest run that does, and its versions out of
   reach flip sign or are raised as before. In the 2026-10-26 bundle the bound changes no
   document's run.
-  `TestRequestBodiesBundle` (with `LOADTEST_REPLAY_BUNDLE=<bundle dir>`, like
-  `TestPlanHistoryBundle`) plans every body the seed sends and every one `replay-plan` plans at
-  rate 1, fails on a body or a planned document version over 1 MiB, and logs the largest body of
-  each kind. Largest in the 2026-10-26 bundle: a padding edit of 623,266 bytes (a 623,138-byte
-  version change), a restore of 637,584 bytes, a replay upload of 665,020 bytes.
+  The tool `BenchmarkRequestBodiesBundle` (`LOADTEST_REPLAY_BUNDLE=<bundle dir> go test -run '^$'
+  -bench '^BenchmarkRequestBodiesBundle$' -benchtime 1x ./loadtest`, like `BenchmarkPlanHistoryBundle`)
+  plans every body the seed sends and every one `replay-plan` plans at rate 1, fails on a body or a
+  planned document version over 1 MiB, and logs the largest body of each kind. Largest in the
+  2026-10-26 bundle: a padding edit of 623,266 bytes (a 623,138-byte version change), a restore of
+  637,584 bytes, a replay upload of 665,020 bytes.
 - **Comments.** Every open thread in creation order, and every resolved thread a window event
   refers to (created, then resolved). The other resolved threads are not recreated.
 - **Anchors** (`chooseAnchor`). Most logged blocks no longer exist in today's block maps, so an
