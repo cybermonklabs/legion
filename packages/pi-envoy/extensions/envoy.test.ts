@@ -48,6 +48,7 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
+import { natsFailureReason } from "@legion/envoy-client/errors";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -323,6 +324,9 @@ const natsState = {
    *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
    *  carries of it. */
   failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
+  /** What `closed()` of a connection settles with once it is closed, as nats.js settles it with
+   *  the close's own error (protocol.js:906-913); none by default. */
+  closeError: undefined as Error | undefined,
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -398,15 +402,15 @@ const natsStandInConnect = async (options: {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
-  // nats.js's `closed()`: settles once the connection is closed for good.
-  const ended = Promise.withResolvers<void>();
+  // nats.js's `closed()`: settles once the connection is closed for good, with the close's error.
+  const ended = Promise.withResolvers<Error | undefined>();
   const made = {
     isClosed: () => closed || natsState.connectionsClosed,
     closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
-      ended.resolve();
+      ended.resolve(natsState.closeError);
     },
     drain: async () => {
       natsState.drainStarted = true;
@@ -838,6 +842,7 @@ afterEach(async () => {
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
   natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
+  natsState.closeError = undefined;
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
@@ -20390,7 +20395,7 @@ console.log(JSON.stringify(args));
     // service under NATS_AUTH=broker says so and what to unset), not only the refusal it led to.
     expect(
       notifications.some((message) =>
-        message.includes("because its NATS connection failed: CONNECTION_REFUSED")
+        message.includes("because its relay subject could not be opened: CONNECTION_REFUSED")
       )
     ).toBe(true);
     expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(false);
@@ -20439,7 +20444,7 @@ console.log(JSON.stringify(args));
     expect(
       notifications.some((message) =>
         message.includes(
-          "because its NATS connection failed: getaddrinfo EAI_AGAIN); retrying in the background"
+          "because its relay subject could not be opened: getaddrinfo EAI_AGAIN); retrying in the background"
         )
       )
     ).toBe(true);
@@ -20595,7 +20600,7 @@ console.log(JSON.stringify(args));
     const id = "ses_relay_lost";
     const relay = deliverSubject(id);
     const control = `agentstream.${id}.control`;
-    const reason = "because its NATS connection failed: CONNECTION_REFUSED";
+    const reason = "because its relay subject could not be opened: CONNECTION_REFUSED";
     const warnings: string[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
@@ -20817,12 +20822,56 @@ console.log(JSON.stringify(args));
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
         await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
-        const reason = "because its NATS connection failed: the NATS connection closed";
+        const reason = "because its relay subject could not be opened: the NATS connection closed";
         expect(await session.follow("team.relay-closed")).toContain(reason);
         for (const part of Object.values(session.outage())) {
           expect(part).toHaveLength(1);
           expect(part[0]).toContain(reason);
         }
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
+  test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    natsState.failConnects = 99;
+    const id = "ses_start_dial_failed";
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "start-dial-failed-reason");
+      try {
+        // The start's dial failed before a relay existed; a follow outside any pass names it.
+        expect(await session.follow("team.start-dial-failed")).toContain(
+          "because its relay subject could not be opened: CONNECTION_REFUSED"
+        );
+      } finally {
+        await session.stop();
+      }
+    });
+  });
+
+  test("a registration sent once the connection closed with an error of its own names that error", async () => {
+    // nats.js settles `closed()` with the close's own error, which replaces the plugin's own words
+    // for the close once it settles.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_closed_error";
+    const closeError = NatsError.errorForCode(ErrorCode.AuthenticationExpired);
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-closed-error");
+      const parked = Promise.withResolvers<void>();
+      try {
+        natsState.heldConnect = parked.promise;
+        natsState.closeError = closeError;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(deliverSubject(id))?.end();
+        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        const reason = `because its relay subject could not be opened: ${natsFailureReason(closeError)}`;
+        expect(natsFailureReason(closeError)).not.toBe("the NATS connection closed");
+        expect(await session.follow("team.relay-closed-error")).toContain(reason);
       } finally {
         natsState.heldConnect = undefined;
         parked.resolve();
@@ -20844,7 +20893,7 @@ console.log(JSON.stringify(args));
         natsState.failSubscribes = 1;
         first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
         await until(() => natsState.failSubscribes === 0, "the relay's own resubscribe");
-        const reason = "because its NATS connection failed: DISCONNECT";
+        const reason = "because its relay subject could not be opened: DISCONNECT";
         expect(await session.follow("team.relay-errored")).toContain(reason);
         for (const part of Object.values(session.outage())) {
           expect(part).toHaveLength(1);
@@ -20942,7 +20991,7 @@ console.log(JSON.stringify(args));
     {
       row: "withholds the text of a NATS failure that carries no code, in every part of the notice",
       error: () => new Error("bad INFO from 10.9.8.7:4222 MARKER-7f3a"),
-      shown: "because its NATS connection failed:",
+      shown: "because its relay subject could not be opened:",
       withheld: ["10.9.8.7", "MARKER-7f3a"],
     },
   ]) {
@@ -20993,6 +21042,11 @@ console.log(JSON.stringify(args));
         for (const [part, text] of Object.entries(parts)) {
           expect(text, `${part} was not given`).toBeDefined();
           expect(text, `${part} does not name the failure`).toContain(shown);
+          // Named once: the pass's own failure text is not added to a refusal that names it.
+          expect(
+            text?.split("because its relay subject could not be opened").length,
+            `${part} names the failure more than once`
+          ).toBe(2);
           for (const secret of withheld)
             expect(text, `${part} printed ${secret}`).not.toContain(secret);
         }

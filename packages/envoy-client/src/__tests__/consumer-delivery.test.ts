@@ -1227,7 +1227,7 @@ describe("one registration", () => {
     }).catch((error: unknown) => error);
 
     const expected =
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its NATS connection failed: Authentication Timeout";
+      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its relay subject could not be opened: Authentication Timeout";
     if (!(refusal instanceof NoRelaySubjectError))
       throw new Error(`no refusal: ${String(refusal)}`);
     expect(refusal.message).toBe(expected);

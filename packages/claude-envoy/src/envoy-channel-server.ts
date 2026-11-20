@@ -1849,6 +1849,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           registrationFailed = true
           throw error
         }
+        // A body the chain held while shutdown began writes no role: `register` returned without
+        // registering, and a role write the chain still holds past the shutdown's bounded wait
+        // would land after the DELETE.
+        if (shuttingDown) return
         await reassertRole(registrationFailed)
         await transferRole()
         await syncRegisteredInterests()
@@ -2136,8 +2140,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /**
    * Follows `watched`, the connection the session holds. nats.js resubscribes by itself after a
    * reconnect; what was published while it was away is in the stream, and the relay restarts at
-   * its ack floor on the new epoch's registration. The status events end when the connection
-   * closes, and a close for good is `connectionClosed`'s.
+   * its ack floor on the new epoch's registration. nats.js 2.29.3 never ends a connection's status
+   * readers, even after it closes, so this reader stays parked on a closed connection; the close
+   * is read from `closed()`, and a close for good is `connectionClosed`'s.
    */
   function watchConnection(watched: ChannelConnection): void {
     // A reopen during the start watches its connection before the start's own watch begins.

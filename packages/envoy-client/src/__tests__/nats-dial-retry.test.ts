@@ -137,20 +137,22 @@ describe("connectNats", () => {
   }, 30_000);
 
   // A refusal, a server that says nothing for the second dial's whole 1 000 ms, then a third dial
-  // that starts 1 105 ms in with 595 ms of the 1 700 ms budget left.
+  // that starts at least 1 100 ms in (two 50 ms waits and the second dial's bound), so at most
+  // 900 ms of the 2 000 ms budget are left for it, less than its 1 000 ms `timeout`. It still
+  // starts while 500 ms are left as long as it starts within 1 500 ms: about 400 ms of slack.
   test("gives a later dial only the budget it has left", async () => {
     const server = fake((n) => (n === 0 ? "refuse" : "silent"));
     const dial = await dialWith(
       server.url,
-      { firstDelayMs: 50, maxDelayMs: 50, budgetMs: 1_700 },
+      { firstDelayMs: 50, maxDelayMs: 50, budgetMs: 2_000 },
       { timeout: 1_000 }
     );
     expect(dial.error).toBeDefined();
-    if (dial.ms >= 1_800)
-      throw new Error(`the dials took ${Math.round(dial.ms)} ms, past the 1 700 ms budget`);
+    if (dial.ms >= 2_100)
+      throw new Error(`the dials took ${Math.round(dial.ms)} ms, past the 2 000 ms budget`);
     expect(dial.bounds).toHaveLength(3);
     expect(dial.bounds.at(-1)).toBeGreaterThanOrEqual(NATS_MIN_REDIAL_BOUND_MS);
-    expect(dial.bounds.at(-1)).toBeLessThanOrEqual(650);
+    expect(dial.bounds.at(-1)).toBeLessThanOrEqual(900);
   }, 30_000);
 
   // The client writes its CONNECT into the closing socket, so a plain close fails a dial with the

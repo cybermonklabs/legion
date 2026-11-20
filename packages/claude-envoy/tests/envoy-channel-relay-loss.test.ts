@@ -84,7 +84,7 @@ test("a relay subscription the server ends with an error is told as an outage na
     const told = notices(notifier, "Envoy inbound unavailable")
     expect(told).toHaveLength(1)
     expect(told[0]).toContain(
-      "because its NATS connection failed: the server refused a permission (its text is withheld)",
+      "because its relay subject could not be opened: the server refused a permission (its text is withheld)",
     )
     // Taken again, once, on the same connection, and registered at a new epoch.
     expect(relaySubscribes()).toBe(2)
@@ -274,7 +274,7 @@ test("a connection closed for good between a /clear's deregistration and its reg
       () => JSON.stringify({ moves, registered }),
     )
     expect(notices(notifier, "Envoy inbound unavailable")[0]).toContain(
-      "because its NATS connection failed: Authorization Violation",
+      "because its relay subject could not be opened: Authorization Violation",
     )
     // Several heartbeats pass with no connection, and none moves the credential on the closed one
     // or flushes or subscribes on it. An absence needs the time to pass: eight 25 ms heartbeats.

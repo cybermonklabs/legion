@@ -962,7 +962,7 @@ export function registerWithRelay<Result>({
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
     const refused = new NoRelaySubjectError(
-      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its NATS connection failed: ${relayMissing}`}`
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
     );
     outage.refused(refused);
     return Promise.reject(refused);

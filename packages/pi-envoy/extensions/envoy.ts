@@ -220,6 +220,7 @@ import {
   type DialLimit,
   type RegistrationInput,
   type RoleSnapshot,
+  stepWasRefused,
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
@@ -1241,9 +1242,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       {
         firstBoundMs: left,
         stopped: () => shuttingDown || limit?.stopped() === true,
+        // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
+        // so the line says the next dial waits on that.
         onRetry: (error, delayMs, attempt) =>
           logger.warn(
-            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms`
+            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
           ),
       }
     );
@@ -2566,6 +2569,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     missing: string | undefined;
   }
   let relay: Relay | undefined;
+  /** Why the last pass could not open its session's inbound, for a registration sent outside a
+   *  pass while that session has no relay yet (the start's dial failed before one existed). */
+  let passFailure: { readonly sessionID: string; readonly text: string } | undefined;
 
   // A relay frame for a session the host is no longer on (a switch, before the next pass closes
   // its relay), or one that drains in while the session shuts down, is one the session cannot
@@ -2637,7 +2643,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       connected = await connect();
     } catch (error) {
-      if (relay === owner) owner.missing = natsFailureReason(error);
+      // A step the task refused (its pass was abandoned, or its session moved) is no reason the
+      // subject is missing: the reason recorded before it stands.
+      if (relay === owner && !stepWasRefused(error) && !taskWasAbandoned(error)) {
+        owner.missing = natsFailureReason(error);
+      }
       throw error;
     }
     if (relay !== owner || owner.subscription !== undefined) return;
@@ -3433,7 +3443,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       relay: asking?.delivery,
       relayMissing:
         relayMissing ??
-        (asking === undefined && relay?.sessionID === registeringFor ? relay.missing : undefined),
+        (asking !== undefined
+          ? undefined
+          : relay?.sessionID === registeringFor && relay.missing !== undefined
+            ? relay.missing
+            : passFailure?.sessionID === registeringFor
+              ? passFailure.text
+              : undefined),
       ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
@@ -3994,6 +4010,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
     const failureText =
       inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
+    passFailure = failureText === undefined ? undefined : { sessionID: host, text: failureText };
     // Every session subscribes to its own agent subject, so every session is registered;
     // envoy_send treats an unregistered id as dead. The listener rejects a claim from a session it
     // does not currently know, so this comes before the role. A registration refused for want of
@@ -4043,7 +4060,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       throw new RegistrationError(
         failureText === undefined || registration.error instanceof NoRelaySubjectError
           ? refused
-          : `${refused}, because its NATS connection failed: ${failureText}`,
+          : `${refused}, because its relay subject could not be opened: ${failureText}`,
         { cause: registration.error }
       );
     }

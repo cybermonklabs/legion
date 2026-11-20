@@ -99,7 +99,7 @@ test(
       expect(stderr()).not.toContain(gate.url.slice("nats://".length))
       // The refused registration names the failure, and the outage is told once over every refusal.
       const why =
-        "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its NATS connection failed: Authorization Violation"
+        "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its relay subject could not be opened: Authorization Violation"
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
       expect(notices("Envoy inbound unavailable")[0]?.message.text).toContain(why)
       expect(count(stderr(), `envoy-channel: this session receives nothing (${why})`)).toBe(1)
@@ -269,7 +269,7 @@ test(
       // Told once over every refusal, naming the close.
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
       expect(notices("Envoy inbound unavailable")[0]?.message.text).toContain(
-        "because its NATS connection failed: Authorization Violation",
+        "because its relay subject could not be opened: Authorization Violation",
       )
       expect(count(stderr(), "this session receives nothing")).toBe(1)
 

@@ -49,9 +49,9 @@ export interface ControlSubscriptionOptions {
 export interface ControlSubscription {
   /** Whether the view stopped: it takes no subject, and its frames go nowhere, from then on. */
   readonly stopped: boolean
-  /** Publishes on the connection held now. A closed connection throws on a publish, and a throw
-   *  here would end the view's reader for good, so its frames are dropped until the server swaps
-   *  in a new connection; the ring keeps them for a replay. */
+  /** Publishes on the connection held now, unless the view stopped. A closed connection throws on
+   *  a publish, and a throw here would end the view's reader for good, so its frames are dropped
+   *  until the server swaps in a new connection; the ring keeps them for a replay. */
   publish(subject: string, payload: string): void
   /** Takes the view's first control subject. */
   start(): void
@@ -136,7 +136,7 @@ export function controlSubscription(options: ControlSubscriptionOptions): Contro
       return stopped
     },
     publish(subject: string, payload: string): void {
-      if (!connection.isClosed()) connection.publish(subject, encoder.encode(payload))
+      if (!stopped && !connection.isClosed()) connection.publish(subject, encoder.encode(payload))
     },
     start(): void {
       // The first subject goes through the gate too: a view starts after its session does, which

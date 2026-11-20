@@ -235,17 +235,25 @@ describe("a NATS dial that the server closes during the handshake", () => {
   test("keeps a close during a reconnect's name lookup final", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "hold"));
     const port = new URL(server.url).port;
-    let lookupMs = 0;
+    let lookups = 0;
+    const inReconnectLookup = Promise.withResolvers<void>();
+    const reconnectLookupDone = Promise.withResolvers<void>();
     const nc = await connectResolving(async () => {
-      await pause(lookupMs);
+      lookups += 1;
+      if (lookups > 1) {
+        // The reconnect's lookup: the row closes while it is held here, then lets it answer.
+        inReconnectLookup.resolve();
+        await pause(1_000);
+        reconnectLookupDone.resolve();
+      }
       return ["127.0.0.1"];
     })({ ...options([`nats://fake.test:${port}`]), reconnectTimeWait: 200, reconnectJitter: 0 });
-    lookupMs = 1_000;
     server.dropAll();
-    // The reconnect is inside its 1 s lookup now.
-    await pause(400);
+    await inReconnectLookup.promise;
     await nc.close();
-    await pause(2_000);
+    await reconnectLookupDone.promise;
+    // An absence: a dial the close did not end would open its connection within this window.
+    await pause(1_000);
     expect(server.connections()).toBe(1);
   }, 30_000);
 
@@ -323,6 +331,35 @@ describe("a NATS dial's bound", () => {
     // Each of the other two addresses would have opened a connection within 1 200 ms more.
     await pause(2_000);
     expect(server.connections()).toBe(1);
+  }, 30_000);
+
+  // nats.js tries the next server when one fails, and looks its name up first: a dial past its
+  // bound looks no further name up, so a lookup that never answers cannot keep it pending. The
+  // first name has two silent addresses, so the bound expires while nats.js is still dialing
+  // the first server, which nats.js leaves only after the second address has timed out too.
+  test("is whole: a dial past its bound looks no further server's name up", async () => {
+    const server = fake(() => "silent");
+    const port = new URL(server.url).port;
+    const looked: string[] = [];
+    const once = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+    const lookup = async (host: string): Promise<string[]> => {
+      looked.push(host);
+      return host === "first.test" ? ["127.0.0.1", "127.0.0.1"] : ["127.0.0.1"];
+    };
+    const dial = await timed(
+      connectNats(
+        connectResolving(lookup as () => Promise<string[]>),
+        { ...options([`nats://first.test:${port}`, `nats://second.test:${port}`]), timeout: 600 },
+        once
+      )
+    );
+    expect(dial.error?.message).toBe("the NATS dial did not complete within 600 ms");
+    // The first server's two addresses: the bound expired inside the second.
+    await until(() => server.connections() === 2, 5_000, "the first server's second address");
+    // An absence: the abandoned connect() moves to the next server once that address times out,
+    // about 600 ms after it opened, and would look its name up then.
+    await pause(1_500);
+    expect(looked).toEqual(["first.test"]);
   }, 30_000);
 
   // nats.js looks a name up before its timer starts, so a lookup that never answers would hold

@@ -6,7 +6,7 @@
 // a stand-in `codex` binary that writes each `codex queue` it is asked for to a file, which is how
 // every line reaches an idle Codex session (`../src/codex/codex-delivery`).
 import { expect, test } from "bun:test"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
@@ -64,7 +64,7 @@ test(
         PROCESS_WAIT_MS,
       )
       expect(await queued()).toContain(
-        "because its NATS connection failed: Authorization Violation",
+        "because its relay subject could not be opened: Authorization Violation",
       )
 
       // The hub admits again: the relay subject is taken on a new connection and a new epoch is
@@ -250,10 +250,27 @@ test(
       },
     })
     const { broker, server, stderr, state } = run
+    // The server's entry among this `codex` process's servers (the test process is the session's
+    // `codex`, `codexSession`): its stop removes it, so an empty directory is the stop having run.
+    const servers = join(run.stateDirectory, "codex-servers", String(process.pid))
+    const entries = async () =>
+      (await readdir(servers).catch(() => [] as string[])).filter((name) => name.endsWith(".json"))
     try {
       await waitFor(async () => asked, "the first registration, held", state, PROCESS_WAIT_MS)
+      await waitFor(
+        async () => (await entries()).length === 1,
+        "the server's entry",
+        state,
+        PROCESS_WAIT_MS,
+      )
       server.kill("SIGTERM")
-      await Bun.sleep(300)
+      // The stop runs before the held registration is answered: it has removed the entry.
+      await waitFor(
+        async () => (await entries()).length === 0,
+        "the stop to have run",
+        state,
+        PROCESS_WAIT_MS,
+      )
       held.resolve()
       const exited = await Promise.race([
         server.exited,

@@ -1,5 +1,5 @@
 diff --git a/lib/nats-base-client/protocol.js b/lib/nats-base-client/protocol.js
-index 63fac09631b888081e0b2b2ab4dd24854a6ae286..efb6690f4f2909490be5134235ff5cace49037f2 100644
+index 63fac09631b888081e0b2b2ab4dd24854a6ae286..2982a497c7ec1ee4e5eec07eef752b3c885680ce 100644
 --- a/lib/nats-base-client/protocol.js
 +++ b/lib/nats-base-client/protocol.js
 @@ -348,9 +348,30 @@ class ProtocolHandler {
@@ -72,7 +72,20 @@ index 63fac09631b888081e0b2b2ab4dd24854a6ae286..efb6690f4f2909490be5134235ff5cac
                  this.connected = true;
                  this.connectError = undefined;
                  this.sendSubscriptions();
-@@ -476,6 +509,18 @@ class ProtocolHandler {
+@@ -468,6 +501,12 @@ class ProtocolHandler {
+     _doDial(srv) {
+         return __awaiter(this, void 0, void 0, function* () {
+             const { resolve } = this.options;
++            // A dial its caller gave up on looks no further server's name up either: the dial loop
++            // takes the next server after this one fails, and a lookup that never answers would
++            // keep the abandoned connect() pending.
++            if (this.options.abandonSignal && this.options.abandonSignal.aborted) {
++                throw core_1.NatsError.errorForCode(core_1.ErrorCode.Timeout);
++            }
+             const alts = yield srv.resolve({
+                 fn: (0, transport_1.getResolveFn)(),
+                 debug: this.options.debug,
+@@ -476,6 +515,18 @@ class ProtocolHandler {
              });
              let lastErr = null;
              for (const a of alts) {

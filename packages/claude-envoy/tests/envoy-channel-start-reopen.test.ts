@@ -125,7 +125,9 @@ for (const host of HOSTS) {
           stderr().includes("envoy-channel: this session receives nothing ("),
         )
         expect(count(stderr(), "this session receives nothing")).toBe(1)
-        expect(stderr()).toContain("because its NATS connection failed: Authorization Violation")
+        expect(stderr()).toContain(
+          "because its relay subject could not be opened: Authorization Violation",
+        )
         expect(run.sessions).toEqual([])
 
         // The hub admits again: the session registers with its relay on a new connection.

@@ -193,8 +193,10 @@ const NEVER_CURED: Record<string, true> = {
 /**
  * Whether dialing again can cure `error`: a dial past its bound, a socket's or a resolver's
  * failure (`ECONNRESET`, `EAI_AGAIN`), or nats.js's for the server's close or refusal. An
- * authorization refusal is cured only for a credential renewed between dials (a broker token,
- * which sets `ignoreAuthErrorAbort`): any other presents the same credential again. Never cured:
+ * authorization refusal is dialed again only under a broker token (which sets
+ * `ignoreAuthErrorAbort`), whose authenticator mints a new token once the held one expires: while
+ * the held token is live it is presented again on every redial, the same as any other credential,
+ * which never changes between dials, so only its expiry can cure the refusal. Never cured:
  * an error with no code (a hub that runs no auth service, `noAuthService`; an INFO that does not
  * parse), a runtime's programming error (`ERR_INVALID_URL`), and nats.js's errors for its own
  * options.

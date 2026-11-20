@@ -56,6 +56,12 @@ export function taskWasAbandoned(error: unknown): boolean {
  */
 class StepRefused extends Error {}
 
+/** Whether `error` is a step the task's handle refused (a task abandoned at its deadline, or one
+ *  whose session moved): no failure of the work, so no reason a notice may name. */
+export function stepWasRefused(error: unknown): boolean {
+  return error instanceof StepRefused;
+}
+
 /** Whether a topic served the session's role, and how many roles had ended, at one moment. */
 export interface RoleSnapshot {
   readonly roleBound: boolean;
