@@ -54,9 +54,11 @@ and Envoy skills, the text skills and the secrets broker's client (`agent-secret
 `skill://dispatch/...`, which resolves by name once both are installed.
 
 `scripts/pi-plugin-prepack.sh` at the repository root is both plugins' `prepack`: it builds the one
-entry, writes the notices and stages this package's partition of `skills/`. It refuses to pack with
-the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release workflow's
-`pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e pack step
+entry, writes the notices, stages this package's partition of `skills/`, and takes group and other
+write from every path `files` ships, so the tarball's modes do not depend on the packer's umask.
+It refuses to pack with the committed manifest, whose `omp.extensions` names
+`extensions/legion.ts`; the release workflow's `pi_legion_build` job
+(`.github/workflows/release.yaml`), the worker image and the e2e pack step
 rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
 afterwards: the build job's tree is discarded, and nothing commits a version — the committed
 manifest's `.version` stays where it last was, and the `pi-legion-v` tag the release makes records

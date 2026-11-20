@@ -117,9 +117,14 @@ describe("the dispatch CLI the package ships", () => {
       // left behind: a checkout that had none must have none again. A developer who had already
       // run `bun run build` keeps theirs.
       distWasBuilt = existsSync(dist);
+      // Under umask 0002, the one a systemd user unit runs with: it gives group write to what the
+      // build writes, so the modes the tarball carries below come from the prepack's own
+      // normalization, not from the packer's umask.
       const pack = Bun.spawnSync(
         [
           "bash",
+          "-c",
+          'umask 0002 && exec bash "$0" "$@"',
           path.join(REPO_ROOT, "scripts/e2e/lib/pack-plugin.sh"),
           "pi-envoy",
           path.join(work, "out"),
@@ -146,7 +151,10 @@ describe("the dispatch CLI the package ships", () => {
       const listing = Bun.spawnSync(["tar", "tvzf", tarball]).stdout.toString().split("\n");
       const entry = (name: string) => listing.find((line) => line.endsWith(` package/${name}`));
       expect(entry("bin/dispatch")).toStartWith("-rwxr-xr-x ");
-      expect(entry("dist/dispatch.js")).toBeDefined();
+      expect(entry("dist/dispatch.js")).toStartWith("-rw-r--r-- ");
+      // No packed file or directory is writable by group or others, whatever umask packed it.
+      const writable = listing.filter((line) => /^.{5}w|^.{8}w/.test(line));
+      expect(writable).toEqual([]);
 
       expect(await readdir(path.join(unpacked, "bin"))).toEqual(["dispatch"]);
       const help = Bun.spawnSync([path.join(unpacked, "bin/dispatch"), "--help"], {

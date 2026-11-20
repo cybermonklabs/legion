@@ -101,3 +101,13 @@ else
 fi
 rm -rf dist/skills
 stage_skills dist/skills
+
+# The tarball keeps each file's mode as it is on disk, and that mode is the packer's umask's: a
+# checkout and a build under umask 0002, which a systemd user unit runs with, give 0775 and 0664
+# where umask 022 gives 0755 and 0644. So every path the manifest's `files` ships loses group and
+# other write here. Every user gets read, search on each directory, and execute on each file that
+# is already executable (chmod's X). The published modes are then the same whoever packs.
+while IFS= read -r shipped; do
+  [ -e "$shipped" ] || continue
+  chmod -R go-w,a+rX "$shipped"
+done < <(jq -r '.files[]' package.json)
