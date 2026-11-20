@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { chmod, readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -111,15 +111,36 @@ describe("the dispatch CLI the package ships", () => {
     const work = temporaryDirectory("pi-envoy-pack");
     let tarball = "";
     let unpacked = "";
+    const plantedModes = new Map<string, number>();
 
     beforeAll(async () => {
       // The pack builds `dist/`, which .gitignore hides, so `git status` would never report it
       // left behind: a checkout that had none must have none again. A developer who had already
       // run `bun run build` keeps theirs.
       distWasBuilt = existsSync(dist);
-      // Under umask 0002, the one a systemd user unit runs with: it gives group write to what the
-      // build writes, so the modes the tarball carries below come from the prepack's own
-      // normalization, not from the packer's umask.
+      // A checkout made under umask 0002, the one a systemd user unit runs with, leaves group write
+      // on every file it writes. The row makes that checkout itself, whatever umask checked this
+      // one out: each file of the package root and of bin/ gets group write until the pack is done
+      // (git keeps no group bit, so `git status` does not change). The pack also runs under umask
+      // 0002, so what the build writes is group-writable too. The modes the tarball carries below
+      // then come from the prepack's own normalization alone.
+      for (const dir of [PACKAGE_ROOT, path.join(PACKAGE_ROOT, "bin")]) {
+        for (const name of await readdir(dir)) {
+          const file = path.join(dir, name);
+          const entry = await stat(file);
+          if (!entry.isFile()) continue;
+          plantedModes.set(file, entry.mode & 0o7777);
+          await chmod(file, (entry.mode & 0o7777) | 0o020);
+        }
+      }
+      // The planting took: the files every pack ships, whatever `files` says, and the executable
+      // the package ships are group-writable now, as a umask 0002 checkout leaves them.
+      const notGroupWritable: string[] = [];
+      for (const file of ["package.json", "README.md", "bin/dispatch"]) {
+        if (((await stat(path.join(PACKAGE_ROOT, file))).mode & 0o020) === 0)
+          notGroupWritable.push(file);
+      }
+      expect(notGroupWritable).toEqual([]);
       const pack = Bun.spawnSync(
         [
           "bash",
@@ -143,7 +164,8 @@ describe("the dispatch CLI the package ships", () => {
       ).toBe(0);
     }, 120_000);
 
-    afterAll(() => {
+    afterAll(async () => {
+      for (const [file, mode] of plantedModes) await chmod(file, mode);
       if (!distWasBuilt) rmSync(dist, { recursive: true, force: true });
     });
 

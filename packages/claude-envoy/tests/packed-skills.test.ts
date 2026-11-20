@@ -88,7 +88,15 @@ beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "claude-envoy-packed-skills-"))
   skillNames = (await readdir(join(packageRoot, "skills"))).sort()
   packageCopy = await copyPackage("packed")
-  await ran([process.execPath, "pm", "pack"], packageCopy)
+  // As a checkout and a pack under umask 0002 leave them, the umask a systemd user unit runs
+  // with: every file of the copy group-writable, the repository's skills the prepack copies in
+  // among them (a copy of its own here, so the checkout's are not touched), and the pack's own
+  // writes too. The modes the tarball carries then come from the prepack's normalization alone.
+  const repositorySkills = join(scratch, "packed", "repository", "skills")
+  await rm(repositorySkills)
+  await cp(join(repoRoot, "skills"), repositorySkills, { recursive: true })
+  await ran(["chmod", "-R", "g+w", join(scratch, "packed")], scratch)
+  await ran(["bash", "-c", 'umask 0002 && exec "$0" pm pack', process.execPath], packageCopy)
   const packed = (await readdir(packageCopy)).filter((entry) => entry.endsWith(".tgz"))
   expect(packed).toHaveLength(1)
   tarball = join(packageCopy, packed[0] as string)
@@ -124,6 +132,15 @@ test("the pack resolves every skills link into the skill's own files", async () 
 
 test("the pack puts the links back, leaving the package as it found it", async () => {
   expect(await links(packageCopy)).toEqual(tracked())
+})
+
+// The tarball keeps each member's mode as the disk had it, so the published modes would be the
+// packer's umask's: a pack from a umask 0002 checkout shipped package.json and every staged skill
+// file group-writable. No member may be writable by group or others, whatever umask packed it.
+test("no packed member is writable by group or others, though the copy was packed under umask 0002", async () => {
+  const listed = (await ran(["tar", "-tvzf", tarball], scratch)).stdout.split("\n")
+  expect(listed.filter((line) => /^.{5}w|^.{8}w/.test(line))).toEqual([])
+  expect(listed.find((line) => line.endsWith(" package/package.json"))).toStartWith("-rw-r--r-- ")
 })
 
 test("the check passes a tarball the pack made, naming what it carries", async () => {

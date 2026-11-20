@@ -17,7 +17,9 @@
 # rather than deleting them, and the list of skills is read off the links rather than written out
 # a second time here.
 #
-# Where no postpack runs — bun runs none when a pack fails — `--restore` puts the links back.
+# Where no postpack runs — bun runs none when a pack fails — `--restore` puts the links back. The
+# prepack's last step takes group and other write from every shipped path, so the published modes
+# do not depend on the packer's umask.
 #
 # npm and bun both run these with the package root as the working directory, as that script's
 # header says, so the package is $PWD and the repository $PWD/../..:
@@ -144,3 +146,28 @@ for name in "${names[@]}"; do
   cp -R "$repo_skills/$name" "skills/$name"
 done
 trap - EXIT
+
+# The tarball keeps each shipped file's mode as it is on disk, and that mode is the packer's umask's:
+# a checkout and a pack under umask 0002, which a systemd user unit runs with, give 0664 and 0775
+# where umask 022 gives 0644 and 0755, and the copies above take the packer's umask too. So every
+# path the pack ships loses group and other write here: each `files` entry that exists (a
+# `<dir>/**` entry is its directory), and what `bun pm pack` ships whatever `files` says (bun
+# 1.4.4: the manifest and the root's README*, LICENSE* and LICENCE* files). Every user keeps read,
+# search on each directory and execute on each file already executable (chmod's X).
+command -v jq > /dev/null 2>&1 || refuse "jq is required to set the shipped files' modes"
+files_list=$(jq -er '.files | if type == "array" then .[] else error("no files list") end' package.json) ||
+  refuse "package.json has no files list to set the shipped files' modes from"
+shopt -s nocaseglob
+shipped=(package.json README* LICENSE* LICENCE*)
+shopt -u nocaseglob
+while IFS= read -r entry; do
+  case $entry in
+    */\*\*) root=${entry%/\*\*} ;;
+    *[*?[]*) refuse "files entry \"$entry\" is a pattern whose paths this prepack cannot set the modes of; list a path, or a directory as <dir>/**" ;;
+    *) root=$entry ;;
+  esac
+  if [ -e "$root" ]; then
+    shipped+=("$root")
+  fi
+done <<< "$files_list"
+chmod -R go-w,a+rX -- "${shipped[@]}"
