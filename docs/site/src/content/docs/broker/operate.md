@@ -873,7 +873,12 @@ act as, by email address or unique id, which `generateIdToken` is called on; and
 `AGENT_SECRETS_MACHINE_AUDIENCE`, here the `aud` of the token that mint returns, the client id the
 broker checks against `BROKER_GOOGLE_OIDC_AUDIENCE`. A `pool` machine missing any of the four
 trades nothing and its helper restart-loops, as Azure dev boxes did for want of the token file
-(example-org/deployment#2200). `AGENT_SECRETS_SESSION` names the session a trade writes under
+(example-org/deployment#2200). `github-actions` is a GitHub Actions job's own OIDC token: the
+client asks the runner's endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`, with the bearer
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, both of which the runner sets in a job granted
+`id-token: write`) for a token of `AGENT_SECRETS_MACHINE_AUDIENCE` at every trade, and presents
+it as a workflow run's token. A job with no runner endpoint reads that token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`. `AGENT_SECRETS_SESSION` names the session a trade writes under
 for a caller that acts as no session of its own — `agent-secrets`, the helper, a daemon — and is
 the only name such a caller has. A caller that is a session writes under its own session id and
 reads that variable for nothing: an agent session's id is minted when the session starts, and its

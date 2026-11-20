@@ -38,3 +38,27 @@ func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
 	}
 	requireAnsweredTree(t, treesRequest(t, handler, target, true), path, observed)
 }
+
+// A check CI proves holds the results its job recorded in recorded_results, apart from results,
+// where the result derived from the job's run stands (keepFieldsOlderCommandsRead moves them
+// there). Each of them carries its observed text's tree as a result in results does: the read
+// registers each result's tree only once no result is moved any more.
+func TestACICheckRecordedResultsCarryTheirObservedTrees(t *testing.T) {
+	rig := newCIJobRig(t)
+	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
+	const observed = "The job ran `go test`: **pass**."
+	result := jobResultOf("c1", "pass")
+	result["observed"] = observed
+	jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), result))
+
+	target := "/api/v1/issues/" + rig.issue + "/results"
+	if check, _ := valueAt(t, treesRequest(t, rig.handler, target, true), "checks.0.block_id"); string(check) != `"c1"` {
+		t.Fatalf("the read's first check is %s, want c1, the check CI proves", check)
+	}
+	const path = "checks.0.recorded_results.0.observed_tree"
+	tree := treeAt(t, rig.handler, target, path)
+	if got, want := treeText(t, tree), "The job ran go test: pass."; got != want {
+		t.Errorf("%s reads %q, want the observed text's words without its marks, %q", path, got, want)
+	}
+	requireAnsweredTree(t, treesRequest(t, rig.handler, target, true), path, observed)
+}

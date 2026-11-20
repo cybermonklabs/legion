@@ -480,12 +480,17 @@ func requestKeyHeader(r *http.Request) (key string, present bool, err error) {
 }
 
 // requestKeyLogin is whom a caller's keys belong to: a person's canonical login, whether they write
-// from the dashboard or through an agent's personal token, a service token's subject, or the shared
-// agent token, which names nobody.
+// from the dashboard or through an agent's personal token, a CI job's run for its results token,
+// a service token's subject, or the shared agent token, which names nobody. A results token names
+// its result entry's person, who sent nothing (R12), so its keys are its run's,
+// `ci-run:<repository>#<check run>`: the repository and the check run of the job, which no other
+// job of any run shares, and two jobs of one entry never replay each other's writes.
 func requestKeyLogin(actor model.Actor, human bool) string {
 	switch {
 	case human:
 		return model.CanonicalLogin(actor.ID)
+	case actor.Credential != nil && actor.Credential.ResultsOnly && actor.Credential.CI != nil:
+		return "ci-run:" + actor.Credential.CI.Repository + "#" + actor.Credential.CI.CheckRunID
 	case actor.Owner != nil:
 		return model.CanonicalLogin(*actor.Owner)
 	case actor.Service != nil:

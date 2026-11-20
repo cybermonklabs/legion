@@ -45,6 +45,7 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+#     [VERIFICATION_RESULTS_E2E_CASES=<case>,<case>] \
 #     bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
@@ -66,6 +67,10 @@
 # line for its flag; naming the command of a worktree of the head whose rule refuses every value
 # that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
 # --negative-control.
+# VERIFICATION_RESULTS_E2E_CASES is optional and names the cases to run, commas between them; unset
+# or empty, every case runs. The first case, `the-results-route-is-served`, always runs. A name no
+# case has, or a list that names no case but the first, exits 2 naming it, before anything is
+# built or started.
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
 # (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
@@ -99,6 +104,7 @@ timeout_hook=''
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
 dispatch_bin=${DISPATCH_BIN:-}
 dispatch_cli=${VERIFICATION_RESULTS_E2E_DISPATCH_CLI:-}
+cases=${VERIFICATION_RESULTS_E2E_CASES:-}
 database_url=${DATABASE_URL:-}
 dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
 envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
@@ -148,6 +154,15 @@ trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
 begin prerequisites
+# The list of cases is checked first, before any other input and before anything is built or
+# started: a name no case has, or a list that names no case but the first, exits 2 naming it, so a
+# wrong list never runs into a pass (verification-results.ts, casesRefusal).
+if [ -n "$cases" ]; then
+  command -v bun >/dev/null || fail "bun is not on PATH"
+  VERIFICATION_RESULTS_E2E_CASES=$cases bun "$root/scripts/e2e/verification-results.ts" --check-cases ||
+    exit 2
+  note "cases: the-results-route-is-served, then $cases"
+fi
 [ -n "$database_url" ] ||
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 for tool in go bun curl psql openssl python3; do
@@ -277,11 +292,15 @@ status=0
 VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
   VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
   VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+  VERIFICATION_RESULTS_E2E_CASES=$cases \
   bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
   status=$?
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;
   1) fail "a case failed (above)" ;;
-  *) fail "the driver stopped before its cases (status $status)" ;;
+  *)
+    echo "FAIL $check: the driver stopped before its cases, or ran none of VERIFICATION_RESULTS_E2E_CASES after the first (status $status)" >&2
+    exit 2
+    ;;
 esac

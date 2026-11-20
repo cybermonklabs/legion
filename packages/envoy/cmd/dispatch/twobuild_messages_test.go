@@ -99,34 +99,42 @@ func requireBusSettings(t *testing.T, js natsgo.JetStreamContext, want busSettin
 	}
 }
 
-// pullRequestFake is the loopback GitHub both builds' intakes call while they handle a merged pull
-// request: the App's installation and token, the pull request, and its first commit. It is one
-// state served by one server per build (serve), so each handling is recorded with the build that
-// did it.
+// pullRequestFake is the loopback GitHub both builds' processes call: the App's installation and
+// token, the reads a delivery reconcile pass makes (an empty pull-request search and empty
+// workflow run and job listings, as multiprocess_test.go's githubFakeAnswer answers them, which
+// this tag does not compile), and a merged pull request and its first commit. It is one state
+// served by one server per build (serve), so each call is recorded with the build that made it.
 //
-// A handling is counted at the pull request's own fetch, GET /repos/{owner}/{repo}/pulls/{number}
-// (delivery.FetchPullRequest), as the multiprocess suite's mergedPullRequestFake counts one: the
-// merge path's first GitHub call after its head write (recordPullRequestHead pages the commits
-// before it), and the one call it makes exactly once however the handling then ends. The commit
-// listing is counted by neither suite, and a merged pull request whose
-// payload names its head is paged twice for it -- once to attribute the head row, once for the
-// completion's session trailers.
+// The pull request is what GitHub answers for a merge of the deploy repository by a population
+// author: labelled non-task, its head in acme/deploy, and titled with the issue the row's pull
+// requests are for (setIssue). So a handling of its message runs the merge path to its end: the
+// head row with its attribution's event, the delivery row (delivery.UpsertPullRequest) and the
+// deploy record (issue.deployed). The title also names the build whose server answered
+// (pullRequestTitle), which is how the row tells which build wrote a delivery row: the row stores
+// the title its handling's own fetch read (deliveryWrites).
 //
-// The fake takes delay to answer that listing, which spreads the messages' handling over a stop,
-// and a listing whose process went away while it waited (the request's context ended) is counted
-// as abandoned. A handling counted is therefore not a handling finished: one a stop gave up
-// unfinished is counted at its fetch all the same, and NATS delivers that message again, which
-// is one of the repeats a hand-over's in-flight window bounds. Anything else is answered with an
-// empty list.
+// A read is not a handling. A reconcile reads the same pull request through the same call when it
+// judges again a merged row an older attribution rule judged (the backfill a raised
+// delivery.AttributionRuleVersion starts, ListStalePullRequestHeads), and writes its head row and
+// nothing else. The row judges each handling by the delivery row it wrote, and keeps the reads
+// only to name them in its log.
+//
+// The fake takes delay to answer the commit listing, which spreads the messages' handling over a
+// stop, and a listing whose process went away while it waited (the request's context ended) is
+// counted as abandoned: NATS delivers that message again. A request that would change anything on
+// GitHub (any method but GET, the token mint and the GraphQL search, a read, excepted) is recorded
+// as a write. Handling a merged pull request posts nothing to GitHub, so the row requires none.
 type pullRequestFake struct {
 	delay time.Duration
 
 	mu        sync.Mutex
-	done      map[int][]handling
+	issue     string
+	read      map[int][]handling
 	abandoned map[int]int
+	writes    []string
 }
 
-// handling is one done handling of a pull request: the build whose server answered it, and when.
+// handling is one handling of a pull request, or one read of it: the build that made it, and when.
 type handling struct {
 	build string
 	at    time.Time
@@ -135,20 +143,49 @@ type handling struct {
 func (h handling) String() string { return h.build + " at " + h.at.Format("15:04:05.000") }
 
 func startPullRequestFake(delay time.Duration) *pullRequestFake {
-	return &pullRequestFake{delay: delay, done: map[int][]handling{}, abandoned: map[int]int{}}
+	return &pullRequestFake{delay: delay, read: map[int][]handling{}, abandoned: map[int]int{}}
 }
 
-// serve starts a server on the fake's state whose done handlings are build's, and returns its URL:
-// the DISPATCH_GITHUB_API_BASE of build's processes.
+// setIssue makes issue the key every pull request's title names from now on.
+func (f *pullRequestFake) setIssue(issue string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issue = issue
+}
+
+// pullRequestTitleBuild is the text of a pull request's title after which pullRequestTitle names
+// the build whose GitHub answered.
+const pullRequestTitleBuild = ": A pull request, as the GitHub of the "
+
+// pullRequestTitle is the title build's GitHub answers for a pull request of issue.
+func pullRequestTitle(issue, build string) string {
+	return issue + pullRequestTitleBuild + build + " answers it"
+}
+
+// buildOfTitle is the build a stored title names (pullRequestTitle), "" for any other title.
+func buildOfTitle(title string) string {
+	_, rest, found := strings.Cut(title, pullRequestTitleBuild)
+	if !found {
+		return ""
+	}
+	build, _ := strings.CutSuffix(rest, " answers it")
+	return build
+}
+
+// serve starts a server on the fake's state whose calls are build's, and returns its URL: the
+// DISPATCH_GITHUB_API_BASE of build's processes.
 func (f *pullRequestFake) serve(t *testing.T, build string) string {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"id":1,"app_slug":"twobuild","permissions":{"contents":"read","actions":"read","pull_requests":"read"}}`)
+		_, _ = io.WriteString(w, `{"id":1,"app_slug":"twobuild","account":{"login":"acme"},"permissions":{"contents":"read","actions":"read","pull_requests":"read"}}`)
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = fmt.Fprintf(w, `{"token":"ghs_twobuild","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	})
+	mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -157,9 +194,20 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 			return
 		}
 		f.mu.Lock()
-		f.done[number] = append(f.done[number], handling{build: build, at: time.Now()})
+		f.read[number] = append(f.read[number], handling{build: build, at: time.Now()})
+		issue := f.issue
 		f.mu.Unlock()
-		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A pull request","user":{"login":"octocat"},"labels":[],"merged_at":"2026-10-27T00:00:00Z","additions":1,"deletions":1}`, number)
+		title, err := json.Marshal(pullRequestTitle(issue, build))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"number":%d,"title":%s,"html_url":"https://github.com/acme/deploy/pull/%d",`+
+			`"user":{"login":"octocat"},"labels":[{"name":"non-task"}],"state":"closed","merged":true,`+
+			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
+			`"additions":1,"deletions":1,"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}},`+
+			`"base":{"ref":"main"}}`, number, title, number, number, number)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -177,25 +225,191 @@ func (f *pullRequestFake) serve(t *testing.T, build string) string {
 		}
 		_, _ = io.WriteString(w, `[{"sha":"0000000000000000000000000000000000000001","commit":{"message":"A change.","author":{"date":"2026-10-26T00:00:00Z"},"committer":{"date":"2026-10-26T00:00:00Z"}}}]`)
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			f.mu.Lock()
+			f.writes = append(f.writes, build+": "+r.Method+" "+r.URL.Path)
+			f.mu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, "[]")
+		_, _ = io.WriteString(w, reconcileListing(r.URL.Path))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server.URL
 }
 
-// handled is each pull request's done handlings, by number, in the order they were done, and how
-// many times a stopping process abandoned it.
-func (f *pullRequestFake) handled() (done map[int][]handling, abandoned map[int]int) {
+// reconcileListing is GitHub's answer to a listing a reconcile pass reads: the App's one
+// installation, on acme/deploy; that installation's one repository; and the deploy and PR-checks
+// workflows' runs and a run's jobs, with nothing in them, in the shape GitHub gives each. Any other
+// path is answered with an empty list.
+func reconcileListing(path string) string {
+	switch {
+	case path == "/app/installations":
+		return `[{"id":1,"app_slug":"twobuild","account":{"login":"acme"},"permissions":{"contents":"read","actions":"read","pull_requests":"read"}}]`
+	case path == "/installation/repositories":
+		return `{"total_count":1,"repositories":[{"id":1,"name":"deploy","full_name":"acme/deploy","private":true,"owner":{"login":"acme"}}]}`
+	case strings.Contains(path, "/actions/workflows/") && strings.HasSuffix(path, "/runs"):
+		return `{"total_count":0,"workflow_runs":[]}`
+	case strings.Contains(path, "/actions/runs/") && strings.HasSuffix(path, "/jobs"):
+		return `{"total_count":0,"jobs":[]}`
+	}
+	return "[]"
+}
+
+// calls is each pull request's reads, by number, in the order they were made; how many times a
+// stopping process abandoned its commit listing; and every write a build sent GitHub.
+func (f *pullRequestFake) calls() (read map[int][]handling, abandoned map[int]int, writes []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	done = make(map[int][]handling, len(f.done))
-	for number, handlings := range f.done {
-		done[number] = slices.Clone(handlings)
+	read = make(map[int][]handling, len(f.read))
+	for number, reads := range f.read {
+		read[number] = slices.Clone(reads)
 	}
-	return done, maps.Clone(f.abandoned)
+	return read, maps.Clone(f.abandoned), slices.Clone(f.writes)
+}
+
+// deliveryWritesTable is the table recordDeliveryWrites has the database append each write of a
+// delivery row to.
+const deliveryWritesTable = "twobuild_delivery_writes"
+
+// recordDeliveryWrites has the row's database record every write of a pull request's delivery
+// row, the effect a handling of a merged pull request's message completes with: a trigger on
+// delivery_pull_requests, after an insert or an update that sets the title, appends the row's
+// repository, number and title to a table of the row's own, at the database's clock. The title is
+// set by delivery.UpsertPullRequest alone (completePullRequest's write), so the deploy record's
+// marker and the attribution's own updates, which set other columns, are no handling's; an upsert
+// its `where` refuses updates no row, and is none either. A redelivery writes the same facts again,
+// so the table holding a second write of a pull request's row is the only trace a second handling
+// leaves in the store. The database runs on the test's host, so its clock is the test's.
+func recordDeliveryWrites(t *testing.T, builds *twoBuilds) {
+	t.Helper()
+	for _, statement := range []string{
+		`create table ` + deliveryWritesTable + ` (
+			id bigint generated always as identity primary key,
+			repo text not null, number int not null, title text not null,
+			at timestamptz not null default clock_timestamp())`,
+		`create function ` + deliveryWritesTable + `_record() returns trigger language plpgsql as $$
+		begin
+			insert into ` + deliveryWritesTable + ` (repo, number, title) values (new.repo, new.number, new.title);
+			return null;
+		end $$`,
+		`create trigger ` + deliveryWritesTable + ` after insert or update of title on delivery_pull_requests
+			for each row execute function ` + deliveryWritesTable + `_record()`,
+	} {
+		if _, err := builds.database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("record the delivery rows' writes: %v", err)
+		}
+	}
+}
+
+// deliveryWrites is every write of a delivery row of acme/deploy, by pull request number, in the
+// order the database made them, each with the build whose GitHub answered the fetch of the
+// handling that wrote it (buildOfTitle).
+func deliveryWrites(t *testing.T, builds *twoBuilds) map[int][]handling {
+	t.Helper()
+	rows, err := builds.database.Pool.Query(context.Background(),
+		`select number, title, at from `+deliveryWritesTable+` where repo = 'acme/deploy' order by at, id`)
+	if err != nil {
+		t.Fatalf("read the delivery rows' writes: %v", err)
+	}
+	defer rows.Close()
+	written := map[int][]handling{}
+	for rows.Next() {
+		var number int
+		var title string
+		var at time.Time
+		if err := rows.Scan(&number, &title, &at); err != nil {
+			t.Fatalf("read the delivery rows' writes: %v", err)
+		}
+		written[number] = append(written[number], handling{build: buildOfTitle(title), at: at})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the delivery rows' writes: %v", err)
+	}
+	return written
+}
+
+// pullRequestEvents is how many events of eventType the database holds for each pull request of
+// acme/deploy, by number: each delivery event names its pull request in its payload.
+func pullRequestEvents(t *testing.T, builds *twoBuilds, eventType string) map[int]int {
+	t.Helper()
+	rows, err := builds.database.Pool.Query(context.Background(), `
+		select (payload->>'number')::int, count(*) from events
+		where type = $1 and payload->>'repo' = 'acme/deploy' group by 1`, eventType)
+	if err != nil {
+		t.Fatalf("count the %s events: %v", eventType, err)
+	}
+	defer rows.Close()
+	counts := map[int]int{}
+	for rows.Next() {
+		var number, count int
+		if err := rows.Scan(&number, &count); err != nil {
+			t.Fatalf("count the %s events: %v", eventType, err)
+		}
+		counts[number] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the %s events: %v", eventType, err)
+	}
+	return counts
+}
+
+// shipPullRequestsTo creates the issue the row's pull requests are for, in a project whose default
+// repository is acme/deploy, so the key in a pull request's title is held to it (attribution.go),
+// and stores a deploy of acme/deploy's main whose production job succeeded after every one of
+// them merged, so each has shipped once its delivery row is written: a handling then appends the
+// pull request's attribution event and its deploy record as well. It answers the issue's key.
+func shipPullRequestsTo(t *testing.T, builds *twoBuilds) string {
+	t.Helper()
+	ctx := context.Background()
+	project := uniqueProjectKey(t, "PRS")
+	builds.current().createProject(t, project, "Merged pull requests")
+	if _, err := builds.database.Pool.Exec(ctx, `
+		insert into repo_projects (repo, project, is_default, created_by)
+		values ('acme/deploy', $1, true, '{"kind":"system","id":"test"}'::jsonb)
+	`, project); err != nil {
+		t.Fatalf("make acme/deploy %s's default repository: %v", project, err)
+	}
+	issue, _ := createDocument(t, builds.current(), project, "The work the pull requests ship", "The work.")
+	const runID = 7001
+	created := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	done := created.Add(time.Hour)
+	run, job := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryJobConclusionSuccess
+	if err := delivery.UpsertRun(ctx, builds.database.Pool, delivery.DeliveryRun{
+		Repo: "acme/deploy", RunID: runID, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: fmt.Sprintf("%040d", runID),
+		HeadCommitAt: created, StartedAt: created, CreatedAt: &created, CompletedAt: &done, Conclusion: &run,
+		URL: fmt.Sprintf("https://github.com/acme/deploy/actions/runs/%d", runID), HeadBranch: new("main"), Event: new("push"),
+	}); err != nil {
+		t.Fatalf("store the deploy run: %v", err)
+	}
+	if err := delivery.UpsertRunJobs(ctx, builds.database.Pool, "acme/deploy", runID, []delivery.DeliveryRunJob{{
+		Repo: "acme/deploy", RunID: runID, Name: "production", StartedAt: &created, CompletedAt: &done, Conclusion: &job,
+	}}, true); err != nil {
+		t.Fatalf("store the deploy run's production job: %v", err)
+	}
+	return issue
+}
+
+// headsAnOlderRuleJudged is the merged pull requests of acme/deploy whose head row a rule older
+// than this build's judged (pull_request_heads.attribution_rule), by number: the rows this build's
+// reconcile offers again once (ListStalePullRequestHeads).
+func headsAnOlderRuleJudged(t *testing.T, builds *twoBuilds) []int {
+	t.Helper()
+	rows, err := builds.database.Pool.Query(context.Background(), `
+		select number from pull_request_heads
+		where repo = 'acme/deploy' and state = 'merged' and attribution_rule < $1 order by number`,
+		delivery.AttributionRuleVersion)
+	if err != nil {
+		t.Fatalf("read the heads an older rule judged: %v", err)
+	}
+	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		t.Fatalf("read the heads an older rule judged: %v", err)
+	}
+	return numbers
 }
 
 // seedPullRequestSettings writes the delivery settings the intakes route by: acme/deploy as the
@@ -214,24 +428,24 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 }
 
 // publishMergedPullRequest publishes a GitHub-shaped message, a merge of pull request number of
-// acme/deploy by octocat, on notifications.github.acme.deploy.pr.<number>, with delivery as its
-// message id, and answers the sequence the stream stored it at. That sequence is what tells a
-// repeat of the message from a replay of settled work: a take-over creates the durable again at
-// the ack floor it found, so the messages it delivers again are exactly those above that floor.
+// acme/deploy by octocat, titled for issue, on notifications.github.acme.deploy.pr.<number>, with
+// delivery as its message id, and answers the sequence the stream stored it at. That sequence is
+// what tells a repeat of the message from a replay of settled work: a take-over creates the durable
+// again at the ack floor it found, so the messages it delivers again are exactly those above that
+// floor.
 //
-// The payload names the head -- its repository, its branch and its commit -- as
-// publishMergedPullRequests does in multiprocess_test.go, so that handling it once settles the
-// pull request's head row for good. An envelope naming no head repository attributes nobody, and
-// the reconcile's merged arm re-reads every merged row credited to nobody once per rule version
-// (reconcilePullRequestHeads): that re-read fetches the pull request's commits, which is what
-// this row counts as a handling, so a message above the ack floor could be read a second time by
-// the taking build and pass as a replay. With the head named, the one repeat the row can see is a
-// NATS redelivery.
-func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
+// The payload names the head -- its repository, its branch and its commit -- and the title and
+// URL, as publishMergedPullRequests does in multiprocess_test.go, so that handling it once judges
+// the pull request's head row whole: the title's key is held to acme/deploy, and the row is
+// stamped read and credited to the issue. An envelope naming no head repository, or no title,
+// attributes nobody, and a reconcile's later read of GitHub would then move the row to the issue
+// and append an attribution event a handling did not.
+func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, issue, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true",
 		"repo": "acme/deploy", "number": strconv.Itoa(number), "author": "octocat",
+		"title": issue + ": A pull request", "url": fmt.Sprintf("https://github.com/acme/deploy/pull/%d", number),
 		"head_repo": "acme/deploy", "head_ref": "a-branch", "head_sha": fmt.Sprintf("%040d", number),
 	})
 	if err != nil {
@@ -338,10 +552,12 @@ func (h handOver) replayed(number int) bool {
 	return h.sequences[number] >= h.start || h.handedBack[number]
 }
 
-// publishAcrossStop publishes a merged pull request for each of numbers while holder delivers from
-// the events durable, stops holder gracefully once ten of them are handled, and waits for standby to
-// take both delivery durables over and for every one of numbers to be handled. It returns that
-// hand-over: its time is after holder's process exited, so every handling holder did is before it.
+// publishAcrossStop publishes a merged pull request of issue for each of numbers while holder
+// delivers from the events durable, stops holder gracefully once ten of them are handled, and
+// waits for standby to take both delivery durables over and for every one of numbers to be
+// handled. A pull request is handled once a handling has written its delivery row
+// (deliveryWrites). It returns that hand-over: its time is after holder's process exited, so every
+// handling holder did is before it.
 //
 // Nothing reads a durable from holder's stop until standby has bound it. A take-over of this
 // tree's deletes the durable and creates it again (delivery.takeOverConfig), so between those two
@@ -349,13 +565,13 @@ func (h handOver) replayed(number int) bool {
 // holder lets go of its hold before it exits, and standby's next poll takes the hold and the
 // durable. Every release from legion-envoy-v30.21.0 on takes the durables over that way, so the
 // gap comes in both hand-overs. The window is therefore read while holder still delivers.
-func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamContext, fake *pullRequestFake, numbers []int, holder, standby *dispatchProcess) handOver {
+func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamContext, issue string, numbers []int, holder, standby *dispatchProcess) handOver {
 	t.Helper()
 	handledOf := func() int {
-		done, _ := fake.handled()
+		written := deliveryWrites(t, builds)
 		count := 0
 		for _, number := range numbers {
-			if len(done[number]) > 0 {
+			if len(written[number]) > 0 {
 				count++
 			}
 		}
@@ -363,7 +579,7 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	}
 	sequences := make(map[int]uint64, len(numbers))
 	for _, number := range numbers {
-		sequences[number] = publishMergedPullRequest(t, js, number, fmt.Sprintf("twobuild-delivery-%d-%s", number, strings.ToLower(uniqueProjectKey(t, ""))))
+		sequences[number] = publishMergedPullRequest(t, js, number, issue, fmt.Sprintf("twobuild-delivery-%d-%s", number, strings.ToLower(uniqueProjectKey(t, ""))))
 	}
 	// The holder stops with the messages part handled: past the first ten, well before the last,
 	// at 300 ms a message.
@@ -467,28 +683,47 @@ func pullRequestNumbers(first, count int) []int {
 }
 
 // Messages and subscription settings pass between the two builds with none skipped, and no
-// message handled twice but where at-least-once delivery makes it so. Issues created on either
-// build produce outbox events whose ids are exactly the ids the stream holds. GitHub-shaped
-// messages are each handled, the set of their delivery ids the set handled, across a graceful
-// stop of the build that holds the intake: this tree first, then the previous build.
+// message's effects made twice but where at-least-once delivery makes it so. Issues created on
+// either build produce outbox events whose ids are exactly the ids the stream holds. GitHub-shaped
+// messages, merges of acme/deploy's pull requests, are each handled across a graceful stop of the
+// build that holds the intake: this tree first, then the previous build.
 //
-// A hand-over is where a repeat can come from, and the durable's ack floor is what bounds it. A
-// take-over creates the durable again at the floor it found plus one
-// (delivery.takeOverConfig), so the next holder is delivered every message above that floor.
-// Four handlers run at once (the durable's MaxAckPending), each finishing in its own time, so
-// at the moment a holder's process exits the messages above its floor are the ones it had in
-// its handlers and the ones whose acknowledgement landed while an earlier message's had not.
-// Each of those may be handled a second time, by the build that took the durable over, after
-// the stopping process exited.
+// A message is judged by what its handling leaves, not by what it reads. A handling writes the pull
+// request's head row, its delivery row (delivery.UpsertPullRequest), the attribution's event on
+// the issue the pull request is credited to, and the deploy record (issue.deployed) of a pull
+// request a production deploy has shipped, and posts nothing to GitHub. A second handling of the
+// same message writes the same rows again and appends nothing: the head row and the delivery row
+// are upserts of the same facts, the attribution's event is appended only on a move of the issue,
+// and the deploy record only while the row's marker is unset. Only the delivery row's write itself
+// is made again (its updated_at), so the row counts each pull request's delivery-row writes
+// (recordDeliveryWrites), requires exactly one attribution event and one deploy record per pull
+// request, and requires that no build wrote anything to GitHub.
 //
-// So a repeat is allowed only where the row can show it was one of those: the message's stream
-// sequence is above the floor the stopping process left (handOver.replayed), its first handling
-// is the stopping build's before that process exited, its second is the taking build's after,
-// and there are no more of them at one hand-over than the durable's in-flight window. Every
-// other repeat fails the row — a message handled twice by one build, a third handling, a
-// handling once the hand-over has settled, and above all a repeat of a message at or below the
-// floor, which is work the hand-over had no reason to deliver again. A message no build handled
-// fails it too.
+// A hand-over is where a repeated handling can come from, and the durable's ack floor is what
+// bounds it. A take-over creates the durable again at the floor it found plus one
+// (delivery.takeOverConfig), so the next holder is delivered every message above that floor. Four
+// handlers run at once (the durable's MaxAckPending), each finishing in its own time, so at the
+// moment a holder's process exits the messages above its floor are the ones it had in its
+// handlers and the ones whose acknowledgement landed while an earlier message's had not. Each of
+// those may be handled a second time, by the build that took the durable over, after the stopping
+// process exited.
+//
+// So a second write of a delivery row is allowed only where the row can show it was one of those:
+// the message's stream sequence is above the floor the stopping process left (handOver.replayed),
+// its first write is the stopping build's before that process exited, its second is the taking
+// build's after, and there are no more of them at one hand-over than the durable's in-flight
+// window. Every other repeat fails the row — a delivery row written twice by one build, a third
+// write, a write once the hand-over has settled, and above all a repeat of a message at or below
+// the floor, which is work the hand-over had no reason to deliver again. A message whose delivery
+// row no build wrote fails it too.
+//
+// A read of a pull request is not a handling. This build's reconcile judges again, once, each
+// merged pull request a rule older than its own attribution rule judged (the backfill a raised
+// delivery.AttributionRuleVersion starts): it reads the pull request from GitHub and writes its
+// head row, and nothing else. This build runs a reconcile pass as it starts and every
+// reconcileEvery after, so the backfill reaches the pull requests the previous build handled
+// before this build's restart inside the row's window every run, and the row requires each of
+// them judged by this build's rule by its end: with two builds of one rule there is none.
 //
 // The delivery durables' filter, ack wait, ack bound and generation, and the stream's age,
 // duplicate window, subjects and replicas, stay as they are across two settings polls with both
@@ -501,13 +736,19 @@ func pullRequestNumbers(first, count int) []int {
 func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	builds := newTwoBuilds(t)
 	seedPullRequestSettings(t, builds)
+	recordDeliveryWrites(t, builds)
 	// One App key for both builds; each build calls its own server of the one fake, so each
-	// handling is recorded with the build that did it.
+	// call is recorded with the build that made it.
 	fake := startPullRequestFake(300 * time.Millisecond)
 	app := githubAppEnv(t, "")
 	previousEnv, currentEnv := maps.Clone(app), maps.Clone(app)
 	previousEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.previousName())
 	currentEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.currentName())
+	// The backfill's start is the row's own: a pass as this build starts, and one every
+	// reconcileEvery, whose lease period it is too (duty.Exclusive), so the restarted process's
+	// first pass is never refused as served by its first start's.
+	currentEnv["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
+	currentEnv["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = reconcileEvery.String()
 
 	// This tree creates the durables, stamped with its generation, and holds them; the previous
 	// build starts beside it as a standby, which is a rolling release's first moment.
@@ -544,6 +785,9 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 			t.Errorf("the stream holds the events\n%v\nwant exactly the events both builds wrote\n%v", got, want)
 		}
 	})
+	// After the outbox row, whose comparison reads every event the database has published.
+	issue := shipPullRequestsTo(t, builds)
+	fake.setIssue(issue)
 
 	time.Sleep(settingsPolls)
 	requireBusSettings(t, js, baseline, "after two settings polls with both builds running")
@@ -553,12 +797,15 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 			builds.currentName(), builds.previous().Output.String())
 	}
 	half := pullRequestMessages / 2
-	currentHandOver := publishAcrossStop(t, builds, js, fake, pullRequestNumbers(1001, half), builds.current(), builds.previous())
+	currentHandOver := publishAcrossStop(t, builds, js, issue, pullRequestNumbers(1001, half), builds.current(), builds.previous())
 
 	// This tree, stopped above, comes back while the previous build delivers from the durable: it
 	// stands by and never takes the binding from it. A previous build from legion-envoy-v30.21.0 on
 	// holds the durable's hold, which takeHold refuses while it is live; a build before holds
-	// delivers under no hold, and the restarted build finds the durable bound elsewhere.
+	// delivers under no hold, and the restarted build finds the durable bound elsewhere. Its
+	// reconcile's first pass, as it starts, judges again the pull requests the previous build's
+	// older rule judged.
+	backfilled := headsAnOlderRuleJudged(t, builds)
 	binding := consumerBinding(t, js, bus.DispatchDeliveryDurable)
 	builds.startCurrent(t, currentEnv)
 	time.Sleep(standbyWindow)
@@ -570,17 +817,17 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 
 	// The previous build, now the holder, stops with the second half part handled; this tree
 	// takes the durables over, and the previous build comes back.
-	previousHandOver := publishAcrossStop(t, builds, js, fake, pullRequestNumbers(1001+half, pullRequestMessages-half), builds.previous(), builds.current())
+	previousHandOver := publishAcrossStop(t, builds, js, issue, pullRequestNumbers(1001+half, pullRequestMessages-half), builds.previous(), builds.current())
 	builds.startPrevious(t, previousEnv)
 	requireBusSettings(t, js, baseline, "after the previous build restarted")
 
 	// Read last, after both restarts, so a message either hand-over delivered again and had
-	// handled again is counted. A handling a stopping process abandoned is one of them: it is
-	// counted at the pull request's fetch, which it made, and NATS delivers that message again,
-	// so the build that took the durable over handles it once more -- a repeat the hand-over's
-	// in-flight window bounds, with the messages whose acknowledgement landed above the floor.
+	// handled again is counted. A handling a stopping process gave up after its delivery-row
+	// write is one of them: NATS delivers that message again, so the build that took the durable
+	// over writes the row once more -- a repeat the hand-over's in-flight window bounds, with the
+	// messages whose acknowledgement landed above the floor.
 	time.Sleep(5 * time.Second)
-	done, abandoned := fake.handled()
+	done := deliveryWrites(t, builds)
 	handOvers := []handOver{currentHandOver, previousHandOver}
 	var twice, again, unhandled []string
 	repeats := map[string]int{}
@@ -594,7 +841,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 			repeats[over.stopping]++
 			again = append(again, fmt.Sprintf("#%d %v", number, handlings))
 		default:
-			twice = append(twice, fmt.Sprintf("#%d seq %d %d time(s) %v (the %s's hand-over delivered from sequence %d and handed back %v)",
+			twice = append(twice, fmt.Sprintf("#%d seq %d delivery row written %d time(s) %v (the %s's hand-over delivered from sequence %d and handed back %v)",
 				number, over.sequences[number], len(handlings), handlings, over.stopping, over.start,
 				slices.Sorted(maps.Keys(over.handedBack))))
 		}
@@ -606,7 +853,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	}
 	if len(done) != pullRequestMessages || len(twice) > 0 || len(unhandled) > 0 {
 		slices.Sort(twice)
-		t.Errorf("the %d GitHub messages were handled as %d distinct pull requests; handled again outside what the hand-overs had to deliver again: %v; never handled: %v",
+		t.Errorf("the %d GitHub messages wrote the delivery rows of %d distinct pull requests; written again outside what the hand-overs had to deliver again: %v; never written: %v",
 			pullRequestMessages, len(done), twice, unhandled)
 	}
 	for _, over := range handOvers {
@@ -615,12 +862,73 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 				over.stopping, repeats[over.stopping], over.window, over.start)
 		}
 	}
+	requireOncePerPullRequest(t, builds, delivery.AttributionEventType, "attribution event", 0)
+	// A deploy record a handling could not write is the reconcile's to write on its next pass.
+	requireOncePerPullRequest(t, builds, delivery.DeployedEventType, "deploy record", 2*reconcileEvery)
+	read, abandoned, writes := fake.calls()
+	if len(writes) > 0 {
+		t.Errorf("the builds sent GitHub %d write(s), where handling a merged pull request and judging one again post nothing: %v", len(writes), writes)
+	}
+	if left := headsAnOlderRuleJudged(t, builds); len(backfilled) > 0 {
+		if still := slices.DeleteFunc(slices.Clone(backfilled), func(number int) bool { return !slices.Contains(left, number) }); len(still) > 0 {
+			t.Errorf("the current build's reconcile, which runs as it starts and every %s, did not judge again by its attribution rule %d the pull requests an older rule judged before its restart: %v of %v",
+				reconcileEvery, delivery.AttributionRuleVersion, still, backfilled)
+		}
+		t.Logf("the current build's reconcile judged again, by its attribution rule %d, the %d pull requests an older rule judged before its restart: %v",
+			delivery.AttributionRuleVersion, len(backfilled), backfilled)
+	} else {
+		t.Logf("no pull request an older attribution rule judged before the current build's restart: the two builds judge by one rule, so no backfill runs")
+	}
+	readsWithoutWrite := map[string][]int{}
+	for number, reads := range read {
+		for _, build := range []string{builds.previousName(), builds.currentName()} {
+			made := slices.IndexFunc(reads, func(h handling) bool { return h.build == build })
+			wrote := slices.ContainsFunc(done[number], func(h handling) bool { return h.build == build })
+			if made >= 0 && !wrote {
+				readsWithoutWrite[build] = append(readsWithoutWrite[build], number)
+			}
+		}
+	}
+	for build, numbers := range readsWithoutWrite {
+		slices.Sort(numbers)
+		t.Logf("the %s read %d pull request(s) it wrote no delivery row of (a judging again, or a handling the stop gave up before its write): %v", build, len(numbers), numbers)
+	}
 	if len(abandoned) > 0 {
-		t.Logf("handlings a stopping process abandoned unfinished, each handled again after: %v", abandoned)
+		t.Logf("commit listings a stopping process abandoned unfinished: %v", abandoned)
 	}
 	if len(again) > 0 {
 		slices.Sort(again)
-		t.Logf("messages this hand-over had to deliver again, handled once more by the build that took the durable over: %v", again)
+		t.Logf("messages a hand-over had to deliver again, whose delivery row the build that took the durable over wrote once more: %v", again)
+	}
+}
+
+// reconcileEvery is how often the current build's delivery reconcile runs in
+// TestTwoBuildsPassMessagesBothWays (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), as the
+// multiprocess suite's frozen-holder row runs it: well inside the restarted build's standby
+// window, so the backfill lands there every run.
+const reconcileEvery = 10 * time.Second
+
+// requireOncePerPullRequest fails the test unless the database holds exactly one event of
+// eventType, what names, for each of the row's pull requests, waiting up to within for each to
+// have one: a handling appends the attribution's event inside its head write, and a deploy record
+// it could not write is the next reconcile pass's.
+func requireOncePerPullRequest(t *testing.T, builds *twoBuilds, eventType, what string, within time.Duration) {
+	t.Helper()
+	numbers := pullRequestNumbers(1001, pullRequestMessages)
+	deadline := time.Now().Add(within)
+	counts := pullRequestEvents(t, builds, eventType)
+	for time.Now().Before(deadline) && slices.ContainsFunc(numbers, func(number int) bool { return counts[number] == 0 }) {
+		time.Sleep(time.Second)
+		counts = pullRequestEvents(t, builds, eventType)
+	}
+	var wrong []string
+	for _, number := range numbers {
+		if counts[number] != 1 {
+			wrong = append(wrong, fmt.Sprintf("#%d %d", number, counts[number]))
+		}
+	}
+	if len(wrong) > 0 {
+		t.Errorf("each pull request has one %s (%s), these another number of them: %v", what, eventType, wrong)
 	}
 }
 

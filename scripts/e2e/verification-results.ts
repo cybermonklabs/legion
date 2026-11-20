@@ -10,10 +10,19 @@
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+//     [VERIFICATION_RESULTS_E2E_CASES=<case>,<case>] \
 //     bun scripts/e2e/verification-results.ts <dispatch-url> <nats-url> <fake-github-url>
+//   VERIFICATION_RESULTS_E2E_CASES=<case>,<case> bun scripts/e2e/verification-results.ts --check-cases
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
+//
+// VERIFICATION_RESULTS_E2E_CASES names the cases to run, commas between them; unset or empty,
+// every case runs. The first case, `the-results-route-is-served`, runs whatever it says. A name
+// no case has stops the run with exit 2 before anything starts, naming it, and so does a list
+// that names no case but the first; a run whose list ran no case after the first exits 2 too, so
+// a list that runs nothing it asked for never reads as a pass. `--check-cases` makes that check
+// alone and exits, which the shell script runs before it builds or starts anything.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
@@ -44,6 +53,61 @@ import { connect, StringCodec } from "nats";
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
 
+/** Every case of this run, in the order the run runs them. `runCase` takes no other name, and
+ *  `VERIFICATION_RESULTS_E2E_CASES` is checked against this list before anything starts. */
+const caseNames = [
+  "the-results-route-is-served",
+  "a2-record-and-read",
+  "a4-a-push-moves-the-head",
+  "a-fork-pull-request-is-no-basis",
+  "a5-a-closed-issue-takes-the-after-merge-result",
+  "a10-a-default-branch-result-follows-the-branch",
+  "a-result-at-a-commit-the-repository-does-not-hold-is-refused",
+  "an-unreadable-repository-answers-unknown",
+  "k-compared-commit-the-bases-each-check-names",
+  "k-attribution-what-decides-a-pull-request-issue",
+  "dash-refused",
+  "dash-refused-every-flag",
+  "values-kept",
+  "several-open-pull-requests",
+  "several-open-pull-requests-lines",
+] as const;
+type CaseName = (typeof caseNames)[number];
+
+/** The first case always runs: it is the run's first result write, and the run stops there when
+ *  it fails (`summarise`). */
+const firstCase: CaseName = "the-results-route-is-served";
+
+/** The cases `VERIFICATION_RESULTS_E2E_CASES` names, commas between them, beside the first case,
+ *  which always runs; empty where it is unset or empty, and then every case runs. */
+const requestedCases = (process.env.VERIFICATION_RESULTS_E2E_CASES ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name !== "");
+
+/** The refusal of a list of cases this run cannot run as asked, or undefined: a name no case
+ *  has, or a list that names no case but the first, which would run nothing it asked for. Either
+ *  way a wrong list never prints a pass. */
+function casesRefusal(): string | undefined {
+  const unknown = requestedCases.filter((name) => !(caseNames as readonly string[]).includes(name));
+  if (unknown.length > 0) {
+    return `VERIFICATION_RESULTS_E2E_CASES names no case of this run: ${unknown.join(", ")}. The cases are: ${caseNames.join(", ")}.`;
+  }
+  if (requestedCases.length > 0 && requestedCases.every((name) => name === firstCase)) {
+    return `VERIFICATION_RESULTS_E2E_CASES names no case but ${firstCase}, which always runs, so the run would run no case it asked for.`;
+  }
+  return undefined;
+}
+
+// `--check-cases` checks the list alone and exits, which the shell script runs before it builds
+// or starts anything: 0 where the list is one this run can run, 2 with the refusal otherwise.
+const casesRefused = casesRefusal();
+if (casesRefused !== undefined) {
+  process.stderr.write(`${casesRefused}\n`);
+  process.exit(2);
+}
+if (process.argv[2] === "--check-cases") process.exit(0);
+
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
 const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
@@ -55,7 +119,8 @@ if (
   !databaseUrl
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> [VERIFICATION_RESULTS_E2E_CASES=<case>,<case>] bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n" +
+      "       VERIFICATION_RESULTS_E2E_CASES=<case>,<case> bun verification-results.ts --check-cases\n"
   );
   process.exit(2);
 }
@@ -73,6 +138,10 @@ const session = "verification-results-e2e";
 /** The repository the proof's issues resolve to, and the one the App is not installed on. */
 const repo = "acme/verification-live";
 const hiddenRepo = "acme/verification-hidden";
+/** The attribution rule the server judges a pull request by and stamps on each row it writes
+ *  (delivery.AttributionRuleVersion): 3, which holds the issue's own link to a pull request's URL
+ *  in any repository. A row stored under an older rule is one the reconcile judges again. */
+const attributionRule = 3;
 
 /** The commits the proof's repository holds, which is every commit a case records against it:
  *  the record route asks GitHub whether the repository the check's issue resolves to holds a
@@ -137,6 +206,12 @@ const heldCommits = {
   dashRefused: "d1".repeat(20),
   /** The commit the case of the kept values records its three results at. */
   valuesKept: "d2".repeat(20),
+  /** The final head of the several-open cases' merged pull request, #81. */
+  severalMerged: "e1".repeat(20),
+  /** The head of their open pull request #82, on the issue's own branch. */
+  severalBranch: "e2".repeat(20),
+  /** The head of their open pull request #83, which only an external link joins to the issue. */
+  severalLinked: "e3".repeat(20),
 };
 
 /** Every commit the cases name: the ones that repository holds, and three it does not.
@@ -556,7 +631,10 @@ function note(line: string): void {
 
 const results: { name: string; ok: boolean }[] = [];
 
-async function runCase(name: string, body: () => Promise<string | undefined>): Promise<void> {
+/** Runs one case, unless `VERIFICATION_RESULTS_E2E_CASES` names cases and not this one: the first
+ *  case runs whatever the list says. */
+async function runCase(name: CaseName, body: () => Promise<string | undefined>): Promise<void> {
+  if (name !== firstCase && requestedCases.length > 0 && !requestedCases.includes(name)) return;
   console.log(`== ${name}`);
   let failure: string | undefined;
   try {
@@ -575,6 +653,18 @@ function summarise(stopped?: string): never {
     `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}`
   );
   void nats.close();
+  // A list of cases whose run ran none of them after the first has measured nothing it asked
+  // for: that is no pass, whatever the first case answered.
+  if (
+    stopped === undefined &&
+    requestedCases.length > 0 &&
+    !results.some((result) => result.name !== firstCase)
+  ) {
+    console.log(
+      `   VERIFICATION_RESULTS_E2E_CASES=${requestedCases.join(",")} ran no case after ${firstCase}`
+    );
+    process.exit(2);
+  }
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
@@ -1221,18 +1311,23 @@ A default-branch result is compared with the default branch alone.
   );
   if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
 
-  // The command, with no commit named. Its head line is where it names the bases.
+  // The command, with no commit named. Under the before check it prints the line of each open
+  // head, #21 and #22, and one line that counts the merged #23, which decides nothing while one is
+  // open; the head lines of the after and branch checks name their branches.
   const printed = await resultsCommand(basesIssue);
   for (const line of commandHeadLines(printed)) note(`dispatch results: ${line}`);
   const wantedLines = [
-    `the head of pull request #21 at ${commits.comparedHeadA}`,
-    `the head of pull request #22 at ${commits.comparedHeadA2}`,
-    `the head of pull request #23 at ${commits.comparedMergedHead}`,
+    `  - #21 at ${commits.comparedHeadA}: `,
+    `  - #22 at ${commits.comparedHeadA2}: `,
+    "  The 1 merged pull request decides nothing while one is open.",
     "branch release/old",
     "branch main",
   ];
   for (const wanted of wantedLines) {
-    if (!printed.includes(wanted)) return `the command named no ${wanted}`;
+    if (!printed.includes(wanted)) return `the command printed no ${wanted.trim()}`;
+  }
+  if (printed.includes(`#23 at ${commits.comparedMergedHead}`)) {
+    return "the command printed a line of the merged #23, which decides nothing while #21 and #22 are open";
   }
 
   // The API, with no commit named: the same bases, each with its pull request's number and the
@@ -1520,7 +1615,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     });
   }
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 2)`;
+    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule ${attributionRule})`;
     const stored = await awaitStoredHead(envelope.number, wanted);
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
@@ -1602,7 +1697,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
   }
   for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 2)`;
+    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule ${attributionRule})`;
     const seen = await awaitStoredHead(row.number, wanted);
     note(`the reconcile re-judged #${row.number}: ${seen}`);
     if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
@@ -1643,7 +1738,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 2)`;
+  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule ${attributionRule})`;
   const movedHead = await awaitStoredHead(41, wantedHead);
   note(`#41 after the push is stored as ${movedHead}`);
   if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
@@ -2056,6 +2151,163 @@ await runCase("values-kept", async () => {
   } finally {
     rmSync(scratch, { force: true, recursive: true });
   }
+});
+
+// several-open-pull-requests and several-open-pull-requests-lines. An issue with one merged pull
+// request and two open ones, each taught to Dispatch by the real intake: #81 merged and #82 open,
+// each with the issue's key in its branch name, and #83 open, which only an external link joins to
+// the issue. The link is written with `dispatch issue-update --external-link` before #83's
+// `opened` envelope is published, since the intake reads the issue's links when it writes the
+// row, and no write of a link marks a stored row again. The first case reads which heads the
+// check compares with before any result, and the command's lines for them; the second records an
+// implementer's pass at #82 and a tester's fail at #83 and reads one line for each.
+
+/** The issue of both cases, seeded once by the first of them that runs, so either runs alone. */
+let severalIssue: Promise<string> | undefined;
+
+/** Waits, bounded, for the stored row of `number` to name `key` as its issue, and answers what it
+ *  last read: the intake writes it from the envelope, and nothing here writes it. */
+async function awaitStoredIssue(number: number, key: string): Promise<string> {
+  const deadline = Date.now() + headWaitMs;
+  let seen = await storedHead(number);
+  while (!seen.startsWith(`${key} by `) && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    seen = await storedHead(number);
+  }
+  return seen;
+}
+
+async function seedSeveralOpen(): Promise<string> {
+  const key = await seedIssue(
+    "VRF",
+    "An issue with several open pull requests",
+    checkFor("each", "A pass of this check must stand at each open head of the issue.")
+  );
+  const linked = `https://github.com/${repo}/pull/83`;
+  const linking = ["issue-update", "--issue", key, "--external-link", linked];
+  const link = await runDispatch(linking);
+  if (link.code !== 0) throw new Error(stepFailed(1, linking, link, 0));
+  note(`${commandText(linking)} linked ${key} to ${repo}#83`);
+  const pulls = [
+    {
+      action: "closed",
+      head: commits.severalMerged,
+      merged: "true",
+      number: 81,
+      ref: `legion/${key}-first`,
+      title: "The first change, merged",
+    },
+    {
+      action: "opened",
+      head: commits.severalBranch,
+      merged: "false",
+      number: 82,
+      ref: `legion/${key}`,
+      title: "The change on the issue's branch",
+    },
+    {
+      action: "opened",
+      head: commits.severalLinked,
+      merged: "false",
+      number: 83,
+      ref: "work/joined-by-a-link-alone",
+      title: "A change no branch or title joins",
+    },
+  ];
+  for (const pull of pulls) {
+    await publishPullRequest({
+      action: pull.action,
+      base_ref: "main",
+      body: "Its issue is named nowhere in this body.",
+      head_ref: pull.ref,
+      head_repo: repo,
+      head_sha: pull.head,
+      kind: "pr",
+      merged: pull.merged,
+      number: String(pull.number),
+      repo,
+      title: pull.title,
+      updated_at: new Date(Date.now() - 60_000).toISOString(),
+      url: `https://github.com/${repo}/pull/${pull.number}`,
+    });
+  }
+  for (const pull of pulls) {
+    const stored = await awaitStoredIssue(pull.number, key);
+    note(`#${pull.number} on ${pull.ref} is stored as ${stored}`);
+    if (!stored.startsWith(`${key} by `)) {
+      throw new Error(`#${pull.number} is stored as ${stored}, want it attributed to ${key}`);
+    }
+  }
+  return key;
+}
+
+/** The line of each head under the check, `  - #<number> at <commit>: …`, as the command printed
+ *  them. */
+function headLinesOf(printed: string): string[] {
+  return printed.split("\n").filter((line) => /^ {2}- #\d+ /.test(line));
+}
+
+await runCase("several-open-pull-requests", async () => {
+  severalIssue ??= seedSeveralOpen();
+  const key = await severalIssue;
+  const each = await checkOf(key, "each");
+  const subjects = (each.pass_stands.subjects ?? []).map(
+    (subject) => `#${subject.basis.pull_request} at ${subject.basis.commit}`
+  );
+  note(`the API's check compares with ${comparedOf(each)}; its heads are ${subjects.join(", ")}`);
+  const wantHeads = [`#82 at ${commits.severalBranch}`, `#83 at ${commits.severalLinked}`];
+  if (JSON.stringify([...subjects].sort()) !== JSON.stringify(wantHeads)) {
+    return `the check's heads are [${subjects.join(", ")}], want [${wantHeads.join(", ")}], the two open pull requests`;
+  }
+  const printed = await resultsCommand(key);
+  for (const line of [...commandHeadLines(printed), ...headLinesOf(printed)]) {
+    note(`dispatch results: ${line}`);
+  }
+  const wantLines = [
+    "- each (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 0 of 2 heads read yes.",
+    `  - #82 at ${commits.severalBranch}: no, as it holds no result.`,
+    `  - #83 at ${commits.severalLinked}: no, as it holds no result.`,
+    "  The 1 merged pull request decides nothing while one is open.",
+  ];
+  const lines = printed.split("\n");
+  for (const wanted of wantLines) {
+    if (!lines.includes(wanted)) return `the command printed no line ${JSON.stringify(wanted)}`;
+  }
+  return undefined;
+});
+
+await runCase("several-open-pull-requests-lines", async () => {
+  severalIssue ??= seedSeveralOpen();
+  const key = await severalIssue;
+  const pass = await record(key, {
+    check: "each",
+    commit: commits.severalBranch,
+    observed: "the implementer's run passed at #82",
+    role: "implementer",
+  });
+  const fail = await record(key, {
+    check: "each",
+    commit: commits.severalLinked,
+    failed: 1,
+    observed: "the tester's run failed at #83",
+    role: "tester",
+    verdict: "fail",
+  });
+  for (const commit of [commits.severalBranch, commits.severalLinked]) {
+    const stands = await awaitCommitStands(key, "each", commit, "at_basis");
+    if (stands !== "at_basis") return `the result at ${commit} stands ${stands}, want at_basis`;
+  }
+  const printed = await resultsCommand(key);
+  const heads = headLinesOf(printed);
+  for (const line of heads) note(`dispatch results: ${line}`);
+  const wanted = [
+    `  - #82 at ${commits.severalBranch}: yes, from implementer. Pass ${pass.result.id} decides it.`,
+    `  - #83 at ${commits.severalLinked}: no, as fail ${fail.result.id} counts there.`,
+  ];
+  if (JSON.stringify([...heads].sort()) !== JSON.stringify(wanted)) {
+    return `the command's head lines are ${JSON.stringify(heads)}, want one line for #82 and one for #83: ${JSON.stringify(wanted)}`;
+  }
+  return undefined;
 });
 
 summarise();

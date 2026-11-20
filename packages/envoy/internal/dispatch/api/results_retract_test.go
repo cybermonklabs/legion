@@ -60,7 +60,8 @@ func claimIssueFor(t *testing.T, database *store.Store, key, session string) {
 	}
 }
 
-// storedRetraction is the retraction row of one result, and whether one stands against it.
+// storedRetraction is the retraction row of one result, a role's (check_result_retractions) or a
+// CI job's (ci_check_result_retractions), and whether one stands against it.
 func storedRetraction(t *testing.T, database *store.Store, resultID string) (model.CheckResultRetraction, bool) {
 	t.Helper()
 	var retraction model.CheckResultRetraction
@@ -68,6 +69,9 @@ func storedRetraction(t *testing.T, database *store.Store, resultID string) (mod
 	err := database.Pool.QueryRow(context.Background(), `
 		select result_id::text, reason, session, actor, created_at, event_seq
 		from check_result_retractions where result_id = $1
+		union all
+		select result_id::text, reason, session, actor, created_at, event_seq
+		from ci_check_result_retractions where result_id = $1
 	`, resultID).Scan(&retraction.ResultID, &retraction.Reason, &retraction.Session,
 		&actorJSON, &retraction.CreatedAt, &retraction.EventSeq)
 	if errors.Is(err, pgx.ErrNoRows) {

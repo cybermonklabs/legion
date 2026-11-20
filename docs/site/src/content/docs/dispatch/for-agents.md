@@ -399,15 +399,18 @@ last five minutes, whatever its status; any other would make a repeated write tw
 that reached nothing (a refused connection, a credential whose trade goes on) is asked again
 without that check, since its repeat is no second write. Dispatch makes the write once per key and
 answers a repeat with the first answer, so the command never makes a write twice. When the write
-landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
-to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
-have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
-answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
-JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
-read it back before you run the command again, since a new command is a new key. Reads, and the
-`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
-once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
-it presented dead, and on an old build's "no route" during a rolling release. A script that calls
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, a first answer too large
+to keep, or a 2xx that carried the key back but whose body, asked again under the key, never gave
+the answer the command reads), the command exits 0 and says it was made: read it back to see it.
+When an attempt may have reached Dispatch and the command got no answer Dispatch's keyed layer
+gave (no attempt answered, a page something in Dispatch's place wrote, a 2xx that is empty, not
+typed JSON or not JSON, an answer that names another request's key back, or one that names no key
+back from a Dispatch the command knows runs the keyed layer), the command says the write may or
+may not have taken effect: read it back before you run the command again, since a new command is
+a new key. Reads, and the `PUT` and `DELETE` of `dispatch follow` and
+`dispatch claim --release`, carry no key. Each goes once, and again only where Dispatch did
+nothing with it: once more after Dispatch calls the token it presented dead, and on an old
+build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

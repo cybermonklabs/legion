@@ -5,13 +5,14 @@ body: |-
   in which the issue's external links name an open or merged GitHub pull request, and
   `400 RESULT_COMMIT_UNKNOWN` names each repository that Dispatch asked. A linked repository
   that Dispatch's GitHub App is not installed on or cannot read counts for nothing, and one record
-  reads at most 10 linked pull requests, the refusal saying how many it left unread. A read of a
-  linked pull request or of a linked repository that does not answer, where no repository is
-  shown to hold the commit, is `502 GITHUB_UNREADABLE` and records nothing, telling the caller
-  to record the result again after GitHub's wait. The generated
+  reads at most 10 linked pull requests, the refusal saying how many it left unread. Such a
+  repository, and a read of a linked pull request or of a linked repository that does not
+  answer, where no repository is shown to hold the commit, record the result as before. The
+  generated
   `POST /api/v1/issues/{key}/results` description states the same rule, and the
   generated `GET /api/v1/issues/{key}/results` description says that a `before_merge` check is
-  compared with the heads of those linked pull requests too. Two generated types carry an
+  compared with the heads of those linked pull requests too, where the attribution gives each to
+  the check's issue: one whose head is in a fork is none. Two generated types carry an
   optional `repo`, the `owner/name` of a linked repository: `CheckBasis`, for the head of a pull
   request the issue links there or a branch of it that a result stands at, and
   `ResultCommitStands`, for the linked repository an `other_commit` or `unknown` answer is about.

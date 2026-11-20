@@ -424,10 +424,23 @@ func readyResultRecord(t *testing.T, base routeFixture, heldOnTheChecksIssue boo
 		return write
 	}
 	write.meanwhile = func(t *testing.T, holder pgx.Tx) {
+		// A version's indexing moves the block's changed version and records the block's text at
+		// that version in one batch (refs.BlockIndexing.Queue), and the write reads the check out
+		// of that text (settledCheckUnderLocks), so the holder writes both, the text unchanged.
 		if err := holder.QueryRow(context.Background(), `
-			update document_blocks set changed_version = changed_version + 1
-			where artifact_id = $1::uuid and block_id = 'k1' and type = 'check'
-			returning changed_version
+			with moved as (
+				update document_blocks set changed_version = changed_version + 1
+				where artifact_id = $1::uuid and block_id = 'k1' and type = 'check'
+				returning artifact_id, block_id, changed_version
+			), recorded as (
+				insert into document_block_texts (artifact_id, block_id, version, text)
+				select moved.artifact_id, moved.block_id, moved.changed_version, held.text
+				from moved join document_block_texts held
+				  on held.artifact_id = moved.artifact_id and held.block_id = moved.block_id
+				 and held.version = moved.changed_version - 1
+				returning version
+			)
+			select version from recorded
 		`, verification.Artifact.ID).Scan(&reworded); err != nil {
 			t.Fatalf("move the check's indexed version: %v", err)
 		}

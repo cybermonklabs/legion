@@ -764,7 +764,9 @@ export class EnvoyApiError extends Error {
    * place, which can echo the request back, so the message names it through `bodyForText`: one
    * line with `shown.tokens` (the credential's secret, and the tokens the client presented lately)
    * and any `Authorization`, `Bearer` or `DPoP` value redacted, and the origin a redirect pointed
-   * at (`shown.redirectTo`). Neither is kept.
+   * at (`shown.redirectTo`). Neither is kept. A redirect's body is neither read nor named: a
+   * redirector writes its target, path and query with it, into the body too, so the line names the
+   * redirect's origin alone.
    */
   constructor(
     readonly details: {
@@ -778,9 +780,12 @@ export class EnvoyApiError extends Error {
     shown: { readonly tokens?: Tokens; readonly redirectTo?: string | undefined } = {}
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
+    const redirect = details.status >= 300 && details.status < 400;
     try {
-      const result = ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
-      if (result.success) parsed = result.data;
+      const result = redirect
+        ? undefined
+        : ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
+      if (result?.success) parsed = result.data;
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
@@ -791,9 +796,11 @@ export class EnvoyApiError extends Error {
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
-      parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
-        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+      redirect
+        ? `${details.method} ${details.url} failed with ${details.status}${redirected}`
+        : parsed === undefined
+          ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
+          : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
     this.code = parsed?.code;
@@ -1017,7 +1024,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       // No call follows a redirect: the listener answers none, so a 3xx is something in its
       // place, and followed it would turn a POST into a GET (301, 302, 303) or send it again to
-      // another origin (307, 308). The 3xx is the call's answer, which reached no listener.
+      // another origin (307, 308) with the credential's DPoP proof and the body. The 3xx is the
+      // call's answer, which reached no listener.
       response = await config.fetch(url, {
         ...init,
         headers,
@@ -1044,6 +1052,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           { cause: unminted }
         ),
       };
+    }
+    // A redirect's body is neither read nor kept: a redirector writes its target, path and query,
+    // into it, and the line names the redirect's origin alone (`EnvoyApiError`). It is cancelled,
+    // and nothing waits on it.
+    if (response.status >= 300 && response.status < 400) {
+      response.body?.cancel().catch(() => undefined);
+      return { response, body: "" };
     }
     // The body is read under the same deadline. A refusal whose body does not arrive is still the
     // listener's refusal; any other answer whose body does not arrive is no answer.
@@ -1093,8 +1108,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       // A body that is not the listener's error JSON was written by something in its place, which
       // can echo the request back: the error names it in one redacted line with the tokens this
-      // client presents, and a redirect, which is never followed (`attemptOnce`), by the origin it
-      // pointed at (`EnvoyApiError`).
+      // client presents, and a redirect, which is never followed (`attemptOnce`) and whose body is
+      // never read, by the origin it pointed at alone (`EnvoyApiError`).
       const redacted = tokens();
       const error = new EnvoyApiError(
         {

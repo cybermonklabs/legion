@@ -1,9 +1,25 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type * as seedModule from "./seed";
+import type * as requestsModule from "./seed-requests";
+import { fileRowLimit } from "./test-limit";
+
+// Each row seeds a fake Dispatch from this process and reads and writes its files, which a loaded
+// machine stretches: each test and hook gets the limit test-limit.ts computes from the bounds of
+// what they wait for, set before the hooks below.
+setDefaultTimeout(fileRowLimit());
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what
@@ -13,6 +29,7 @@ import type * as seedModule from "./seed";
 // registered, so a write at module scope would stay written for every later file.
 restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let seed: typeof seedModule;
+let requests: typeof requestsModule;
 
 const origin = "http://127.0.0.1:18777";
 const work = temporaryDirectory("skill-scenarios-seed");
@@ -21,6 +38,7 @@ beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
   seed = await import("./seed");
+  requests = await import("./seed-requests");
 });
 let dirs = 0;
 function freshDir(name: string): string {
@@ -1065,7 +1083,7 @@ describe("tester-proof", () => {
         issue_key: "LWEVAL-2",
         phase: "implement",
         version: 1,
-        author: seed.IMPLEMENTER,
+        author: requests.IMPLEMENTER,
         body: JSON.stringify(body),
       }),
     ]);
@@ -1076,10 +1094,10 @@ describe("tester-proof", () => {
         role: "implementer",
         verdict: "pass",
         commit_sha: commit,
-        actor: seed.IMPLEMENTER,
+        actor: requests.IMPLEMENTER,
       }),
     ]);
-    expect(seed.IMPLEMENTER.id).not.toBe(runSession.id);
+    expect(requests.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       issue: "LWEVAL-2",
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },

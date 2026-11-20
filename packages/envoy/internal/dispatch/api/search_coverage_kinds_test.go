@@ -129,7 +129,7 @@ var notIndexedKindTables = []struct{ kind, count string }{
 	{"component", "select count(*) from components"},
 	{"session", "select coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
 	{"document_version", "select count(*) from artifact_versions"},
-	{"result", "select count(*) from check_results"},
+	{"result", "select (select count(*) from check_results) + (select count(*) from ci_check_results)"},
 	{"handoff", "select count(*) from handoffs"},
 }
 
@@ -180,8 +180,8 @@ func requireNotIndexedCountsItsTables(t *testing.T, database *store.Store, repor
 	return reported
 }
 
-// seedNotIndexedKinds writes one component, two sessions, one result and one handoff, each
-// through the table the route counts that kind from.
+// seedNotIndexedKinds writes one component, two sessions, two results (a role's and a CI job's)
+// and one handoff, each through the table the route counts that kind from.
 func seedNotIndexedKinds(t *testing.T, database *store.Store, corpus searchCorpus, project string) {
 	t.Helper()
 	ctx := context.Background()
@@ -215,6 +215,13 @@ func seedNotIndexedKinds(t *testing.T, database *store.Store, corpus searchCorpu
 			                            check_version, check_sha256, role, commit_sha, verdict, actor)
 			 values ($1, $1, $2::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass',
 			         '{"kind":"user","id":"alice"}'::jsonb)`,
+			[]any{corpus.issueKey, corpus.primaryArtifactID}},
+		{"a CI job's result",
+			`insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+			                               check_version, check_sha256, run, commit_sha, branch, verdict,
+			                               attestation, session, actor)
+			 values ($1, $1, $2::uuid, 'k1', 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/SRCH-1', 'fail',
+			         '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb)`,
 			[]any{corpus.issueKey, corpus.primaryArtifactID}},
 		{"a handoff",
 			`insert into handoffs (issue_key, phase, version, body, author)
@@ -266,7 +273,7 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 	after := searchCoverageResponse(t, handler)
 	counts := requireNotIndexedCountsItsTables(t, database, after)
 	for kind, want := range map[string]int64{
-		"component": 1, "session": 2, "result": 1, "handoff": 1,
+		"component": 1, "session": 2, "result": 2, "handoff": 1,
 		"document_version": empty["document_version"],
 	} {
 		if counts[kind] != want {

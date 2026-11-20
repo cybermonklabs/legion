@@ -16,6 +16,8 @@
       "args": ["./dist/envoy-channel.js", "--host", "codex"],
       "cwd": "./",
       "env_vars": [
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
         "AGENTBOX_HOST",
         "AGENT_SECRETS_MACHINE_AUDIENCE",
         "AGENT_SECRETS_MACHINE_IDENTITY",

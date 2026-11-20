@@ -1,5 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
+import { keyedLayer } from "../../test/keyed-layer";
+import { leastAnswerFor } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 
@@ -7,6 +9,8 @@ import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "..
 // makes goes through its one request function. This drives every method of the class through a
 // recording fetch, so a method added later that reaches Dispatch any other way - its own fetch, the
 // global one, a write without the key - fails here, as does a method the table below leaves out.
+// The fetch answers a write as Dispatch does, behind its keyed layer: the route's least answer,
+// naming the write's key back, which every write reads as its answer.
 
 /** The names of DispatchClient's methods: every function member but the injected fetch. */
 type ClientMethod = Exclude<
@@ -22,7 +26,7 @@ const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
 
-/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
+/** One call of each method, with arguments of the shapes it takes; a read's answer is not read. */
 const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
   resolveIssue: (client) => client.resolveIssue("owner/repo#1"),
@@ -72,6 +76,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  recordCIJobResult: (client) =>
+    client.recordCIJobResult("DSP-1", {
+      check: "c1",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
   dryRunResult: (client) =>
     client.dryRunResult("DSP-1", {
       actor,
@@ -83,6 +93,14 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  recordSpecCheckResult: (client) =>
+    client.recordSpecCheckResult("ACME", {
+      commit: "1111111111111111111111111111111111111111",
+      check: "p-1",
+      verdict: "pass",
+    }),
+  specCheckResults: (client) =>
+    client.specCheckResults("ACME", "1111111111111111111111111111111111111111"),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),
@@ -140,7 +158,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
 
 afterEach(forgetKeyedLayerMemory);
 
-test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
+test("every DispatchClient method reaches Dispatch through its one request function, every write keyed and answered", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an
   // accessor (the secret the client presents, which a broker credential renews), not a call.
   const methods = Object.getOwnPropertyNames(DispatchClient.prototype).filter((name) => {
@@ -150,15 +168,21 @@ test("every DispatchClient method reaches Dispatch through its one request funct
   expect(methods.sort()).toEqual(Object.keys(CALLS).sort());
   const global = spyOn(globalThis, "fetch");
   const keys: string[] = [];
+  /** Each write call that did not end in the answer Dispatch gave it, with what it ended in. */
+  const unanswered: { readonly name: string; readonly error: string }[] = [];
   try {
     for (const [name, call] of Object.entries(CALLS)) {
       const requests: { readonly method: string; readonly key: string | null }[] = [];
-      const recording = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-        requests.push({
-          method: init?.method ?? "GET",
-          key: new Headers(init?.headers).get(IDEMPOTENCY_KEY_HEADER),
-        });
-        return Response.json({});
+      const recording = keyedLayer(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        requests.push({ method, key: new Headers(init?.headers).get(IDEMPOTENCY_KEY_HEADER) });
+        const written =
+          method === "POST" || method === "PATCH"
+            ? leastAnswerFor(method, new URL(String(url)).pathname)
+            : undefined;
+        return written === undefined
+          ? Response.json({})
+          : Response.json(written.body, { status: written.status });
       }) as typeof fetch;
       const client = new DispatchClient(
         "http://dispatch.test",
@@ -167,7 +191,12 @@ test("every DispatchClient method reaches Dispatch through its one request funct
         { writeRetry: DISPATCH_WRITE_RETRY }
       );
 
-      await call(client).catch(() => undefined);
+      const error = await call(client).then(
+        () => undefined,
+        (thrown: unknown) => (thrown instanceof Error ? thrown.message : String(thrown))
+      );
+      const wrote = requests.some(({ method }) => method === "POST" || method === "PATCH");
+      if (wrote && error !== undefined) unanswered.push({ name, error });
 
       expect({ name, requested: requests.length > 0 }).toEqual({ name, requested: true });
       for (const { method, key } of requests) {
@@ -184,6 +213,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
       }
     }
     expect(global).not.toHaveBeenCalled();
+    expect(unanswered).toEqual([]);
   } finally {
     global.mockRestore();
   }

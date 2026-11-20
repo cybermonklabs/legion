@@ -57,6 +57,11 @@ jobs:
           ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
           -verbose -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'
 
+      # why: .github/ci-notes/ci-job-ci-filters.md#the-guard-that-no-ci-file-compares-the-spec-files
+      - name: Check that no CI file of this repository compares the spec files
+        run: go run ./cmd/spec-check guard --root ../..
+        working-directory: packages/envoy
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -185,6 +185,10 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// HideStateFile names the file whose presence makes the results read leave out the state the
+	// server computes from the results (api.Deps.HideStateFile); only DISPATCH_TEST_HIDE_STATE_FILE,
+	// under the test hooks, sets it.
+	HideStateFile string
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -1391,6 +1395,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookPath(env, "DISPATCH_TEST_HIDE_STATE_FILE", boot.TestHooksEnabled, &boot.HideStateFile); err != nil {
+		return bootConfig{}, err
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -1817,6 +1824,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.HideStateFile = boot.HideStateFile
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
@@ -2043,7 +2051,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs. It
+// serves a results token (brokertoken.Options.ServesResults) for the same reason: the scope
+// results alone, which the broker mints from a result entry for one CI run, reaches the routes
+// the results list names (resultsScopeRoutes) and every other route answers it 403
+// RESULTS_ONLY_TOKEN.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2061,9 +2073,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
+		// The read list, the results list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token and a results token reach the routes their
+		// lists name and no other.
 		ServesReadOnly: true,
+		ServesResults:  true,
 	})
 }
 
@@ -2245,6 +2259,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
 	*target = raw == "1"
+	return nil
+}
+
+// testHookPath reads the test-only file setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is a path
+// that is not absolute, which would name a file in whatever directory the process started in.
+func testHookPath(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	if !filepath.IsAbs(raw) {
+		return fmt.Errorf("%s=%q (expected an absolute path)", name, raw)
+	}
+	*target = raw
 	return nil
 }
 

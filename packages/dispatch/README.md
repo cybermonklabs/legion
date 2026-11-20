@@ -552,9 +552,9 @@ optional ones:
   line and every other section runs.
 
 One rule governs every result the script records, beside the refusals above.
-The record route takes a result at a 40-character commit the repository of the check's issue holds, or at one a repository the issue links an open or merged pull request in holds (`https://github.com/<owner>/<repo>/pull/<n>`), and refuses any other `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, at most 10 of the linked pull requests whose state it could not read and a count of the rest, and every linked pull request in whose repository it could not read the commit, with how to mend it.
-It asks the issue's own repository first, and reads the links only where GitHub does not say that repository holds the commit: where GitHub proves it does not, and where that read does not answer, which stores the result under the issue's own repository unless a linked repository holds the commit.
-Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
+The record route takes a result at a 40-character commit the repository of the check's issue holds, one a repository of another open or merged pull request of that issue holds, or one a repository the issue links an open or merged pull request in holds (`https://github.com/<owner>/<repo>/pull/<n>`), and refuses any other `400 RESULT_COMMIT_UNKNOWN`, naming the commit and each `owner/repo` it asked.
+It asks the issue's own repository first, and asks the other repositories only where GitHub does not say that repository holds the commit: where GitHub proves it does not, and where that read does not answer, which stores the result under the issue's own repository unless another repository holds the commit.
+Where a read of a repository does not answer, or Dispatch cannot read the repository, and no repository is shown to hold the commit, it stores the result as before; where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`, stores nothing, and the caller records the result again.
 One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
 The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
 Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
@@ -614,17 +614,20 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   `e2e/verification.e2e.ts`.
 - `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
   pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
-  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
-  either block. The head of the merged pull request still answers. Three such checks at one head
-  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
-  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
-  to 2,000.
+  names the run and no recorder. A failed run prints `fail`, and neither `check_results` nor
+  `ci_check_results` holds a row for either block. The head of the merged pull request still
+  answers. Three such checks at one head cost one check-runs read (`GET /__fixture/requests`), an
+  open head is read before an older merged one, an issue with no such check reads no check runs,
+  and a summary of 2,500 runes is cut to 2,000.
 - `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
   holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
   of one name are decided by the higher id, in both orders of their conclusions.
 - `k4`: a tester's and an implementer's result for a check CI proves are refused `409
-  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
-  recorded and `dispatch results` shows it.
+  CHECK_PROVED_BY_CI`, naming the block and the CI job; the same call against an ordinary check
+  is recorded and `dispatch results` shows it. A run of that CI job records the check's result
+  with its own identity through the secrets broker, which
+  `packages/envoy-client/src/__tests__/ci-check-results.live.test.ts` proves on a stack of its
+  own.
 - `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
   stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
   GitHub serves that Dispatch's own head record does not hold yet.

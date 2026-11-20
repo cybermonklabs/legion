@@ -80,11 +80,13 @@ func liveCIChecks(t *testing.T, service *Service, artifactID string) map[string]
 }
 
 // A browser's write is never refused, so settlement holds the check blocks it leaves to the four
-// rules: each block carrying a ci_check that breaks one - a block holding a recorded result, a run,
-// a when of after_merge, no negative control - loses its ci_check in the live document and in the
-// version settlement writes, and one block.invalid names the block, the rule and block_type check
-// at that version. A block keeping every rule keeps its ci_check. A later settlement of the same
-// document repairs nothing again and adds no event.
+// rules: each block carrying a ci_check that breaks one - a block holding a result a role recorded,
+// a run, a when of after_merge, no negative control - loses its ci_check in the live document and
+// in the version settlement writes, and one block.invalid names the block, the rule and block_type
+// check at that version. The release before holds a block to the same four, so the two builds
+// repair alike. A block keeping every rule keeps its ci_check, c5 too, though a CI job's result
+// stands against it: a CI job's results are rows of ci_check_results, which no rule counts. A later
+// settlement of the same document repairs nothing again and adds no event.
 func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T) {
 	database, service := blockIndexService(t)
 	checks := writeIndexedDocument(t, database, service, "verification", ciCheckOf("c1", `negative_control="Break the build and watch the run fail."`))
@@ -92,7 +94,13 @@ func TestSettlementDeletesTheCICheckOfEachBrokenCheckABrowserWrote(t *testing.T)
 		insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, role, commit_sha, verdict, actor)
 		values ('CORE-1', 'CORE-1', $1, 'c1', 1, 'digest', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}')
 	`, checks); err != nil {
-		t.Fatalf("record a result against c1: %v", err)
+		t.Fatalf("record a role's result against c1: %v", err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
+		values ('CORE-1', 'CORE-1', $1, 'c5', 1, 'digest', 'go-test', repeat('a', 40), 'legion/CORE-1', 'pass', '{}', 'ci-run', '{"kind":"ci","id":"go-test"}')
+	`, checks); err != nil {
+		t.Fatalf("record a CI job's result against c5: %v", err)
 	}
 
 	browserReplaceText(t, service, checks, strings.Join([]string{

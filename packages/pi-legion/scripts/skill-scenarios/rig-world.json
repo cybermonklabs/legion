@@ -1,0 +1,14 @@
+{
+  "repository": "example/widgets",
+  "defaultBranch": "main",
+  "ciJobs": {
+    "ci-only": { "name": "docs", "checkRun": 9001, "run": 40, "suite": 41, "status": "completed" },
+    "ci-pass-and-fail": {
+      "name": "go-checks",
+      "checkRun": 9101,
+      "run": 41,
+      "suite": 41,
+      "status": "in_progress"
+    }
+  }
+}

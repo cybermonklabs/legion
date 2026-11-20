@@ -174,6 +174,9 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// HideStateFile is for end-to-end test processes only (cmd/dispatch:
+	// DISPATCH_TEST_HIDE_STATE_FILE); see api.DepsInput.
+	HideStateFile string
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -242,6 +245,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		HideStateFile:          opts.HideStateFile,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,

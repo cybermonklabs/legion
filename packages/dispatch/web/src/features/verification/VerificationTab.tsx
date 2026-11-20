@@ -1,3 +1,9 @@
+import {
+  checkWithNewerFields,
+  mergedPullRequestsWords,
+  subjectPlace,
+  subjectStateWords,
+} from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -30,8 +36,9 @@ import { Timestamp } from "../refs/Timestamp";
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
  * what the check compared its results with. The server reads it over every result of the
- * check, so no word here comes from the newest result alone: a pass recorded before a fail
- * still stands, and a fail recorded after a pass takes nothing away from it.
+ * check, so no word here comes from the newest result alone. Two rules decide it: a pass and a
+ * fail that count at one commit of a `before_merge` check leave that commit, and so the check, not
+ * known, whoever recorded them; and a check compared with a branch takes its newest result.
  */
 const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
@@ -118,14 +125,17 @@ function Screenshot({ reference }: { reference: string }): ReactNode {
 }
 
 /** What one basis is, in words: the commit a reader named in the request, the head of a pull
- *  request, or a branch. The commit itself is drawn beside this, whole. A basis in a repository
- *  the issue links a pull request in and does not resolve to names that repository (`repo`), so
- *  it reads apart from a pull request or a branch of the issue's own repository: `owner/repo#7`
- *  is GitHub's own name for that pull request. */
+ *  request, a branch, or the head of a branch a CI job pushed. The commit itself is drawn beside
+ *  this, whole. A basis in a repository the issue links a pull request in and does not resolve
+ *  to names that repository (`repo`), so it reads apart from a pull request or a branch of the
+ *  issue's own repository: `owner/repo#7` is GitHub's own name for that pull request. */
 function basisWords(basis: CheckBasis): string {
   if (basis.kind === "branch") {
     const branch = `branch ${basis.branch ?? ""}`;
     return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
+  }
+  if (basis.kind === "branch_head") {
+    return `the head of branch ${basis.branch ?? ""}`;
   }
   if (basis.kind === "pull_request") {
     if (basis.pull_request === undefined) return "the head of the pull request";
@@ -206,6 +216,7 @@ function Result({
   result: CheckResult;
 }): ReactNode {
   const retracted = result.retracted;
+  const notCounted = result.not_counted ?? "";
   return (
     <li className="space-y-2" data-testid="verification-result">
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurface}`}>
@@ -221,6 +232,9 @@ function Result({
           </span>
         )}
         <span data-testid="verification-result-role">{result.role}</span>
+        {result.branch === undefined || result.branch === "" ? null : (
+          <span data-testid="verification-result-branch">on branch {result.branch}</span>
+        )}
         <span aria-hidden="true">·</span>
         <Timestamp at={result.created_at} />
       </div>
@@ -274,6 +288,14 @@ function Result({
           ))}
         </div>
       )}
+      {notCounted === "" ? null : (
+        <p
+          className={`text-sm ${textMutedOnSurface}`}
+          data-testid="verification-result-not-counted"
+        >
+          It counts for nothing: {notCounted}
+        </p>
+      )}
     </li>
   );
 }
@@ -292,6 +314,41 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
       <Basis basis={basis} />
     </span>
   ));
+}
+
+/** R13: one row for each head a pass of the check must stand at, under the pill: the pull request,
+ *  its whole head, its state and its roles, in the words `dispatch results` prints on the line of
+ *  that head (`subjectPlace`, `subjectStateWords`), so a pull request of another repository than
+ *  the issue's names that repository beside its number (R18); then the line that counts the merged
+ *  pull requests, which decide nothing while one is open. The pill keeps the answer of the whole
+ *  check. */
+function Heads({ check }: { check: CheckBlock }): ReactNode {
+  const subjects = check.pass_stands.subjects ?? [];
+  if (subjects.length === 0) return null;
+  const merged = mergedPullRequestsWords(check);
+  return (
+    <div className="space-y-1">
+      <ul aria-label={`Heads of ${check.block_id}`} className="space-y-1">
+        {subjects.map((subject) => (
+          <li
+            className={`text-sm break-words ${textSecondaryOnSurface}`}
+            data-pass-stands={subject.answer}
+            data-testid="verification-check-head"
+            key={`${subject.basis.kind}-${subject.basis.repo ?? ""}-${subject.basis.pull_request ?? subject.basis.branch ?? ""}-${subject.basis.commit ?? ""}`}
+          >
+            {subjectPlace(subject.basis)} at{" "}
+            <code className="break-all">{subject.basis.commit ?? "an unnamed commit"}</code>:{" "}
+            {subjectStateWords(subject)}
+          </li>
+        ))}
+      </ul>
+      {merged === undefined ? null : (
+        <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-merged">
+          {merged}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function Check({ check }: { check: CheckBlock }): ReactNode {
@@ -323,6 +380,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         </span>
         <span className="font-medium">{check.text}</span>
       </div>
+      <Heads check={check} />
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <Fact label="When" testId="verification-check-when">
           {check.when}
@@ -351,10 +409,11 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
   );
 }
 
-/** A check's results, newest first. A check CI proves holds no recorded result, only the one the
- *  server derives from the CI run it names, drawn as a recorded one is; where that run proved
- *  nothing, the server's sentence saying why stands in its place. The tab reads that run as of
- *  its own load and asks GitHub nothing more. */
+/** A check's results, newest first. A check CI proves holds the one the server derives from the
+ *  CI run it names and each one its CI job recorded, and a role's result of it counts for nothing,
+ *  drawn as a recorded one is with the server's reason (`not_counted`); where that run proved
+ *  nothing, the server's sentence saying why stands in place of the derived one. The tab reads
+ *  that run as of its own load and asks GitHub nothing more. */
 function CheckResults({
   check,
   results,
@@ -417,7 +476,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
   return (
     <ul aria-label="Checks" className="space-y-3" data-testid="verification-checks">
       {(results.data.checks ?? []).map((check) => (
-        <Check check={check} key={check.block_id} />
+        <Check check={checkWithNewerFields(check)} key={check.block_id} />
       ))}
     </ul>
   );

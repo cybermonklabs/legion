@@ -175,7 +175,8 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
    * named without its text, since that text could be a token; and a request that got no answer is
    * named by its error's class, since the runtime's message can repeat the host it was handed. No
    * redirect is followed: Google's services answer none, and a 307 or 308 would send the body, a
-   * token in it, on to another origin, so a redirect is a non-2xx answer like any other.
+   * token in it, on to another origin, so a redirect is a non-2xx answer like any other, named by
+   * its status alone, since a redirector writes its target, path and query with it, into the body.
    */
   const call = async (
     endpoint: string,
@@ -200,7 +201,8 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
         signal: AbortSignal.any(signals),
         redirect: "manual",
       });
-      text = await answerText(answer);
+      // A 3xx's body is never read: the redirect is named by its status alone.
+      text = answer.status >= 300 && answer.status < 400 ? "" : await answerText(answer);
     } catch (error) {
       throw new Error(`no answer: ${errorClass(error)}`);
     }

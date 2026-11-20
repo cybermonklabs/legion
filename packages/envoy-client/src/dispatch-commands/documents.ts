@@ -705,9 +705,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
-  // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
-  // says which two characters the two sets differ on. Both checks below read this one
-  // predicate.
+  // JavaScript's `trim` is another set, so it is not read here: the comment of `goBlankPattern`
+  // (`@legion/contracts/go-blank`) says which two characters the two sets differ on. Both checks
+  // below read this one predicate.
   const blank = content === undefined || goBlankPattern.test(content);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is

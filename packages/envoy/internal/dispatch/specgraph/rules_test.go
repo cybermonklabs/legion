@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -458,6 +459,29 @@ func TestValidateSortsItsProblems(t *testing.T) {
 	want := []string{"a.md leaf-one code-in-text", "a.md leaf-one leaf-without-check", "b.md leaf-two bad-kind", "b.md leaf-two leaf-without-check"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("Validate order %q, want %q", keys, want)
+	}
+}
+
+// Judge reads the files as Parse does and judges the tree as Validate does, with the problems of
+// both in one list in Validate's order: a line outside any block and an unclosed block are
+// Parse's, and the leaf the unclosed block leaves without a check is Validate's. The tree is the
+// one Parse reads, the unclosed block's statement in it.
+func TestJudgeHoldsTheProblemsOfParseAndOfValidate(t *testing.T) {
+	t.Parallel()
+	tree, problems := Judge(map[string][]byte{
+		"b.md": []byte(":::requirement{#broken kind=\"behavior\"}\nThis block never closes.\n"),
+		"a.md": []byte("A line outside any block.\n"),
+	}, Options{})
+	var keys []string
+	for _, p := range problems {
+		keys = append(keys, fmt.Sprintf("%s:%d %s %s", p.Pos.File, p.Pos.Line, p.Node, p.Rule))
+	}
+	want := []string{"a.md:1 - text-outside-block", "b.md:1 broken leaf-without-check", "b.md:1 broken unclosed-block"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Errorf("Judge problems %q, want %q", keys, want)
+	}
+	if _, ok := tree.StatementByID("broken"); !ok || len(tree.Statements) != 1 {
+		t.Errorf("Judge tree %+v, want the one statement broken", tree.Statements)
 	}
 }
 

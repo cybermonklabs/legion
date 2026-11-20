@@ -1687,7 +1687,7 @@
       ],
       "outcome": "result",
       "text": [
-        "Recorded pass for check k1 of DSP-1 at 1111111111111111111111111111111111111111, as implementer.",
+        "Recorded pass for check k1 of DSP-1 at 1111111111111111111111111111111111111111, as implementer. Result 01234567-0000-4000-8000-000000000001.",
         "",
         "Pull request body line:",
         "- Check k1 (before_merge): pass at 111111111111, recorded by implementer. The workspace opens natively."

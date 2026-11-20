@@ -2,7 +2,8 @@
 // left there. DISPATCH_E2E_PORT names the server, which e2e/api.ts addresses. e2e/api.ts addresses
 // PLAYWRIGHT_BASE_URL instead, with E2E_AGENT_TOKEN as its bearer, whenever it is set, so seed.ts
 // refuses to run while either is set. Each mode is also an exported function, which seed.test.ts
-// calls against a stubbed fetch.
+// calls against a stubbed fetch. The two heads modes live in heads-world.ts, and the requests both
+// files make as the agent bearer in seed-requests.ts.
 //
 //   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
 //                                          the world of every scenario but brainstorm
@@ -77,6 +78,21 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
+//   seed.ts heads-issue <file> <scenario> [<case>]
+//                                          a heads scenario's issue (reviewer-own-head <case>,
+//                                          reviewer-pass-and-fail, architect-pass-and-fail or
+//                                          ci-pass-and-fail <role>), before rig.sh's heads_fixture:
+//                                          the GitHub stand-in FAKE_GITHUB_PORT names holds the
+//                                          run's repository, the run's project is mapped to it,
+//                                          the delivery settings are written, and the issue has
+//                                          its spec and its Verification document; writes {issue,
+//                                          title, verification} to <file>
+//   seed.ts heads-events <file> <heads file> <scenario> [<case>]
+//                                          after heads_fixture: the stand-in serves the open pull
+//                                          requests at the heads <heads file> names, their opened
+//                                          events go out on the NATS DISPATCH_E2E_NATS_URL names,
+//                                          and the case's results and handoff records are recorded;
+//                                          adds the records and each body's line of k1 to <file>
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -110,7 +126,9 @@ import {
   listIssueMessages,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { headsEvents, headsIssue, headsWorld } from "./heads-world";
 import { parseInstant } from "./production-dispatch";
+import { agentGet, agentPost, IMPLEMENTER } from "./seed-requests";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -135,9 +153,6 @@ const TesterFixture = z.object({
   issue: z.string(),
   implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
 });
-/** The session the tester's predecessor wrote its implement handoff as: the implementer's, never
- * the run's own. */
-export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
 /** The person who files the run's issue, posts the source's input and answers every ask. */
 const PERSON = "alice";
 /** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
@@ -658,31 +673,6 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
-/** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
- * Dispatch's answer. */
-async function agentPost(route: string, input: unknown): Promise<void> {
-  const response = await fetch(new URL(route, baseUrl), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(input),
-  });
-  if (!response.ok)
-    throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
-}
-
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
  * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
  * (`GET /api/v1/handoffs/{id}`) for its body. */
@@ -895,7 +885,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -938,7 +928,15 @@ async function main(argv: string[]): Promise<boolean> {
     await implementHandoff(file, second, third);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
-  else return false;
+  else if (command === "heads-issue" && file !== undefined && second !== undefined && n <= 4) {
+    const world = headsWorld(second, third);
+    if (world === undefined) return false;
+    await headsIssue(file, world);
+  } else if (command === "heads-events" && file !== undefined && third !== undefined && n <= 5) {
+    const world = headsWorld(third, argv[4]);
+    if (world === undefined || second === undefined) return false;
+    await headsEvents(file, second, world);
+  } else return false;
   return true;
 }
 

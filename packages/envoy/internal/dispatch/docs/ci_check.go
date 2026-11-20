@@ -12,7 +12,13 @@ import (
 )
 
 // The four rules a `check` block carrying `ci_check` keeps, in the order CICheckRuleIn reads them.
-// Such a check is proved by the GitHub check run its `ci_check` names, so no role runs it.
+// Such a check is proved by the GitHub check run its `ci_check` names, so no role runs it. The
+// three of CICheckRule are the block's attributes, and the fourth, that no result a role recorded
+// stands against it, is read from the database. A write is held to all four: a document write's
+// refusal (refuseCICheckBlocks) and settlement's repair of what a browser leaves
+// (reconcileCICheckBlocks), as the release before holds it, so both builds keep or delete one
+// block's ci_check alike while they serve one database. The results read and the record route
+// read the three alone (api's validCICheck), so the kind of a check is its block's at each read.
 const (
 	ciCheckRuleRun             = "a check proved by CI carries no run"
 	ciCheckRuleWhen            = "ci_check takes when of before_merge"
@@ -65,8 +71,9 @@ func CarriesCICheck(check CheckAttributes) bool {
 
 // CICheckRule is the first of the three attribute rules check breaks, read as a check carrying
 // `ci_check` (CarriesCICheck), and "" when it breaks none: it carries no run, its `when` is
-// before_merge, and it names its negative control. The fourth rule, that no result is recorded
-// against it, is read from the database (CICheckRuleIn).
+// before_merge, and it names its negative control. They are what makes a check CI's at each read.
+// A write is held to a fourth too, that no result a role recorded stands against it, which is read
+// from the database (CICheckRuleIn).
 func CICheckRule(check CheckAttributes) string {
 	switch {
 	case check.Run != "":
@@ -81,11 +88,13 @@ func CICheckRule(check CheckAttributes) string {
 
 // CICheckRuleIn is the first of the four rules check, the check block blockID of the document
 // artifactID, breaks, read as a check carrying `ci_check` (CarriesCICheck), and "" when it breaks
-// none: the three of CICheckRule, then that no result is recorded against it, read through q
-// (the pool, or the transaction of the write that asks) only when the other three leave that to
-// decide. Every reader of the rules that has no results loaded comes here: a document write's
-// refusal (refuseCICheckBlocks), settlement's repair of what a browser leaves
-// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves.
+// none: the three of CICheckRule, then that no result a role recorded stands against it, read
+// through q (the transaction of the write that asks) only when the other three leave that to
+// decide. check_results holds what a role recorded alone, a retracted result among them, since a
+// retraction is a row of its own; a CI job's results are rows of ci_check_results, which no rule
+// counts. The rule is the release before's, read in the same table, so the two builds judge every
+// block alike. Its two readers are a document write's refusal (refuseCICheckBlocks) and
+// settlement's repair of what a browser leaves (reconcileCICheckBlocks).
 func CICheckRuleIn(ctx context.Context, q Queryer, artifactID, blockID string, check CheckAttributes) (string, error) {
 	if rule := CICheckRule(check); rule != "" {
 		return rule, nil
@@ -161,9 +170,9 @@ func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 // tree before the write, holds no check block under its id, or one whose `ci_check`, run, `when`
 // or negative control differ; a nil prior (a new document, or one outside the schema) holds none.
 // So an edit elsewhere in the document never meets a block another writer left broken. Whether a
-// result is recorded against the block is read in the write's transaction, and only for a block
-// that keeps the other three rules. A browser's write never comes here: settlement repairs what
-// it leaves.
+// role's result is recorded against the block is read in the write's transaction, and only for a
+// block that keeps the other three rules. A browser's write never comes here: settlement repairs
+// what it leaves.
 func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
 	// held is read from prior at the first block carrying ci_check, so a write that leaves none
 	// walks prior not at all.
@@ -200,9 +209,9 @@ func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree
 // breaks a rule is repaired here: its `ci_check` is deleted, in tree and, through repairLive, in the
 // live document, and one block.invalid names the block, the rule it broke and block_type "check",
 // which the issue's Activity reads as the refusal. A repaired block carries no `ci_check`, so a
-// later settlement repairs it no more. Whether a result is recorded against a block is read in tx,
-// the settlement's transaction, and only for a block that keeps the other three rules. actor is
-// the settlement's, as its ask events name.
+// later settlement repairs it no more. Whether a role's result is recorded against a block is read
+// in tx, the settlement's transaction, and only for a block that keeps the other three rules.
+// actor is the settlement's, as its ask events name.
 func (r *settlementReconciliation) reconcileCICheckBlocks(
 	ctx context.Context,
 	tx pgx.Tx,

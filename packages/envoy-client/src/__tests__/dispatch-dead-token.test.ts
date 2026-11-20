@@ -10,6 +10,7 @@
 // token traded again for nothing, and the dead one kept for the next call.
 
 import { expect, test } from "bun:test";
+import { routeAnswer } from "../../test/route-answers";
 import { brokerCredential } from "../broker-credential";
 import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
@@ -57,9 +58,14 @@ test.each([
     "a write",
     (client: DispatchClient) =>
       client.comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "ses-one" } }),
+    // The comment route's own answer, the row the write's callers read (`dispatch-write-rows.ts`).
     (key: string) =>
       Response.json(
-        { comment: { id: "c-1" } },
+        routeAnswer("POST /api/v1/issues/{key}/comments", {
+          id: "c-1",
+          issue_key: "DSP-1",
+          body: "Shipped.",
+        }),
         { status: 201, headers: key === "" ? {} : { "Idempotency-Key": key } }
       ),
   ],

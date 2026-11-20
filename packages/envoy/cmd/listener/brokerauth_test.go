@@ -139,6 +139,30 @@ func readOnlyAnswer(session, service, jkt string) brokertoken.Introspection {
 	}
 }
 
+// resultsAnswer is the broker's answer about a token a result entry minted for one CI run, the one
+// token Dispatch's results route takes: the one scope results, the project scope results, a
+// person, one project, and the whole run (internal/broker/oauth,
+// TestAResultEntrysRunIntrospectsWithItsRun). The listener's verifier is built without the switch
+// that serves one (brokertoken.Options.ServesResults), so such a token is no session's credential
+// here.
+func resultsAnswer(session, jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      session,
+		Person:       "ada@example.com",
+		ProjectScope: brokertoken.ProjectScopeResults,
+		Projects:     []string{"ACME"},
+		Scope:        brokertoken.ScopeResults,
+		CI: &brokertoken.CIRun{
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
+			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+		},
+		ClientID:   brokertoken.ExchangeClientID,
+		Thumbprint: jkt,
+	}
+}
+
 // brokerTokenRequest is the request a caller holding token sends to path, signed as its real
 // client signs one: the proof the caller's own DPoP transport produced, on a request carrying
 // this listener's JSON body.

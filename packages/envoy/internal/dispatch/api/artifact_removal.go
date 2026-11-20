@@ -232,7 +232,8 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		              and (k.artifact_id = $1 or k.block_artifact_id = $1
 		                   or jsonb_path_query_array(k.approval, '$."documents"[*]."artifact_id"') @> to_jsonb($2::text))),
 		       exists(select 1 from artifact_reviews w where w.artifact_id = $1),
-		       exists(select 1 from check_results c where c.check_artifact_id = $1),
+		       exists(select 1 from check_results c where c.check_artifact_id = $1)
+		           or exists(select 1 from ci_check_results c where c.check_artifact_id = $1),
 		       exists(select 1 from user_document_reads u where u.artifact_id = $1)
 	`, artifact.ID, artifact.ID).Scan(
 		&points.comment, &points.ask, &points.approval, &points.review, &points.result, &points.read,

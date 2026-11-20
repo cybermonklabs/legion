@@ -9,10 +9,13 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchEmptyPathError,
   DispatchGatewayError,
   DispatchNoRouteError,
   DispatchWriteUnsettledError,
@@ -32,7 +35,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function fakeFetch(responses: readonly Response[]) {
+/** A stand-in of Dispatch that gives `responses` in order, behind Dispatch's keyed layer: each 2xx
+ *  it gives a write, and each answer `layer` says the layer judged, names the write's key back
+ *  (`keyedLayer`), as Dispatch's own answers do. */
+function fakeFetch(responses: readonly Response[], layer: KeyedLayerOptions = {}) {
   const requests: RecordedRequest[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     requests.push({ url: String(input), init: init ?? {} });
@@ -40,7 +46,7 @@ function fakeFetch(responses: readonly Response[]) {
     if (!response) throw new Error("unexpected request");
     return response;
   };
-  return { fetchImpl: fetchImpl as typeof fetch, requests };
+  return { fetchImpl: keyedLayer(fetchImpl, layer) as typeof fetch, requests };
 }
 
 function requestBody(request: RecordedRequest): unknown {
@@ -400,9 +406,35 @@ describe("DispatchClient", () => {
   });
 
   test("maps project document and reference routes to authenticated API requests", async () => {
-    const { fetchImpl, requests } = fakeFetch(
-      Array.from({ length: 14 }, () => jsonResponse({ ok: true }))
-    );
+    const read = () => jsonResponse({ ok: true });
+    const { fetchImpl, requests } = fakeFetch([
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+          artifact: { project: "CORE", name: "runbook.md", slug: "runbook-md" },
+        })
+      ),
+      read(),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+          artifact_id: "artifact-1",
+          question: "The runbook is ready for readers. How should we publish it?",
+          urgency: "med",
+        })
+      ),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/comments", {
+          artifact_id: "artifact-1",
+          body: "Looks good.",
+        })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/comments", { artifact_id: "artifact-1" })
+      ),
+      ...Array.from({ length: 6 }, read),
+    ]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
@@ -465,8 +497,39 @@ describe("DispatchClient", () => {
     });
   });
   test("maps dispatch operations to authenticated JSON and multipart API requests", async () => {
+    const read = () => jsonResponse({ ok: true });
     const { fetchImpl, requests } = fakeFetch([
-      ...Array.from({ length: 15 }, () => jsonResponse({ ok: true })),
+      jsonResponse(routeAnswer("POST /api/v1/issues", { key: "DSP-1", title: "Issue" }, 200)),
+      read(),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/asks", {
+          issue_key: "DSP-1",
+          question: "Choose",
+          urgency: "med",
+        })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Review" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Use this" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/messages", { issue_key: "DSP-1", body: "Update" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+          artifact: { issue_key: "DSP-1", name: "spec.md", slug: "spec-md" },
+        })
+      ),
+      read(),
+      read(),
+      read(),
+      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: 0 })),
+      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/versions", {})),
+      read(),
+      read(),
       jsonResponse({ last_seq: 4 }),
       jsonResponse([]),
     ]);
@@ -751,7 +814,7 @@ describe("DispatchClient", () => {
 
   // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
   // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
-  // and the Location's user info, path and query are never printed.
+  // the Location's user info, path and query are never printed, and its body is never read.
   test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
     const { fetchImpl, requests } = fakeFetch([
       new Response("<html><body>Moved</body></html>", {
@@ -781,9 +844,9 @@ describe("DispatchClient", () => {
     expect(error).toBeInstanceOf(DispatchGatewayError);
     expect(error.message).toStartWith(
       "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
-        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
-        `that is not Dispatch's error JSON ("Moved")`
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow), which looks"
     );
+    expect(error.message).not.toContain("Moved");
     expect(error.message).not.toContain("user:");
     expect(error.message).not.toContain("token=abc");
     expect(error.message).not.toContain("/login");
@@ -1018,20 +1081,28 @@ describe("DispatchClient", () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
-    const { fetchImpl, requests } = fakeFetch([
-      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-        status: 502,
-        statusText: "Bad Gateway",
-        headers: { "Content-Type": "text/html" },
-      }),
-      jsonResponse([]),
-      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
-      jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
-      jsonResponse(
-        { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
-        404
-      ),
-    ]);
+    // Dispatch's keyed layer names the write's key back on its KEY_COMMITTED, as on every answer
+    // it gives a keyed write, and a landing needs it.
+    const { fetchImpl, requests } = fakeFetch(
+      [
+        new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+          status: 502,
+          statusText: "Bad Gateway",
+          headers: { "Content-Type": "text/html" },
+        }),
+        jsonResponse([]),
+        jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
+        jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
+        jsonResponse(
+          {
+            code: "NOT_FOUND",
+            error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews",
+          },
+          404
+        ),
+      ],
+      { judged: (response) => response.ok || response.status === 409 }
+    );
     const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
       retryNoRoute: false,
@@ -1830,7 +1901,7 @@ describe("a request a Dispatch process answers with no route", () => {
   test("sends a POST again with the same body", async () => {
     const { fetchImpl, requests } = fakeFetch([
       noRoute("POST", "/api/v1/projects"),
-      jsonResponse({ key: "CORE", name: "Core" }, 201),
+      jsonResponse(routeAnswer("POST /api/v1/projects", { key: "CORE", name: "Core" }), 201),
     ]);
     const client = new DispatchClient(
       "http://dispatch.test",
@@ -2024,6 +2095,327 @@ describe("a broker token Dispatch says is not live", () => {
       await expect(call(client)).rejects.toThrow(refusal.message);
       expect(stales).toHaveLength(1);
       expect(requests).toHaveLength(1);
+    }
+  });
+});
+
+// Every URL of the client is built in one place, which refuses a path value that is empty: sent,
+// `POST /api/v1/comments//resolve` is answered by Dispatch's router with a 307 to another path.
+describe("a path value that is empty", () => {
+  test("is refused before any request, naming its place in the route", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment("", actor), "/api/v1/comments/{empty}/resolve"],
+      [
+        () => client.retractResult("", { actor, reason: "Wrong commit." }),
+        "/api/v1/results/{empty}/retract",
+      ],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  // A value of only white space names nothing either, and `.` or `..` is a step of the path, which
+  // the URL parser drops: sent, `POST /api/v1/comments/./resolve` asks `POST
+  // /api/v1/comments/resolve` and `GET /api/v1/agents/../answers` asks `GET /api/v1/answers`.
+  test("a value of only white space, . or .. is refused the same way", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment(".", actor), '/api/v1/comments/{"."}/resolve'],
+      [
+        () => client.retractResult("..", { actor, reason: "Wrong commit." }),
+        '/api/v1/results/{".."}/retract',
+      ],
+      [() => client.sessionAnswers(" \t"), '/api/v1/agents/{" \\t"}/answers'],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  // Only dots and slashes name no step either (`./` is what "./$X" gives with an empty X), and
+  // Go's white space is Dispatch's blank: U+0085, which JavaScript's `trim` keeps, Dispatch trims.
+  test("a value of only dots and slashes, or of Go's white space, is refused the same way", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment("./", actor), '/api/v1/comments/{"./"}/resolve'],
+      [
+        () => client.retractResult("../", { actor, reason: "Wrong commit." }),
+        '/api/v1/results/{"../"}/retract',
+      ],
+      [() => client.sessionAnswers(".//"), '/api/v1/agents/{".//"}/answers'],
+      [() => client.sessionAnswers("\u0085"), '/api/v1/agents/{"\u0085"}/answers'],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
+});
+
+// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
+// and Dispatch answers no API route with a redirect, so no request of the client follows one: the
+// 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
+describe("a redirect to another origin", () => {
+  test("a read is not followed there, so its credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
+      },
+    });
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
+      const refusal = await client.getIssue("DSP-1").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+      expect((refusal as DispatchGatewayError).status).toBe(302);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, so an operator who wrote `http://` for an
+  // `https://` Dispatch fixes the URL from the line: the scheme and the host, never a path, a
+  // query or a user, any of which can carry a secret.
+  test("a refused redirect names the origin it points at, and nothing else of it", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://dispatch.example.com"],
+      ["/login?next=%2Fapi", "http://dispatch.test"],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect(message, location).toContain(
+          `answered 302 (a redirect to ${origin}, which this client does not follow), `
+        );
+        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
+          expect(message, location).not.toContain(part);
+        }
+      }
+    }
+  });
+
+  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
+  // as text or as a link's text), so the line quotes nothing of a redirect's body: the status and
+  // the origin say all an operator needs.
+  test("a refused redirect quotes nothing of its body, where a redirector writes its target", async () => {
+    // The path and the query of the target are made for this run.
+    const path = `login-${crypto.randomUUID()}`;
+    const state = crypto.randomUUID();
+    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fapi`;
+    for (const [type, body] of [
+      ["text/plain", `Found. Redirecting to ${target}`],
+      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
+      ["application/json", JSON.stringify({ code: "MOVED", error: `Redirecting to ${target}` })],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(body, {
+          status: 302,
+          headers: { Location: target, "Content-Type": type },
+        })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect({
+          origin: message.includes(
+            "answered 302 (a redirect to https://sso.example.com, which this client does not follow), "
+          ),
+          path: message.includes(path),
+          query: message.includes(state),
+          body: message.includes("Redirecting to"),
+        }).toEqual({ origin: true, path: false, query: false, body: false });
+      }
+    }
+  });
+
+  // No request reads the body of a redirect: a body that never ends delays no refusal, since
+  // nothing waits on it, and the client cancels it.
+  test("a refused redirect's body is not read", async () => {
+    let cancelled = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull: () => new Promise<void>(() => {}),
+          cancel() {
+            cancelled += 1;
+          },
+        }),
+        { status: 302, headers: { Location: "https://sso.example.com/login" } }
+      )) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: async () => undefined }
+    );
+    const started = performance.now();
+    for (const call of [
+      () => client.getIssue("DSP-1"),
+      () => client.comment("DSP-1", { body: "Review", actor }),
+    ]) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+    }
+    expect({ cancelled, atOnce: performance.now() - started < 10_000 }).toEqual({
+      cancelled: 2,
+      atOnce: true,
+    });
+  });
+
+  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
+  // is sent again under its key: a probe that followed the redirect would hand the proof to the
+  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
+  test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${new URL(request.url).pathname}`);
+        return jsonResponse({ status: "ok", idempotency_keys: true });
+      },
+    });
+    const asked: string[] = [];
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        asked.push(`${request.method} ${path}`);
+        if (path === "/healthz") {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
+          });
+        }
+        return new Response("<html><body>Bad Gateway</body></html>", {
+          status: 502,
+          headers: { "Content-Type": "text/html" },
+        });
+      },
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch, {
+        sleep: async () => undefined,
+      });
+      await client.comment("DSP-1", { body: "Review", actor }).catch(() => undefined);
+      expect({ asked, elsewhere }).toEqual({
+        asked: ["POST /api/v1/issues/DSP-1/comments", "GET /healthz"],
+        elsewhere: [],
+      });
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
     }
   });
 });

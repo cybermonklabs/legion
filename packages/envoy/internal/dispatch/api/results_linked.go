@@ -8,13 +8,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // results_linked.go holds what the results route does with a linked repository: one the check's
@@ -37,157 +34,171 @@ import (
 // commit at most once. Ten leaves room for an issue whose work spans several repositories, or
 // carries a few links that name no pull request at all, and holds one record to at most ten such
 // calls and ten commit reads. A link past the bound is left unread, and a refusal says how many
-// were. A refusal names at most this many of the linked pull requests Dispatch could not read,
-// and counts the rest (linkedReads.couldNotRead).
+// were.
 const linkedPullRequestReads = 10
 
 // refuseUnknownCommit refuses a result at a commit that no repository the result may name a
 // commit of holds: 400 RESULT_COMMIT_UNKNOWN, naming the commit and every `owner/repo` GitHub
-// said holds no such commit, what Dispatch could not read of each linked repository it cannot
-// read — a linked pull request, or the commit in the repository of one it read — with its
-// reason and what mends it (linkedReads.couldNotRead), and each linked repository it set aside
-// because GitHub's naming rule refuses its name (linkedReads.setAside): the issue already links
-// such a pull request, so a refusal that left it out would tell the caller to link what it has
-// linked. It answers the linked repository the result's commit is taken to be of, and nil where
-// the commit is taken to be repo's or there is no repo.
+// said holds no such commit, and each linked repository it set aside because GitHub's naming
+// rule refuses its name (linkedReads.setAside): the issue already links such a pull request, so
+// a refusal that left it out would tell the caller to link what it has linked. It answers the
+// repository other than repo that the result's commit is taken to be of, and nil where the
+// commit is taken to be repo's or there is no repo.
 //
-// A result may name a commit of two kinds of repository. The first is repo, the repository the
+// A result may name a commit of three kinds of repository. The first is repo, the repository the
 // check's issue resolves to, which readResultRequest resolved for this refusal; a nil repo is
 // nothing to ask GitHub about, no refusal and no read-through. A deployment with no App key
-// resolves none, so the key is not checked again here. The second is a linked repository in
-// which the external links of the check's issue name a GitHub pull request that is open or
-// merged (linkedRepositories, linkedRepositoryHolds). A closed pull request that did not merge
-// makes no repository count, and neither does a link to a pull request GitHub answers 404 or 410
-// for (delivery.ErrPullRequestNotFound), nor one in a repository the App is not installed on or
-// cannot read (delivery.RepositoryUnreadable), nor one whose name no repository GitHub could
-// hold is called (refs.ErrNotGitHubRepo): each is an answer, and no retry changes it. The last
-// two are kept apart, since each mends in its own way (linkedRepositoryHolds).
+// resolves none, so the key is not checked again here. The second is the repository of each open
+// or merged pull request of the issue that Dispatch holds (delivery.HeadsAttributedTo): a pull
+// request an issue links by its URL is that issue's in any repository (attributionHeldFor, R19
+// of the spec of several open pull requests), so it may be another repository than repo (R17).
+// The third is a linked repository in which the external links of the check's issue name a
+// GitHub pull request that is open or merged (linkedRepositories, linkedRepositoryHolds). A
+// closed pull request that did not merge makes no repository count, and neither does a link to a
+// pull request GitHub answers 404 or 410 for (delivery.ErrPullRequestNotFound), nor one whose
+// name no repository GitHub could hold is called (refs.ErrNotGitHubRepo): each is an answer, and
+// no retry changes it.
 //
-// repo is asked first, and the links are read only when GitHub does not say that repo holds the
-// commit: when it proves repo does not, and when its read of repo did not answer — a rate
-// limit, a 5xx — since the commit may then be a linked repository's, and a result stored under
-// the issue's own repository there would be compared where GitHub answers 404 for it, unknown
-// for good. A result at a commit of the issue's own repository costs the one read it cost
-// before. At most linkedPullRequestReads linked pull requests are read, each distinct repository
-// once.
+// A commit that is the head of an open or merged pull request of the issue is taken with no read
+// of GitHub at all (R17): the head's row says which repository holds it, and the answer is that
+// repository where it is not repo. Every other commit is asked of repo first, and of the other
+// repositories only when GitHub does not say that repo holds it: when it proves repo does not,
+// and when its read of repo did not answer — a rate limit, a 5xx — since the commit may then be
+// another repository's, and a result stored under the issue's own repository there would be
+// compared where GitHub answers 404 for it, unknown for good. A result at a commit of the issue's
+// own repository costs the one read it cost before. The repositories of the issue's pull
+// requests are asked next, each once in name order, and then the linked ones: at most
+// linkedPullRequestReads linked pull requests are read, each distinct repository once, and a
+// linked repository already asked as a pull request's is not asked again.
 //
 // It runs before the transaction opens, so a refused result leaves no check_results row and no
 // result.recorded event behind. Dispatch stored a result at a mistyped commit no repository
 // held once, and a reader could not tell it from the real head, since both print as twelve
 // characters.
 //
-// It refuses in three ways. Where Dispatch's own list of the links could not be read
+// It refuses in two ways. Where Dispatch's own list of the links could not be read
 // (linkedRepositories), it answers that error, a server error to the caller, and nothing is
 // stored, whatever GitHub said of repo: the record cannot tell whether a linked repository holds
-// the commit, and a result stored then would sit at a commit no read showed any repository to
-// hold, one GitHub may have proved repo does not hold. The caller records the result again.
-// Where a read of a linked pull request's state or of a linked repository's commit did not
-// answer — a rate limit, a 5xx, a transport failure — and no repository is shown to hold the
-// commit, the record is refused for now (linkedReadRefusal), telling the caller to record the
-// result again, after GitHub's wait where the rate limit names one: that repository may hold the
-// commit, and a result stored under it would be stored at a commit no read showed any repository
-// to hold. And where GitHub proved that repo does not hold the commit and every linked
+// the commit. And where GitHub proved that repo does not hold the commit and every other
 // repository either does not count or, counting, is proved not to hold it either — which
 // delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
-// commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. Every other answer about repo
-// stores the result. No other GitHub answer can block the result a closed issue takes, the
-// production check's after-merge result — whose merge commit is on the branch its pull request
-// merged into and is held anyway. A refusal with links left unread for the bound says how many,
-// since a link past it may name the repository that holds the commit.
+// commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. A refusal with links left unread
+// for the bound says how many, since a link past it may name the repository that holds the
+// commit.
 //
-// It answers a linked repository only where GitHub said that repository holds the commit: the
-// first linked repository that counts and holds it. Every other result it stores is taken to be
-// at a commit of repo, and it answers nil for it: where GitHub says repo holds the commit, and
-// where GitHub's read of repo did not answer, every linked read answered and no linked repository
-// holds the commit, which stores the result exactly as it was stored before the links were read.
-// recordResultUnderOwnerLocks writes a linked repository it answers with the row
-// (model.CheckResult.CommitRepo), so the results read compares a branch check's result in that
-// repository (comparisonReader.onNamedBranch) and reads a `before_merge` result's pull requests
-// through it (comparisonReader.readThroughHead); and the read-through after the write reads the
-// commit's pull requests through it, or through repo where it answers nil
+// Where Dispatch cannot read one of the repositories and no repository is shown to hold the
+// commit, it stores the result, taken to be repo's (R17): a read that did not answer — a rate
+// limit, a 5xx, a transport failure — of repo or of any other repository, and a repository the
+// App is not installed on or whose token is refused it (delivery.RepositoryUnreadable). No such
+// answer can block the result a closed issue takes, the production check's after-merge result —
+// whose merge commit is on the branch its pull request merged into and is held anyway — and a
+// repository Dispatch cannot read records the result as before.
+//
+// It answers a repository other than repo only where the head's row names it or GitHub said that
+// repository holds the commit: the first that does. Every other result it stores is taken to be
+// at a commit of repo, and it answers nil for it. recordResultUnderOwnerLocks writes a repository
+// it answers with the row (model.CheckResult.CommitRepo), so the results read compares a branch
+// check's result in that repository (comparisonReader.onNamedBranch) and reads a `before_merge`
+// result's pull requests through it (comparisonReader.readThroughHead); and the read-through after
+// the write reads the commit's pull requests through it, or through repo where it answers nil
 // (readThroughPullRequests).
 func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueKey string, repo *string, sha string) (*string, error) {
 	if repo == nil {
 		return nil, nil
 	}
+	heads, err := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+	if err != nil {
+		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
+			"issue", issueKey, "commit", sha, "error", err)
+	}
+	if at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool { return head.HeadSHA == sha }); at >= 0 {
+		return headRepositoryOther(heads[at], *repo), nil
+	}
 	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
 	if err == nil && held {
 		return nil, nil
 	}
-	// ownUnread is a read of repo that did not answer. It refuses nothing by itself: it leaves
-	// the commit repo's wherever the links are read, every linked read answers and no linked
-	// repository holds the commit.
-	ownUnread := err != nil
-	if ownUnread {
+	// unread is a repository Dispatch could not read. It refuses nothing by itself (R17): it
+	// leaves the commit repo's wherever no other repository is shown to hold it.
+	unread := err != nil
+	if unread {
 		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
 			"repo", *repo, "commit", sha, "error", err)
+	}
+	checked := []string{*repo}
+	asked := []string{*repo}
+	for _, other := range otherHeadRepositories(heads, *repo) {
+		asked = append(asked, other)
+		held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, other, sha)
+		switch {
+		case err != nil:
+			slog.Info("dispatch: GitHub could not say whether the repository of a pull request of the issue holds a recorded result's commit",
+				"issue", issueKey, "repo", other, "commit", sha, "error", err)
+			unread = true
+		case held:
+			return &other, nil
+		default:
+			checked = append(checked, other)
+		}
 	}
 	links, err := linkedRepositories(ctx, q, issueKey)
 	if err != nil {
 		return nil, err
 	}
-	checked := []string{*repo}
-	// failed is the first linked read that did not answer, and failedRepo its repository.
-	var failed error
-	var failedRepo string
 	reads := linkedReads{left: linkedPullRequestReads}
 	for _, link := range links {
+		if slices.ContainsFunc(asked, func(name string) bool { return strings.EqualFold(name, link.repo) }) {
+			continue
+		}
 		counts, held, err := s.linkedRepositoryHolds(ctx, link, sha, &reads)
 		switch {
 		case err != nil:
 			slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
 				"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
-			if failed == nil {
-				failed, failedRepo = err, link.repo
-			}
+			unread = true
 		case held:
 			return &link.repo, nil
 		case counts:
 			checked = append(checked, link.repo)
 		}
 	}
-	switch {
-	case failed != nil:
-		return nil, linkedReadRefusal(failedRepo, sha, failed)
-	case ownUnread:
+	if unread || len(reads.unreadRepos) > 0 {
 		return nil, nil
 	}
 	return nil, errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
-		"%s no commit %s: record the result once the commit is pushed, or link the issue to an open or merged pull request of the repository that holds it%s%s%s",
-		repositoriesHold(checked), sha, reads.couldNotRead(), reads.setAside(), reads.leftUnread())
+		"%s no commit %s: record the result once the commit is pushed, or link the issue to an open or merged pull request of the repository that holds it%s%s",
+		repositoriesHold(checked), sha, reads.setAside(), reads.leftUnread())
 }
 
-// linkedReadRefusal is the refusal of a record whose read of repo, a linked repository, did not
-// answer (err) where no repository was shown to hold the commit: 502 GITHUB_UNREADABLE, the code
-// Dispatch answers a GitHub read that failed with (getAppInstallation), naming the repository,
-// the commit and GitHub's error, and telling the caller to record the result again. Nothing is
-// stored, so the record is made again whole. GitHub's error is worded by gitHubReason, as
-// getAppInstallation's 502 words it: where GitHub refused the read (githubapp.StatusError) or
-// rate-limited it (githubapp.RateLimitError), the body the error's text ends with is replaced by
-// the `message` GitHub wrote, and left out where it wrote none; and the text is cut to
-// gitHubReasonBytes, saying so, since any other error keeps GitHub's body whole — an
-// installation token mint GitHub refused carries it, up to the megabyte githubapp reads of an
-// answer. Where the read that failed is the installation token mint (delivery.ErrTokenMint), as
-// for a suspended installation's 403, the sentence names the mint, since GitHub was asked nothing
-// about the repository itself. A rate limit names GitHub's wait, in the sentence and in
-// Retry-After, rounded up to whole seconds as every Retry-After Dispatch writes is
-// (ratelimit.RetryAfterSeconds); any other failed read names none, since GitHub gave none.
-func linkedReadRefusal(repo, sha string, err error) error {
-	reason := gitHubReason(err)
-	limited, rateLimited := githubapp.AsRateLimit(err)
-	again := "record the result again"
-	retryAfter := 0
-	if rateLimited && limited.Wait > 0 {
-		retryAfter = ratelimit.RetryAfterSeconds(limited.Wait)
-		again = fmt.Sprintf("record the result again in %s, the wait GitHub named", time.Duration(retryAfter)*time.Second)
+// headRepositoryOther is the repository head is of where it is not repo, the repository the
+// check's issue resolves to, and nil where it is: a linked pull request's under the canonical
+// name its link is read by (delivery.AttributedHead.LinkedRepo), and else the row's own, compared
+// without case.
+func headRepositoryOther(head delivery.AttributedHead, repo string) *string {
+	switch {
+	case head.LinkedRepo != "":
+		return &head.LinkedRepo
+	case !strings.EqualFold(head.Repo, repo):
+		return &head.Repo
 	}
-	failed := fmt.Sprintf("GitHub could not be read for whether %s, a repository the issue links a pull request in, holds commit %s", repo, sha)
-	if errors.Is(err, delivery.ErrTokenMint) {
-		failed = fmt.Sprintf("Dispatch's GitHub App could not mint an installation token for %s, a repository the issue links a pull request in, so GitHub could not be read for whether it holds commit %s", repo, sha)
+	return nil
+}
+
+// otherHeadRepositories is the repository of each pull request in heads that is attributed to
+// the issue and not of repo, each once, compared without case, in name order. A linked pull
+// request's repository is not among them: refuseUnknownCommit reads it as a linked repository.
+func otherHeadRepositories(heads []delivery.AttributedHead, repo string) []string {
+	var others []string
+	for _, head := range heads {
+		if head.LinkedRepo != "" || strings.EqualFold(head.Repo, repo) {
+			continue
+		}
+		if !slices.ContainsFunc(others, func(name string) bool { return strings.EqualFold(name, head.Repo) }) {
+			others = append(others, head.Repo)
+		}
 	}
-	refusal := errorf(http.StatusBadGateway, "GITHUB_UNREADABLE", "%s: %s. Nothing was recorded: %s", failed, reason, again)
-	refusal.retryAfter = retryAfter
-	return refusal
+	slices.Sort(others)
+	return others
 }
 
 // repositoriesHold is the subject of a refusal's sentence, every repository it checked: "a
@@ -211,34 +222,20 @@ func joinAnd(items []string) string {
 // (linkedPullRequestReads), how many linked pull requests the bound left unread, each repository
 // Dispatch cannot read (delivery.RepositoryUnreadable) and each repository whose name GitHub's
 // naming rule refuses (refs.ErrNotGitHubRepo), in the order the record met them: unreadRepos
-// names each it cannot read, unreadPulls each linked pull request of a repository whose read of a
-// pull request's state answered so, and unreadCommits the pull request read open or merged of a
-// repository whose commit read answered so, each pull request named
-// `owner/repo#n (repository_unreadable)`; and misnamed names each repository the rule refuses.
+// names each it cannot read, which stores the result rather than refusing it (R17 of the spec of
+// several open pull requests), and misnamed names each repository the rule refuses.
 type linkedReads struct {
-	left, unread  int
-	unreadRepos   []string
-	unreadPulls   []string
-	unreadCommits []string
-	misnamed      []string
+	left, unread int
+	unreadRepos  []string
+	misnamed     []string
 }
 
-// cannotRead keeps link, a repository whose read of a linked pull request's state answered that
-// Dispatch cannot read it, and all its linked pull requests: the answer is about the whole
-// repository, so none of its pull requests can be read until someone grants the App it.
+// cannotRead keeps link, a repository whose read of a linked pull request's state, or of the
+// commit once a pull request read open or merged, answered that Dispatch cannot read it: the
+// answer is about the whole repository, so none of its pull requests can be read until someone
+// grants the App it.
 func (r *linkedReads) cannotRead(link linkedRepository) {
 	r.unreadRepos = append(r.unreadRepos, link.repo)
-	for _, number := range link.numbers {
-		r.unreadPulls = append(r.unreadPulls, unreadPull(link.repo, number))
-	}
-}
-
-// cannotReadCommit keeps link, a repository whose linked pull request number read open or merged
-// and whose commit read then answered that Dispatch cannot read it: the pull request was read,
-// and what Dispatch could not read is the commit in its repository.
-func (r *linkedReads) cannotReadCommit(link linkedRepository, number int) {
-	r.unreadRepos = append(r.unreadRepos, link.repo)
-	r.unreadCommits = append(r.unreadCommits, unreadPull(link.repo, number))
 }
 
 // misnamedRepository keeps link, a repository whose name GitHub's naming rule refuses
@@ -247,46 +244,6 @@ func (r *linkedReads) cannotReadCommit(link linkedRepository, number int) {
 // the link or the rename that makes the name.
 func (r *linkedReads) misnamedRepository(link linkedRepository) {
 	r.misnamed = append(r.misnamed, link.repo)
-}
-
-// unreadPull is a linked pull request of a repository Dispatch cannot read as a refusal names it.
-func unreadPull(repo string, number int) string {
-	return fmt.Sprintf("%s#%d (%s)", repo, number, model.ReasonRepositoryUnreadable)
-}
-
-// couldNotRead is the clause a refusal names what Dispatch could not read of the linked
-// repositories with, each with its reason, and says how to mend; "" where it met no repository it
-// cannot read. A linked pull request whose read of its state answered so is named as a pull
-// request Dispatch could not read; where that read answered and the commit read of its repository
-// did not, the clause names the commit in the repository of that pull request instead. The pull
-// requests of the first kind are named up to linkedPullRequestReads and the rest counted, since a
-// repository Dispatch cannot read lists every pull request the issue links in it, which are as
-// many as a person writes; each of the second kind spent one of those reads, so the bound holds
-// them already.
-func (r linkedReads) couldNotRead() string {
-	var parts []string
-	if pulls := r.unreadPulls; len(pulls) > 0 {
-		noun := "the linked pull request "
-		if len(pulls) > 1 {
-			noun = "the linked pull requests "
-		}
-		if more := len(pulls) - linkedPullRequestReads; more > 0 {
-			pulls = append(pulls[:linkedPullRequestReads:linkedPullRequestReads], fmt.Sprintf("%d more", more))
-		}
-		parts = append(parts, noun+joinAnd(pulls))
-	}
-	switch len(r.unreadCommits) {
-	case 0:
-	case 1:
-		parts = append(parts, "the commit in the repository of the linked pull request "+r.unreadCommits[0])
-	default:
-		parts = append(parts, "the commit in the repositories of the linked pull requests "+joinAnd(r.unreadCommits))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("; Dispatch could not read %s: grant Dispatch's GitHub App %s, or link a readable pull request",
-		strings.Join(parts, ", and "), joinAnd(r.unreadRepos))
 }
 
 // leftUnread is the clause a refusal ends with where the bound left links unread, and "" where
@@ -327,8 +284,8 @@ type linkedRepository struct {
 // linkedRepositories is every repository that the issue does not resolve to and in which the
 // external links of issueKey name a GitHub pull request, each once with the numbers of its
 // linked pull requests, in the order the issue lists its links. It groups
-// delivery.LinkedPullRequests, the list whose heads the results read compares a `before_merge`
-// check with, so the route and the read take one list. A link to a pull request of the issue's
+// delivery.LinkedPullRequests, read from the links themselves, since Dispatch may hold no row of a
+// pull request a link names yet. A link to a pull request of the issue's
 // own repository names nothing here: that repository is asked about the commit before any link
 // is read.
 func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([]linkedRepository, error) {
@@ -367,17 +324,18 @@ func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([
 // such pull request, which is a link a person mistyped or one to a pull request since deleted, so
 // it counts for nothing, exactly as a closed one that did not merge, and the next linked pull
 // request is read. A repository no read of which can work is the same answer about every pull
-// request of it, so none of them is read further and its commits are not asked about: a result
-// kept under it would read unknown for good. No retry changes it until someone gives the App the
-// repository or mends the link, and the two mend apart, so each is kept apart in reads, which the
-// refusal names them from: a repository Dispatch cannot read (linkedReads.cannotRead,
-// linkedReads.cannotReadCommit), and one whose name the rule refuses
-// (linkedReads.misnamedRepository). Read as a failure, any of these would refuse every record of
-// the issue until someone removed the link.
+// request of it, so none of them is read further and its commits are not asked about. No retry
+// changes it until someone gives the App the repository or mends the link, and the two mend
+// apart, so each is kept apart in reads: a repository Dispatch cannot read
+// (linkedReads.cannotRead), which leaves the result stored rather than refused (R17 of the spec
+// of several open pull requests), and one whose name the rule refuses
+// (linkedReads.misnamedRepository), which a refusal names. Read as a failure, any of these would
+// refuse every record of the issue until someone removed the link.
 //
 // The error is a read that did not answer — a rate limit, a 5xx, a transport failure — about the
 // commit, or about a pull request's state where no other pull request of the repository is open
-// or merged, which refuseUnknownCommit refuses the record for, to be made again.
+// or merged, which leaves the result stored where no repository is shown to hold the commit
+// (refuseUnknownCommit, R17).
 func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err error) {
 	for index, number := range link.numbers {
 		if reads.left == 0 {
@@ -402,7 +360,7 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 		case open:
 			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
 			if delivery.RepositoryUnreadable(err) {
-				reads.cannotReadCommit(link, number)
+				reads.cannotRead(link)
 				return false, false, nil
 			}
 			return true, held, err
@@ -525,8 +483,8 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 // baseBranchMergedIn is the branch the newest pull request the check's issue links in repo, a
 // linked repository, merged into (delivery.BaseBranchMergedIn), read once per issue and
 // repository per read of the results, and whether the read answered at all. The attribution
-// never gives the issue a pull request of a repository it does not resolve to, so the links are
-// what name its merge there, where baseBranchMergedFor reads the pull requests attributed to it
+// gives the issue such a pull request (R19 of the spec of several open pull requests), unless its
+// head is in a fork, and baseBranchMergedFor reads only the pull requests attributed to the issue
 // in the repository it resolves to. The key is the issue and the repository: an issue whose work
 // spans two repositories merged once in each. The memo keeps a failed read as
 // baseBranchMergedFor's does, for the same reason.

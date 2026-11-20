@@ -5,6 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import { RIG_OWNER } from "./rig-world";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
@@ -73,7 +74,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/${RIG_OWNER}`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: GEMINI_KEY,
       OPENAI_API_KEY: OPENAI_KEY,

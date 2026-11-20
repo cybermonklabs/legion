@@ -14,6 +14,7 @@ import {
   RelayHeader,
   type RelayReply,
 } from "@legion/envoy-client/consumer-delivery";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -67,7 +68,11 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET. Returns the recorded requests and the server's base URL. The server
+ * answers behind Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
+ * `Idempotency-Key` names that key back, as Dispatch's own answers do: the client takes no 2xx
+ * that names no key as its write's answer, so a stand-in of a keyed write (a delivery's accept,
+ * a reply) whose answer left it out would never be accepted.
  */
 export function serveStandin(
   cleanup: Cleanup,
@@ -77,13 +82,13 @@ export function serveStandin(
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    async fetch(request) {
+    fetch: keyedLayer(async (request: globalThis.Request) => {
       const url = new URL(request.url);
       const text = request.method === "POST" ? await request.text() : "";
       const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
       requests.push({ path: url.pathname, body });
       return answer(url, body);
-    },
+    }),
   });
   cleanup.push(async () => {
     await server.stop(true);

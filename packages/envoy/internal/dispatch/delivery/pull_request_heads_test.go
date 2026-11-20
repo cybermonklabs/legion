@@ -424,6 +424,39 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 }
 
+// HeadsAttributedTo names the repository each head's row is stored under, as NewestPullRequestHead
+// does: the results read reads a check run at each open head in that head's own repository, and a
+// pull request an issue links may be of another repository than the issue's.
+func TestHeadsAttributedToNamesEachRowsRepository(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 93)
+	for _, head := range []struct {
+		repo   string
+		number int
+		sha    string
+	}{{"acme/widgets", 931, "9310000000000000000000000000000000000000"}, {"acme/infra", 932, "9320000000000000000000000000000000000000"}} {
+		attributed := issue
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: head.repo, Number: head.number, HeadSHA: head.sha, HeadRef: "legion/work", BaseRef: "main",
+			State: "open", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
+			Title: issue + " the work", URL: fmt.Sprintf("https://github.com/%s/pull/%d", head.repo, head.number),
+		}); err != nil {
+			t.Fatalf("store %s#%d: %v", head.repo, head.number, err)
+		}
+	}
+	heads, err := HeadsAttributedTo(ctx, pool, issue)
+	if err != nil {
+		t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
+	}
+	repos := map[int]string{}
+	for _, head := range heads {
+		repos[head.Number] = head.Repo
+	}
+	if len(heads) != 2 || repos[931] != "acme/widgets" || repos[932] != "acme/infra" {
+		t.Fatalf("HeadsAttributedTo(%s) = %+v, want #931 of acme/widgets and #932 of acme/infra, each naming its row's repository", issue, heads)
+	}
+}
+
 // A pull request's title, body and branch are text any account that can open one writes, and an
 // attributed head row is what a `before_merge` result's commit stands at, so an issue that
 // resolves to another repository attributes nothing: the row is still written, with no issue.

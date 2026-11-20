@@ -304,7 +304,15 @@ agents using it stop working at once.
   pass stands and from which roles, and names what Dispatch compared the results with: each head
   of the issue's pull requests for a before-merge check, the branches for the other two kinds,
   or the reason there is nothing to compare with, which is that the issue has no pull request
-  and no branch, or that Dispatch could not read the repository. Each result carries the whole
+  and no branch, or that Dispatch could not read the repository. A before-merge check has one
+  row for each open pull request's head under that answer, with the head, its state and its
+  roles in the words `dispatch results` prints, and one line that counts the merged pull
+  requests, which decide nothing while one is open. A pull request that the issue links by its
+  URL is the issue's in any repository, unless its head is in a fork, and its row names that
+  repository beside the number, `owner/repo#9`. A pass stands only where each open head reads
+  yes. A pass and a fail at one commit of a before-merge check leave that head not known,
+  whoever recorded them, and a later pass does not end it; a retraction of the wrong one does.
+  A check compared with a branch takes its newest result. Each result carries the whole
   commit, the reading its role recorded, whether that commit is one of the compared commits, and
   whether the check's words moved after the result was recorded. A retracted result shows as
   retracted with its reason, and counts as no evidence.

@@ -75,7 +75,8 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/9")
-	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
+	// acme/tools#9 as the attribution leaves it: the issue's, since the issue links it.
+	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", issue, "main")
 
 	_, toolsAsksBefore := linked.counts("acme/tools")
 	_, widgetsAsksBefore := linked.counts("acme/widgets")
@@ -183,7 +184,7 @@ func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T
 	issue := issueInRepository(t, handler, "RELO", "acme/widgets", "Decided by the linked repository").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-	writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+	writeHead(t, database, "acme/tools", 7, headCommit, "open", issue)
 
 	result := recordStored(t, handler, issue, "k1", oldCommit)
 	if repo := storedCommitRepo(t, database, result); repo == nil || *repo != "acme/tools" {
@@ -255,16 +256,13 @@ func TestARecordReadsAtMostTheBoundOfLinkedPullRequests(t *testing.T) {
 	}
 }
 
-// A refusal names at most linkedPullRequestReads of the linked pull requests Dispatch could not
-// read, and counts the rest, so the number of links a person writes does not set the size of the
-// refusal's text. An issue linking twelve pull requests of one repository the App is not
-// installed on reads none of them, since GitHub's answer about the first is its answer about every
-// pull request of that repository, and the refusal names the first ten in the order the record
-// meets the links and says two more. The pull requests are numbered from 101, so that order,
-// which the links' text sets, is their numbers' too.
-//
-// The negative control is the list left uncut, which names all twelve.
-func TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead(t *testing.T) {
+// R17 of the spec of several open pull requests: a repository Dispatch cannot read stores the result.
+// An issue linking twelve pull requests of one repository the App is not installed on: GitHub's
+// answer about the first is its answer about every pull request of that repository, so Dispatch
+// cannot say whether that repository holds the commit, however many links name it. The result at
+// a commit acme/widgets does not hold is stored, taken to be acme/widgets', and no pull request
+// of acme/elsewhere is read past that one answer.
+func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 	const (
 		commit = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
 		links  = linkedPullRequestReads + 2
@@ -274,12 +272,9 @@ func TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead(t *te
 		pulls:       map[string]string{},
 		uninstalled: []string{"acme/elsewhere"},
 	}
-	var urls, named []string
+	var urls []string
 	for number := 101; number < 101+links; number++ {
 		urls = append(urls, fmt.Sprintf("https://github.com/acme/elsewhere/pull/%d", number))
-		if number < 101+linkedPullRequestReads {
-			named = append(named, fmt.Sprintf("acme/elsewhere#%d (%s)", number, model.ReasonRepositoryUnreadable))
-		}
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELC", "acme/widgets", "Many links of one repository the App cannot read").Key
@@ -289,22 +284,9 @@ func TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead(t *te
 
 	recorded := recordResult(t, handler, issue, resultBody("k1", "pass", commit, nil))
 
-	code, text := refusalOf(t, recorded)
-	if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
-		t.Fatalf("status=%d body=%s, want 400 RESULT_COMMIT_UNKNOWN", recorded.Code, recorded.Body.String())
-	}
-	want := "; Dispatch could not read the linked pull requests " + strings.Join(named, ", ") +
-		" and 2 more: grant Dispatch's GitHub App acme/elsewhere, or link a readable pull request"
-	if !strings.Contains(text, want) {
-		t.Errorf("the refusal reads %q, want it to say %q", text, want)
-	}
-	for _, past := range []string{"acme/elsewhere#111", "acme/elsewhere#112"} {
-		if strings.Contains(text, past) {
-			t.Errorf("the refusal reads %q, want %s, past the bound, counted and not named", text, past)
-		}
-	}
-	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
-		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+	storedAtOwnRepository(t, database, recorded, issue, eventsBefore)
+	if reads, _ := linked.counts("acme/elsewhere"); reads != 0 {
+		t.Errorf("the record read the state of %d of acme/elsewhere's pull requests, want none: the App is not installed there", reads)
 	}
 }
 
@@ -354,14 +336,14 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 
 // A result's dry run judges a commit of a linked repository as the record does, because the two
 // share one judgement (readResultRequest): a commit only the linked repository holds is taken, a
-// commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN, a linked read that did not
-// answer is refused 502 GITHUB_UNREADABLE, and a linked repository the App cannot read is named in
-// the refusal. Each dry run answers what the record of the same body then answers, word for word,
-// and stores nothing. A dry run that skipped the linked reads would answer a line where the
-// record refuses, and tell a role its result will be taken when it will not.
+// commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN, and a linked read that did not
+// answer and a linked repository the App cannot read each take the result, taken to be the
+// issue's own repository's. Each dry run answers what the record of the same body then answers,
+// word for word, and stores nothing. A dry run that skipped the linked reads would answer a line
+// where the record refuses, and tell a role its result will be taken when it will not.
 //
 // The negative control is a dry run that asks no repository about the commit: it answers 200 in
-// the three refused rows.
+// the refused row.
 func TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
@@ -370,16 +352,20 @@ func TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes(t *testing.T) {
 		// github is how GitHub answers, beside the open pull request acme/tools#7.
 		github func(*linkedGitHub)
 		// status and code are the record's answer; the dry run answers 200 where the record 201s.
+		// repo is the commit_repo the record stores where it takes the result, "" for none.
 		status int
 		code   string
+		repo   string
 	}{
-		{"a commit only the linked repository holds", func(*linkedGitHub) {}, http.StatusCreated, ""},
+		{"a commit only the linked repository holds", func(*linkedGitHub) {}, http.StatusCreated, "", "acme/tools"},
 		{"a commit no repository holds", func(linked *linkedGitHub) { linked.held["acme/tools"] = nil },
-			http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN"},
+			http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN", ""},
+		// R17 of the spec of several open pull requests: a repository Dispatch cannot read stores the result.
 		{"a linked read GitHub answered 500", func(linked *linkedGitHub) { linked.erroring = []string{"acme/tools"} },
-			http.StatusBadGateway, "GITHUB_UNREADABLE"},
+			http.StatusCreated, "", ""},
+		// R17 of the spec of several open pull requests: a repository Dispatch cannot read stores the result.
 		{"a linked repository the App cannot read", func(linked *linkedGitHub) { linked.refusing = []string{"acme/tools"} },
-			http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN"},
+			http.StatusCreated, "", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			linked := &linkedGitHub{
@@ -414,8 +400,12 @@ func TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes(t *testing.T) {
 				if want := "pass at " + linkedCommit; !strings.Contains(line, want) {
 					t.Errorf("the dry run's line = %q, want it to say %q", line, want)
 				}
-				if repo := storedCommitRepo(t, database, decodeBody[recordedResult](t, recorded).Result); repo == nil || *repo != "acme/tools" {
-					t.Errorf("the record stored commit_repo %v, want acme/tools", repo)
+				stored := ""
+				if repo := storedCommitRepo(t, database, decodeBody[recordedResult](t, recorded).Result); repo != nil {
+					stored = *repo
+				}
+				if stored != row.repo {
+					t.Errorf("the record stored commit_repo %q, want %q (\"\" is none)", stored, row.repo)
 				}
 				return
 			}

@@ -178,6 +178,7 @@
         "@biomejs/biome": "^2.3.14",
         "@legion/test-fixtures": "workspace:*",
         "@types/bun": "latest",
+        "ajv": "8.20.0",
         "typescript": "^5.3.0",
       },
     },

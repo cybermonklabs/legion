@@ -107,14 +107,15 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_INSTANCES":            givesNone("a Google account's instance names"),
 	"BROKER_VM_EXCHANGE_ACCOUNTS":    givesNone("a Google account's person and project"),
 
-	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
-	"BROKER_EXCHANGE_GITHUB_AUDIENCE": givesNone("an audience"),
-	"BROKER_EXCHANGE_K8S_AUDIENCE":    givesNone("an audience"),
-	"BROKER_EXCHANGE_ACCOUNTS":        givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
-	"BROKER_EXCHANGE_READ_ACCOUNTS":   givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_WORKFLOWS":       givesNone("a GitHub workflow"),
-	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
+	"BROKER_API_ACCOUNTS":              givesARole("a BROKER_API_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_GITHUB_ISSUER":    givesNone("an issuer"),
+	"BROKER_EXCHANGE_GITHUB_AUDIENCE":  givesNone("an audience"),
+	"BROKER_EXCHANGE_K8S_AUDIENCE":     givesNone("an audience"),
+	"BROKER_EXCHANGE_ACCOUNTS":         givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
+	"BROKER_EXCHANGE_READ_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_WORKFLOWS":        givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_RESULT_WORKFLOWS": givesNone("a GitHub workflow, matched only against a GitHub Actions token (exchange.Set.Workflow)"),
+	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE":  givesNone("a file path"),
 
 	// loadNATSCallout's.
 	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),

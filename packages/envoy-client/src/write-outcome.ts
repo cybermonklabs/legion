@@ -11,10 +11,13 @@
 // and that Dispatch's keyed layer answered, or a refusal the keyed layer judged for the write's key
 // (the key echoed back), settles the write. Every other way it ends — any other answer, a failure,
 // the deadline, the caller's stop, running out of retries or of time — is
-// `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that ends
-// is told the event's own error: the refusal, the transport's failure, the credential's, the
-// deadline's; but where the deadline or the caller's stop ends the wait after a credential that
-// could not present, the credential's failure, since it is why nothing was sent.
+// `DispatchWriteUnsettledError` carrying the key, but one: where the last attempt's 2xx carried
+// the key back and its body was not the row the write's callers read, Dispatch answered only after
+// the write committed, so the write landed with its answer lost (`DISPATCH_ANSWER_LOST`,
+// `dispatch-http.ts`'s `#endWrite`). Before anything may have landed, a write that ends is told the
+// event's own error: the refusal, the transport's failure, the credential's, the deadline's; but
+// where the deadline or the caller's stop ends the wait after a credential that could not present,
+// the credential's failure, since it is why nothing was sent.
 //
 // The cells rest on what Dispatch does (`packages/envoy/internal/dispatch/api/request_keys.go`):
 // every answer its keyed layer gives a keyed POST or PATCH carries the key back, a 5xx included; a
@@ -40,18 +43,28 @@ export type WriteEvent =
    *  Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer ran (`401`,
    *  `403 READ_ONLY_TOKEN`), a second dead token, a 1xx. */
   | "unjudged"
+  /** An echoed 401: a handler's refusal, which can come after the handler committed the write,
+   *  and which the keyed layer keeps as no outcome of the key (a 401 is never stored), so it is no
+   *  verdict on the write and it may have landed in either state. Not asked again after. */
+  | "unkept"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that carried no key back, from a Dispatch this process knows runs the keyed layer,
-   *  whose every answer to a keyed write carries it: not Dispatch's answer to this write (a
-   *  captive portal's or a proxy's own page), so it says nothing of whether the write ran. */
+  /** A 2xx, or a `409 KEY_COMMITTED`, that is not Dispatch's answer to this write (a captive
+   *  portal's or a proxy's own page, a proxy or a cache answering one write with another's), so
+   *  it says nothing of whether the write ran: a 2xx whose body is empty or not JSON-typed, or
+   *  either that names another request's key back, whatever the process knows, or names no key
+   *  back from a Dispatch this process knows runs the keyed layer, whose every answer to a keyed
+   *  write carries it. Where it carried this write's key back, Dispatch answered, and the write
+   *  landed with its answer lost. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
   | "body-broken"
-  /** A 2xx whose body, read whole, is not the JSON its `Content-Type` says (cut short on the way):
-   *  asked again under the key as a broken body is. */
+  /** A 2xx whose body, read whole, is not the JSON its `Content-Type` says (cut short on the way),
+   *  or is JSON that is not the row the write's callers read: asked again under the key as a
+   *  broken body is. Where the asking is spent after one that carried the key back, the write
+   *  landed with its answer lost. */
   | "body-malformed"
   /** A 5xx: asked again under the key. It can come after Dispatch committed the write. */
   | "server-error"
@@ -128,6 +141,8 @@ export const WRITE_TRANSITIONS: {
   applied: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   judged: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   unjudged: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
+  // A handler gave it, perhaps after it committed: it may have landed whatever came before.
+  unkept: { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   redirect: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   // Whether a foreign page's sender passed the write on cannot be told, so it may have landed.
   "foreign-2xx": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },

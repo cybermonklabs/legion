@@ -1,10 +1,17 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
 import { sharedRuns } from "./score";
+import { fileRowLimit } from "./test-limit";
+
+// Each row runs judge.ts's judges in this process, through the fake runner below, and reads and
+// writes their directories: a loaded machine stretches that past bun's 5 s default (a row that runs
+// judge.ts six times took over 5 s at a load of 401), so each test and hook gets the limit
+// test-limit.ts computes from the bounds of what they wait for.
+setDefaultTimeout(fileRowLimit());
 
 // judge.ts gives each prompt a fresh directory under <work>/judging/<run>/ that holds only that
 // prompt's inputs and prompt.txt, starts the judge there through an injected runner (rig.sh

@@ -19,7 +19,10 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # so silently selecting a shared default would make the destructive write
 # target ambiguous. FAKE_ENVOY_PORT and FAKE_GITHUB_PORT (and FAKE_BROKER_PORT
 # for the default broker switch below) name the fakes the caller started, whose
-# ports e2e/harness-start.ts reads from their reports.
+# ports e2e/harness-start.ts reads from their reports. DISPATCH_E2E_NATS_URL,
+# optional, names a NATS server the caller started: set, the server's delivery
+# intake reads it (NATS_URLS); unset or empty, the server runs with NATS off
+# (DISPATCH_NATS_DISABLED=1), as it always did.
 #
 # One server (DISPATCH_E2E_PROCESSES unset or 1): DISPATCH_E2E_PORT unset (or
 # empty), the server serves on a port the kernel chooses, held from that moment
@@ -288,6 +291,24 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
 fi
 
+# The hide-state file, read before the sweep below and passed under the same DISPATCH_TEST_HOOKS=1.
+# While the file it names exists, the results read leaves out the state the server computes from
+# the results: each check's pass_stands and ci, and each result's currency. The skill-scenario rig
+# sets it for a run whose agent judges the results alone. Unset, nothing changes.
+hide_state_env=()
+if [ -n "${DISPATCH_TEST_HIDE_STATE_FILE:-}" ]; then
+  hide_state_env=(DISPATCH_TEST_HIDE_STATE_FILE="$DISPATCH_TEST_HIDE_STATE_FILE")
+fi
+
+# The NATS server, read before the sweep below: DISPATCH_E2E_NATS_URL names one the caller started
+# (the skill-scenario rig starts one for each run of its heads scenarios), and the server gets it
+# as NATS_URLS, NATS on, so its delivery intake reads the `pull_request` envelopes the caller
+# publishes there. Unset or empty, the server gets DISPATCH_NATS_DISABLED=1, as it always did.
+nats_env=(DISPATCH_NATS_DISABLED=1)
+if [ -n "${DISPATCH_E2E_NATS_URL:-}" ]; then
+  nats_env=(NATS_URLS="$DISPATCH_E2E_NATS_URL")
+fi
+
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -393,9 +414,10 @@ exec "${listen[@]}" env \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_NATS_DISABLED=1 \
+  "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
+  "${hide_state_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \

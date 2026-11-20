@@ -565,10 +565,12 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
-		// role runs it or records its result, and `dispatch results` derives that result
-		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
-		// judged, or lists a check's attributes, carries the exception. The tester's and the
-		// implementer's role parts point at the worker skill's page, which a core part may not name.
+		// role runs it or records its result, and its results come from CI: the one `dispatch
+		// results` derives from that run, and each one a run of its CI job records through the
+		// secrets broker (R5 of the spec of that rule). Each part that orders a check
+		// run, recorded or judged, or lists a check's attributes, carries the exception. The
+		// tester's and the implementer's role parts point at the worker skill's page, which a core
+		// part may not name.
 		{"core/tester.md", ciCheckRule},
 		{"core/implementer.md", ciCheckRule},
 		{"core/reviewer.md", ciCheckRule},
@@ -582,8 +584,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"architect-root.md", "takes no `run`"},
 		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
 		// unread is waited for, and a name no run answers goes to the architect, rather than sending
-		// the work back to an implementer who cannot cure it. The final gate points at that rule.
-		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
+		// the work back to an implementer who cannot cure it. The final gate points at that rule. A
+		// head whose line reads not known for a pass and a fail is no reason to wait: the reviewer
+		// requests changes for that check at once, since no later result at that commit ends it.
+		{"reviewer.md", "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once."},
+		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
@@ -603,6 +608,28 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 			if strings.Contains(text, retired) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
+		}
+	}
+}
+
+// The CI-result decisions belong in the prompts that bind each role. Guide text may describe how
+// to operate a tool, but a role must receive the decision in the prompt it loads for its head.
+func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
+	for _, pin := range []struct{ file, rule string }{
+		{"tester.md", "A `before_merge` check reads yes at the head you test only with a pass from the implementer and a pass from the tester there; a pass from one role alone is no pass."},
+		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect-root.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect.md", "To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule."},
+		{"architect-root.md", "To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule."},
+		{"architect.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
+		{"architect-root.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
+		{"implementer.md", "For a check CI proves, copy the `Pull request line` under this pull request's head from `dispatch results` into the body's `Checks` line; record no result for it."},
+	} {
+		text := strings.Join(strings.Fields(rolePart(t, pin.file)), " ")
+		if !strings.Contains(text, pin.rule) {
+			t.Errorf("%s does not contain %q", pin.file, pin.rule)
 		}
 	}
 }

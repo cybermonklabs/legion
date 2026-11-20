@@ -182,6 +182,8 @@ PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/plans any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/projects/{key}/results any
+POST /api/v1/projects/{key}/results any
 GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any

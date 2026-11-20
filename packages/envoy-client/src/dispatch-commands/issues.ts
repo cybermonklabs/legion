@@ -8,6 +8,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -21,8 +22,11 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
+import { printable, printableJson, printableLine, printableStrings } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { formatCheckResults } from "./check-results";
+
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -39,8 +43,8 @@ import {
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
 import { linkFor } from "./links";
+import { observedAsKept } from "./observed-text";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
-import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
 
 /** The change line after a components write: what the issue's own attachment became. */
@@ -653,6 +657,76 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
+/**
+ * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
+ * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
+ * reader keeps, whose recorder is the run and no person. It sends what a result keeps of observed
+ * (`observedAsKept`). The job runs it with its own identity and no session (`runDispatchCli`), and
+ * a session's call reaches it through `resultCommand`.
+ */
+export async function specCheckResultCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const observed = optionalString(args, "observed");
+  const stored = await client.recordSpecCheckResult(project, {
+    commit: stringArg(args, "commit"),
+    check: stringArg(args, "check"),
+    verdict: stringArg(args, "verdict"),
+    ...(observed === undefined ? {} : { observed: observedAsKept(observed) }),
+  });
+  const { predicate } = stored.attestation;
+  return {
+    text: JSON.stringify(stored, null, 2),
+    details: {
+      project,
+      result: stored.id,
+      seq: stored.seq,
+      check: predicate.check,
+      verdict: predicate.verdict,
+    },
+  };
+}
+
+/** One stored result of a check of the spec files, as `dispatch results --project` lists it:
+ *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
+ *  the commit. Each of them is a CI job's or the stored statement's text, so it prints by the rule
+ *  of a runner's log (`printable`, runner-log.ts): a listing read in a job's log starts no line of
+ *  its own and names no workflow command. */
+function specCheckResultLine(result: SpecCheckResult): string {
+  const { predicate, subject } = result.attestation;
+  const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
+  // Destructured: claude-envoy compiles this file under noPropertyAccessFromIndexSignature.
+  const { gitCommit } = subject?.[0]?.digest ?? {};
+  const commit = gitCommit ?? "an unnamed commit";
+  return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
+}
+
+/** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
+ *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
+ *  results as JSON with `json`, each by the rule of a runner's log (runner-log.ts). */
+async function specCheckResultsCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const commit = stringArg(args, "commit");
+  const check = optionalString(args, "check");
+  const results = (await client.specCheckResults(project, commit, check)).results ?? [];
+  const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
+  const text =
+    optionalBoolean(args, "json") === true
+      ? printableJson(JSON.stringify(results, null, 2))
+      : results.length === 0
+        ? `No result of ${what} is stored at ${printable(commit)}.`
+        : [
+            `Results of ${what} at ${printable(commit)}, newest first:`,
+            ...results.map(specCheckResultLine),
+          ].join("\n");
+  return { text, details: { project, commit, results: results.length } };
+}
+
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
  *  `dispatch result` record, whose dry run prints the pull-request body line the record would
  *  print, since that line is Dispatch's to write and a copy written here would be a second
@@ -661,18 +735,27 @@ export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, u
   return tool === "dispatch_result" && args["retract"] === undefined;
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document, or, as
- *  the CLI's dry run, ask Dispatch for the pull-request body line the record would print. */
+/** `dispatch result`: record one result of one check of an issue's Verification document, or,
+ *  with `project`, a CI job's result of a check of the spec files, or, as the CLI's dry run, ask
+ *  Dispatch for the pull-request body line the record would print. It prints the recorded result's
+ *  id as `dispatch results` prints it, `Result <id>`, which `--retract` takes. What it prints back
+ *  of the answer is text a session wrote (a retraction's reason, a check's words in the pull
+ *  request line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of
+ *  it starts a line. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultCommand(client, args);
+  }
   const retract = optionalString(args, "retract");
   if (retract !== undefined) {
     const retraction = await client.retractResult(retract, {
       actor,
       reason: stringArg(args, "reason"),
     });
+    const shown = printableStrings(retraction);
     return {
-      text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
+      text: `Retracted result ${shown.result_id}. ${actorText(shown.actor)} retracted it at ${shown.created_at}. The reason: ${shown.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
       details: {
         result: retraction.result_id,
         reason: retraction.reason,
@@ -715,10 +798,11 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
   } catch (error) {
     // CHECK_CONTENDED is the one refusal of this route that asks for nothing but the same
     // call again: a document version reworded the check at both of the write's attempts, so
-    // nothing was recorded and the next call resolves the check afresh. Every other refusal
-    // it can give asks the caller to change something first, and reaches them as Dispatch
-    // wrote it. Untouched, this one reaches them as prose with its code hidden, which reads
-    // as a failure to work out rather than a write to repeat.
+    // nothing was recorded and the next call resolves the check afresh. A server of this
+    // build never answers it, since its write reads the check from the block index under its
+    // locks, but a released server still can, and this command meets both. Untouched, it
+    // reaches the caller as prose with its code hidden, which reads as a failure to work out
+    // rather than a write to repeat.
     if (dispatchAnswered(error, 409) && error.code === "CHECK_CONTENDED") {
       throw refusalWithCode(
         error,
@@ -727,8 +811,9 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     }
     throw error;
   }
+  const shown = printableStrings(recorded.result);
   return {
-    text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
+    text: `Recorded ${shown.verdict} for check ${shown.check_block_id} of ${shown.check_issue_key} at ${shown.commit_sha}, as ${shown.role}. Result ${shown.id}.\n\nPull request body line:\n${printableLine(recorded.line)}`,
     details: {
       issue,
       result: recorded.result.id,
@@ -740,16 +825,24 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, or the route's answer whole as JSON with `json`, where each result a CI job
+ *  recorded carries the in-toto statement of its run; or, with `project`, the results CI jobs
+ *  stored for checks of the spec files. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultsCommand(client, args);
+  }
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
   return {
-    text: formatCheckResults(results, brief),
+    text:
+      optionalBoolean(args, "json") === true
+        ? printableJson(JSON.stringify(results, null, 2))
+        : formatCheckResults(results, brief),
     details: {
       issue,
       checks: checks.length,

@@ -8,12 +8,18 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
-//     One row per run, then counts per scenario and label (for askgate, per case and label), and a
-//     legend saying what each count is. Each scenario's rule is on the function that scores it:
-//     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
-//     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+//     <runs dir> holds each run under its name: rig.sh's <work>/maps/runs, whose links point at
+//     the runs' own directories (rig.sh's header, "the map"), with the label links beside it in
+//     <work>/maps/profiles.
+//     One row per run, then counts per scenario and label (for askgate and reviewer-own-head, per
+//     case and label), and a legend saying what each count is. Each scenario's rule is on the
+//     function that scores it: askOnMessage, measureBeforeAsk, testerProof, brainstormSurface,
+//     askgateReview, specRow for spec-writing and spec-rewrite, headsReview for reviewer-own-head
+//     and reviewer-pass-and-fail, and headsArchitect for architect-pass-and-fail. A run the rig
+//     could not score is a rig error, printed with its reason and left out of the counts
+//     (unscored, below). A run SKILL_SCENARIOS_FIXTURE_ONLY stopped before its agent is listed
+//     and not scored.
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -24,6 +30,7 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { HEADS_SCENARIOS } from "./heads-scenarios";
 import {
   CheckableFile,
   CheckableOutput,
@@ -73,8 +80,9 @@ const IssueEvents = z.array(
 );
 /** `GET /api/v1/issues/{key}/messages/{id}`: the message and its replies. */
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
-/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, and (a
- * gh call that edited the pull request's body) the body the stand-in kept and serves from then on. */
+/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, (a gh
+ * call that edited the pull request's body) the body the stand-in kept and serves from then on, and
+ * (a call no route of the world matched) `no_route`. */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
@@ -83,6 +91,7 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  no_route: z.boolean().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -479,10 +488,10 @@ function resultOf(entries: SessionEntry[], id: string): { text: string; isError:
   };
 }
 
-/** An askgate run's directory, askgate-<case>-<label>-<n>: the case comes before the label, so the
- * cases' batches of one label, each numbered from 1, never share a directory. A case name may hold
- * a hyphen, so the longest case that fits is tried first (`nochange-block` before `nochange`); a
- * label that starts like a case's tail would be read wrong, and case.txt then refuses the run. */
+/** An askgate run's name in the map, askgate-<case>-<label>-<n>: the case comes before the label,
+ * so the cases' batches of one label, each numbered from 1, never share a name. A case name may
+ * hold a hyphen, so the longest case that fits is tried first (`nochange-block` before
+ * `nochange`); a label that starts like a case's tail would be read wrong. */
 const ASKGATE_RUN = new RegExp(
   `^askgate-(${ASKGATE_CASES.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
 );
@@ -496,8 +505,8 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
 /** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
  * one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
- * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
- * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with
+ * run's name names its case (its agent sees no file that does). The row's scenario is
+ * `askgate:<case>`, so the counts are per case. A gate entry with
  * outcome `unreadable` is a refusal before any model call, of a command the gate cannot read (a
  * pipe, a `;`, an unquoted here-document), and one with outcome `unmarked` is the `dispatch` CLI's
  * refusal or warning for a gated write that carried no AskGate marker, so no rule counts either as
@@ -523,12 +532,7 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
  * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
-function askgateReview(runDir: string, run: string, label: string, dirCase: string): Row {
-  const askCase = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
-  if (!ASKGATE_CASES.includes(askCase))
-    throw new Error(`askgate case.txt names '${askCase}', not one of ${ASKGATE_CASES.join(", ")}`);
-  if (askCase !== dirCase)
-    throw new Error(`case.txt names '${askCase}', but the run's directory names ${dirCase}`);
+function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
   const on = label !== "off";
   if (!on && askCase !== "facts")
     throw new Error(`askgate scores off only with case facts, not ${askCase}`);
@@ -801,6 +805,282 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
+}
+
+/** The cases of reviewer-own-head, which rig.sh's run_reviewer_own_head runs. */
+const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
+/** A reviewer-own-head run's directory, reviewer-own-head-<case>-<label>-<n>, as an askgate run's
+ * names its case (ASKGATE_RUN). */
+const OWN_HEAD_RUN = new RegExp(`^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`);
+/** A ci-pass-and-fail run's directory, ci-pass-and-fail-<role>-<label>-<n>: the role it drives. */
+const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
+/** The scenarios whose run directory names a case before its label, each with the pattern of its
+ * directory's name, whose first group is the case: the one list of them that scoreRuns and
+ * visible-world.ts both read. */
+export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
+  askgate: ASKGATE_RUN,
+  "reviewer-own-head": OWN_HEAD_RUN,
+  "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
+};
+/** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
+/** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
+const LINE_OF_702 = /^ {2}- #702 at /m;
+
+/** One review a run submitted through the gh stand-in: when, the pull request, the event, the
+ * commit it names ("" for none) and the body. */
+interface Review {
+  readonly at: string;
+  readonly pr: number;
+  readonly event: string;
+  readonly commit: string;
+  readonly body: string;
+}
+
+/** Each review the gh stand-in answered (exit 0), in the order they were made: a `gh api` write to
+ * `repos/<o>/<r>/pulls/<n>/reviews` (an explicit POST, or gh's own POST for a call that sends
+ * fields or `--input`), read from its `--input` JSON or its `-f`/`-F` fields, a file or stdin
+ * among them as the stand-in recorded it; and a `gh pr review <n>`, whose `--approve`,
+ * `--request-changes` or `--comment` is its event and which names no commit. */
+function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
+  const reviews: Review[] = [];
+  for (const call of calls) {
+    if (call.as !== "gh" || call.exit !== 0) continue;
+    const argv = call.argv;
+    const read = (source: string) =>
+      source === "-" ? (call.stdin ?? "") : (call.files?.[source] ?? "");
+    if (argv[0] === "pr" && argv[1] === "review") {
+      const target = argv.slice(2).find((arg) => /^(\d+|https:\/\/\S+\/pull\/\d+)$/.test(arg));
+      const event = argv.some((arg) => arg === "--approve" || arg === "-a")
+        ? "APPROVE"
+        : argv.some((arg) => arg === "--request-changes" || arg === "-r")
+          ? "REQUEST_CHANGES"
+          : "COMMENT";
+      const at = argv.findIndex((arg) => ["-b", "--body", "-F", "--body-file"].includes(arg));
+      const value = at < 0 ? "" : (argv[at + 1] ?? "");
+      reviews.push({
+        at: call.at,
+        pr: Number(/(\d+)$/.exec(target ?? "702")?.[1]),
+        event,
+        commit: "",
+        body: argv[at] === "-F" || argv[at] === "--body-file" ? read(value) : value,
+      });
+      continue;
+    }
+    if (argv[0] !== "api") continue;
+    const endpoint = argv.find((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/reviews$/.test(arg));
+    if (endpoint === undefined) continue;
+    const methodAt = argv.findIndex((arg) => arg === "-X" || arg === "--method");
+    const method = (
+      methodAt >= 0
+        ? (argv[methodAt + 1] ?? "")
+        : (argv.find((arg) => /^(-X|--method=)/.test(arg))?.replace(/^(-X|--method=)/, "") ?? "")
+    ).toUpperCase();
+    const sends = argv.some((arg) =>
+      ["--input", "-f", "-F", "--field", "--raw-field"].includes(arg)
+    );
+    if (method === "" ? !sends : method !== "POST") continue;
+    const fields: Record<string, string> = {};
+    argv.forEach((arg, index) => {
+      const next = argv[index + 1] ?? "";
+      if (arg === "--input") {
+        try {
+          const sent: unknown = JSON.parse(read(next));
+          for (const key of ["event", "commit_id", "body"]) {
+            const value = field(sent, key);
+            if (typeof value === "string") fields[key] = value;
+          }
+        } catch {
+          // An input that is no JSON object names no event, so the review reads as none.
+        }
+      } else if (["-f", "-F", "--field", "--raw-field"].includes(arg)) {
+        const [key = "", ...rest] = next.split("=");
+        const value = rest.join("=");
+        fields[key] =
+          (arg === "-F" || arg === "--field") && value.startsWith("@")
+            ? read(value.slice(1))
+            : value;
+      }
+    });
+    reviews.push({
+      at: call.at,
+      pr: Number(/pulls\/(\d+)\/reviews$/.exec(endpoint)?.[1]),
+      event: (fields.event ?? "").toUpperCase(),
+      commit: fields.commit_id ?? "",
+      body: fields.body ?? "",
+    });
+  }
+  return reviews;
+}
+
+/** Each line of the run's own replies that starts WAITING, the line a worker ends a turn that
+ * waits with (roles/mechanics/headless.md); with `before`, only those of a reply whose message
+ * started before that time: the replies before the run's decision. */
+function waitingLines(entries: SessionEntry[], before?: string): string[] {
+  const by = before === undefined ? Number.POSITIVE_INFINITY : Date.parse(before);
+  return entries.flatMap((entry) =>
+    entry.message?.role !== "assistant" || !(Date.parse(entry.timestamp ?? "") < by)
+      ? []
+      : (entry.message.content ?? []).flatMap((part) =>
+          part.type === "text"
+            ? (part.text ?? "").split("\n").filter((line) => /^\s*WAITING\b/.test(line))
+            : []
+        )
+  );
+}
+
+/** reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer: a reviewer, started
+ * on a tester's pass, reviews #702 of an issue (world.json) whose results seed.ts heads-events (and,
+ * in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The review is the last one the run
+ * submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull request, and the
+ * notes list it. A reviewer-own-head run's case is in its name, and its row's scenario is
+ * `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's are; a
+ * ci-pass-and-fail run's row is `ci-pass-and-fail:reviewer`. A pass:
+ *   - sibling-fails and ci-only, where #702's line reads yes (from both roles, or from CI): the
+ *     review approves #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review
+ *     --approve` names no commit, so it approves no head the score can read;
+ *   - no-implementer and no-tester, where #702's line reads yes from one role: the review requests
+ *     changes and its body names k1;
+ *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
+ *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
+ *     still going: the same, and no reply of the run starts WAITING before its first review of #702
+ *     (with no such review, no reply at all): that is a wait for the check or for the run, which R15
+ *     forbids, and one after the review waits for the next round (verification.md's "writes no
+ *     WAITING line for it").
+ * `ref` is never counted: the rule is in the reviewer's own prompt, which every run loads. */
+function headsReview(
+  runDir: string,
+  run: string,
+  label: string,
+  dirCase: string,
+  scenario: "reviewer-own-head" | "reviewer-pass-and-fail" | "ci-pass-and-fail"
+): Row {
+  const world = scenario === "reviewer-own-head" ? dirCase : scenario;
+  const { pr, head } = json(path.join(runDir, "world.json"), World);
+  const reviews = reviewsOf(parsed(path.join(runDir, "calls.jsonl"), Call));
+  const review = reviews.filter((r) => r.pr === pr).at(-1);
+  const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
+  const approves = review?.event === "APPROVE" && review.commit === head;
+  const namesCheck = /\bk1\b/.test(review?.body ?? "");
+  const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
+  const pass =
+    world === "sibling-fails" || world === "ci-only"
+      ? approves
+      : world === "reviewer-pass-and-fail" || world === "ci-pass-and-fail"
+        ? refuses && waiting.length === 0
+        : refuses;
+  const notes = [
+    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...reviews.map(
+      (r) =>
+        `  review #${r.pr} ${r.event || "none"} at ${r.commit || "none"}: ${JSON.stringify(r.body.slice(0, 200))}`
+    ),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    scenario:
+      scenario === "reviewer-own-head"
+        ? `reviewer-own-head:${world}`
+        : scenario === "ci-pass-and-fail"
+          ? "ci-pass-and-fail:reviewer"
+          : scenario,
+    label,
+    pass,
+    ref: false,
+    notes: notes.join("\n"),
+  };
+}
+
+/** ci-pass-and-fail's tester: a tester, started on the implementer's completion, tests #702, at
+ * whose head k1, a check CI proves, holds the CI job's pass and later fail while the job's run is
+ * still going, so #702's line reads not known. R15 and R16 and the spec's Design make that no
+ * reason to wait for any role, and the tester's texts make it a test failure at once
+ * (skills/legion-worker/references/ci-checks.md, "A run that is still going"; pr-body.md). The
+ * record is the run's own newest test record on its issue (handoffs.json, seed.ts
+ * capture-handoffs, newest first: the first one this run's session wrote, as testerProof reads it).
+ * A pass: that record's body is a test handoff (TestHandoff) whose `failures` name k1, and no reply
+ * of the run starts WAITING before Dispatch recorded it (with no such record, no reply at all): a
+ * WAITING line after the record waits for the next phase. `ref` is never counted. */
+function headsTester(runDir: string, run: string, label: string): Row {
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  let body: unknown;
+  try {
+    body = record === undefined ? undefined : JSON.parse(record.body);
+  } catch {
+    body = undefined;
+  }
+  const handoff = TestHandoff.safeParse(body);
+  const failures = handoff.success ? (handoff.data.failures ?? []) : [];
+  const listsK1 = failures.some((failure) => /\bk1\b/.test(failure.check));
+  const waiting = waitingLines(entries, record?.created_at);
+  const notes = [
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${handoff.success ? `${handoff.data.implementerProof.verdict} failures=[${failures.map((failure) => failure.check).join(",")}]` : "unreadable"} listsK1=${listsK1} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...failures.map(
+      (failure) => `  failure ${failure.check}: ${JSON.stringify(failure.evidence.slice(0, 200))}`
+    ),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    scenario: "ci-pass-and-fail:tester",
+    label,
+    pass: record !== undefined && listsK1 && waiting.length === 0,
+    ref: false,
+    notes: notes.join("\n"),
+  };
+}
+
+/** architect-pass-and-fail and ci-pass-and-fail's architect: the tree's root architect judges #702,
+ * at whose head the tester recorded a pass, its test record and then a fail (in ci-pass-and-fail,
+ * the CI job its pass and then its fail while the job's run is still going), and the reviewer its
+ * review record. The architect's calls are the daemon stand-in's log (daemon.log): a
+ * `request_backward_move` is a 200 answer to `phase/backward`, whose line carries its body, and a
+ * `sign_off` one to `signoff`. A pass: a move back whose reason names k1, no sign-off, and no reply
+ * of the run that starts WAITING before its first move or sign-off (with neither, no reply at all):
+ * a WAITING line after the move waits for the next phase, not for the check. `ref` is never
+ * counted. */
+function headsArchitect(
+  runDir: string,
+  run: string,
+  label: string,
+  scenario: "architect-pass-and-fail" | "ci-pass-and-fail:architect"
+): Row {
+  const calls = parsed(path.join(runDir, "daemon.log"), DaemonLine).filter(
+    (line) => line.status === 200
+  );
+  const backs = calls.filter((line) => line.path === "/legion/v1/phase/backward");
+  const signOffs = calls.filter((line) => line.path === "/legion/v1/signoff").length;
+  const reason = (line: z.infer<typeof DaemonLine>) => {
+    const value = field(line.body, "reason");
+    return typeof value === "string" ? value : "";
+  };
+  const sentBack = backs.some((line) => /\bk1\b/.test(reason(line)));
+  const decided = calls.find(
+    (line) => line.path === "/legion/v1/phase/backward" || line.path === "/legion/v1/signoff"
+  );
+  const waiting = waitingLines(session(runDir), decided?.at);
+  const notes = [
+    `sentBack=${sentBack} moves=${backs.length} signOffs=${signOffs} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...backs.map(
+      (line) =>
+        `  request_backward_move to ${String(field(line.body, "to"))}: ${JSON.stringify(reason(line).slice(0, 200))}`
+    ),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    scenario,
+    label,
+    pass: sentBack && signOffs === 0 && waiting.length === 0,
+    ref: false,
+    notes: notes.join("\n"),
+  };
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
@@ -3037,7 +3317,13 @@ function median(values: number[]): number {
  *     in the same Postgres container (`sharing`, each Dispatch's runs). A `dispatch search`
  *     searches every project of its server, so runs that share one can read each other's issue
  *     and asks, and one run's answer can be another's;
+ *   - a run of a heads scenario (HEADS_SCENARIOS) whose results-before.txt holds no line of #702:
+ *     its Dispatch never learned #702's head, so rig.sh's fixture_heads started no agent, and an
+ *     agent's reading of the head's line would measure nothing;
  *   - it never finished: out.txt has no `exit=` line;
+ *   - its world answered a GitHub call with no route: gh-standin.ts recorded a call `no_route`, so
+ *     the agent read the rig's gap, not an answer GitHub gives, and whatever it did next measures
+ *     the rig (a world answers each refusal GitHub gives with a route of its own);
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
@@ -3073,8 +3359,18 @@ function unscored(
       return `it shares Dispatch database ${database} of Postgres ${postgres} with ${others.join(", ")}, so each could read the other's issue and asks`;
     }
   }
+  if (HEADS_SCENARIOS.includes(scenario)) {
+    const before = path.join(runDir, "results-before.txt");
+    if (!existsSync(before) || !LINE_OF_702.test(readFileSync(before, "utf8")))
+      return "results-before.txt holds no line of #702: the run's Dispatch never learned #702's head";
+  }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  const gaps = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
+    (call) => call.no_route === true
+  );
+  if (gaps.length > 0)
+    return `the gh stand-in had no route for ${gaps.length} call(s), first \`gh ${gaps[0]?.argv.join(" ")}\`: the agent read the rig's gap, not GitHub's answer`;
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
@@ -3295,8 +3591,9 @@ function flagOf(name: string, reaches: Reach[], note: string): { inline: string;
 
 /** The directory a run had when it ran. rig.sh starts every agent in `<run dir>/cwd`, and its
  * session's header records that cwd, so a run scored from a copy (another work directory) still
- * reads its own paths as its own. A header whose cwd is not `…/runs/<this run's name>/cwd`, or no
- * header, gives `dir` itself. */
+ * reads its own paths as its own. `dir` is the run's own directory, the target of its link in the
+ * map. A header whose cwd is not `…/runs/<that directory's name>/cwd`, or no header, gives `dir`
+ * itself. */
 function ranAt(dir: string, entries: SessionEntry[]): string {
   const cwd = entries.find((entry) => entry.type === "session")?.cwd;
   return typeof cwd === "string" && cwd.endsWith(`/runs/${path.basename(dir)}/cwd`)
@@ -3337,9 +3634,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case comes from its directory (ASKGATE_RUN).
-  const scorers: Record<string, (dir: string, run: string, label: string, askCase: string) => Row> =
+  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate, a
+  // reviewer-own-head or a ci-pass-and-fail run's case comes from its directory (CASED_RUNS).
+  const scorers: Record<string, (dir: string, run: string, label: string, dirCase: string) => Row> =
     {
       "ask-on-message": askOnMessage,
       "measure-before-ask": measureBeforeAsk,
@@ -3348,8 +3645,22 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       askgate: askgateReview,
       "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
       "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+      "reviewer-own-head": (dir, run, label, dirCase) =>
+        headsReview(dir, run, label, dirCase, "reviewer-own-head"),
+      "reviewer-pass-and-fail": (dir, run, label) =>
+        headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
+      "architect-pass-and-fail": (dir, run, label) =>
+        headsArchitect(dir, run, label, "architect-pass-and-fail"),
+      "ci-pass-and-fail": (dir, run, label, role) =>
+        role === "reviewer"
+          ? headsReview(dir, run, label, "", "ci-pass-and-fail")
+          : role === "tester"
+            ? headsTester(dir, run, label)
+            : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
     };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
+  // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
+  const fixtureOnly: string[] = [];
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
     const score = scorers[match?.[1] ?? ""];
@@ -3357,28 +3668,42 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
-    // undefined for every other scenario, null for an askgate directory that names no case.
-    const askgate = scenario === "askgate" ? ASKGATE_RUN.exec(run) : undefined;
-    const [, askCase = "", label = named] = askgate ?? [];
-    const key = `${askgate ? `askgate:${askCase}` : scenario}\t${label}`;
+    if (existsSync(path.join(dir, "fixture-only"))) {
+      fixtureOnly.push(run);
+      continue;
+    }
+    // undefined for a scenario with no case, null for a directory of one that names no case.
+    const casedRun = CASED_RUNS[scenario]?.exec(run);
+    const [, dirCase = "", label = named] = casedRun ?? [];
+    const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (askgate === null)
+      if (casedRun === null)
         throw new Error(
-          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+          `the directory names no case: ${/^[aeiou]/.test(scenario) ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
       // The paths the run had when it ran, which its transcripts name, never those of a copy
-      // scored elsewhere (ranAt).
-      const ran = ranAt(dir, session(dir));
+      // scored elsewhere (ranAt), from the run's own directory: the map's link resolved (a link to
+      // no directory is this run's rig error).
+      const ran = ranAt(lstatSync(dir).isSymbolicLink() ? realpathSync(dir) : dir, session(dir));
       const work = path.dirname(path.dirname(ran));
-      const profile = path.join(work, "profiles", label);
+      // The label's profile under the run's own work directory: its directory's name is the one the
+      // map's link names, and the label's own where the profiles are named by label.
+      const link = path.join(profiles, label);
+      const profile = path.join(
+        work,
+        "profiles",
+        existsSync(link) && lstatSync(link).isSymbolicLink()
+          ? path.basename(realpathSync(link))
+          : label
+      );
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, askCase);
+        const scored = score(dir, run, label, dirCase);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3422,6 +3747,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   for (const row of rows) console.log(`${row.run}\tpass=${row.pass}\tref=${row.ref}\t${row.notes}`);
   for (const error of errors) console.log(`${error.run}\trig error: ${error.reason}`);
+  for (const run of fixtureOnly) console.log(`${run}\tfixture only: no agent ran, not scored`);
   console.log("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged");
   const keys = [
     ...new Set([
@@ -3470,7 +3796,14 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
+      "           reviewer-own-head (per case), reviewer-pass-and-fail: the review the reviewer",
+      "           submitted on #702 (headsReview); architect-pass-and-fail: the architect sent the",
+      "           issue back naming k1 and signed nothing off (headsArchitect); ci-pass-and-fail",
+      "           (per role): the reviewer's refusal naming k1, the tester's test record listing k1",
+      "           in its failures (headsTester) and the architect's move back naming k1, each with",
+      "           no WAITING line before it",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and the four heads",
+      "           scenarios: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",

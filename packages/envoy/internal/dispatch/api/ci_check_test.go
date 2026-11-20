@@ -25,9 +25,6 @@ const (
 	ciCheckOrdinary = `negative_control="` + ciCheckNegativeControl + `"`
 )
 
-// ciCheckRecordedRule is the message of the rule a block holding a recorded result breaks.
-const ciCheckRecordedRule = "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
-
 // ciCheckBlock is check block id carrying attributes as markdown writes them.
 func ciCheckBlock(id, attributes string) string {
 	return ":::check{#" + id + " " + attributes + "}\nThe server builds at the head.\n:::\n"
@@ -133,22 +130,43 @@ func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
 	}
 }
 
-// A check holding a recorded result does not become CI's: giving it a ci_check is refused with the
-// fourth rule through a replacement, a retype and a rebuild, and so is a new block written under
-// its id once it is deleted, since the results still stand against that id. A ci_check on a fresh
-// block id of the same document is written.
+// ciCheckRecordedRule is the message of the rule a block holding a result a role recorded breaks.
+const ciCheckRecordedRule = "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
+
+// A check holding a result a role recorded does not become CI's, as the release before holds it:
+// giving it a ci_check is refused with the fourth rule through a replacement, a retype and a
+// rebuild, and so is a new block written under its id once it is deleted, since the results still
+// stand against that id. A retracted result still stands against it: a retraction is a row of its
+// own, and the result's row stays. A ci_check on a fresh block id of the same document is written,
+// and so is a change of the negative control of a check that holds a CI job's result alone, which
+// no rule counts.
 func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
-	handler, _, broken := newBrokenTestServer(t)
+	handler, database, broken := newBrokenTestServer(t)
 	issue := createInteractionIssue(t, handler, "CIR", "CI checks", "A spec\n")
-	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckOrdinary))
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", ciCheckOrdinary)+"\n"+ciCheckBlock("c2", ciCheckOrdinary)+"\n"+ciCheckBlock("c5", ciCheckKept))
 	id := verification.Artifact.ID
 	if recorded := recordResult(t, handler, issue.Key, resultBody("c1", "pass", headCommit, nil)); recorded.Code != http.StatusCreated {
 		t.Fatalf("record a result against c1: status=%d body=%s", recorded.Code, recorded.Body.String())
 	}
+	retracted := recordResult(t, handler, issue.Key, resultBody("c2", "pass", headCommit, nil))
+	if retracted.Code != http.StatusCreated {
+		t.Fatalf("record a result against c2: status=%d body=%s", retracted.Code, retracted.Body.String())
+	}
+	if response := retractAsPerson(t, handler, decodeBody[recordedResult](t, retracted).Result.ID, "The run tested another commit."); response.Code != http.StatusCreated {
+		t.Fatalf("retract c2's result: status=%d body=%s, want 201", response.Code, response.Body.String())
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
+		values ($1, $1, $2::uuid, 'c5', 1, 'digest', $3, $4, 'legion/' || $1, 'pass', '{}', 'ci-run', '{"kind":"ci","id":"go-test"}')
+	`, issue.Key, id, ciCheckRun, headCommit); err != nil {
+		t.Fatalf("record a CI job's result against c5: %v", err)
+	}
+	held := ciCheckBlock("c2", ciCheckOrdinary) + "\n" + ciCheckBlock("c5", ciCheckKept)
 	before := documentMarkdown(t, handler, id)
 	want := ciCheckRefusal("c1", ciCheckRecordedRule)
 
-	expectRefusal(t, "a replacement giving it a ci_check", uploadVerification(t, handler, issue.Key, ciCheckBlock("c1", ciCheckKept)),
+	expectRefusal(t, "a replacement giving it a ci_check", uploadVerification(t, handler, issue.Key, ciCheckBlock("c1", ciCheckKept)+"\n"+held),
 		http.StatusBadRequest, "INVALID_CI_CHECK", want)
 	expectRefusal(t, "a retype giving it a ci_check", applyOp(t, handler, id, map[string]any{
 		"op": "retype", "block": "c1", "type": "check",
@@ -156,11 +174,21 @@ func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 	}), http.StatusBadRequest, "INVALID_CI_CHECK", want)
 	broken.failNextLoad(id)
 	expectRefusal(t, "a rebuild giving it a ci_check", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/rebuild",
-		map[string]any{"markdown": ciCheckBlock("c1", ciCheckKept)}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
+		map[string]any{"markdown": ciCheckBlock("c1", ciCheckKept) + "\n" + held}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
+	expectRefusal(t, "a retype giving a ci_check to c2, whose result is retracted", applyOp(t, handler, id, map[string]any{
+		"op": "retype", "block": "c2", "type": "check",
+		"attributes": map[string]any{"negative_control": ciCheckNegativeControl, "ci_check": ciCheckRun},
+	}), http.StatusBadRequest, "INVALID_CI_CHECK", ciCheckRefusal("c2", ciCheckRecordedRule))
 	if after := documentMarkdown(t, handler, id); after != before {
 		t.Fatalf("verification.md after refused writes = %q, want %q unchanged", after, before)
 	}
 
+	if response := applyOp(t, handler, id, map[string]any{
+		"op": "retype", "block": "c5", "type": "check",
+		"attributes": map[string]any{"negative_control": "Break the test and watch the job fail.", "ci_check": ciCheckRun},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("a new negative control of c5, which holds a CI job's result alone: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
 	if response := applyOp(t, handler, id, map[string]any{
 		"op": "insert", "after": "end", "markdown": ciCheckBlock("c3", ciCheckKept),
 	}); response.Code != http.StatusOK {
@@ -257,7 +285,7 @@ func ciCheckRefusalEvents(t *testing.T, handler http.Handler, issueKey string) [
 
 // A browser peer's write is never refused, so the room's settlement refuses it: each check block
 // the peer wrote with a ci_check that breaks a rule - a run, a when of after_merge, no negative
-// control, and a result already recorded against it - reads back without its ci_check, and one
+// control, and a result a role recorded against it - reads back without its ci_check, and one
 // block.invalid names the block, the rule and block_type check. A check keeping every rule keeps
 // its ci_check. A second settlement, after the peer edits elsewhere, repairs nothing again.
 func TestSettlementRefusesEachBrokenCICheckABrowserPeerWrites(t *testing.T) {

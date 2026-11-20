@@ -210,6 +210,8 @@ var settings = []setting{
 		Description: "Set to `1` so the server builds no embedder whatever `DISPATCH_EMBEDDER` and the AWS SDK's own variables would have built: meaning search answers keyword-only and says so, and the embedding queue does nothing, for an end-to-end test process whose AWS variables address a file store rather than a model service. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RECONCILE_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HIDE_STATE_FILE", Required: "no",
+		Description: "An absolute path: while a file is there, `GET /api/v1/issues/{key}/results` leaves out each check's `pass_stands` and `ci` and each result's `currency`, the state the server computes from the results, and keeps every other field, for an end-to-end test process whose agent must judge the results alone. The skill-scenario rig creates the file after its own reads and removes it when the agent ends. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the architecture import's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_CI_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",

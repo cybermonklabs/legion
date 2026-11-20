@@ -687,8 +687,9 @@ func runCoverage(ctx context.Context, deps Deps) {
 // which sessions exist, '[]' when the listener has not answered and no row at all before the
 // first answer, so a deployment that resolves none counts 0), a document version from
 // artifact_versions (only a document's latest text is indexed, and then as windows of its
-// blocks, so no version row is an item of any covered kind), a result from check_results and a
-// handoff from handoffs.
+// blocks, so no version row is an item of any covered kind), a result of a check block from
+// check_results, which holds what a role recorded, and from ci_check_results, which holds what a
+// CI job recorded, and a handoff from handoffs.
 //
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
@@ -696,7 +697,7 @@ var notIndexedKinds = []struct{ kind, items string }{
 	{"component", "(select count(*) from components)"},
 	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
 	{"document_version", "(select count(*) from artifact_versions)"},
-	{"result", "(select count(*) from check_results)"},
+	{"result", "((select count(*) from check_results) + (select count(*) from ci_check_results))"},
 	{"handoff", "(select count(*) from handoffs)"},
 }
 

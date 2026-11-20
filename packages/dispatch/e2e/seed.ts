@@ -28,8 +28,8 @@ const tables = [
   "delivery_run_jobs",
   "delivery_runs",
   "delivery_pull_requests",
-  // pull_request_heads and check_results are reached by the cascade below (both carry a
-  // foreign key into issues); branch_commits carries none, so it is named here.
+  // pull_request_heads, check_results and ci_check_results are reached by the cascade below (each
+  // carries a foreign key into issues); branch_commits carries none, so it is named here.
   "branch_commits",
   "user_issue_state",
   "user_agent_state",

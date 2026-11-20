@@ -4,8 +4,10 @@ import {
   dispatchToolSpecs,
   zodSchemaApi,
 } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import { z } from "zod";
 import { messageFor } from "./errors";
+import { goSpaceAtEnds, pathNamesNothingPattern } from "./go-space";
 
 /**
  * The `dispatch` command surface: one command per Dispatch tool spec and one flag per field, all
@@ -559,6 +561,37 @@ export function parseCommand(
     }
   }
 
+  // A value that names what a call is about or narrows what a read answers, empty, names nothing:
+  // sent, an empty issue key reaches a route that is no route (`PATCH /api/v1/issues/`), which a
+  // rolling release also answers, and an empty search project or `--at` widens the read with no
+  // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
+  // is how one is written. Each item of a list is read as a single value is (`dispatch priorities
+  // --project`). Blank is Go's white space, since Dispatch trims a value by `strings.TrimSpace`
+  // (`@legion/contracts/go-blank`), and in a URL path a value of only dots and slashes names no
+  // step either (`dispatch read --issue ..` asked `GET /api/v1/`).
+  for (const { field, noun, tools, path } of IDENTIFIER_FIELDS) {
+    const given = args[field];
+    if (tools !== undefined && !tools.includes(tool)) continue;
+    const flag = setBy.get(field);
+    for (const value of Array.isArray(given) ? given : [given]) {
+      if (typeof value !== "string") continue;
+      let problem: string | undefined;
+      if (value === "") {
+        problem = `${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`;
+      } else if (goBlankPattern.test(value)) {
+        problem = `${flag} is only white space, so the call names no ${noun}`;
+      } else if (path === true && pathNamesNothingPattern.test(value)) {
+        const named = value.replace(goSpaceAtEnds, "");
+        problem =
+          named === "." || named === ".."
+            ? `${flag} is "${named}", a step of a URL path, which the URL drops, so the call names no ${noun}`
+            : `${flag} is "${named}", only dots and slashes, which name no step of a URL path, so the call names no ${noun}`;
+      }
+      if (problem === undefined) continue;
+      problems.push(problem);
+      break;
+    }
+  }
   if (help) return { kind: "help", tool };
   if (problems.length > 0) {
     // When every problem is a bare `-`, the refusal is about values and lists no flags.
@@ -592,6 +625,33 @@ function appendedItem(
 
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/**
+ * The fields that name what a call is about, or narrow what a read answers, each a key, an id, a
+ * reference, a commit or a filter that is never empty or only white space, with the noun its
+ * refusal names: every command's field of the name, or the listed commands' alone where another
+ * command gives the empty value a meaning (`dispatch issue-update --parent ""` clears the
+ * parent). `path` marks a field whose value goes into a URL path in some command, where a value
+ * of only dots and slashes names nothing either (`pathNamesNothingPattern`). A value the call
+ * puts in a URL path is refused there too, for every caller (`DispatchEmptyPathError`).
+ */
+const IDENTIFIER_FIELDS: readonly {
+  readonly field: string;
+  readonly noun: string;
+  readonly tools?: readonly string[];
+  readonly path?: true;
+}[] = [
+  { field: "issue", noun: "issue", path: true },
+  { field: "project", noun: "project", path: true },
+  { field: "artifact", noun: "document", path: true },
+  { field: "check", noun: "check" },
+  { field: "commit", noun: "commit" },
+  { field: "at", noun: "commit" },
+  { field: "retract", noun: "result", path: true },
+  { field: "comment", noun: "comment", path: true },
+  { field: "session", noun: "session", path: true },
+  { field: "parent", noun: "parent", tools: ["dispatch_issues", "dispatch_issue"] },
+];
 
 /** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
 function quoteWord(value: string): string {

@@ -164,6 +164,97 @@ func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, tre
 	return requirements, nil
 }
 
+// typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
+// in document order, with its block id (typedBlocksOf). The markdown is read live and parsed;
+// nothing is written. Its reader is the requirements of a spec (requirementBlocksIn); the results
+// routes read a check from the block index alone (results_settled_check.go).
+//
+// When trees is true, visit is handed as content the markdown the block's text_tree is read
+// from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
+// index stores it: the block's slice of the document's markdown, between the byte range the
+// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
+// cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
+// and the results read takes a check's tree from the same stored text (checkBlocksOf), so one
+// block answers one tree in all three reads, the whole stored text of a typed block in a quote
+// included. The ranges come with the markdown from that one read, which serves both from the
+// read cache without a render where it can (typedBlockMarkdown); a block the read gives no range
+// for answers the block's own content (blockContent).
+func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
+	if err != nil {
+		return err
+	}
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)
+	}
+	typedBlocksOf(tree, blockType, func(node *pmdoc.Node, id string) {
+		content := ""
+		if trees {
+			if whole, held := texts[id]; held {
+				content = blockTextContent(whole, true)
+			} else {
+				content = blockContent(node)
+			}
+		}
+		visit(node, id, content)
+	})
+	return nil
+}
+
+// typedBlockMarkdown is the live markdown of one document and, when trees is true, the text the
+// block index stores for each block of blockType in it, by id: the block's slice of that markdown
+// between the byte range the same read gives for it (docs.Service.TextWithBlocks). The read lists
+// blocks in document order, so the text kept for an id is its first holder's, the block
+// typedBlocksIn visits. When trees is false the document is read with Text alone.
+//
+// A read with blocks that fails is logged, and the document is read again with Text and given no
+// text at all, so every block answers its own content: a value inside a block that no block token
+// can encode refuses TextWithBlocks and not Text, and such a document still answers its blocks'
+// words. A failure Text meets as well is answered with Text's error.
+func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType string, trees bool) (string, map[string]string, error) {
+	if trees {
+		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+		if err == nil {
+			texts := map[string]string{}
+			for _, block := range blocks {
+				if block.Type != blockType {
+					continue
+				}
+				if _, held := texts[block.ID]; !held {
+					texts[block.ID] = sliceMarkdown(markdown, block.From, block.To)
+				}
+			}
+			return markdown, texts, nil
+		}
+		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", err)
+	}
+	markdown, err := s.deps.Docs.Text(ctx, artifactID)
+	return markdown, nil, err
+}
+
+// typedBlocksOf hands visit each block of blockType in tree, in document order, with its block
+// id. A rendering can repeat an id; the block index keys one row per id, and so does this, so
+// only the first holder of an id is visited, and a block with no id is not.
+func typedBlocksOf(tree *pmdoc.Node, blockType string, visit func(node *pmdoc.Node, id string)) {
+	seen := map[string]struct{}{}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type != blockType {
+			return true
+		}
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		if id == "" {
+			return true
+		}
+		if _, repeated := seen[id]; repeated {
+			return true
+		}
+		seen[id] = struct{}{}
+		visit(node, id)
+		return true
+	})
+}
+
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.
 type servingCounts struct {
 	checks    int

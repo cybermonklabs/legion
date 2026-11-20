@@ -1,3 +1,5 @@
+import { SESSION_VAR } from "@legion/broker-client/environment";
+import { PERSON_TRADE_VAR } from "@legion/broker-client/signins";
 import { isCleanUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -248,6 +250,39 @@ export function dispatchSettings(
 export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): string | undefined {
   const target = dispatchTarget(env, config);
   return target.enabled ? target.url : undefined;
+}
+
+/**
+ * Dispatch for a caller that writes as this machine's own identity and as nothing else: a CI job
+ * that records its result of a check of the spec files (`dispatch result --project`), which has
+ * no session and no envoy.json. Its server is `DISPATCH_URL`, and its credential is the access
+ * token the secrets broker trades this machine's identity for (`AGENT_SECRETS_URL` with
+ * `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). No bearer is read, and no person's
+ * sign-in is traded (`PERSON_TRADE_VAR` off), so the write never carries a person's credential.
+ * The trade names no session: `SESSION_VAR` is blanked for it, since the broker's entry for such a
+ * caller fixes the session. Off, it says why as an `error`.
+ */
+export function ownIdentityDispatch(env: DispatchEnvironment): DispatchConfigResolution {
+  const url = nonEmpty(env.DISPATCH_URL);
+  if (url === undefined) {
+    return offWithError(
+      "DISPATCH_URL is not set: a write with this machine's own identity reads Dispatch's server from it alone"
+    );
+  }
+  if (httpUrl(url) === undefined) return offWithError("DISPATCH_URL must be an http or https URL");
+  const machine = { ...env, [PERSON_TRADE_VAR]: "off", [SESSION_VAR]: "" };
+  let route: BrokerRoute;
+  try {
+    route = brokerRouteConfigured(machine);
+  } catch (error) {
+    return offWithError(messageFor(error));
+  }
+  if (!route.traded) {
+    return offWithError(
+      `a write with this machine's own identity trades it at the secrets broker, and ${route.gap}`
+    );
+  }
+  return { enabled: true, url: withoutTrailingSlashes(url), credential: brokerCredential(machine) };
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,

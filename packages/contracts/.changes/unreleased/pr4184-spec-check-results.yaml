@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  The generated Dispatch API types and the OpenAPI document hold `POST /api/v1/projects/{key}/results` and its read: `SpecCheckResult`, the stored result of a check of the spec files a CI job wrote, with its in-toto statement (`ResultAttestation`, `ResultPredicate`), whose recorder (`ResultRecorder`) is the run's session and principal and no person, and the body the job writes, `{commit, check, verdict, observed}`. `SPEC_CHECK_OBSERVED_MAX` (2000) is how many characters of `observed` a result keeps. A longer text keeps its first `SPEC_CHECK_OBSERVED_START` (500) characters, then `SPEC_CHECK_OBSERVED_CUT_NOTE`, the line that says the middle was cut, then its last `SPEC_CHECK_OBSERVED_END` characters. All four are generated into Go.

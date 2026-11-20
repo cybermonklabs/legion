@@ -670,13 +670,12 @@ func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 // the harness's size. The route joins no ledger and writes its two rows inline, so its window
 // holds three statements: the batch that appends `result.recorded` (the event owner's lock, its
 // row, and the insert), the result row's own insert, and the COMMIT ending them. Everything the
-// record is decided on comes before the first of them - the check's words, read before the
-// transaction opens; the two issues' owner locks, which assign no transaction id
-// (store.LockOwner, lockIssueOwners); whether each issue is open; the screenshots the result
-// names; and the version and digest the index holds for the check, read under those locks - and
-// the one read of the live document a moved version or digest needs runs with those locks given
-// back (recordResultWithFreshWords), so no read of a document is inside this window or behind
-// these locks.
+// record is decided on comes before the first of them - the check as the block index holds it,
+// read before the transaction opens; the two issues' owner locks, which assign no transaction id
+// (store.LockOwner, lockIssueOwners); whether each issue is open; the version, digest and text the
+// index holds for the check, read under those locks in one statement (settledCheckUnderLocks);
+// who may record a result of it (refuseResultOfAnotherRecorder); and the screenshots the result
+// names - and no read of a document is inside this window or behind these locks.
 func xidWindowResultRecorded(t *testing.T, f *xidFixture) {
 	f.uploadVerification(t)
 	f.measure(t, http.StatusCreated, storetest.XidWindowOf(3,

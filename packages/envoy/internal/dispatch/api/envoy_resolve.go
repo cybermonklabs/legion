@@ -27,17 +27,12 @@ import (
 // the one place the shape is spelled, for that call and for any other slow read a write
 // decides on:
 //
-//  1. resolve - the slow read (the listener call, or the results write's read of the live
-//               Verification document), with nothing held;
+//  1. resolve - the slow read (the listener call, or any other), with nothing held;
 //  2. lock    - open the transaction and take the locks the write needs;
 //  3. verify  - re-read under those locks whatever the resolution depended on, and decide
 //               with the resolution only while the locked rows still agree with it;
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
-//
-// The results write (recordResultWithFreshWords, results.go) takes this shape for its read of
-// the check's words: a cold read bounded by a minute, which held under the two issues' owner
-// locks would make every writer of either issue wait it out.
 //
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
@@ -64,10 +59,9 @@ import (
 // (deliverResolvedCommentMention).
 
 // errStaleResolution is how a locked write reports that a row the resolution it was handed
-// depended on had changed by the time it held the lock. That resolution is the pre-transaction
-// listener call for a delivery, and the check's words read out of the live document for the
-// results write (recordResultWithFreshWords). It never reaches a client: resolveThenLock
-// either redoes the pair or answers with the caller's conflict.
+// depended on had changed by the time it held the lock. That resolution is the slow read the
+// write made before its transaction opened: the listener call, for a delivery. It never reaches
+// a client: resolveThenLock either redoes the pair or answers with the caller's conflict.
 var errStaleResolution = errors.New("listener resolution is stale")
 
 // resolutionAttempts is how many times resolveThenLock resolves before it gives up: the

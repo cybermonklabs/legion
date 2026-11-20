@@ -269,32 +269,38 @@ type judged struct {
 	files    int
 }
 
-// judge reads and parses dir as read does, and validates the tree with o.
+// judge reads dir as readSet does, and judges the files it read with o as every reader of spec
+// files does (specgraph.Judge).
 func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
-	j, err := read(stderr, dir)
+	set, err := readSet(stderr, dir)
 	if err != nil {
-		return j, err
+		return judged{dir: dir}, err
 	}
-	j.problems = append(j.problems, specgraph.Validate(j.tree, o)...)
-	specgraph.SortProblems(j.problems)
-	return j, nil
+	tree, problems := specgraph.Judge(set.Files, o)
+	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
 }
 
-// read reads dir with notes.ReadSet, warns on stderr of each entry that is not a spec file, and
-// parses the files it read. The error is ReadSet's: notes.ErrNoDirectory for a directory that
-// does not exist, a *notes.SizeRefusal for a file above the bound, and an error naming the path
-// for any other failure to read.
+// read reads dir as readSet does, and parses the files it read.
 func read(stderr io.Writer, dir string) (judged, error) {
-	set, err := notes.ReadSet(os.DirFS(dir), dir)
-	for _, entry := range set.Rejected {
-		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
-	}
+	set, err := readSet(stderr, dir)
 	if err != nil {
 		return judged{dir: dir}, err
 	}
 	tree, problems := specgraph.Parse(set.Files)
 	specgraph.SortProblems(problems)
 	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
+}
+
+// readSet reads dir with notes.ReadSet, and warns on stderr of each entry that is not a spec
+// file. The error is ReadSet's: notes.ErrNoDirectory for a directory that does not exist, a
+// *notes.SizeRefusal for a file above the bound, and an error naming the path for any other
+// failure to read.
+func readSet(stderr io.Writer, dir string) (notes.Set, error) {
+	set, err := notes.ReadSet(os.DirFS(dir), dir)
+	for _, entry := range set.Rejected {
+		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
+	}
+	return set, err
 }
 
 // sayProblems writes one line of stderr for each problem: "<dir>/<file>:<line>: <node>: <detail>".

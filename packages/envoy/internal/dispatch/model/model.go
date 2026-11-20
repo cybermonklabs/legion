@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -76,11 +77,24 @@ type Credential struct {
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// (refuseLimitedToken), before anything else the route does. The scope itself is not among
 	// Scopes: those are what a route can require of a credential, and read meets no route's
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ResultsOnly is a broker-issued token that writes only the results of its CI run, of its
+	// project's spec checks and of each check CI proves whose ci_check names its check run
+	// (brokertoken.ScopeResults): one the secrets broker minted from a result entry for one CI
+	// run, naming a person, one project and the run. The person stays inside the server: a
+	// result, an answer and the access log name the run (ResultRecorder). Dispatch serves it on
+	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
+	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
+	// does. False for every other credential.
+	ResultsOnly bool
+	// CI is the run a ResultsOnly credential was minted for, as the broker answered it: what that
+	// credential writes is held to the run's commit, repository and check run. Nil for every other
+	// credential.
+	CI *oauthwire.CIRun
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -1299,14 +1313,17 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 }
 
-// CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
-// results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository or, for
-// one result, of a repository the issue links a pull request in (CheckBasis.Repo).
+// CheckBasisNamed, CheckBasisPullRequest, CheckBasisBranch and CheckBasisBranchHead are the kinds
+// of thing a check's results are compared with: the one commit a reader named in `at`, the head
+// of a pull request Dispatch holds for the check's issue, a branch of the check's issue's
+// repository or, for one result, of a repository the issue links a pull request in
+// (CheckBasis.Repo), and the head of a branch that a CI job's result on the check's issue names,
+// the commit that branch is at as GitHub answered it on this read.
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
 	CheckBasisBranch      = "branch"
+	CheckBasisBranchHead  = "branch_head"
 )
 
 // BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
@@ -1357,20 +1374,27 @@ const (
 )
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
-// `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
-// repository, one the check's issue links a pull request in and does not resolve to: the head
-// of a pull request the issue links there, and a branch of it that a result whose commit is
-// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
-// which is of the repository the check's issue resolves to or is the commit a reader named, so
-// a reader can tell pull request #7 or branch main of the linked repository from those of the
-// issue's own.
+// `named`, a `pull_request` and a `branch_head` basis, Branch for a `branch` and a `branch_head`
+// one, and PullRequest is the number of the pull request whose head the commit is. Merged is
+// set on a `pull_request` basis whose pull request merged, whose commit is its final head: a
+// reader tells it from an open pull request's head, and counts it apart. Repo is the
+// `owner/repo` of a basis in another repository than the one the check's issue resolves to,
+// compared without case: the head of a pull request the issue links there (one its link makes
+// the issue's own, R19, or one its external links name, under the canonical name the link is
+// read by), and a branch of such a repository that a result whose commit is that repository's
+// stands at (CheckResult.CommitRepo). A reader names it beside the number or the branch, since a
+// number alone does not say which repository holds the pull request (R18 of the spec of several
+// open pull requests), so pull request #7 or branch main of the linked repository reads apart
+// from those of the issue's own. It is empty for every other basis, which is of the repository
+// the check's issue resolves to or is the commit a reader named, and for a pull request basis
+// where Dispatch cannot name the issue's repository and the issue's links do not name it.
 type CheckBasis struct {
-	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
-	Repo        string          `json:"repo,omitempty"`
+	Kind        string          `json:"kind" enum:"named,pull_request,branch,branch_head"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
+	Repo        string          `json:"repo,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 
@@ -1386,10 +1410,71 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, the newest merged one's final head and
+// the head of each of its branches a CI job's result names. A pass stands only when one stands at
+// each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
+// the answer is unknown because a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown (R4).
+//
+// For a check compared with a branch, an `after_merge` or `default_branch` check, Dispatch takes
+// the newest result that counts or that it could not place (R5), and Results names that result. A
+// pass stands only when it is a pass, and a result it could not place makes the answer unknown.
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
+}
+
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit of a `before_merge` check, from any role.
+// PassSubjectReasonReadFailed is a subject alone: the check runs at that head, of a check CI
+// proves, could not be read.
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
+)
+
+// ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
+// (CheckResult.NotCounted): only that check's CI job records its result. The kind of a check is its
+// block's as the block index holds it at each read, and such a row stands against a block carrying
+// ci_check only when a document write raced the result, until the settlement that holds the block
+// to the fourth rule takes that ci_check off; a browser's write reaches the index only through that
+// settlement. A reader prints it after "It counts for nothing: ".
+const ResultNotCountedRoleOnCICheck = "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
+
+// ResultNotCountedAnotherJob is why a CI job's result of a check CI proves counts for nothing when
+// the job that recorded it (CheckResult.Run, its check run's name) is not the job the check's
+// ci_check names in the state the read serves. The check's digest covers its ci_check, so a result
+// recorded against that state names the job already; this is the second line of that binding. A
+// reader prints it after "It counts for nothing: ".
+const ResultNotCountedAnotherJob = "a run of another CI job recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
@@ -1408,12 +1493,97 @@ type ResultCommitStands struct {
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
-// (check_result_retractions): why the result is wrong, who said so and when. The result itself
-// is neither updated nor deleted, so a reader sees both records.
+// (check_result_retractions for a role's result, ci_check_result_retractions for a CI job's):
+// why the result is wrong, who said so and when. The result itself is neither updated nor
+// deleted, so a reader sees both records.
 type CheckResultRetracted struct {
 	Reason    string    `json:"reason"`
 	Actor     Actor     `json:"actor"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// SpecCheckResultKindRun is the kind of every result a CI job writes for a check of the spec
+// files: one run of the check's test (SpecCheckResult.Kind).
+const SpecCheckResultKindRun = "run"
+
+// SpecCheckResult is one result a CI job wrote for a check of the spec files at the commit it
+// tested (POST /api/v1/projects/{key}/results): Dispatch's id and record number for it, its kind,
+// and the in-toto statement of the run. Seq orders the results as Dispatch recorded them, and
+// the read orders by it. Nothing updates a stored result: another run, attempt or leg is another
+// one.
+type SpecCheckResult struct {
+	ID          string            `json:"id"`
+	Seq         int64             `json:"seq"`
+	Kind        string            `json:"kind"`
+	Attestation ResultAttestation `json:"attestation"`
+}
+
+// ResultAttestation is an in-toto Statement v1 (https://in-toto.io/Statement/v1) of one result a
+// CI job wrote: the subject it read, a commit of a repository, and the predicate of the result.
+// Both results routes store one (SpecCheckResult.Attestation, CheckResult.Attestation), built by
+// one builder; its PredicateType says which kind of check the predicate names.
+type ResultAttestation struct {
+	Type          string               `json:"_type"`
+	Subject       []AttestationSubject `json:"subject"`
+	PredicateType string               `json:"predicateType"`
+	Predicate     ResultPredicate      `json:"predicate"`
+}
+
+// AttestationSubject is one subject of an in-toto statement: its name and its digests by
+// algorithm. The one subject of a CI job's result is git+https://github.com/<repository> with the
+// digest gitCommit, the commit the job tested.
+type AttestationSubject struct {
+	Name   string            `json:"name"`
+	Digest map[string]string `json:"digest"`
+}
+
+// ResultPredicate is what a CI job's result says. Dispatch writes every field from the results
+// token, from GitHub and from the check, except Verdict and Observed, which the job wrote: Check
+// and ProcedureDigest are the check and the digest of its procedure, as the predicate type
+// defines them; Test is its test part; Job and Leg are the name of the run's check run cut at its
+// last " ("; Run is the run the token was minted for; and Recorder is the run's session and
+// principal, which the token proved.
+type ResultPredicate struct {
+	Project         string         `json:"project"`
+	Check           string         `json:"check"`
+	ProcedureDigest string         `json:"procedure_digest"`
+	Test            ResultTest     `json:"test"`
+	Verdict         string         `json:"verdict"`
+	Observed        string         `json:"observed"`
+	Job             string         `json:"job"`
+	Leg             string         `json:"leg"`
+	Run             ResultRun      `json:"run"`
+	Recorder        ResultRecorder `json:"recorder"`
+	RecordedAt      time.Time      `json:"recorded_at"`
+}
+
+// ResultTest is the test part of a check: the runner and the selector that pick one test, and
+// the job whose reports alone count for it. A check block that its ci_check proves names the job
+// alone.
+type ResultTest struct {
+	Runner   string `json:"runner"`
+	Selector string `json:"selector"`
+	Job      string `json:"job"`
+}
+
+// ResultRun is the GitHub Actions run a result was written in, as its token names it.
+type ResultRun struct {
+	Repository        string `json:"repository"`
+	WorkflowRef       string `json:"workflow_ref"`
+	Ref               string `json:"ref"`
+	EventName         string `json:"event_name"`
+	RunID             string `json:"run_id"`
+	Attempt           int    `json:"attempt"`
+	CheckRunID        string `json:"check_run_id"`
+	RunnerEnvironment string `json:"runner_environment"`
+}
+
+// ResultRecorder is who wrote a result, as its token proved it: the session of the run's
+// workflow and the broker's principal of it. It names no person: the airlock authenticated a run,
+// and the person a result entry names is the broker's configuration, who ran no test.
+type ResultRecorder struct {
+	Session   string `json:"session"`
+	Principal string `json:"principal"`
 }
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
@@ -1445,6 +1615,25 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// Branch is the branch whose push the CI job that recorded this result ran on: the ref of its
+	// results token without refs/heads/. It is set on a result a CI job recorded and on no other,
+	// and left out of the JSON wherever it is empty: a role's result and a derived result carry
+	// none.
+	Branch string `json:"branch,omitempty"`
+	// Attestation is the in-toto statement of the run of the CI job that recorded this result,
+	// under the predicate type check-block-result/v1, built by the builder both results routes
+	// use. It is set on a result a CI job recorded and on no other, and left out of the JSON
+	// wherever it is nil: a role's result and a derived result carry none.
+	Attestation *ResultAttestation `json:"attestation,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does: a role's result of a check
+	// CI proves (ResultNotCountedRoleOnCICheck). No surface counts such a result as evidence, and
+	// it is left out of the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
+	// AtBranchHead is the head of a branch of the check's issue that this result's commit is, on a
+	// result of CheckBlock.Results; CommitStands then answers as against CheckBlock.ComparedWith,
+	// which names no branch head. A field of its own, since a dispatch command released before
+	// this one reads CommitStands and prints a basis of a kind it does not know as a commit it named.
+	AtBranchHead *CheckBasis `json:"at_branch_head,omitempty"`
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
@@ -1476,9 +1665,10 @@ type CheckResult struct {
 }
 
 // CheckResultRetraction is the record that says one stored result is wrong
-// (check_result_retractions). It names the result and keeps the reason and the actor. The
-// result itself is neither updated nor deleted, so a reader sees both records. One result
-// takes one retraction, which the table's key holds.
+// (check_result_retractions for a role's result, ci_check_result_retractions for a CI job's). It
+// names the result and keeps the reason and the actor. The result itself is neither updated nor
+// deleted, so a reader sees both records. One result takes one retraction, which the table's key
+// holds.
 type CheckResultRetraction struct {
 	ResultID  string    `json:"result_id"`
 	Reason    string    `json:"reason"`
@@ -1493,11 +1683,14 @@ type CheckResultRetraction struct {
 // result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
-// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run. Text is the block's words with every link and
-// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
-// content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`.
+// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check
+// is CI's by its block at each read: Results holds the one result derived from that run (id
+// `ci-run:<check run id>`) alone, as a dispatch command released before this one reads it, and
+// RecordedResults every result recorded against it, newest first: each one a run of its CI job
+// recorded (role `ci`, Branch set), and each role's, which carries NotCounted. Text is the
+// block's words with every link and dispatch:// reference dropped (the pull-request line reads
+// them); TextTree is the block's own content whole, links and references kept, as the reader is
+// shown it, present only for a caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1514,10 +1707,19 @@ type CheckBlock struct {
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
-	// ComparedWith is every commit and branch this check's results are compared with, in the
-	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	// RecordedResults is, for a check CI proves, every result recorded against it, newest first,
+	// which Results does not hold (Results holds its derived result alone). Left out for any other
+	// check, whose Results holds every result.
+	RecordedResults []CheckResult `json:"recorded_results,omitempty"`
+	// ComparedWith is every commit and branch this check's results are compared with but the head
+	// of a branch of its issue, in the order they are asked about, and ComparedNothing is why
+	// there are none where it and BranchHeads are both empty (ReasonNoPullRequestOrBranch,
+	// ReasonRepositoryUnreadable, ReasonReadFailed). BranchHeads is the heads of the issue's
+	// branches a `before_merge` check compares with where its issue has no open pull request, in
+	// name order: a field of its own, since a dispatch command released before this one prints a
+	// basis of a kind it does not know as a commit it named.
 	ComparedWith    []CheckBasis    `json:"compared_with"`
+	BranchHeads     []CheckBasis    `json:"branch_heads,omitempty"`
 	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
@@ -1532,16 +1734,30 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch holds no head to read at (the case no_head). Result is the id of the result
+// the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set where the
+// run passed or failed and only there: a reader picks the derived result of a head by this id,
+// never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec

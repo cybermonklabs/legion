@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { ROW_MARGIN_MS, spawnWithin } from "./row-clock";
 import { memoryRoot, temporaryDirectories, temporaryDirectory } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
@@ -429,4 +430,185 @@ test("makes three and seals the root", () => {
     }
     expect(run.exitCode).not.toBe(0);
   });
+});
+
+/** The path of the row clock, which the child files below mock before they import the fixture. */
+const clockModule = JSON.stringify(join(import.meta.dir, "row-clock"));
+/** The path of the fixture, which those child files import after their mocks. */
+const fixtureModule = JSON.stringify(join(import.meta.dir, "temporary-directories"));
+
+/** How long each disk call of the fixture's three hooks takes in the held child below. */
+const HOLD_MS = 5_500;
+
+/**
+ * A busy disk can hold a hook's disk work past Bun's 5 s hook limit, and the row whose directory
+ * it is must not fail for it: the fixture's hooks take no limit of Bun's. This reads a `bun test`
+ * of its own, in which every disk call of the fixture's three hooks takes HOLD_MS: the child slows
+ * `node:fs`'s `mkdirSync` of the one-shot directory, which the beforeAll makes in the process, and
+ * starts each removal's process HOLD_MS late through a `spawnWithin` of the row clock that waits
+ * first, both with `mock.module` before it imports the fixture. The hold is a wait on the real
+ * clock, since what the row reads is Bun's own hook timer, which no fake clock drives. With Bun's
+ * 5 s each hook fails its row: "a beforeEach/afterEach hook timed out for this test".
+ *
+ * The child's bound is its three holds and 5 s for the start of each of its three bun processes
+ * (the child and its two removals): the child of this row's first form, with its removals in its
+ * own process, ended within 0.4 s of its holds at 1-minute loads of up to 563. Past the bound the
+ * child is killed and the row fails naming it. The row's limit is that bound and 5 s for the row's
+ * reads.
+ */
+const HELD_CHILD_BOUND_MS = 3 * HOLD_MS + 3 * 5_000;
+describe("a removal a busy disk holds", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-held");
+
+  test(
+    "past 5 s fails no row, in the afterEach, the beforeAll or the afterAll",
+    () => {
+      const work = makeDirectory("run");
+      writeFileSync(
+        join(work, "held.test.ts"),
+        `import { describe, expect, mock, test } from "bun:test";
+import * as fs from "node:fs";
+import { basename } from "node:path";
+
+const { mkdirSync } = fs;
+mock.module("node:fs", () => ({
+  ...fs,
+  mkdirSync: (...args: Parameters<typeof mkdirSync>) => {
+    if (basename(String(args[0])).startsWith("held-one-shot-")) Bun.sleepSync(${HOLD_MS});
+    return mkdirSync(...args);
+  },
+}));
+// Each removal's process waits HOLD_MS, then runs the removal: \`sh\` execs it, so the process the
+// clock would kill is the removal itself.
+const clock = await import(${clockModule});
+const { spawnWithin } = clock;
+mock.module(${clockModule}, () => ({
+  ...clock,
+  spawnWithin: (wait: unknown, command: string[], options: unknown) =>
+    spawnWithin(wait, ["sh", "-c", 'sleep ${HOLD_MS / 1000} && exec "$0" "$@"', ...command], options),
+}));
+// Imported after the mocks: a static import runs before this file's body, so the fixture would
+// bind the real modules.
+const { temporaryDirectories, temporaryDirectory } = await import(${fixtureModule});
+const make = temporaryDirectories("held-per-test");
+
+test("a row whose directory the afterEach removes", () => {
+  console.log(\`made \${make()}\`);
+});
+
+describe("a describe whose directory the beforeAll makes and the afterAll removes", () => {
+  const one = temporaryDirectory("held-one-shot");
+  test("reads it", () => {
+    expect(fs.existsSync(one)).toBe(true);
+    console.log(\`made \${one}\`);
+  });
+});
+`
+      );
+      const child = spawnWithin(
+        { part: "the child bun test", boundMs: HELD_CHILD_BOUND_MS },
+        [process.execPath, "test", "./held.test.ts"],
+        { cwd: work }
+      );
+      const code = child.exitCode;
+      const stdout = child.stdout.toString();
+      const stderr = child.stderr.toString();
+      const output = `${stdout}${stderr}`;
+      const made = [...stdout.matchAll(/^made (.+)$/gm)].map((line) => line[1] ?? "");
+
+      expect(output).not.toContain("timed out");
+      expect(output).toMatch(/^ 2 pass$/m);
+      expect(made.map((path) => basename(path).replace(/-[^-]+$/, ""))).toEqual([
+        "held-per-test",
+        "held-one-shot",
+      ]);
+      expect(made.filter((path) => existsSync(path))).toEqual([]);
+      expect(code).toBe(0);
+    },
+    HELD_CHILD_BOUND_MS + ROW_MARGIN_MS
+  );
+});
+
+/** The limit the hung child below states through the row clock. */
+const HUNG_LIMIT_MS = 10_000;
+
+/**
+ * A removal that never ends fails its hook within the file's limit, naming the directory it was
+ * removing. This reads a `bun test` of its own that states HUNG_LIMIT_MS through the row clock's
+ * `fileLimit` and whose removals never end: its `spawnWithin` starts `sleep 3600` in place of each
+ * removal. Each is killed where the file's limit, on a clock of the hook's own, leaves it, and its
+ * hook fails naming the directory; Bun's own timer, which the fixture's hooks do not set, never
+ * fires. The directories the child made are under its own TMPDIR, inside this row's folder, so
+ * this row's removal takes them.
+ *
+ * The child's bound is the file's limit for each of its two hooks that remove and 5 s for its
+ * start; the row's limit is that bound and 5 s for the row's reads.
+ */
+const HUNG_CHILD_BOUND_MS = 2 * HUNG_LIMIT_MS + 5_000;
+describe("a removal that never ends", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-hung");
+
+  test(
+    "fails its hook within the file's limit, naming the directory, in the afterEach and the afterAll",
+    () => {
+      const work = makeDirectory("run");
+      const childTmp = join(work, "tmp");
+      mkdirSync(childTmp);
+      writeFileSync(
+        join(work, "hung.test.ts"),
+        `import { describe, mock, setDefaultTimeout, test } from "bun:test";
+
+const clock = await import(${clockModule});
+const { spawnWithin } = clock;
+mock.module(${clockModule}, () => ({
+  ...clock,
+  spawnWithin: (wait: unknown, _command: string[], options: unknown) =>
+    spawnWithin(wait, ["sleep", "3600"], options),
+}));
+setDefaultTimeout(clock.fileLimit(${HUNG_LIMIT_MS}));
+// Imported after the mock: a static import runs before this file's body, so the fixture would
+// bind the real row clock.
+const { temporaryDirectories, temporaryDirectory } = await import(${fixtureModule});
+const make = temporaryDirectories("hung-per-test");
+
+test("a row whose directory the afterEach removes", () => {
+  console.log(\`made \${make()}\`);
+});
+
+describe("a describe whose directory the afterAll removes", () => {
+  const one = temporaryDirectory("hung-one-shot");
+  test("reads it", () => {
+    console.log(\`made \${one}\`);
+  });
+});
+`
+      );
+      // Under GITHUB_ACTIONS, bun prints each failure a second time as a GitHub annotation, so
+      // the child runs without it and names each failed hook once, as it does on a machine.
+      const { GITHUB_ACTIONS: _annotations, ...environment } = process.env;
+      const child = spawnWithin(
+        { part: "the child bun test", boundMs: HUNG_CHILD_BOUND_MS },
+        [process.execPath, "test", "./hung.test.ts"],
+        { cwd: work, env: { ...environment, TMPDIR: childTmp } }
+      );
+      const stdout = child.stdout.toString();
+      const output = `${stdout}${child.stderr.toString()}`;
+      const made = [...stdout.matchAll(/^made (.+)$/gm)].map((line) => line[1] ?? "");
+
+      expect(made.map((path) => basename(path).replace(/-[^-]+$/, ""))).toEqual([
+        "hung-per-test",
+        "hung-one-shot",
+      ]);
+      for (const path of made) {
+        expect(output).toContain(`the removal of ${path} did not end within the `);
+      }
+      const killed = output.match(
+        new RegExp(`within the \\d+ ms the file's limit of ${HUNG_LIMIT_MS} ms left it`, "g")
+      );
+      expect(killed?.length).toBe(2);
+      expect(output).not.toContain("timed out");
+      expect(child.exitCode).not.toBe(0);
+    },
+    HUNG_CHILD_BOUND_MS + ROW_MARGIN_MS
+  );
 });

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,8 @@ import (
 
 // The listed identities every exchange test is written against: pods of three accounts of one
 // cluster and runs of two workflows of one repository, each with the project and person an entry
-// gives it, and pods of a fourth account a read entry lists, whose tokens only read.
+// gives it, pods of a fourth account a read entry lists, whose tokens only read, and runs of a
+// third workflow a result entry lists, whose tokens write only their project's results.
 const (
 	exchangeGrant = "urn:ietf:params:oauth:grant-type:token-exchange"
 	account       = "system:serviceaccount:example-ns:example-worker"
@@ -59,6 +61,13 @@ const (
 	readAccount = "system:serviceaccount:example-ns:example-reader"
 	readService = "example-reader"
 	readSession = "example-reader-session"
+	// resultsWorkflow is the workflow the result entry lists on every branch one segment below
+	// refs/heads/: its runs are minted a token that holds the scope results and the project scope
+	// results, names resultsSession, the person and the project, and carries the run.
+	resultsWorkflow = ".github/workflows/ci-results.yaml"
+	resultsSession  = "ci-results:" + repository + "/" + resultsWorkflow
+	resultsBranch   = "refs/heads/topic"
+	commitSHA       = "0123456789abcdef0123456789abcdef01234567"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
 	// carrying anything else is not spendable at this broker.
 	podAudience      = "https://broker.example"
@@ -74,27 +83,28 @@ const (
 	registrar = "system:serviceaccount:legion-system:legion-daemon"
 )
 
-// newPolicy builds the exchange's listed identities with no read entry, failing the test on an
-// entry it refuses. machines are the Google accounts a test that drives the machine subject token
-// lists; every other test passes none.
+// newPolicy builds the exchange's listed identities with no read entry and no result entry,
+// failing the test on an entry it refuses. machines are the Google accounts a test that drives
+// the machine subject token lists; every other test passes none.
 func newPolicy(t *testing.T, accounts []exchange.AccountEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
 	t.Helper()
-	return newPolicyReading(t, accounts, nil, workflows, machines...)
+	return newPolicyListing(t, accounts, nil, workflows, nil, machines...)
 }
 
-// newPolicyReading is newPolicy with read entries listed beside the accounts, as the exchange
-// fixture's own policy lists one.
-func newPolicyReading(t *testing.T, accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
+// newPolicyListing is newPolicy with read entries listed beside the accounts and result entries
+// beside the workflows, as the exchange fixture's own policy lists one of each.
+func newPolicyListing(t *testing.T, accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, results []exchange.ResultWorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
 	t.Helper()
-	set, err := exchange.NewSet(accounts, reads, workflows, machines, signInDomain)
+	set, err := exchange.NewSet(accounts, reads, workflows, results, machines, signInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	return set
 }
 
-// exchangeFixture is a fixture whose token exchange lists the accounts, the read entry and the
-// workflows above, with a local issuer standing in for the cluster's and another for GitHub's.
+// exchangeFixture is a fixture whose token exchange lists the accounts, the read entry, the
+// workflows and the result entry above, with a local issuer standing in for the cluster's and
+// another for GitHub's.
 type exchangeFixture struct {
 	*fixture
 	cluster    *oidctest.Issuer
@@ -120,7 +130,7 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 		t.Fatalf("GitHub keys: %v", err)
 	}
 	config := oauth.ExchangeConfig{
-		Policy: newPolicyReading(t,
+		Policy: newPolicyListing(t,
 			[]exchange.AccountEntry{
 				{Account: account, Project: project, Person: person},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
@@ -130,7 +140,8 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
-			}),
+			},
+			[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, RefPattern: "refs/heads/*", Project: project, Person: person}}),
 		Kubernetes: oauth.IssuerConfig{Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
 		GitHub:     oauth.IssuerConfig{Issuer: github.URL(), Audience: workflowAudience, Keys: githubKeys},
 	}
@@ -202,6 +213,31 @@ func (f *exchangeFixture) workflowToken(t *testing.T, run string, change func(ma
 		change(claims)
 	}
 	return f.github.Mint(t, f.githubKey, claims)
+}
+
+// resultRunToken is the GitHub token of a run of resultsWorkflow on resultsBranch: a workflow
+// token, with the run's commit, its event, its attempt, its runner and the check run of its job,
+// which a result entry's token carries on as its run. Each call mints a fresh jti, as a run does.
+func (f *exchangeFixture) resultRunToken(t *testing.T, run string) string {
+	t.Helper()
+	return f.workflowToken(t, run, func(claims map[string]any) {
+		claims["sub"] = "repo:" + repository + ":ref:" + resultsBranch
+		claims["workflow_ref"] = repository + "/" + resultsWorkflow + "@" + resultsBranch
+		claims["job_workflow_ref"] = claims["workflow_ref"]
+		claims["ref"] = resultsBranch
+		claims["sha"] = commitSHA
+		claims["event_name"] = "push"
+		claims["run_attempt"] = "1"
+		claims["runner_environment"] = "github-hosted"
+		claims["check_run_id"] = "9" + run
+	})
+}
+
+// resultRunForm is the exchange request of a run of resultsWorkflow, naming no session, since
+// the result entry fixes it.
+func (f *exchangeFixture) resultRunForm(t *testing.T, run string) url.Values {
+	t.Helper()
+	return exchangeForm(f.resultRunToken(t, run), oauthwire.SubjectTokenTypeGitHub, "")
 }
 
 // exchangeForm is a complete token-exchange request a test spoils one field at a time: the
@@ -410,6 +446,95 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 	}
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	}
+}
+
+// TestAResultEntrysRunIntrospectsWithItsRun: a run of the result entry's workflow is answered a
+// token that introspects as the scope results and the project scope results, the session and the
+// person the entry gives and its one project, and the run the token was minted for: its
+// repository, workflow, ref and commit, its event, its run and attempt, its runner and the check
+// run of its job.
+func TestAResultEntrysRunIntrospectsWithItsRun(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	answer := f.introspected(t, f.exchanged(t, f.resultRunForm(t, "7"), key))
+	run := oauthwire.CIRun{
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
+		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+	}
+	if answer.CI == nil || *answer.CI != run {
+		t.Fatalf("Introspect answered the run %+v, want %+v", answer.CI, run)
+	}
+	answer.CI = nil
+	want := oauthwire.Introspection{Active: true, Scope: "results", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: resultsSession, Person: person, ProjectScope: "results", Projects: []string{project}, ExpiresAt: answer.ExpiresAt}
+	if !reflect.DeepEqual(answer, want) {
+		t.Errorf("Introspect = %+v, want %+v", answer, want)
+	}
+}
+
+// TestAResultsTokenIsNoSubjectTokenForAnotherExchange: a results token presented back to the
+// exchange as an access token, the subject type a dev box's machine login trades under, is
+// refused, and nothing is minted from it. Every token the exchange mints is issued to the
+// exchange client, and the library refuses a client the exchange of its own token
+// (rfc8693.validateExchangeTokenPolicy) with invalid_grant and the hint that says so, before any
+// decision of the broker's runs: the refusal is that one, and no later refusal of the broker's
+// (Set.Machine's invalid_request for a token that names no machine credential id) is reached. The
+// request asks under a session name of its own, so the claim on the results token's own session,
+// which another principal holds, is not what refuses it.
+func TestAResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	results := f.exchanged(t, f.resultRunForm(t, "7"), key)
+	before := f.count(t, "oauth_access_tokens")
+	status, body := f.exchange(t, exchangeForm(results, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own"), key)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("an exchange of a results token = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	const ownToken = "Clients are not allowed to perform a token exchange on their own tokens."
+	if hint, _ := body["error_description"].(string); !strings.Contains(hint, ownToken) {
+		t.Errorf("the refusal reads %q, which is not the library's refusal of a client's own token %q", hint, ownToken)
+	}
+	if after := f.count(t, "oauth_access_tokens"); after != before {
+		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	}
+}
+
+// TestARequestNamingTheResultsScopeIsRefusedUnderEveryEntry: the exchange client is not
+// registered for the scope results either, so the library refuses a request that names it
+// invalid_scope before the exchange decides anything, under a named entry, the read entry and the
+// result entry alike, and stores no token. The same request naming no scope is then answered, so
+// what refused it was the scope: the result entry grants results without being asked.
+func TestARequestNamingTheResultsScopeIsRefusedUnderEveryEntry(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	runs := 0
+	for _, c := range []struct {
+		name string
+		form func(*testing.T) url.Values
+	}{
+		{name: "a named entry", form: func(t *testing.T) url.Values {
+			return exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+		}},
+		{name: "the read entry", form: f.readPodForm},
+		{name: "the result entry", form: func(t *testing.T) url.Values {
+			runs++
+			return f.resultRunForm(t, strconv.Itoa(runs))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before := f.count(t, "oauth_access_tokens")
+			asked := c.form(t)
+			asked.Set("scope", oauthwire.ScopeResults)
+			status, body := f.exchange(t, asked, key)
+			if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
+				t.Fatalf("an exchange under %s naming the scope %s = %d %v, want 400 invalid_scope and no access token", c.name, oauthwire.ScopeResults, status, body)
+			}
+			if after := f.count(t, "oauth_access_tokens"); after != before {
+				t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+			}
+			f.exchanged(t, c.form(t), key)
+		})
 	}
 }
 
@@ -1580,7 +1705,8 @@ func TestASignInTradeAsksNoMemberKind(t *testing.T) {
 
 // TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject: an operator's entry maps a token
 // to one project and one person, and the exchange holds that pairing to Dispatch at every trade,
-// for each of the three settings that write such an entry.
+// for each of the three settings that write a named entry and for a result entry, whose results
+// token names its one project the same way.
 func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T) {
 	access := newFakeAccess()
 	access.sees[person] = []string{"PRIV"}
@@ -1590,6 +1716,8 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
+	status, body = f.exchange(t, f.resultRunForm(t, "8"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 
 	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
@@ -1603,6 +1731,7 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
 	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
+	f.introspectsProjects(t, f.exchanged(t, f.resultRunForm(t, "9"), key), oauthwire.ProjectScopeResults, []string{project})
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 
@@ -1698,7 +1827,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 		mints(t, down)
 	})
 	t.Run("a workflow entry may not leave its project empty", func(t *testing.T) {
-		if _, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}}, nil, signInDomain); err == nil {
+		if _, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}}, nil, nil, signInDomain); err == nil {
 			t.Fatal("NewSet with a workflow entry naming no project = nil error, want a refusal")
 		}
 	})

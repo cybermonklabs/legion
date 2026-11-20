@@ -32,9 +32,12 @@ func TestResponseShapes(t *testing.T) {
 	}
 	checks := []model.CheckBlock{{
 		BlockID: "b-1", Ref: "check-1", IssueKey: "TEST-1", Text: "go build",
-		Results:      []model.CheckResult{readResult},
-		ComparedWith: []model.CheckBasis{{Kind: model.CheckBasisBranch, Branch: "main"}},
-		PassStands:   model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"implementer"}},
+		Results: []model.CheckResult{readResult},
+		ComparedWith: []model.CheckBasis{
+			{Kind: model.CheckBasisBranch, Branch: "main"},
+			{Kind: model.CheckBasisBranchHead, Branch: "legion/TEST-1", Commit: "0123456789abcdef0123456789abcdef01234567"},
+		},
+		PassStands: model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"implementer"}},
 	}}
 	result := model.CheckResult{ID: "res-1", IssueKey: "TEST-1", CheckBlockID: "b-1", Verdict: "pass"}
 	ask := model.Ask{ID: "ask-1", Question: "Approve?"}

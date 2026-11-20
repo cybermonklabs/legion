@@ -23,7 +23,7 @@ import {
   TradeRetryingError,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted, stubBroker } from "./stub";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -110,6 +110,71 @@ test("two callers that need a token at once make one trade", async () => {
     expect(second.accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(1);
   } finally {
+    broker.stop();
+  }
+});
+
+// A caller that joins a trade another caller started ends at its own signal, told that the trade
+// still out has not answered (`TradeUnansweredError`), and leaves that trade to the caller that
+// started it: the identity here answers only once the test lets it.
+test("a caller that joins a trade under way ends at its own signal", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const source: TokenSource = {
+    read: async () => {
+      await held;
+      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+    },
+    describe: () => "an identity that answers once the test lets it",
+  };
+  const client = await clientAt(broker.url, { now: Date.now() }, source);
+  try {
+    const first = client.token();
+    const ended = new AbortController();
+    const joined = client.token(ended.signal);
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    expect((await refusalOf(() => joined))?.name).toBe("TradeUnansweredError");
+    release();
+    expect((await first).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+  } finally {
+    release();
+    broker.stop();
+  }
+});
+
+// The trade runs under its own bound and under no caller's signal: the caller that started it
+// leaves at its own signal, told the trade has not answered yet, and the caller that joined it
+// still gets its token from that one trade. The broker here answers the trade only once the test
+// lets it, after the starter left.
+test("the starter's signal ends its own wait, and never the trade another caller waits on", async () => {
+  const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const broker = stubBroker(async (_trade, count) => {
+    arrive();
+    await held;
+    return { body: accepted(`token-${count}`, 600) };
+  });
+  const client = await clientAt(broker.url, { now: Date.now() }, countingSource());
+  try {
+    const ended = new AbortController();
+    const starter = client.token(ended.signal);
+    const joiner = client.token();
+    await arrived;
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    const left = await refusalOf(() => starter);
+    release();
+    const joined = await joiner.then(
+      (token) => token.accessToken,
+      (error: unknown) => String(error)
+    );
+    expect({
+      left: left?.name,
+      joined,
+      trades: broker.trades.length,
+    }).toEqual({ left: "TradeUnansweredError", joined: "token-1", trades: 1 });
+  } finally {
+    release();
     broker.stop();
   }
 });

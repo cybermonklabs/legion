@@ -193,7 +193,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
 	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
+		policy, err := exchange.NewSet(nil, nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}

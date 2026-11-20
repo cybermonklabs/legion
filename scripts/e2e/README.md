@@ -4077,6 +4077,7 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  [VERIFICATION_RESULTS_E2E_CASES=<case>,<case>] \
   bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
@@ -4109,6 +4110,14 @@ Each item below names an input and its default, then what it means.
   The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
+
+- `VERIFICATION_RESULTS_E2E_CASES` — unset
+
+  the cases to run, commas between them; unset or empty, every case runs.
+  The first case, `the-results-route-is-served`, always runs, since it is the run's first result write.
+  Before anything is built or started, the script asks the driver (`verification-results.ts --check-cases`) whether the list is one it can run: a name no case has exits 2 and names it, and so does a list that names no case but the first.
+  A run whose list ran no case after the first exits 2 as well, so a list that runs nothing it asked for never prints a pass.
+  `VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests,several-open-pull-requests-lines` prints `== ` lines for the first case and those two alone
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -4241,6 +4250,17 @@ Each item below names a case and how it is driven, then what must hold for it to
   Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
   A field that a step did not send reads as the empty string
 
+- `several-open-pull-requests` — one issue with one `before_merge` check, `each`, and three pull requests the intake learns from their envelopes: #81 merged and #82 open, each on a branch whose name holds the issue's key, and #83 open on a branch, with a title and a body, that name no issue.
+  The case first links the issue to #83's URL with `dispatch issue-update --external-link`, and only then publishes #83's `opened` envelope, since the intake reads the issue's links when it writes the row and no write of a link marks a stored row again.
+  It waits until each of the three stored rows names the issue
+
+  before any result, `each`'s heads (`pass_stands.subjects`) are the heads of #82 and #83 and no other.
+  `dispatch results` prints `- each (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 0 of 2 heads read yes.`, one line `  - #<n> at <head>: no, as it holds no result.` for each of #82 and #83, and `  The 1 merged pull request decides nothing while one is open.`
+
+- `several-open-pull-requests-lines` — the same issue (seeded here when the case runs alone); the implementer records a pass at #82's head and the tester a fail at #83's head
+
+  `dispatch results` prints, under `each`, the line `  - #82 at <head>: yes, from implementer. Pass <id> decides it.` and the line `  - #83 at <head>: no, as fail <id> counts there.`, each with its result's id, and no other line of a head
+
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
@@ -4289,6 +4309,20 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 #   line for --negative-control
 #   exit 1
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
+```
+
+The two cases of several open pull requests take their negative controls from a planted fault and from `VERIFICATION_RESULTS_E2E_DISPATCH_CLI`:
+
+```sh
+# In a worktree of this change's head, delivery.HeadsAttributedTo keeps only its first head:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests bash scripts/e2e/verification-results.sh
+# → FAIL several-open-pull-requests: the check's heads are [<one head>], want [#82 at …, #83 at …]
+# The command of a worktree of a commit before the lines of each head:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests-lines \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<base tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL several-open-pull-requests-lines: the command's head lines are [], want one line for #82
+#   and one for #83
 ```
 
 ## child-adoption.sh

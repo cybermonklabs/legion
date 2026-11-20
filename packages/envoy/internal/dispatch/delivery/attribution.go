@@ -14,16 +14,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A pull request's issue is the first issue its five ranked sources name that resolves to the
-// repository the pull request is in: a candidate ranked above it that resolves to another
-// repository, or to no repository at all, is passed over, and a pull request no candidate of
-// which resolves here is attributed to nobody, with the source "none". Every candidate of one
-// source ranks above any of the next (attributionCandidates):
+// A pull request's issue is the first issue its five ranked sources name that is held to it: the
+// issue whose external link is the pull request's own URL is held in any repository, and an issue
+// any other source names is held only where it resolves to the repository the pull request is in.
+// A candidate ranked above it that is not held is passed over, and a pull request no candidate of
+// which is held is attributed to nobody, with the source "none". Every candidate of one source
+// ranks above any of the next (attributionCandidates):
 //
 //  1. the issue whose external link is the pull request's own URL;
 //  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
-//     the first such citation in body order;
+//     the first such citation in body order, where <n> is not a pull request Dispatch holds
+//     (citedPullRequest);
 //  3. a key in its head branch name, whatever its case;
 //  4. a key in its title or body, title first;
 //  5. a key in its commit messages, in commit order.
@@ -37,7 +39,13 @@ import (
 //
 // The holding to the repository is the server's one repository-resolution rule, spliced into the
 // same statement as the candidates (refs.IssueRepoTerms, attributionHeld), so what an
-// attribution believes an issue's repository is can never disagree with the issue page.
+// attribution believes an issue's repository is can never disagree with the issue page. The link
+// to the pull request's own URL is exempt from it (attributionHeldFor), since a person links an
+// issue to one pull request, and the link says which, in whatever repository that pull request
+// is: R19 of the spec of several open pull requests. Each other source is text the pull request's
+// author writes — a body's citation, a branch, a title, a commit message — which can name an issue
+// of any repository, so each keeps the holding. A pull request whose head is in a fork has no
+// issue, linked or not (headAttribution).
 //
 // Sources 2, 3, 4 and 5 read what GitHub says about the pull request, which does not change once
 // it has merged, so those inputs (AttributionInputs) are read from GitHub once and stored on its
@@ -49,22 +57,36 @@ import (
 // of the table, with no GitHub call. Nothing in the schema says which rows a change could affect (a
 // link carries no time, and adding or removing one leaves its issue's updated_at alone), so the
 // walk visits them all in turn.
+//
+// A pull_request_heads row stores the same four inputs, written by each writer that read them
+// from GitHub (UpsertPullRequestHead), and whether its head is in its own repository, so its issue
+// is judged again from the database alone too: a change of an issue's links judges at once, in its
+// own transaction, each row whose own URL a link it added or removed names and each row whose body
+// cites a GitHub issue it added or removed, with no read of GitHub (LinksChanged). A link a person
+// makes by hand is answered from what Dispatch holds, as the results route answers it.
 
 // AttributionRuleVersion names the rule this build judges a pull request by: the first
-// candidate, of the five sources above, whose issue resolves to the repository the pull request
-// is in. pull_request_heads.attribution_rule records the rule that last judged a row, and the
-// reconcile re-judges a merged row once when the rule that judged it is older than this one
+// candidate, of the five sources above, that is held to the pull request.
+// pull_request_heads.attribution_rule records the rule that last judged a row, and the reconcile
+// re-judges a merged row once when the rule that judged it is older than this one
 // (ListStalePullRequestHeads, pull_request_heads.go). 0 is what a row written before that column
 // has: the rule that took the first candidate outright, whatever repository its issue resolved
 // to. 1 held every candidate to the pull request's repository and ranked the title and the body
 // first. 2 is the order above, with the two links and the head branch over the title and the
-// body.
+// body. 3 holds the issue's own link to a pull request's URL in any repository (R19 of the spec
+// of several open pull requests), so a pull request an issue links in another repository is that
+// issue's. 4 is 3 with its inputs and the head's repository stored on the row, so a change of an
+// issue's links judges the row from them; the reconcile's merged arm reads each merged row once
+// more and stores them. A row a change of an issue's links named and could not judge from stored
+// facts gets rule 0, so that arm reads it again (LinksChanged). 5 is 4 with no citation of a
+// number that is a pull request Dispatch holds (citedPullRequest), so a pull request a mention of
+// another pull request credited to that pull request's issue goes back to the issue it is for.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
 // row is read again only by that arm — so a change made without raising it leaves every pull
 // request merged before it judged by the rule of its day for good.
-const AttributionRuleVersion = 2
+const AttributionRuleVersion = 5
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -196,6 +218,32 @@ func uniqueKeys(text string) []string {
 	return appendUnique([]string{}, issueKeyCandidate.FindAllString(text, -1)...)
 }
 
+// BranchOfIssue reports whether branch belongs to issueKey, which is what decides whether a CI
+// job's result of a push of that branch counts for that issue (api/results.go,
+// refuseBranchOfAnotherIssue; api/results_comparison.go, headBases). A branch belongs to an issue
+// when it is the head branch of an open or merged pull request attributed to that issue
+// (pull_request_heads), or when the attribution rule above gives the branch's name to the issue:
+// source 3, "a key in its head branch name, whatever its case", read as attributionInputsFrom
+// reads BranchKeys and joined to the issues Dispatch holds as attributionCandidates joins them,
+// the first such key in the name's order deciding. That is the part of the rule that needs only
+// the branch: the links, the title, the body and the commit messages are a pull request's.
+func BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) (bool, error) {
+	var belongs bool
+	if err := q.QueryRow(ctx, `
+		select exists (
+			select 1 from pull_request_heads
+			where issue_key = $1 and head_ref = $2 and state in ('open', 'merged')
+		) or coalesce((
+			select b.key = $1 from unnest($3::text[]) with ordinality b(key, n)
+			join issues i on i.key = b.key
+			order by b.n limit 1
+		), false)
+	`, issueKey, branch, uniqueKeys(strings.ToUpper(branch))).Scan(&belongs); err != nil {
+		return false, fmt.Errorf("read whether branch %q belongs to %s: %w", branch, issueKey, err)
+	}
+	return belongs, nil
+}
+
 func appendUnique(list []string, values ...string) []string {
 	for _, value := range values {
 		if !slices.Contains(list, value) {
@@ -235,7 +283,7 @@ func citedIssues(repo, body string) []string {
 // (resolveAttributionCandidates), or a stored row's own columns for every row
 // (AttributePullRequests). Named, so the two callers cannot hand the four text[] inputs over in
 // another order. The repository the candidates are held to is not read here: it reaches the SQL
-// through attributionHeld alone, from attributionOneRepo or the batch's own c.pr_repo.
+// through attributionHeldFor alone, from attributionOneRepo or the batch's own c.pr_repo.
 type attributionColumns struct {
 	URL, TitleKeys, CitedIssues, BranchKeys, CommitKeys string
 }
@@ -247,17 +295,21 @@ type attributionColumns struct {
 // name a dozen, so 25 is room for the shapes that occur and a bound on the work a pathological
 // body can ask for. The bound drops only candidates ranked below it, so an issue is passed over
 // for the bound's sake alone where the five sources name more than 25 keys and none of the
-// first 25 is held to the pull request's repository.
+// first 25 is held to the pull request.
 const attributionCandidateBound = 25
 
 // attributionCandidates is the issues a pull request's five sources name, best first: the
 // ranking is the file's, every candidate of a source before any of the next, and within a
 // source the order the keys were read in. The union's arms are written in that ranked order,
-// so the text reads as the list at the top of this file reads. The two link sources compare
-// URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
-// answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
-// link lowercased (refs.ExternalRepo) or as a person typed it (issue_external_links_url_lower
-// serves the comparison).
+// so the text reads as the list at the top of this file reads. Each candidate carries the source
+// that named it, which the holding reads: the first arm, the issue whose link is the pull
+// request's own URL, is held in any repository, and every other arm only in the pull request's
+// own (attributionHeldFor). The two link sources compare URLs lowercased on both sides: GitHub's
+// owner and repository names are case-insensitive, its answers spell them as their owners do
+// (`Acme/Widgets`), and Dispatch stores an issue's GitHub link lowercased (refs.ExternalRepo) or
+// as a person typed it (issue_external_links_url_lower serves the comparison).
+//
+// The second arm leaves out a citation of a number that is a pull request (citedPullRequest).
 func attributionCandidates(c attributionColumns) string {
 	return `select s.key, s.source, s.rank, s.n from (
 		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n
@@ -265,6 +317,7 @@ func attributionCandidates(c attributionColumns) string {
 		union all
 		select l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, c.n
 			from unnest(` + c.CitedIssues + `) with ordinality c(url, n) join issue_external_links l on lower(l.url) = lower(c.url)
+			where not ` + citedPullRequest("c.url") + `
 		union all
 		select b.key, '` + string(sourceBranch) + `', 2, b.n
 			from unnest(` + c.BranchKeys + `) with ordinality b(key, n) join issues i on i.key = b.key
@@ -277,8 +330,27 @@ func attributionCandidates(c attributionColumns) string {
 	) s order by s.rank, s.n limit ` + strconv.Itoa(attributionCandidateBound)
 }
 
-// attributionHeld is the condition one candidate passes to be the pull request's issue: it
-// resolves, through the server's one repository-resolution rule (refs.IssueRepoTerms, joined by
+// citedPullRequest is the condition that the GitHub issue URL the expression url reads, one
+// citedIssues wrote (https://github.com/<owner>/<repo>/issues/<n>), names a pull request Dispatch
+// holds: a pull_request_heads row of that repository, under its canonical name
+// (refs.CanonicalRepoSQL), with that number. GitHub numbers a repository's issues and pull
+// requests in one sequence and answers /issues/<n> for a pull request too, so `#<n>` in a body,
+// and the .../issues/<n> link Dispatch stores for the reference owner/repo#<n>, name the pull
+// request #<n> when it is one. A body that names another pull request mentions that pull
+// request's work; it cites no issue whose work it does. Without this condition, a pull request
+// whose body said "#<n> renamed the helper" was credited to the issue that links #<n>, above the
+// issue its own branch names. A pull request Dispatch holds no head row for reads as an issue. The
+// number is compared as text: a citation's digits are not bounded, and a cast of a longer run of
+// them to an integer fails the statement.
+func citedPullRequest(url string) string {
+	return `exists (select 1 from pull_request_heads cited_pr
+		where lower(cited_pr.repo) = lower(` + refs.CanonicalRepoSQL(`split_part(`+url+`, '/', 4) || '/' || split_part(`+url+`, '/', 5)`) + `)
+			and cited_pr.number::text = split_part(` + url + `, '/', 7))`
+}
+
+// attributionHeld is the condition a candidate of every source but the issue's own link to the
+// pull request's URL passes to be the pull request's issue (attributionHeldFor): it resolves,
+// through the server's one repository-resolution rule (refs.IssueRepoTerms, joined by
 // refs.IssueRepoJoin in the enclosing statement), to the repository the expression repo reads.
 // It is never null — a candidate whose issue row is missing, and one whose parent chain ran out
 // of depth, is simply not held — so a caller may read it as a plain boolean and a `where` over
@@ -297,9 +369,22 @@ func attributionHeld(repo string) string {
 		` and lower(` + refs.CanonicalRepoSQL(refs.IssueRepoResolved) + `) = lower(` + refs.CanonicalRepoSQL(repo) + `), false)`
 }
 
+// attributionHeldFor is the condition one candidate, named by the source the expression source
+// reads, passes to be the pull request's issue. The issue whose external link is the pull
+// request's own URL is held in any repository: a person links an issue to one pull request, and
+// the link names that pull request wherever it is (R19 of the spec of several open pull
+// requests). A candidate of any other source is held where attributionHeld holds it, to the
+// repository the expression repo reads. Neither holds a pull request whose head is in a fork,
+// which headAttribution refuses before it reads the candidates. A candidate always names its
+// source, so the condition is never null for one; the batch's one null-keyed row of a pull request
+// whose sources name nothing reads null here, which its `where` drops as it drops a false.
+func attributionHeldFor(source, repo string) string {
+	return `(` + source + ` = '` + string(sourceExternalLink) + `' or ` + attributionHeld(repo) + `)`
+}
+
 // attributionOneColumns are the bound parameters one pull request's candidates are read from:
 // its URL, then its four inputs; attributionOneRepo is the last parameter, the repository the
-// pull request is in, which attributionHeld reads. resolveAttributionCandidates binds the six
+// pull request is in, which attributionHeldFor reads. resolveAttributionCandidates binds the six
 // in that order.
 var attributionOneColumns = attributionColumns{
 	URL: "$1", TitleKeys: "$2::text[]", CitedIssues: "$3::text[]",
@@ -320,7 +405,7 @@ const attributionSubjects = `subjects as (
 
 // attributionCandidatesQuery is the one statement that resolves a pull request's candidates from
 // stored inputs: every candidate the five sources name, best first, each marked whether it is
-// held to the pull request's own repository. The repository rule is spliced in over the
+// held to the pull request (attributionHeldFor). The repository rule is spliced in over the
 // candidate keys the way refs.IssueRepository splices it over one key, so one walk resolves them
 // all together. `left join issues`, not `join`: a candidate whose issue row has gone stays in
 // the answer, unheld, so a caller can name the candidates it passed over. The text is built
@@ -329,7 +414,7 @@ const attributionSubjects = `subjects as (
 var attributionCandidatesQuery = `with recursive candidates as (
 	` + attributionCandidates(attributionOneColumns) + `
 ), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `
-select c.key, c.source, ` + attributionHeld(attributionOneRepo) + ` as held
+select c.key, c.source, ` + attributionHeldFor("c.source", attributionOneRepo) + ` as held
 from candidates c
 	left join issues i on i.key = c.key
 	` + refs.IssueRepoJoin + `
@@ -349,7 +434,7 @@ var attributionBatchQuery = `
 			order by attribution_checked_at nulls first, repo, number
 			limit $1
 		), candidates as (
-			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n
+			select src.repo as pr_repo, src.number as pr_number, f.key, f.source, f.rank, f.n
 			from batch src
 			left join lateral (` + attributionCandidates(attributionColumns{
 	URL: "src.url", TitleKeys: "src.attribution_title_keys",
@@ -361,7 +446,7 @@ var attributionBatchQuery = `
 			from candidates c
 				left join issues i on i.key = c.key
 				` + refs.IssueRepoJoin + `
-			where ` + attributionHeld("c.pr_repo") + `
+			where ` + attributionHeldFor("c.source", "c.pr_repo") + `
 		), picked as (
 			select distinct on (pr_repo, pr_number) pr_repo, pr_number, key
 			from held order by pr_repo, pr_number, rank, n
@@ -382,7 +467,7 @@ var attributionBatchQuery = `
 	`
 
 // attributionCandidate is one issue a pull request's sources name: the key, the source that
-// named it, and whether it resolves to the repository the pull request is in. Only a held
+// named it, and whether it is held to the pull request (attributionHeldFor). Only a held
 // candidate may be the pull request's issue; the unheld ones above it are what a caller names
 // when it reports what it passed over (headAttribution).
 type attributionCandidate struct {
@@ -393,9 +478,10 @@ type attributionCandidate struct {
 
 // resolveAttributionCandidates is every issue the stored inputs of the pull request at url, in
 // repo, name, best first, each marked held or not: the whole ranked list, so a caller that must
-// skip a candidate can take the next rather than make a second read.
-func resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
-	rows, err := pool.Query(ctx, attributionCandidatesQuery,
+// skip a candidate can take the next rather than make a second read. q is the pool, or a
+// transaction whose own uncommitted links the candidates must read (LinksChanged).
+func resolveAttributionCandidates(ctx context.Context, q refs.Queryer, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
+	rows, err := q.Query(ctx, attributionCandidatesQuery,
 		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
@@ -416,7 +502,7 @@ func resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, u
 }
 
 // resolveStoredIssueKey is the issue a pull request's stored inputs name: the first candidate
-// held to repo, the repository the pull request is in, and nobody with the source "none" when
+// held to the pull request in repo (attributionHeldFor), and nobody with the source "none" when
 // no candidate is. Its callers hand over the repository they already hold — completePullRequest
 // its repoFull, readAttributionInputs its row's own repo.
 func resolveStoredIssueKey(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) (*string, attributionSource, error) {
@@ -431,9 +517,9 @@ func resolveStoredIssueKey(ctx context.Context, pool *store.Pool, repo, url stri
 	return nil, sourceNone, nil
 }
 
-// firstHeldCandidate is the index of the first candidate held to the pull request's own
-// repository, -1 when none is: the pick made over one pull request's ranked list, which both
-// readers of that list share — resolveStoredIssueKey and headAttribution
+// firstHeldCandidate is the index of the first candidate held to the pull request
+// (attributionHeldFor), -1 when none is: the pick made over one pull request's ranked list,
+// which both readers of that list share — resolveStoredIssueKey and headAttribution
 // (pull_request_heads.go), the second of which also needs the index to name what it passed
 // over — so the two cannot come to answer one list differently.
 //
@@ -441,7 +527,7 @@ func resolveStoredIssueKey(ctx context.Context, pool *store.Pool, repo, url stri
 // instead, by attributionBatchQuery's `distinct on (pr_repo, pr_number) … order by … rank, n`
 // over its `held` term, since resolving a batch row by row would pay for a repository walk per
 // row (AttributePullRequests). The two are one rule because they read one ranked list and one
-// holding: attributionCandidates ranks, attributionHeld holds, attributionSubjects names the
+// holding: attributionCandidates ranks, attributionHeldFor holds, attributionSubjects names the
 // keys the walk resolves, and all three are spliced into both statements.
 func firstHeldCandidate(candidates []attributionCandidate) int {
 	return slices.IndexFunc(candidates, func(candidate attributionCandidate) bool { return candidate.held })

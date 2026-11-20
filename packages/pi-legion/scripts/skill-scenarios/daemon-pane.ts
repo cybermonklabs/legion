@@ -14,6 +14,7 @@ import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { RIG_WORLD } from "./rig-world";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -66,6 +67,9 @@ interface PaneRequest {
   readonly path: string;
   readonly ghPath?: string;
   readonly systemPrompt?: boolean;
+  /** The issue's repository and its default branch: rig-world.json's (`RIG_WORLD`). */
+  readonly repository: string;
+  readonly defaultBranch: string;
 }
 
 /** What the daemon tells the pane: every variable, PATH included, and, for a request that asks for
@@ -167,6 +171,8 @@ export function workerPane(
     path: env.PATH ?? "",
     systemPrompt: source.systemPrompt,
     ghPath: source.ghPath,
+    repository: RIG_WORLD.repository,
+    defaultBranch: RIG_WORLD.defaultBranch,
   };
   const pane = JSON.parse(
     runDaemonPane(source.daemonModule, ["pane"], JSON.stringify(request))

@@ -41,6 +41,9 @@ export const SUBJECT_TOKEN_TYPE_KUBERNETES =
 /** The `subject_token_type` a machine presents its own Google identity token under. */
 export const SUBJECT_TOKEN_TYPE_GOOGLE = "urn:envoy:params:oauth:token-type:google-identity";
 
+/** The `subject_token_type` a GitHub Actions job presents its workflow run's OIDC token under. */
+export const SUBJECT_TOKEN_TYPE_GITHUB = "urn:envoy:params:oauth:token-type:github-workflow-run";
+
 /** The `subject_token_type` a person presents their own Google identity token under, which only a
  *  sign-in carries. */
 export const SUBJECT_TOKEN_TYPE_PERSON = "urn:envoy:params:oauth:token-type:person-google-identity";

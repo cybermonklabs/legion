@@ -21,8 +21,12 @@ export interface StubAnswer {
   readonly nonce?: string;
 }
 
-/** A broker that answers `answer` to each trade in turn, keeping every trade it was sent. */
-export function stubBroker(answer: (trade: StubTrade, count: number) => StubAnswer): {
+/** A broker that answers `answer` to each trade in turn, keeping every trade it was sent. An
+ *  answer that is a promise holds the trade until it settles, as a broker that is slow to answer
+ *  does. */
+export function stubBroker(
+  answer: (trade: StubTrade, count: number) => StubAnswer | Promise<StubAnswer>
+): {
   readonly url: string;
   readonly trades: StubTrade[];
   stop(): void;
@@ -46,7 +50,7 @@ export function stubBroker(answer: (trade: StubTrade, count: number) => StubAnsw
         proofClaims: read(1),
       };
       trades.push(trade);
-      const given = answer(trade, trades.length);
+      const given = await answer(trade, trades.length);
       return Response.json(given.body, {
         status: given.status ?? 200,
         ...(given.nonce === undefined ? {} : { headers: { "DPoP-Nonce": given.nonce } }),

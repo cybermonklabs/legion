@@ -13,15 +13,16 @@
 #   of k1, a person pasting the four blocks, is the browser row of e2e/verification.e2e.ts.
 # - k2: `dispatch results` derives the result of the check from the named run at the issue's open
 #   pull request head: the run's name, conclusion, output and URL, and the pull-request body line,
-#   which names the run and no recorder; a failed run prints fail; check_results holds no row for
-#   either block; the merged head still answers; three such checks at one head cost one
-#   check-runs read; an open head is read before an older merged one; an issue with no such check
-#   reads nothing; a summary of 2,500 runes is cut to 2,000 and the answer is not refused.
+#   which names the run and no recorder; a failed run prints fail; neither check_results nor
+#   ci_check_results holds a row for either block; the merged head still answers; three such
+#   checks at one head cost one check-runs read; an open head is read before an older merged one;
+#   an issue with no such check reads nothing; a summary of 2,500 runes is cut to 2,000 and the
+#   answer is not refused.
 # - k3: the eleven outcomes of the run, among them the fake GitHub's 500 and a read held past the
 #   server's real 10 s deadline, and two runs of one name decided by the higher id in both orders.
 # - k4: a tester's and an implementer's result for a check CI proves are refused 409
-#   CHECK_PROVED_BY_CI naming the block and the run, and the same call against an ordinary check
-#   is recorded and shown.
+#   CHECK_PROVED_BY_CI naming the block and the CI job, and the same call against an ordinary
+#   check is recorded and shown.
 # - k5: the whole line the reviewer's gate reads, then a failed run, a head moved to a commit the
 #   run does not cover, and a head GitHub serves that Dispatch's head record does not hold yet.
 #
@@ -275,7 +276,7 @@ fake_pull() {
 
 # stage_head SECTION ISSUE NUMBER SHA STATE: pull request NUMBER of ISSUE is STATE (open or
 # merged) at SHA, in the fake and in Dispatch's own head record, as a `pull_request` event would
-# have stored it. attribution_rule is delivery.AttributionRuleVersion, so the reconcile has no
+# have stored it. attribution_rule is delivery.AttributionRuleVersion, 3, so the reconcile has no
 # merged row to judge again either; were it to, it reads the same pull request from the fake.
 stage_head() {
   fake_pull "$@"
@@ -283,7 +284,7 @@ stage_head() {
     -v state="$5" -v issue="$2" -v title="$2 the ci-check acceptance run" <<'SQL'
 insert into pull_request_heads
   (repo, number, head_sha, state, issue_key, attribution_source, title, attribution_rule, checked_at)
-values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 2, now())
+values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 3, now())
 on conflict (repo, number) do update set
   head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key,
   title = excluded.title, attribution_rule = excluded.attribution_rule, checked_at = excluded.checked_at;
@@ -400,31 +401,34 @@ no_line() {
 
 # derived SECTION WHAT ID VERDICT SHA CASE NUMBER WORDS [RUN]: the last output holds the derived
 # result of check ID, VERDICT at SHA by ci from RUN (contracts) concluded CASE, at the head of pull
-# request NUMBER, and its pull-request body line, which names the run and no recorder.
+# request NUMBER, and, under the line of that head, its pull-request body line, which names the run
+# and no recorder.
 derived() {
   local run_name="${9:-contracts}"
   line "$1" "$2" \
     "- $3 (before_merge): $4 at $5 by ci (CI run $run_name, $6), that commit is the head of pull request #$7. $8"
   line "$1" "$3's pull-request body line names CI run $run_name" \
-    "  Pull request line: - Check $3 (before_merge): $4 at $5, from CI run $run_name. $8"
+    "    Pull request line: - Check $3 (before_merge): $4 at $5, from CI run $run_name. $8"
 }
 
 # unconcluded SECTION WHAT ID CASE DETAIL WORDS: the last output says check ID, proved by the run
 # contracts, has no result for CASE, in DETAIL, and prints neither a pass nor a fail for it.
 unconcluded() {
   line "$1" "$2" "- $3 (before_merge): no result: $5 $6"
-  line "$1" "$3's pull-request body line says its run has no result ($4)" \
-    "  Pull request line: - Check $3 (before_merge): CI run contracts has no result ($4)"
+  line "$1" "$3's pull-request body line, under the line of its head, says its run has no result ($4)" \
+    "    Pull request line: - Check $3 (before_merge): CI run contracts has no result ($4)"
   no_line "$1" "$3 prints neither a pass nor a fail" "- $3 (before_merge): pass at"
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
 
-# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT.
+# no_rows SECTION WHAT ARTIFACT BLOCK: neither check_results, a role's results, nor ci_check_results,
+# a CI job's, holds a row for block BLOCK of ARTIFACT.
 no_rows() {
   sql "$1" "$2" -v artifact="$3" -v block="$4" <<'SQL'
-select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block';
+select (select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block')
+     + (select count(*) from ci_check_results where check_artifact_id = :'artifact' and check_block_id = :'block');
 SQL
-  [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "check_results holds $(<"$work/sql") rows for $4"
+  [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "the results tables hold $(<"$work/sql") rows for $4"
   pass "$1" "$2"
 }
 
@@ -581,16 +585,14 @@ stage_head k2 "$k2_open" 101 "$open_sha" open
 results k2 "$k2_open"
 derived k2 "c-ci prints the pass of CI run contracts at the open head" c-ci pass "$open_sha" \
   success 101 "$ci_words"
-line k2 "the result's reading opens with the run's conclusion" "  Reading: conclusion: success"
-line k2 "the reading carries the run's output title" "contracts success"
-line k2 "the reading carries the run's output summary" "The contracts job concluded success."
-line k2 "the reading carries the run's URL" "https://github.com/$driven_repo/actions/runs/40/job/9001"
+line k2 "the result's reading is one line: the run's conclusion, output title, output summary and URL" \
+  "  Reading: conclusion: success\\ncontracts success\\nThe contracts job concluded success.\\nhttps://github.com/$driven_repo/actions/runs/40/job/9001"
 get "/api/v1/issues/$k2_open/results"
 want_status 200 k2 "GET /results answers"
 expect k2 "the one result is the derived one: its id, role, producer, run and commit" \
   "$(jq -cn --arg sha "$open_sha" '[["ci-run:9001","ci","github_app","github-actions","contracts",$sha]]')" \
   '[.checks[] | select(.block_id == "c-ci") | .results[] | [.id, .role, .actor.kind, .actor.id, .run, .commit_sha]]'
-no_rows k2 "check_results holds no row for $k2_open's c-ci" "$k2_open_artifact" c-ci
+no_rows k2 "no results table holds a row for $k2_open's c-ci" "$k2_open_artifact" c-ci
 
 ci_issue k2 "a check CI proves, whose run failed"
 readonly k2_fail="$key" k2_fail_artifact="$artifact"
@@ -601,7 +603,7 @@ stage_head k2 "$k2_fail" 102 "$fail_sha" open
 results k2 "$k2_fail"
 derived k2 "c-ci prints fail at the head for a run that concluded failure" c-ci fail "$fail_sha" \
   failure 102 "$ci_words"
-no_rows k2 "check_results holds no row for $k2_fail's c-ci" "$k2_fail_artifact" c-ci
+no_rows k2 "no results table holds a row for $k2_fail's c-ci" "$k2_fail_artifact" c-ci
 
 stage_head k2 "$k2_open" 101 "$open_sha" merged
 results k2 "$k2_open"
@@ -724,7 +726,7 @@ derived k3 "a conclusion R3 does not name prints a fail, naming it as GitHub wro
 
 # unread SECTION WHAT WORDS: the last output says GitHub could not be read for c-ci at k3's head,
 # with WORDS from what GitHub answered, prints neither a pass nor a fail, and says it is not known
-# whether a pass stands.
+# whether a pass stands, since the one head, #301, reads not known.
 unread() {
   local said
   said="$(grep -F -- "- c-ci (before_merge): no result: GitHub could not be read for the check runs of $driven_repo at $k3_sha: " "$work/out")" ||
@@ -732,9 +734,11 @@ unread() {
   [[ "$said" == *"$3"* ]] || fail "$1" "$2" "the line does not carry \"$3\": $said"
   pass "$1" "$2: $said"
   line "$1" "c-ci says it is not known whether a pass stands, since the read failed" \
-    "  A pass stands: not known."
+    "  A pass stands: not known, as 0 of 1 heads read yes."
+  line "$1" "the line of #301 says Dispatch could not read the run there" \
+    "  - #301 at $k3_sha: not known, as Dispatch could not read CI run contracts there."
   line "$1" "c-ci's pull-request body line says its run has no result (github_unreadable)" \
-    "  Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
+    "    Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
   no_line "$1" "c-ci prints neither a pass nor a fail" " by ci (CI run "
 }
 
@@ -764,11 +768,11 @@ derived k3 "the run of the higher id decides: a fail, where the first listed pas
 
 # --- k4: no role records a result for a check CI proves ------------------------------------------
 
-readonly proved_refusal='check c-fresh is proved by CI run "contracts": dispatch results reads its result from that run, and no role records one'
+readonly proved_refusal='check c-fresh names CI job "contracts": only a run of that job records its result, through the secrets broker'
 for role in tester implementer; do
   cli result --issue "$k1" --check c-fresh --role "$role" --verdict pass --commit "$plain_commit" \
     >"$work/out" 2>&1 && fail k4 "the $role's result for c-fresh is refused" "it was recorded: $(<"$work/out")"
-  line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the run" \
+  line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the CI job" \
     "CHECK_PROVED_BY_CI: $proved_refusal"
 done
 no_rows k4 "nothing is stored for c-fresh" "$k1_artifact" c-fresh
