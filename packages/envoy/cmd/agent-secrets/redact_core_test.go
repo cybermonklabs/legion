@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,30 @@ func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
 			}
 			wantNamedNotPrinted(t, "stdout and stderr", stdout+stderr, nil, row.secrets...)
 			wantNamedNotPrinted(t, "stdout", stdout, []string{row.want, "AGENT_SECRETS_APPROVE_URL"})
+		})
+	}
+}
+
+// TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt: with AGENT_SECRETS_APPROVE_URL unset,
+// machine login prints the verification_uri the broker answered, which the helper relays, as it
+// prints the approve URL: a page that carries a user and a password, or a token in its query, is
+// not printed. Control: a plain https page still prints whole.
+func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
+	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
+	password := "hunter2pw-" + "verifypage-" + "6d1e"
+	withUser := (&url.URL{Scheme: "https", User: url.UserPassword("tokuser5b8c", password), Host: "dispatch.example", Path: "/credentials/machine"}).String()
+	for _, row := range []struct{ name, page, want string }{
+		{"a user and a password in the page", withUser, "enter it at " + redact.NotPrinted},
+		{"a token in the page's query", "https://dispatch.example/credentials/machine?token=" + password, "enter it at " + redact.NotPrinted},
+		{"control: a plain https page", "https://dispatch.example/credentials/machine", "enter it at https://dispatch.example/credentials/machine — approve"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", fakeLoginHelperAt(t, "KQ7M-X4PZ", row.page, []string{"issued"}))
+			var stdout, stderr bytes.Buffer
+			if exit := cmdMachineLogin(nil, &stdout, &stderr); exit != 0 {
+				t.Fatalf("machine login = %d (stderr %q), want 0", exit, stderr.String())
+			}
+			wantNamedNotPrinted(t, "stdout and stderr", stdout.String()+stderr.String(), []string{row.want}, password, "tokuser5b8c")
 		})
 	}
 }

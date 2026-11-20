@@ -3,13 +3,11 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ttlFlag is --ttl's usage line, the request form's and the exec form's alike.
@@ -19,7 +17,7 @@ const ttlFlag = "how long the grant lasts, a whole number of seconds such as 2m 
 // set it, and an error for a value that is not a positive whole number of seconds or is past the
 // most the broker records (record.ValidLifetime), so `--ttl 0` is refused rather than read as
 // unset.
-func ttlSeconds(flags *flag.FlagSet, ttl time.Duration) (*int, error) {
+func ttlSeconds(flags *flagSet, ttl time.Duration) (*int, error) {
 	if !flagGiven(flags, "ttl") {
 		return nil, nil
 	}
@@ -47,20 +45,21 @@ func grantedLifetime(ctx context.Context, c *client, signer Signer, result Reque
 	if result.LifetimeSeconds != nil {
 		given = fmt.Sprintf("a lifetime of %ds", *result.LifetimeSeconds)
 	}
-	// The request and grant ids are the broker's, so each prints on one line (redact.OneLine);
-	// the calls below take them as they came.
-	mismatch := fmt.Sprintf("the broker gave request %s %s, not --ttl %ds", redact.OneLine(result.RequestID), given, *ttl)
+	// The request and grant ids are the broker's, so each prints as the broker's address lets its
+	// answer print, or by its shape (idWords); the calls below take them as they came.
+	words := func(id string) string { return idWords(c.baseURL, id) }
+	mismatch := fmt.Sprintf("the broker gave request %s %s, not --ttl %ds", words(result.RequestID), given, *ttl)
 	const why = "the broker or this machine's agent-secrets-helper is from before --ttl; restart the helper on the pinned release, or request without --ttl"
 	switch {
 	case result.GrantID != nil && result.RecordID != nil:
-		return fmt.Errorf("%s, so nothing was run and the existing grant %s was left as approved: %s", mismatch, redact.OneLine(*result.GrantID), why)
+		return fmt.Errorf("%s, so nothing was run and the existing grant %s was left as approved: %s", mismatch, words(*result.GrantID), why)
 	case result.State == "pending" && result.Coalesced:
-		return fmt.Errorf("%s, so nothing was run and the existing pending request %s was left waiting for its approver: %s", mismatch, redact.OneLine(result.RequestID), why)
+		return fmt.Errorf("%s, so nothing was run and the existing pending request %s was left waiting for its approver: %s", mismatch, words(result.RequestID), why)
 	case result.GrantID != nil:
 		if err := c.RevokeGrant(ctx, signer, *result.GrantID); err != nil {
-			return fmt.Errorf("%s, and revoking its grant %s failed: %w", mismatch, redact.OneLine(*result.GrantID), err)
+			return fmt.Errorf("%s, and revoking its grant %s failed: %w", mismatch, words(*result.GrantID), err)
 		}
-		return fmt.Errorf("%s, so its grant %s was ended and nothing was run: %s", mismatch, redact.OneLine(*result.GrantID), why)
+		return fmt.Errorf("%s, so its grant %s was ended and nothing was run: %s", mismatch, words(*result.GrantID), why)
 	case result.State == "pending":
 		if err := c.CancelRequest(ctx, signer, result.RequestID); err != nil {
 			return fmt.Errorf("%s, and cancelling it failed: %w", mismatch, err)

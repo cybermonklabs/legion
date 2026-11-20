@@ -20,16 +20,16 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// refuseUnexpectedArgument prints form's refusal of an argument it does not take and answers
-// exitUsageError. The argument itself is not printed: an argument a form does not take is where
-// a credential pasted in the wrong place shows up.
+// refuseUnexpectedArgument prints form's refusal of an argument it does not take
+// (unexpectedArgument) and answers exitUsageError.
 func refuseUnexpectedArgument(stderr io.Writer, form string) int {
-	fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
+	fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unexpectedArgument)
 	return exitUsageError
 }
 
@@ -57,9 +57,9 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	// The code and the page are the broker's, as the helper relayed them, so each prints on
-	// one line (redact.OneLine): as it came, or Go-quoted where a control character in it
-	// would start a line of its own or rewrite this one.
+	// The code is the broker's, as the helper relayed it, so it prints on one line
+	// (redact.OneLine): as it came, or Go-quoted where a control character in it would start a
+	// line of its own or rewrite this one.
 	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
 		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
@@ -67,7 +67,10 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		// where a person who pasted a credential in place of Dispatch's address finds it.
 		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
 	} else if resp.VerificationURI != "" {
-		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
+		// The broker's page, as the helper relayed it, prints as the page above does: whole
+		// when it is a plain http(s) URL, redact.NotPrinted otherwise, so a user, a password, a
+		// query or a control character in it does not print.
+		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.URL(resp.VerificationURI))
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
@@ -204,7 +207,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	const form = "machine list"
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet(form, stderr)
-	asJSON := flags.Bool("json", false, "print the broker's response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -227,7 +230,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREDENTIAL_ID\tHOST\tAPPROVED_BY\tISSUED\tEXPIRES\tSTATE")
 	for _, m := range machines.Credentials {
-		fmt.Fprintln(tw, strings.Join(machineRow(m), "\t"))
+		fmt.Fprintln(tw, strings.Join(machineRow(base, m), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -244,15 +247,17 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 
 // machineRow is one machine login's cells, in the table's column order: its credential id, its
 // host, who approved it ("-" for none), when it was issued and expires, and its state. The first
-// three are the broker's, so each prints on one line (redact.OneLine): as it came, or Go-quoted
-// where a control character in it, a tab among them, would start a line of its own or split the
-// cell.
-func machineRow(m OperatorMachine) []string {
+// three are the broker's, so each prints as the broker's address base lets its answer print
+// (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in it,
+// a tab among them, would start a line of its own or split the cell, and not at all beside an
+// address that carries a credential; the credential id, as every id the broker answers prints
+// (idWords), still whole there where it is a UUID the address does not hold.
+func machineRow(base brokeraddr.Address, m OperatorMachine) []string {
 	state := "ok"
 	if m.Expired {
 		state = "expired"
 	}
-	return []string{redact.OneLine(m.CredentialID), redact.OneLine(m.Host), redact.OneLine(orDash(m.ApprovedBy)),
+	return []string{idWords(base, m.CredentialID), base.Words(m.Host), base.Words(orDash(m.ApprovedBy)),
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 

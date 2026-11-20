@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -62,31 +64,31 @@ func tokenURL(audience string) string {
 // Token asks the metadata server for this machine's identity token for audience. format=full is
 // required: without it Google mints a token carrying no google.compute_engine claims, which names
 // no project, zone or instance, so an exchange entry pinned to either refuses it. Every error
-// names the URL it asked and never the token.
+// names the server as server() does and never the token.
 func Token(ctx context.Context, audience string) (string, error) {
-	callURL := tokenURL(audience)
+	callURL, at := tokenURL(audience), server()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("ask the metadata server at %s: %w", callURL, err)
+		return "", fmt.Errorf("ask %s: %w", at, redact.Class(err))
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("the metadata server at %s could not be reached (%s names its host): %w", callURL, MetadataHostVar, err)
+		return "", fmt.Errorf("%s could not be reached: %w", at, redact.Class(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("read the metadata server's answer from %s: %w", callURL, err)
+		return "", fmt.Errorf("read the answer of %s: %w", at, redact.Class(err))
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
+		return "", fmt.Errorf("%s answered HTTP %d", at, resp.StatusCode)
 	}
 	token := strings.TrimSpace(string(body))
 	if token == "" {
-		return "", fmt.Errorf("the metadata server at %s answered an empty identity token", callURL)
+		return "", fmt.Errorf("%s answered an empty identity token", at)
 	}
 	return token, nil
 }
@@ -112,12 +114,29 @@ const (
 )
 
 // metadataURL is path on the metadata server, honouring MetadataHostVar.
-func metadataURL(path string) string {
-	host := os.Getenv(MetadataHostVar)
-	if host == "" {
-		host = defaultMetadataHost
+func metadataURL(path string) string { return "http://" + metadataHost() + path }
+
+// metadataHost is the host MetadataHostVar names, or the one every Google machine answers on.
+func metadataHost() string {
+	if host := os.Getenv(MetadataHostVar); host != "" {
+		return host
 	}
-	return "http://" + host + path
+	return defaultMetadataHost
+}
+
+// server is the metadata server as a message names it: by MetadataHostVar, and by its host only as
+// internal/redact's allow-list prints it - whole when it is a plain host and port, and not at all
+// when it carries a user name, a password, a path, a query or an escape, any of which can hold a
+// credential pasted into the variable. net/url's and net/http's errors quote the URL built from
+// the host (a parse error all of it, a *url.Error its user name and query), so every failed
+// request prints as its class (redact.Class) beside this name, never as the library's text.
+func server() string {
+	host := metadataHost()
+	printed := redact.NotPrinted
+	if !strings.Contains(host, "/") {
+		printed = redact.URL("http://" + host)
+	}
+	return "the metadata server at " + printed + " (" + MetadataHostVar + " names its host)"
 }
 
 // Probe asks the metadata server which service account this machine runs as, within
@@ -127,35 +146,35 @@ func metadataURL(path string) string {
 // every answer of Google's carries. A Google metadata server that answers anything but a success,
 // or an empty email, is a fault, and its error is not ErrNoMetadataServer.
 func Probe(ctx context.Context) (string, error) {
-	callURL := metadataURL(emailPath)
+	callURL, at := metadataURL(emailPath), server()
 	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, callURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("ask the metadata server at %s: %w", callURL, err)
+		return "", fmt.Errorf("ask %s: %w", at, redact.Class(err))
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("ask the metadata server at %s: %w", callURL, ctx.Err())
+			return "", fmt.Errorf("ask %s: %w", at, ctx.Err())
 		}
-		return "", fmt.Errorf("%w: nothing answered at %s within %s (%s names its host): %v", ErrNoMetadataServer, callURL, ProbeTimeout, MetadataHostVar, err)
+		return "", fmt.Errorf("%w: nothing answered as %s within %s: %w", ErrNoMetadataServer, at, ProbeTimeout, redact.Class(err))
 	}
 	defer resp.Body.Close()
 	if resp.Header.Get("Metadata-Flavor") != "Google" {
-		return "", fmt.Errorf("%w: what answered at %s is not a Google metadata server (its answer carries no Metadata-Flavor: Google)", ErrNoMetadataServer, callURL)
+		return "", fmt.Errorf("%w: what answered as %s is not a Google metadata server (its answer carries no Metadata-Flavor: Google)", ErrNoMetadataServer, at)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
-		return "", fmt.Errorf("read the metadata server's answer from %s: %w", callURL, err)
+		return "", fmt.Errorf("read the answer of %s: %w", at, redact.Class(err))
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
+		return "", fmt.Errorf("%s answered HTTP %d", at, resp.StatusCode)
 	}
 	email := strings.TrimSpace(string(body))
 	if email == "" {
-		return "", fmt.Errorf("the metadata server at %s names no service account", callURL)
+		return "", fmt.Errorf("%s names no service account", at)
 	}
 	return email, nil
 }
@@ -167,34 +186,34 @@ func Probe(ctx context.Context) (string, error) {
 // that asks for several tokens wraps it in oauth2.ReuseTokenSource.
 func AccessTokenSource() oauth2.TokenSource { return metadataTokenSource{} }
 
-// metadataTokenSource is AccessTokenSource's oauth2.TokenSource. Its errors name the URL it
-// asked and never a token. It answers ErrNoMetadataServer, wrapped with what it saw, where no
-// Google metadata server answered (ErrNoMetadataServer says when), as Probe does; a Google server
-// that answers anything but a success, or no token, is a fault, and its error is not
+// metadataTokenSource is AccessTokenSource's oauth2.TokenSource. Its errors name the server as
+// server() does and never a token. It answers ErrNoMetadataServer, wrapped with what it saw, where
+// no Google metadata server answered (ErrNoMetadataServer says when), as Probe does; a Google
+// server that answers anything but a success, or no token, is a fault, and its error is not
 // ErrNoMetadataServer. The connection comes within ProbeTimeout or not at all (client); once it
 // has, the server's own minting of the token has the whole 10 s token-fetch bound.
 type metadataTokenSource struct{}
 
 func (metadataTokenSource) Token() (*oauth2.Token, error) {
-	callURL := metadataURL(tokenPath)
+	callURL, at := metadataURL(tokenPath), server()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("ask the metadata server at %s: %w", callURL, err)
+		return nil, fmt.Errorf("ask %s: %w", at, redact.Class(err))
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	asked := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: the metadata server at %s could not be reached (%s names its host): %v", ErrNoMetadataServer, callURL, MetadataHostVar, err)
+		return nil, fmt.Errorf("%w: %s could not be reached: %w", ErrNoMetadataServer, at, redact.Class(err))
 	}
 	defer resp.Body.Close()
 	if resp.Header.Get("Metadata-Flavor") != "Google" {
-		return nil, fmt.Errorf("%w: what answered at %s is not a Google metadata server (its answer carries no Metadata-Flavor: Google)", ErrNoMetadataServer, callURL)
+		return nil, fmt.Errorf("%w: what answered as %s is not a Google metadata server (its answer carries no Metadata-Flavor: Google)", ErrNoMetadataServer, at)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
+		return nil, fmt.Errorf("%s answered HTTP %d", at, resp.StatusCode)
 	}
 	var answer struct {
 		AccessToken string `json:"access_token"`
@@ -202,10 +221,10 @@ func (metadataTokenSource) Token() (*oauth2.Token, error) {
 		TokenType   string `json:"token_type"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&answer); err != nil {
-		return nil, fmt.Errorf("the metadata server at %s answered something other than an access token", callURL)
+		return nil, fmt.Errorf("%s answered something other than an access token", at)
 	}
 	if answer.AccessToken == "" || answer.ExpiresIn <= 0 {
-		return nil, fmt.Errorf("the metadata server at %s answered no access token or no expiry", callURL)
+		return nil, fmt.Errorf("%s answered no access token or no expiry", at)
 	}
 	return &oauth2.Token{AccessToken: answer.AccessToken, TokenType: answer.TokenType, Expiry: asked.Add(time.Duration(answer.ExpiresIn) * time.Second)}, nil
 }

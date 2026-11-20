@@ -6,14 +6,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -67,8 +70,54 @@ type PoolIdentity struct {
 	HTTP *http.Client
 }
 
+// Describe names the identity in every trade log line and error, by what its settings are where
+// they are plainly that, and by the variable that names them otherwise: the token audience as
+// internal/redact's allow-list prints a URL, beside MachineAudienceVar; the pool audience whole
+// where it is a workload identity pool provider's resource name (poolProvider), else by
+// PoolAudienceVar alone, since it is no http URL the allow-list could print; and the account where
+// it is a service account's email or unique id (ServiceAccountWords), else by PoolAccountVar. A
+// setting is where a person who pasted a credential in the wrong place puts it.
 func (p *PoolIdentity) Describe() string {
-	return "a Google identity token for " + p.TokenAudience + " minted through the workload identity pool " + p.Audience + " as " + p.ServiceAccount
+	pool := "that " + PoolAudienceVar + " names"
+	if poolProvider.MatchString(p.Audience) {
+		pool = p.Audience + " (" + PoolAudienceVar + " names it)"
+	}
+	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + ServiceAccountWords(p.ServiceAccount, PoolAccountVar)
+}
+
+// poolProvider is a workload identity pool provider's full resource name, as Google spells it:
+// the one shape of AGENT_SECRETS_POOL_AUDIENCE Describe prints.
+var poolProvider = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$`)
+
+// serviceAccountEmail and serviceAccountID are the ways Google names a service account, its
+// email and its numeric unique id: the shapes of an account ServiceAccountShaped admits. An email
+// is a name of lower-case letters, digits and dashes at a domain under gserviceaccount.com: a
+// user-managed account's (<name>@<project>.iam.gserviceaccount.com), a Google service agent's
+// (service-<number>@gcp-sa-<service>.iam.gserviceaccount.com), Compute Engine's default
+// (<project number>-compute@developer.gserviceaccount.com), App Engine's default
+// (<project id>@appspot.gserviceaccount.com) and Cloud Build's (<number>@cloudbuild...).
+var (
+	serviceAccountEmail = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}@[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*\.gserviceaccount\.com$`)
+	serviceAccountID    = regexp.MustCompile(`^[0-9]{1,32}$`)
+)
+
+// ServiceAccountShaped reports whether account has the shape of a Google service account's email
+// or unique id: lower-case letters, digits and dashes in Google's own forms, no control character
+// and nothing a pasted credential's text could pass as. A message prints an account Google or a
+// setting named only where it is so shaped, agent-secrets' using line and userinfo refusal among
+// them.
+func ServiceAccountShaped(account string) bool {
+	return serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account)
+}
+
+// ServiceAccountWords is account as a message names it: whole where it has a service account's
+// shape (ServiceAccountShaped), else as the service account setting names, which is not printed.
+// agent-secrets names a credentials file's account by it too.
+func ServiceAccountWords(account, setting string) string {
+	if ServiceAccountShaped(account) {
+		return account
+	}
+	return "the service account " + setting + " names (not printed: it has neither the shape of a service account's email nor of its unique id)"
 }
 
 // Token trades the external credential for a federated access token and spends it on one
@@ -83,7 +132,7 @@ func (p *PoolIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, p.TokenAudience, federated)
+	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, ServiceAccountWords(p.ServiceAccount, PoolAccountVar), p.TokenAudience, federated)
 	if err != nil {
 		return "", "", err
 	}
@@ -112,19 +161,20 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 		AccessToken string `json:"access_token"`
 	}
 	if err := postGoogle(ctx, p.HTTP, endpoint, "", body, &answer); err != nil {
-		return "", fmt.Errorf("trade this machine's credential at the security token service %s: %w", endpoint, err)
+		return "", fmt.Errorf("trade this machine's credential at the security token service %s: %w", redact.URL(endpoint), err)
 	}
 	if answer.AccessToken == "" {
-		return "", fmt.Errorf("the security token service %s answered no access_token", endpoint)
+		return "", fmt.Errorf("the security token service %s answered no access_token", redact.URL(endpoint))
 	}
 	return answer.AccessToken, nil
 }
 
 // generateIDToken is IAM Credentials' half of a mint: an access token that may act as
 // serviceAccount (bearer) spent on one generateIdToken for audience, with includeEmail set, at
-// iamURL, or Google's own service where it is empty. A workload identity pool spends its
-// federated token here, and an external_account credential the access token it mints.
-func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, audience, bearer string) (string, error) {
+// iamURL, or Google's own service where it is empty. Every error names the account as named
+// says. A workload identity pool spends its federated token here, and an external_account
+// credential the access token it mints.
+func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, named, audience, bearer string) (string, error) {
 	origin := iamURL
 	if origin == "" {
 		origin = DefaultIAMCredentialsURL
@@ -138,25 +188,30 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 	var answer struct {
 		Token string `json:"token"`
 	}
+	// The endpoint's path holds the account, whose `@` internal/redact's allow-list never prints,
+	// so a message names the service by its origin and the account beside it, as named says.
+	at := "IAM Credentials' generateIdToken at " + redact.URL(origin) + " for " + named
 	if err := postGoogle(ctx, client, endpoint, bearer, body, &answer); err != nil {
-		return "", fmt.Errorf("mint this machine's identity token at %s: %w", endpoint, err)
+		return "", fmt.Errorf("mint this machine's identity token with %s: %w", at, err)
 	}
 	if answer.Token == "" {
-		return "", fmt.Errorf("generateIdToken at %s answered no token", endpoint)
+		return "", fmt.Errorf("%s answered no token", at)
 	}
 	return answer.Token, nil
 }
 
 // postGoogle posts body to endpoint through client (nil is http.DefaultClient), with bearer on
-// the Authorization header when it is not empty, and decodes the answer into out. A non-2xx
-// answer is an error naming the status and the body Google's services put their reason in,
-// which carries no credential of this machine's.
+// the Authorization header when it is not empty, and decodes the answer into out. None of its
+// errors holds a library's text or a body: a request that failed is its class (redact.Class), a
+// non-2xx answer its status and registered error code (redact.Answered) - a Google error body's
+// description and message can be anything, an echo of the token the request carried among them -
+// and a success that does not decode fixed text, since the answer holds a token.
 func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer string, body []byte, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, poolTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return redact.Class(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if bearer != "" {
@@ -167,17 +222,20 @@ func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer strin
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return redact.Class(err)
 	}
 	defer resp.Body.Close()
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return redact.Class(err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(answer)))
+		return errors.New(redact.Answered(resp.StatusCode, answer))
 	}
-	return json.Unmarshal(answer, out)
+	if json.Unmarshal(answer, out) != nil {
+		return errors.New("the answer is not the JSON this call reads")
+	}
+	return nil
 }
 
 // poolSubjectTokenType is the subjectTokenType the security token service reads an external

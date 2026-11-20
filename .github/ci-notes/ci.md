@@ -236,7 +236,7 @@ and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, b
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
+(internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
 holds the reviewer's prompt to, the GitHub App helper
