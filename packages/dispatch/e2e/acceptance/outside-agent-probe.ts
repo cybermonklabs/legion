@@ -47,16 +47,19 @@
  *    access <project> <person>
  *                            GET /api/v1/projects/<project>/access at Dispatch: `listed`, whether
  *                            <person> is on its access list, or null when no list was read.
- *    peer                    the peer of row P4: registers the session, opens its relay socket and
- *                            answers each message from then on, until it is stopped. To
- *                            `outside-e2e ping <nonce>` it answers the sender
- *                            `outside-e2e pong <nonce> at <Unix ms>`, and to
- *                            `outside-e2e ack <nonce>`, `outside-e2e done <nonce> at <Unix ms>`. It
- *                            prints one line of JSON per message it reads and per answer it sends.
- *                            With OUTSIDE_FOREIGN_LISTENER_URL set it first registers
- *                            `<session>-foreign` there, under a token that names no project, and
- *                            keeps it registered: the session outside the project row P6 must not
- *                            find; it prints whether that listener lists it.
+ *    peer                    a scripted peer of row P4, for a local stack with no model: registers
+ *                            the session, opens its relay socket and answers each message from
+ *                            then on, until it is stopped. To `outside-e2e ping <nonce> at <ms>`
+ *                            it answers the sender `outside-e2e pong <nonce> at <Unix ms>` and then
+ *                            `outside-e2e hello <nonce> at <Unix ms>`; to
+ *                            `outside-e2e reply <nonce> at <ms>`, `outside-e2e done <nonce> at
+ *                            <Unix ms>`. It prints one line of JSON per message it reads, with the
+ *                            time it read it, and per answer it sends. With
+ *                            OUTSIDE_FOREIGN_LISTENER_URL set it first does what `foreign` does.
+ *    foreign                 registers `<session>-foreign` at OUTSIDE_FOREIGN_LISTENER_URL, under
+ *                            a token that names no project, prints whether that listener lists
+ *                            it, and keeps it registered until it is stopped: the session outside
+ *                            the project that row P6 must not find.
  */
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
@@ -417,19 +420,22 @@ async function peer(): Promise<void> {
     const envelope = envelopeOf(frame);
     const text = (envelope?.payload ?? envelope?.payload_summary ?? "").trim();
     const from = envelope?.source_session ?? envelope?.sender?.session_id ?? "";
-    print({ read: text, from });
-    const asked = /^outside-e2e (ping|ack) ([A-Za-z0-9-]{1,64})$/.exec(text);
+    print({ read: text, from, at: Date.now() });
+    const asked = /^outside-e2e (ping|reply) ([A-Za-z0-9-]{1,64}) at [0-9]+$/.exec(text);
     if (asked === null || from === "") continue;
     const [, kind, nonce] = asked;
     // A frame delivered twice is answered once.
     if (answered.has(`${kind} ${nonce}`)) continue;
     answered.add(`${kind} ${nonce}`);
-    const reply = `outside-e2e ${kind === "ping" ? "pong" : "done"} ${nonce} at ${Date.now()}`;
-    const sent = await sendMessage(from, reply).catch((error: unknown) => ({
-      status: 0,
-      body: String(error),
-    }));
-    print({ sent: reply, to: from, status: sent.status });
+    // A ping gets a pong and then a hello, which the other side replies to; a reply gets a done.
+    for (const word of kind === "ping" ? ["pong", "hello"] : ["done"]) {
+      const answer = `outside-e2e ${word} ${nonce} at ${Date.now()}`;
+      const sent = await sendMessage(from, answer).catch((error: unknown) => ({
+        status: 0,
+        body: String(error),
+      }));
+      print({ sent: answer, to: from, status: sent.status });
+    }
   }
   clearInterval(heartbeat);
   throw new Unreadable("the peer's relay socket closed");
@@ -679,6 +685,13 @@ async function main(): Promise<void> {
           })
         )
       );
+      return;
+    case "foreign":
+      if ((env.OUTSIDE_FOREIGN_LISTENER_URL ?? "").trim() === "") {
+        throw new Unreadable("OUTSIDE_FOREIGN_LISTENER_URL is unset");
+      }
+      await foreignSession();
+      await Promise.withResolvers<never>().promise;
       return;
     case "peer":
       try {

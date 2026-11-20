@@ -16,8 +16,7 @@
 #   ENVOY_URL=<OUTSIDE_LISTENER_URL> ENVOY_INBOUND=listener DISPATCH_URL=<OUTSIDE_DISPATCH_URL>
 #   DISPATCH_TOKEN_BROKER=1 AGENT_SECRETS_URL=<OUTSIDE_BROKER_URL>
 #   AGENT_SECRETS_MACHINE_IDENTITY=device-login AGENT_SECRETS_PROJECTS=<OUTSIDE_PROJECT>
-# beside PATH, HOME, TERM, TMPDIR and, for Oh My Pi's model, ANTHROPIC_API_KEY or
-# ANTHROPIC_OAUTH_TOKEN where the caller sets one. No ENVOY_NATS_URL, ENVOY_TOKEN or
+# beside PATH, HOME, TERM and TMPDIR. No model credential, ENVOY_NATS_URL, ENVOY_TOKEN or
 # DISPATCH_TOKEN reaches any of them.
 #
 # Inputs, each named by the row that cannot run without it:
@@ -39,10 +38,7 @@
 #                             to, whose events P5 must be admitted to.
 #   OUTSIDE_PATH_TARGETS      the target list outside-path-reach.sh reads (P9).
 # Optional: OUTSIDE_OTHER_PROJECT (default EXAMPLE) and OUTSIDE_OTHER_REPOSITORY (default
-# example-owner/example-repo), the project and repository P5 must be refused; OUTSIDE_OMP_MODEL,
-# the model Oh My Pi is started with; OUTSIDE_P4_REPLY (default model), how P4's two sends are
-# made: `model`, by the session's model, which needs ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN
-# (without one P4 reads UNKNOWN), or `scripted`, by the probe as the session's own session id;
+# example-owner/example-repo), the project and repository P5 must be refused;
 # OUTSIDE_AGENT_PUBLIC_TSV, a file that gets a copy of the TSV; OUTSIDE_GITHUB_EVENT_SECONDS
 # (default 900), how long P5 waits for an event.
 #
@@ -202,8 +198,6 @@ session_env=(
   "AGENT_SECRETS_MACHINE_IDENTITY=device-login"
   "AGENT_SECRETS_PROJECTS=$project"
 )
-[ -z "${ANTHROPIC_API_KEY:-}" ] || session_env+=("ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
-[ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ] || session_env+=("ANTHROPIC_OAUTH_TOKEN=$ANTHROPIC_OAUTH_TOKEN")
 
 # pane: what the Oh My Pi session's tmux pane shows, with its history.
 pane() { tmux -S "$tmux_socket" capture-pane -p -J -S -3000 -t outside-e2e 2>/dev/null; }
@@ -386,76 +380,69 @@ if [ -z "$problem5" ]; then
 fi
 
 # --- P4: an Oh My Pi session at the edge, its relay socket, and a message each way. ---
-# How the session's two sends are made, OUTSIDE_P4_REPLY: `model` (the default) prompts its model
-# to call envoy_send, which needs a model credential (ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN);
-# `scripted` sends them with outside-agent-probe.ts as the session's own session id, through the
-# same device login and the same edge, with no model. Either way the session itself receives
-# through its relay socket, and the pane shows what the peer sends it. p4_send is the one place
-# the two differ.
-reply=${OUTSIDE_P4_REPLY:-model}
-want4="the session exchanges a message and a reply with ${peer:-<OUTSIDE_PEER_SESSION>} each way through ${listener:-<OUTSIDE_LISTENER_URL>}, each shown within 10 s ($reply sends)"
+# The session receives through its own relay socket, and its pane shows what the peer sends it.
+# Its two sends are scripted: outside-agent-probe.ts sends them as the session's own session id,
+# through the same device login and the same edge, since this runner holds no model credential.
+# The peer, a session of ours on a developer box that the tailnet leg runs, answers with its
+# model: a ping with a pong and then a hello, and the reply to the hello with a done. Each message
+# carries its sender's clock, `at <Unix ms>`, and a lag here is this runner's clock when the pane
+# shows a message, less that stamp; the tailnet leg reads the peer's side the same way.
+want4="the session at ${listener:-<OUTSIDE_LISTENER_URL>} pings ${peer:-<OUTSIDE_PEER_SESSION>}, and shows its pong and its hello within 10 s of the peer's sends; it replies to the hello, and shows the peer's done within 10 s"
 problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION OUTSIDE_PROJECT)
 [ -n "$problem" ] || problem=$(tool_problem tmux omp)
-case $reply in
-  model)
-    [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_OAUTH_TOKEN:-}" ] ||
-      problem="${problem:+$problem; }OUTSIDE_P4_REPLY is model and neither ANTHROPIC_API_KEY nor ANTHROPIC_OAUTH_TOKEN is set, so Oh My Pi has no model to send with"
-    ;;
-  scripted) [ -n "$problem" ] || problem=$(tool_problem bun) ;;
-  *) problem="OUTSIDE_P4_REPLY must be model or scripted, not $reply" ;;
-esac
+[ -n "$problem" ] || problem=$(probe_problem)
 session_id=''
 p4_started=''
 if [ -n "$problem" ]; then
   row P4 "$want4" "$problem" UNKNOWN
-elif ! passed P2; then
-  row P4 "$want4" "not run: P2 did not pass, so the session has no device login" UNKNOWN
 else
   tmux_socket="$work/tmux.sock"
-  model=()
-  [ -z "${OUTSIDE_OMP_MODEL:-}" ] || model=(--model "$OUTSIDE_OMP_MODEL")
   say "P4: starting omp in tmux (tmux -S $tmux_socket attach -t outside-e2e)"
   env -i "${session_env[@]}" tmux -S "$tmux_socket" new-session -d -s outside-e2e -x 220 -y 50 \
-    -c "$session_dir" omp "${model[@]}" </dev/null
+    -c "$session_dir" omp </dev/null
   p4_started=$(now)
-  # turns: how many turns of its model the session's own log holds.
-  turns() {
-    cat "$home"/.omp/agent/sessions/*.jsonl "$home"/.omp/agent/sessions/*/*.jsonl 2>/dev/null |
-      grep -c '"role":"assistant"'
-  }
+  # stamp: this runner's clock in Unix ms, to the second, which bash 3.2's date can give.
+  stamp() { printf '%s000' "$(now)"; }
   # p4_send TEXT: the session sends TEXT to the peer. False when it was not sent, with
   # `send_problem` saying why and `send_verdict` FAIL for an edge that refused the send, UNKNOWN
-  # for a send that was not made.
+  # for a send that got no answer.
+  send_problem=''
+  send_verdict=UNKNOWN
   p4_send() {
-    local answer status before
-    send_problem=''
-    send_verdict=UNKNOWN
-    if [ "$reply" = scripted ]; then
-      answer=$(probe_as=$session_id probe send "$peer" "$1")
-      status=$(json_field status "$answer")
-      case $status in
-        2??) return 0 ;;
-        4??) send_verdict=FAIL ;;
-      esac
-      send_problem="the send of '$1' as $session_id: ${answer:0:200}"
-      return 1
-    fi
-    before=$(turns)
-    tmux -S "$tmux_socket" send-keys -t outside-e2e -l \
-      "This is an automated check. Call the envoy_send tool once, to send session $peer exactly this message: $1. Then end your turn."
-    sleep 1
-    tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
-    # An Enter can race the compose box's render and be swallowed, as smoke-delivery.sh says; it
-    # is sent again until the model takes a turn.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      [ "$(turns)" -le "$before" ] || return 0
-      sleep 3
-      tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
-    done
-    send_problem="the Oh My Pi session made no model turn for '$1' within 30 s"
+    local answer status
+    answer=$(probe_as=$session_id probe send "$peer" "$1")
+    status=$(json_field status "$answer")
+    case $status in
+      2??) return 0 ;;
+      4??) send_verdict=FAIL ;;
+      *) send_verdict=UNKNOWN ;;
+    esac
+    send_problem="the send of '$1' as $session_id: ${answer:0:200}"
     return 1
   }
-  # The TUI names its directory once it takes input; keys sent before that are dropped.
+  # seen WORD: the peer's stamp on `outside-e2e WORD <nonce> at <ms>` once the pane shows it.
+  seen() {
+    local text stamped
+    text=$(pane)
+    case $text in *"outside-e2e $1 $nonce at "*) ;; *) return 1 ;; esac
+    stamped=${text#*"outside-e2e $1 $nonce at "}
+    stamped=${stamped%%[!0-9]*}
+    printf '%s' "$stamped"
+  }
+  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's stamp to this pane showing it.
+  wait_seen() {
+    local deadline stamped
+    deadline=$(($(now) + $2))
+    while [ "$(now)" -lt "$deadline" ]; do
+      if stamped=$(seen "$1") && [ -n "$stamped" ]; then
+        printf '%s' $(($(now) - stamped / 1000))
+        return 0
+      fi
+      sleep 1
+    done
+    return 1
+  }
+  # The TUI names its directory once it runs; the session registers from then on.
   ready=''
   deadline=$(($(now) + 60))
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
@@ -467,58 +454,55 @@ else
     session_id=''
     sleep 3
   done
-  # seen WORD: the peer's time stamp on `outside-e2e WORD <nonce> at <ms>` once the pane shows it.
-  seen() {
-    local text stamp
-    text=$(pane)
-    case $text in *"outside-e2e $1 $nonce at "*) ;; *) return 1 ;; esac
-    stamp=${text#*"outside-e2e $1 $nonce at "}
-    stamp=${stamp%%[!0-9]*}
-    printf '%s' "$stamp"
-  }
-  # wait_seen WORD SECONDS: the lag in whole seconds from the peer's stamp to this pane showing it.
-  wait_seen() {
-    local deadline stamp
-    deadline=$(($(now) + $2))
-    while [ "$(now)" -lt "$deadline" ]; do
-      if stamp=$(seen "$1") && [ -n "$stamp" ]; then
-        printf '%s' $(($(now) - stamp / 1000))
-        return 0
-      fi
-      sleep 1
-    done
-    return 1
-  }
+  # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
+  # Oh My Pi session's registration is left as it is.
+  served=$(json_field granted "$(probe relay-sub "notifications.envoy.deliver.$probe_session")")
   pong_lag=''
+  hello_lag=''
   done_lag=''
+  ping_at=''
+  reply_at=''
   ping_sent=''
-  ack_sent=''
-  send_problem=''
-  send_verdict=UNKNOWN
-  if [ -n "$ready" ] && [ -n "$session_id" ] && p4_send "outside-e2e ping $nonce"; then
-    ping_sent=yes
-    pong_lag=$(wait_seen pong 240) || pong_lag=''
-    if [ -n "$pong_lag" ] && p4_send "outside-e2e ack $nonce"; then
-      ack_sent=yes
-      done_lag=$(wait_seen 'done' 240) || done_lag=''
+  reply_sent=''
+  if [ -n "$ready" ] && [ -n "$session_id" ] && [ "$served" = true ]; then
+    ping_at=$(stamp)
+    if p4_send "outside-e2e ping $nonce at $ping_at"; then
+      ping_sent=yes
+      pong_lag=$(wait_seen pong 240) || pong_lag=''
+      [ -z "$pong_lag" ] || { hello_lag=$(wait_seen hello 240) || hello_lag=''; }
+      if [ -n "$hello_lag" ]; then
+        reply_at=$(stamp)
+        if p4_send "outside-e2e reply $nonce at $reply_at"; then
+          reply_sent=yes
+          done_lag=$(wait_seen 'done' 240) || done_lag=''
+        fi
+      fi
     fi
   fi
+  # The tailnet leg reads these from the row to find the peer's side of the same exchange.
+  marks="nonce=$nonce ping_at=${ping_at:-none} reply_at=${reply_at:-none}"
   if [ -z "$ready" ]; then
-    row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s, so nothing was sent" UNKNOWN
+    row P4 "$want4" "the Oh My Pi TUI did not name its directory within 60 s" UNKNOWN
   elif [ -z "$session_id" ]; then
     row P4 "$want4" "the Oh My Pi session is not on $listener's session list (GET /v1/sessions by its directory)" UNKNOWN
+  elif [ "$served" = false ]; then
+    row P4 "$want4" "session $session_id: the relay socket refused a session its own relay subject" FAIL
+  elif [ "$served" != true ]; then
+    row P4 "$want4" "session $session_id registered; $listener serves no relay socket" UNKNOWN
   elif [ -z "$ping_sent" ]; then
-    row P4 "$want4" "session $session_id registered; $send_problem" "$send_verdict"
+    row P4 "$want4" "session $session_id registered; $send_problem; $marks" "$send_verdict"
   elif [ -z "$pong_lag" ]; then
-    row P4 "$want4" "session $session_id: no pong from $peer shown within 240 s of the ping" FAIL
-  elif [ -z "$ack_sent" ]; then
-    row P4 "$want4" "session $session_id: pong shown after ${pong_lag} s; $send_problem" "$send_verdict"
+    row P4 "$want4" "session $session_id: no pong from $peer shown within 240 s of the ping; $marks" FAIL
+  elif [ -z "$hello_lag" ]; then
+    row P4 "$want4" "session $session_id: pong shown ${pong_lag} s after the peer sent it; no hello within 240 s; $marks" FAIL
+  elif [ -z "$reply_sent" ]; then
+    row P4 "$want4" "session $session_id: pong and hello shown; $send_problem; $marks" "$send_verdict"
   elif [ -z "$done_lag" ]; then
-    row P4 "$want4" "session $session_id: pong shown after ${pong_lag} s; no done from $peer within 240 s, so the ack did not reach it" FAIL
-  elif [ "$pong_lag" -gt 10 ] || [ "$done_lag" -gt 10 ]; then
-    row P4 "$want4" "session $session_id: pong shown ${pong_lag} s and done ${done_lag} s after the peer sent them" FAIL
+    row P4 "$want4" "session $session_id: pong and hello shown; no done from $peer within 240 s of the reply; $marks" FAIL
+  elif [ "$pong_lag" -gt 10 ] || [ "$hello_lag" -gt 10 ] || [ "$done_lag" -gt 10 ]; then
+    row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them; $marks" FAIL
   else
-    row P4 "$want4" "session $session_id ($reply sends): ping and ack reached $peer; pong shown ${pong_lag} s and done ${done_lag} s after it sent them" PASS
+    row P4 "$want4" "session $session_id: pong ${pong_lag} s, hello ${hello_lag} s and done ${done_lag} s after the peer sent them; $marks" PASS
   fi
 fi
 

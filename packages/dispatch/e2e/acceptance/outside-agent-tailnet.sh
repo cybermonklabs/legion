@@ -39,7 +39,14 @@
 #                                OUTSIDE_PEER_SESSION and OUTSIDE_PUBLIC_RESULTS in its environment
 #                                and writes outside-agent-public.tsv and
 #                                outside-edge-revocations.tsv there.
-# Optional: OUTSIDE_PEER_SESSION (default outside-e2e-peer-<random>); OUTSIDE_IMAGE_REVISION_COMMAND,
+# Optional: OUTSIDE_PEER, P4's peer: `omp` (the default), an Oh My Pi session of this box whose
+# model answers, run with the box's own model profile and only the envoy plugin
+# OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's packages/pi-envoy, built); or `probe`, a
+# scripted peer for a local stack, only with OUTSIDE_ALLOW_HTTP=1, named OUTSIDE_PEER_SESSION
+# (default outside-e2e-peer-<random>). OUTSIDE_OWNER_REMOVE_COMMAND, a command line that removes
+# the test person from the project's access list as its owner, run with the person and the
+# project as its last two words, in place of P10's prompt (a harness that acts as the owner's
+# browser). OUTSIDE_IMAGE_REVISION_COMMAND,
 # a command line that prints the commit an image was built from, run with the image as its last
 # word (default: `crane config`, read for org.opencontainers.image.revision); OUTSIDE_TAILNET_TSV,
 # a file that gets a copy of the TSV; OUTSIDE_RESULT_ISSUE, an issue the result is posted to as one
@@ -422,19 +429,111 @@ fi
 # --- The peer session, and the session outside the project P6 must not list. ---
 probe_env=()
 while IFS= read -r name; do
-  case $name in AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | XDG_* | HOME | PATH | TMPDIR) ;; *) continue ;; esac
+  case $name in AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | XDG_* | GCE_METADATA_HOST | HOME | PATH | TMPDIR) ;; *) continue ;; esac
   probe_env+=("$name=${!name}")
 done <<EOF
 $(compgen -e)
 EOF
+# The peer of P4 is an Oh My Pi session of this box, OUTSIDE_PEER=omp (the default): the box's own
+# model profile, with only the envoy plugin OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's
+# packages/pi-envoy, built) and no other extension, skill, rule or context file, its sessions kept
+# in the scratch directory. It registers at the edge listener with this box's identity and a token
+# naming the project, and its model answers the public leg's messages. OUTSIDE_PEER=probe is
+# outside-agent-probe.ts's scripted peer instead, for a local stack with no model, and only with
+# OUTSIDE_ALLOW_HTTP=1. Either way `peer_seen` gets one line per ping and reply the peer was shown:
+# `<word> <nonce> <sender's stamp> <this box's clock when it was seen>`, in Unix ms.
+peer_kind=${OUTSIDE_PEER:-omp}
+peer_seen="$work/peer-seen.txt"
+: >"$peer_seen"
+peer_tmux="$work/peer-tmux.sock"
 peer_problem=$(lacking OUTSIDE_LISTENER_URL)
 [ -n "$peer_problem" ] || peer_problem=$(tool_problem bun)
-foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL)
-if [ -z "$peer_problem" ]; then
-  say "starting the peer session $peer at $OUTSIDE_LISTENER_URL"
+case $peer_kind in
+  omp)
+    plugin_dir=${OUTSIDE_PEER_PLUGIN_DIR:-$here/../../../pi-envoy}
+    [ -n "$peer_problem" ] || peer_problem=$(tool_problem omp tmux)
+    [ -n "$peer_problem" ] || [ -d "$plugin_dir/dist" ] ||
+      peer_problem="OUTSIDE_PEER_PLUGIN_DIR names $plugin_dir, which holds no built plugin (dist/)"
+    ;;
+  probe)
+    [ "$allow_http" = 1 ] ||
+      peer_problem="${peer_problem:+$peer_problem; }OUTSIDE_PEER=probe, the scripted peer, is for a local stack alone (OUTSIDE_ALLOW_HTTP=1)"
+    ;;
+  *) peer_problem="OUTSIDE_PEER must be omp or probe, not $peer_kind" ;;
+esac
+# peer_text: what the peer has been shown so far: its pane, or the scripted peer's log.
+peer_text() {
+  if [ "$peer_kind" = omp ]; then
+    tmux -S "$peer_tmux" capture-pane -p -J -S -5000 -t outside-e2e-peer 2>/dev/null
+  else
+    cat "$work/peer.log" 2>/dev/null
+  fi
+}
+# watch_peer: runs until it is stopped, adding to `peer_seen` each ping and reply the peer is
+# shown for the first time, with the time it was first seen.
+# shellcheck disable=SC2329 # started in the background below
+watch_peer() {
+  local text rest word n stamped
+  while :; do
+    text=$(peer_text)
+    for word in ping reply; do
+      rest=$text
+      while case $rest in *"outside-e2e $word "*) true ;; *) false ;; esac; do
+        rest=${rest#*"outside-e2e $word "}
+        n=${rest%% *}
+        stamped=${rest#"$n at "}
+        [ "$stamped" != "$rest" ] || continue
+        stamped=${stamped%%[!0-9]*}
+        [ -n "$stamped" ] || continue
+        case $(cat "$peer_seen") in *"$word $n "*) ;; *)
+          printf '%s %s %s %s000\n' "$word" "$n" "$stamped" "$(now)" >>"$peer_seen"
+          ;;
+        esac
+      done
+    done
+    sleep 1
+  done
+}
+peer_prompt="You are the peer session of an automated check. Follow these instructions exactly and take no other action. Wait for Envoy messages. When a message 'outside-e2e ping <N> at <T>' arrives from a session, reply to that session: run the bash command date +%s%3N, then call envoy_send to send that session exactly 'outside-e2e pong <N> at <the number date printed>'; then run date +%s%3N again and call envoy_send to send it exactly 'outside-e2e hello <N> at <the number date printed>'. When a message 'outside-e2e reply <N> at <T>' arrives from a session, run date +%s%3N and call envoy_send to send that session exactly 'outside-e2e done <N> at <the number date printed>'. Then wait again."
+if [ -z "$peer_problem" ] && [ "$peer_kind" = omp ]; then
+  peer_dir="$work/outside-e2e-peer-$nonce"
+  mkdir -p "$peer_dir" "$work/peer-sessions"
+  peer_dir=$(cd "$peer_dir" && pwd -P)
+  say "starting the peer, omp in tmux (tmux -S $peer_tmux attach -t outside-e2e-peer)"
+  env -u ENVOY_NATS_URL -u ENVOY_TOKEN -u ENVOY_TOKEN_FILE -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE \
+    ENVOY_URL="$OUTSIDE_LISTENER_URL" ENVOY_INBOUND=listener AGENT_SECRETS_PROJECTS="$project" \
+    tmux -S "$peer_tmux" new-session -d -s outside-e2e-peer -x 220 -y 50 -c "$peer_dir" \
+    omp --no-extensions --plugin-dir "$plugin_dir" --no-skills --no-rules --no-context-files \
+    --session-dir "$work/peer-sessions" </dev/null
+  ready=''
+  deadline=$(($(now) + 60))
+  while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
+    case $(peer_text) in *"outside-e2e-peer-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
+  done
+  peer=''
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -n "$ready" ] || break
+    peer=$(json_field at_dir "$(env -i "${probe_env[@]}" AGENT_SECRETS_PROJECTS="$project" \
+      OUTSIDE_PROBE_SESSION="outside-e2e-peer-finder-$nonce" OUTSIDE_LISTENER_URL="$OUTSIDE_LISTENER_URL" \
+      OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" bun "$here/outside-agent-probe.ts" sessions "$peer_dir" \
+      2>>"$work/probe.log" </dev/null)")
+    [ -z "$peer" ] || [ "$peer" = null ] || break
+    peer=''
+    sleep 3
+  done
+  if [ -z "$ready" ]; then
+    peer_problem="the peer's Oh My Pi TUI did not name its directory within 60 s"
+  elif [ -z "$peer" ]; then
+    peer_problem="the peer's Oh My Pi session is not on $OUTSIDE_LISTENER_URL's session list"
+  else
+    tmux -S "$peer_tmux" send-keys -t outside-e2e-peer -l "$peer_prompt"
+    sleep 1
+    tmux -S "$peer_tmux" send-keys -t outside-e2e-peer Enter
+  fi
+elif [ -z "$peer_problem" ]; then
+  say "starting the scripted peer $peer at $OUTSIDE_LISTENER_URL"
   env -i "${probe_env[@]}" AGENT_SECRETS_PROJECTS="$project" OUTSIDE_PROBE_SESSION="$peer" \
     OUTSIDE_LISTENER_URL="$OUTSIDE_LISTENER_URL" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
-    OUTSIDE_FOREIGN_LISTENER_URL="${OUTSIDE_INTERNAL_LISTENER_URL:-}" \
     bun "$here/outside-agent-probe.ts" peer >"$work/peer.log" 2>&1 </dev/null &
   background="$background $!"
   deadline=$(($(now) + 60))
@@ -446,12 +545,30 @@ if [ -z "$peer_problem" ]; then
     *'"ready":true'*) ;;
     *) peer_problem="the peer $peer did not start: $(text_of "$work/peer.log")" ;;
   esac
-  if [ -z "$foreign_problem" ]; then
-    case $(cat "$work/peer.log") in
-      *'"foreign":"'*'"registered":2'*'"listed":true'*) ;;
-      *) foreign_problem="the session $peer-foreign was not registered and listed at $OUTSIDE_INTERNAL_LISTENER_URL" ;;
-    esac
-  fi
+fi
+if [ -z "$peer_problem" ]; then
+  watch_peer &
+  background="$background $!"
+fi
+# The session outside the project, `<peer>-foreign`, which P6 must not find on the edge's list.
+foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL)
+[ -n "$foreign_problem" ] || foreign_problem=$(tool_problem bun)
+[ -n "$foreign_problem" ] || [ -z "$peer_problem" ] || foreign_problem="no peer, which it is named after"
+if [ -z "$foreign_problem" ]; then
+  env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="$peer" \
+    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
+    OUTSIDE_FOREIGN_LISTENER_URL="$OUTSIDE_INTERNAL_LISTENER_URL" \
+    bun "$here/outside-agent-probe.ts" foreign >"$work/foreign.log" 2>&1 </dev/null &
+  background="$background $!"
+  deadline=$(($(now) + 60))
+  while [ "$(now)" -lt "$deadline" ]; do
+    case $(cat "$work/foreign.log") in *'"foreign":"'* | *'"unknown"'*) break ;; esac
+    sleep 1
+  done
+  case $(cat "$work/foreign.log") in
+    *'"foreign":"'*'"registered":2'*'"listed":true'*) ;;
+    *) foreign_problem="the session $peer-foreign was not registered and listed at $OUTSIDE_INTERNAL_LISTENER_URL: $(text_of "$work/foreign.log")" ;;
+  esac
 fi
 
 # --- P10's hold login: a device login of the test person, the one the outside agent runs, whose
@@ -708,8 +825,8 @@ elif [ -n "$hold_problem" ]; then
   row P10 "$want_p10" "not run: there is no hold login: $hold_problem" UNKNOWN
 elif [ "$(cat "$work/hold.exit" 2>/dev/null)" != 0 ] || [ ! -f "$hold_file" ]; then
   row P10 "$want_p10" "not run: the hold login (code $hold_code) was not approved: $(text_of "$work/hold.log")" UNKNOWN
-elif ! { : </dev/tty; } 2>/dev/null; then
-  row P10 "$want_p10" "not run: there is no terminal to ask the operator for the removal on" UNKNOWN
+elif [ -z "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then
+  row P10 "$want_p10" "not run: there is no terminal to ask the operator for the removal on, and no OUTSIDE_OWNER_REMOVE_COMMAND" UNKNOWN
 else
   before=$(listed_now)
   control=$(hold_probe trade)
@@ -718,9 +835,19 @@ else
   elif [ "$(json_field traded "$control")" != true ]; then
     row P10 "$want_p10" "not run: before the removal the hold login's trade was not answered: ${control:0:200}" UNKNOWN
   else
-    printf 'outside-agent-tailnet: P10: remove %s from %s'"'"'s access list now, then press Enter here.\n' \
-      "$person" "$project" >/dev/tty
-    read -r _ </dev/tty
+    if [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
+      # A harness that acts as the owner's browser session makes the removal.
+      set -f
+      # shellcheck disable=SC2086 # a command line, split on blanks on purpose
+      set -- $OUTSIDE_OWNER_REMOVE_COMMAND
+      set +f
+      "$@" "$person" "$project" >"$work/p10.remove" 2>&1 </dev/null ||
+        say "P10: the removal command exited non-zero: $(text_of "$work/p10.remove")"
+    else
+      printf 'outside-agent-tailnet: P10: remove %s from %s'"'"'s access list now, then press Enter here.\n' \
+        "$person" "$project" >/dev/tty
+      read -r _ </dev/tty
+    fi
     removed_at=$(now)
     say "P10: removal read at $(date -u '+%H:%M:%SZ'); watching for 325 s"
     hold_probe hold 340 >"$work/p10.hold" &
@@ -744,6 +871,7 @@ else
     close_code=$(json_field code "$held")
     wrong=''
     socket=''
+    unread=''
     case $held in
       *'"opened_at"'*)
         if [ "$close_code" = null ] || [ -z "$closed_at" ] || [ "$closed_at" = null ]; then
@@ -754,7 +882,10 @@ else
           socket="the socket opened at the removal closed $close_code $((closed_at / 1000 - removed_at)) s after it"
         fi
         ;;
-      *) socket="no socket opened after the removal: ${held:0:150}" ;;
+      # A trade already refused opens no socket: the stop came before the socket could.
+      *'no broker token'*) socket="no socket could be opened at the removal, its trade already refused" ;;
+      # Anything else (no relay socket served, no answer) says nothing of the stop.
+      *) unread="the socket part was not read: ${held:0:200}" ;;
     esac
     if [ "$after" = true ]; then
       row P10 "$want_p10" "$person is still on $project's access list, so the removal was not made" UNKNOWN
@@ -764,6 +895,8 @@ else
       row P10 "$want_p10" "a trade was still answered 325 s after the removal${wrong:+; $wrong}" FAIL
     elif [ -n "$wrong" ]; then
       row P10 "$want_p10" "$wrong; the trade was refused $((refused_at - removed_at)) s after the removal" FAIL
+    elif [ -n "$unread" ]; then
+      row P10 "$want_p10" "the trade was refused $((refused_at - removed_at)) s after the removal; $unread" UNKNOWN
     else
       row P10 "$want_p10" "the trade refused $((refused_at - removed_at)) s after the removal (status $(json_field status "$refusal")); $socket. Re-adding $person is the operator's own act" PASS
     fi
@@ -803,6 +936,38 @@ EOF
   esac
   if [ -n "$held_by" ] && [ "$verdict" != UNKNOWN ]; then
     row "$name" "$want" "$verdict as the public leg read it, unproven here: $held_by; $got" UNKNOWN
+  elif [ "$name:$verdict" = P4:PASS ]; then
+    # The public leg read the peer's answers on its side; the peer's side is read here: its ping
+    # and the reply must each be shown to the peer within 10 s of the public side's stamp.
+    exchange=${got##*nonce=}
+    exchange=${exchange%% *}
+    lags=''
+    late=''
+    unseen=''
+    for word in ping reply; do
+      seen_line=''
+      while IFS= read -r each; do
+        case $each in "$word $exchange "*) seen_line=$each ;; esac
+      done <"$peer_seen"
+      if [ -z "$seen_line" ]; then
+        unseen="${unseen:+$unseen, }$word"
+        continue
+      fi
+      set -f
+      # shellcheck disable=SC2086 # the four fields of one line of peer_seen, split on purpose
+      set -- $seen_line
+      set +f
+      lag=$((($4 - $3) / 1000))
+      lags="${lags:+$lags, }$word $lag s"
+      [ "$lag" -le 10 ] || late="${late:+$late, }$word $lag s"
+    done
+    if [ -n "$late" ]; then
+      row P4 "$want" "the $peer_kind peer was shown the public side's $late after it was sent; $got" FAIL
+    elif [ -n "$unseen" ]; then
+      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's view never showed its $unseen of nonce $exchange; $got" UNKNOWN
+    else
+      row P4 "$want" "$got; the $peer_kind peer was shown the $lags after they were sent" PASS
+    fi
   else
     row "$name" "$want" "$got" "$verdict"
   fi
