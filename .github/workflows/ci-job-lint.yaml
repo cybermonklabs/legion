@@ -168,6 +168,12 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
+      # Biome reads nothing of a file at or above its files.maxSize: it prints an info diagnostic
+      # and the step above still passes. This step fails naming each such file, so a file that
+      # grows past the limit fails here instead of leaving lint without a word.
+      - name: Check no file is too large for Biome to read
+        run: .github/scripts/check-biome-max-size.sh
+
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name
       # one the floor takes. The test scans every tracked shell script and every tracked text file

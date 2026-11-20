@@ -49,11 +49,11 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { natsFailureReason } from "@legion/envoy-client/errors";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
 import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
 import {
@@ -98,7 +98,9 @@ import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
 import { type ConnectionOptions, ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
-import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with { type: "json" };
+import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with {
+  type: "json",
+};
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
@@ -20675,9 +20677,9 @@ console.log(JSON.stringify(args));
         );
         await settle();
         for (const part of Object.values(told())) expect(part).toHaveLength(1);
-        expect(transcript().filter((content) => content.includes("Envoy inbound restored"))).toEqual(
-          []
-        );
+        expect(
+          transcript().filter((content) => content.includes("Envoy inbound restored"))
+        ).toEqual([]);
 
         // The hub admits again. The next heartbeat dials a new connection, opens the relay and
         // the control subject on it, registers, and tells the session once that it receives
@@ -20903,7 +20905,9 @@ console.log(JSON.stringify(args));
         }
         session.heartbeat();
         await until(
-          () => natsState.controls.get(relay) !== first && natsState.controls.get(relay)?.active() === true,
+          () =>
+            natsState.controls.get(relay) !== first &&
+            natsState.controls.get(relay)?.active() === true,
           "the heartbeat's open of the relay subject"
         );
         await until(() => session.restored().written.length === 1, "the restored notice");
@@ -20941,7 +20945,9 @@ console.log(JSON.stringify(args));
         await settle();
         // The first subscription ended with its connection; the stand-in still calls an ended
         // subscription active, so only those taken after it are counted.
-        const live = (natsState.controlsByTopic.get(control) ?? []).slice(1).filter((c) => c.active());
+        const live = (natsState.controlsByTopic.get(control) ?? [])
+          .slice(1)
+          .filter((c) => c.active());
         expect(live).toHaveLength(1);
       } finally {
         natsState.heldConnect = undefined;
