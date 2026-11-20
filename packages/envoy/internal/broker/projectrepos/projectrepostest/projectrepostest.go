@@ -180,7 +180,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "no such route"})
 		return
 	}
-	// Dispatch's route refuses every credential but an access account's with 403 (K-E5).
+	// Dispatch's route refuses every credential but an access account's with 403.
 	if r.Header.Get("Authorization") != "Bearer "+s.Token {
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "FORBIDDEN", "error": "not an access account"})
 		return

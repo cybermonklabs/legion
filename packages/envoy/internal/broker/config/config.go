@@ -619,9 +619,8 @@ type Config struct {
 	// (urn:envoy:params:oauth:token-type:google-identity). Its issuer is BROKER_GOOGLE_OIDC_ISSUER,
 	// Google's own unless a dev stack says otherwise. Needs a Google caller, a google: entry in
 	// BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in
-	// BROKER_NATS_SERVICES, since with none no token for it could ever be accepted; and each such
-	// entry needs it, refusing the start naming the entry without it. API callers and edge
-	// listeners need no VM service. The
+	// BROKER_NATS_SERVICES, since with none no token for it could ever be accepted; and any such
+	// caller without it refuses the start. API callers and edge listeners need no VM service. The
 	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,

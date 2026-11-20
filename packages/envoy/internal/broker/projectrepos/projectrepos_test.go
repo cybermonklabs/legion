@@ -108,8 +108,8 @@ func TestProjectRepositoriesClientRefusesWhatIsNoWholeAnswer(t *testing.T) {
 	}
 }
 
-// TestProjectRepositoriesClientGivesUpAfterTwoSeconds: a Dispatch that stalls is given 2 s, the
-// bound K-E5 sets, and then the read is an error, never a list.
+// TestProjectRepositoriesClientGivesUpAfterTwoSeconds: a Dispatch that stalls is given 2 s, and
+// then the read is an error, never a list.
 func TestProjectRepositoriesClientGivesUpAfterTwoSeconds(t *testing.T) {
 	if projectrepos.Timeout != 2*time.Second {
 		t.Fatalf("Timeout = %s, want 2s", projectrepos.Timeout)

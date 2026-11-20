@@ -19,13 +19,12 @@ import (
 // GET /v1/project-repositories and refused at start when one does not parse; it needs no NATS
 // audience and no key set, and reads none.
 func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifiers, keysFor keysFunc) ([]natscallout.ServiceEntry, natscallout.PlatformTokens, error) {
-	if !cfg.NATS.Enabled() {
-		services, err := natscallout.ParseServices(cfg.NATS.Services)
-		return services, natscallout.PlatformTokens{}, err
-	}
 	services, err := natscallout.ParseServices(cfg.NATS.Services)
 	if err != nil {
 		return nil, natscallout.PlatformTokens{}, err
+	}
+	if !cfg.NATS.Enabled() {
+		return services, natscallout.PlatformTokens{}, nil
 	}
 	if err := natscallout.RequireAudiences(services, cfg.NATS.K8sAudience, cfg.NATS.GoogleAudience); err != nil {
 		return nil, natscallout.PlatformTokens{}, err
