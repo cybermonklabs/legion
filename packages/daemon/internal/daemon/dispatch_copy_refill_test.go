@@ -47,9 +47,8 @@ func TestTheFirstBootRefillsTheCopyFromAListingOnce(t *testing.T) {
 		})
 	})
 	// The database as the release before dispatchValueSequencesMigration leaves it, so the boot's
-	// own Store.Migrate applies that one over the rows seeded here, and intakeFailuresMigration,
-	// which names what that one creates, after it.
-	st, dsn := storeWithholding(t, "legion_copy_refill", dispatchValueSequencesMigration, intakeFailuresMigration)
+	// own Store.Migrate applies that one over the rows seeded here.
+	st, dsn := storeWithholding(t, "legion_copy_refill", dispatchValueSequencesMigration)
 	cfg.PostgresDSN = dsn
 	pool := st.Pool()
 	project := cfg.Project

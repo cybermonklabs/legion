@@ -111,9 +111,8 @@ import (
 // to dispatch_issues at their defaults, an index on its parent, and a refill mark for each project
 // the copy holds rows of.
 // dispatch://INFRA-1575's intake failures (20261120144241) are applied last: they create
-// intake_failures, cleared_pull_requests and pull_request_settled_heads, all three empty, add
-// dispatch_issues.status_changed_seq, which starts each row it finds at the status_seq
-// 20261120055717 gave it, and touch no outbox_kind_check.
+// intake_failures, cleared_pull_requests and pull_request_settled_heads, all three empty, and
+// touch no dispatch_issues column and no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

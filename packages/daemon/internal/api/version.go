@@ -2543,17 +2543,16 @@ package api
 // command `legion intake` reaches an older daemon, which answers it 404.
 //
 // The change carries store migration `20261120144241_intake_failures`, which adds the tables
-// `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads` and the column
-// `dispatch_issues.status_changed_seq`. An older daemon binary put back on this schema
-// decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
-// an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
-// each time; and it applies or drops a message with an open failure without telling the table, so
-// after a roll forward the sweep would give up as passed a message that applied. The way back is
-// the migration header's last paragraph (`migrations.WayBack`), the same text `docs/kubernetes.md`
-// carries under "Rolling back the release that gives up on intake messages": with the daemon
-// stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures,
-// each statement naming the project. The given-up records, the three tables and the column stay,
-// which the older binary never reads and a roll forward finds in place.
+// `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`. An older daemon
+// binary put back on this schema decodes an outbox payload strictly (`record.DecodeOutboxPayload`,
+// `DisallowUnknownFields`), so an unsent `intake-gave-up` notice row is refused at every attempt
+// and logged `outbox row failed` each time; and it applies or drops a message with an open failure
+// without telling the table, so after a roll forward the sweep would give up as passed a message
+// that applied. The way back is the migration header's last paragraph (`migrations.WayBack`), the
+// same text `docs/kubernetes.md` carries under "Rolling back the release that gives up on intake
+// messages": with the daemon stopped, delete the project's unsent `intake-gave-up` controller
+// notices and its open failures, each statement naming the project. The given-up records and the
+// three tables stay, which the older binary never reads and a roll forward finds in place.
 // (This entry takes 195: main declared 189 when it was read on 2026-11-20 at a4cd4949fce7, and the
 // open pull requests read that day declared 189 to 194, so 195 is the lowest number above main's
 // that no open head declares. Read main's own number and every open pull request again at the

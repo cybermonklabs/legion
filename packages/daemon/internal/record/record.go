@@ -1913,12 +1913,6 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
-	// DispatchStatusChangedSeq is the latest sequence by which the copy knows key's status changed
-	// (PutDispatchIssue): a reading moves it to its own sequence when it carries a status the copy
-	// takes that differs from the one the row held, and a reading older than the row's status
-	// reading that carries another status raises it to that status reading's sequence. It is 0 for
-	// no row, and for a row no reading carrying a status wrote.
-	DispatchStatusChangedSeq(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,

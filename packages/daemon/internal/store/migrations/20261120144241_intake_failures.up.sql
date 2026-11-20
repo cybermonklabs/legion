@@ -60,31 +60,6 @@
 -- deletes takes that pull request's rows with it (on delete cascade), and the way back keeps the
 -- rest.
 --
--- dispatch_issues.status_changed_seq is the latest sequence of a reading of Dispatch by which the
--- copy knows the issue's status changed (record.Store.PutDispatchIssue). The status_seq of
--- 20261120055717_dispatch_issue_value_sequences is another thing: the sequence of the newest
--- reading that carried the status, changed or not, so a rename or a re-rank that carries the same
--- status moves it. A reading moves status_changed_seq to its own sequence when it carries the
--- status, the copy takes that status by status_seq's rule, and the status differs from the one the
--- row held. A reading older than status_seq, whose status that rule refuses, raises it to
--- status_seq when its status differs from the one the row holds, since the status changed between
--- that reading and the newer one the row holds; it never lowers it. A new row starts at the
--- sequence of the reading that makes it when that reading carries the status, and at 0 when it
--- carries none. A person's approval of a parked root's spec that reaches the daemon late queues the
--- root as their handover only when no status change came after the approval (workflow's
--- personHandoverQueues), and 0 is no change.
---
--- A row that exists at this migration starts at its status_seq, the sequence of the newest reading
--- of its status the copy holds. The copy never kept when that status last changed, and the fence
--- starts at what the record already holds: an approval older than that reading, however late it
--- comes, queues nothing, so no stale fact unparks a root, and the person can still move it to todo.
--- The rows the first boot of each project refills on 20261120055717's mark are new rows, and start
--- at the sequence of the listing that writes them. This migration sorts after that one, so it
--- finds status_seq on every database. An earlier daemon neither reads nor writes the column: a row
--- it inserts takes 0 and a status it changes leaves the column as it stands, so the way back keeps
--- it, and after a roll forward it can stand older than the row's newest status change, which only
--- lets a late approval queue the root, as the earlier daemon did.
---
 -- A rollback of one project to an earlier image first deletes two kinds of that project's row,
 -- with its daemon stopped. Its intake-gave-up controller notices go, because the earlier image
 -- decodes a notice strictly (record.DecodeOutboxPayload) and refuses this kind and its count and
@@ -185,9 +160,6 @@ create table pull_request_settled_heads (
   fence jsonb not null,
   primary key (issue, kind, head)
 );
-
-alter table dispatch_issues add column status_changed_seq bigint not null default 0 check (status_changed_seq >= 0);
-update dispatch_issues set status_changed_seq = status_seq;
 
 -- There is no down file: migrations here are forward-only. The way back above is what a rollback
 -- runs.

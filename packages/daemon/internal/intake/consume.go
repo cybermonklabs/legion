@@ -223,13 +223,15 @@ type ConsumerSpec struct {
 	// decoded.
 	PrepareRepository func(ctx context.Context, issue DispatchIssue) (DispatchIssue, error)
 	// PrepareArtifact readies what the workflow reads of the issue a Dispatch review event is on
-	// (DispatchArtifact.Issue), before the fact is applied, within AckWait, which bounds this one
-	// preparation rather than the delivery (ReviewPermission), and returns the fact to
-	// apply: the workflow performs no I/O, and decides from Dispatch's view of the issue whether a
-	// person's approval of a parked labelled root's primary document queues that root, so the view
-	// is read here, for a person's approval that is not a carried one. A failed preparation is
-	// retried after the nak delay (nakDelay) rather than applied without it. No preparer (a test)
-	// applies the fact as decoded, with no view, which queues nothing.
+	// (DispatchArtifact.Issue and StatusChangedAt), before the fact is applied, within AckWait,
+	// which bounds this one preparation rather than the delivery (ReviewPermission), and returns
+	// the fact to apply: the workflow performs no I/O, and decides from Dispatch's view of the issue
+	// and its event log whether a person's approval of a parked labelled root's primary document
+	// queues that root, so the view is read here, for a person's approval that is not a carried
+	// one, and the log for such an approval that the view shows can queue its root
+	// (DispatchArtifact.MayQueueHandover). A failed preparation is retried after the nak delay
+	// (nakDelay) rather than applied without it. No preparer (a test) applies the fact as decoded,
+	// with no view, which queues nothing.
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
 }
 

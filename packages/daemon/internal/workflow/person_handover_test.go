@@ -343,16 +343,63 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 	})
 }
 
-// A person's approval of a parked labelled root's spec, delivered after the root's status changed
-// - late, or replayed from a message the intake gave up on, however late - queues nothing:
-// Dispatch's view the approval is prepared with is the issue as it is now, so it cannot say whether
-// the park it shows came before the approval or after it, and the copy's status change sequence
-// (record.Store.DispatchStatusChangedSeq) says the status moved after the approval. Here the person
-// approved the spec at sequence 9 and moved the root to icebox at sequence 10, and the park reached
-// the daemon first. An event after the approval that changed no status, a rename after a park that
-// came before it, leaves the root queued. A root whose park and rename the copy read before it
-// kept the status change sequence starts at the newest reading of its status, the rename's, so the
-// same approval replayed after that keeps it parked.
+// rootLogEvent is one event of LEGION-208's Dispatch event log as dispatch.Client.EventsAfter
+// serves it: type typ at seq, by askPerson, with payload as its payload.
+func rootLogEvent(seq int64, typ, payload string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":"LEGION-208","seq":%d,"type":%q,"actor":{"kind":%q,"id":%q},"payload":%s}`,
+		seq, seq, typ, askPerson.Kind, askPerson.ID, payload))
+}
+
+// rootIssueEvent is an issue event of LEGION-208's log, type typ at seq, that leaves the labelled
+// root in status under title.
+func rootIssueEvent(seq int64, typ, status, title string) json.RawMessage {
+	return rootLogEvent(seq, typ, fmt.Sprintf(`{"key":"LEGION-208","status":%q,"title":%q,"labels":[%q]}`, status, title, dispatch.LegionLabel))
+}
+
+// rootApprovalEvent is the approval approvalOf builds, askPerson's approval of version 2 of
+// artifact-208 at 9, as LEGION-208's log carries it.
+func rootApprovalEvent() json.RawMessage {
+	return rootLogEvent(9, "artifact.approved", `{"artifact_id":"artifact-208","version":2}`)
+}
+
+// preparedApprovalOf is askPerson's approval at 9 as the daemon's preparation builds it: view is
+// what it read of the issue, and for an approval that may queue its root it sets the first change
+// of the root's status after the approval that log, LEGION-208's Dispatch event log, shows
+// (intake.StatusChangedAfter).
+func preparedApprovalOf(t *testing.T, view *dispatch.Issue, log []json.RawMessage) intake.DispatchArtifact {
+	t.Helper()
+	fact := approvalOf(askPerson, view)
+	if fact.MayQueueHandover() && fact.Mark.Seq > 0 {
+		changed, err := intake.StatusChangedAfter(log, fact.Mark.Seq)
+		if err != nil {
+			t.Fatalf("read the status changes of LEGION-208's log: %v", err)
+		}
+		fact.StatusChangedAt = changed
+	}
+	return fact
+}
+
+// LEGION-208's Dispatch event logs the approval at 9 is prepared from: the root created in todo
+// and parked after the approval, at 10; and the root parked before the approval, at 8, and
+// renamed after it, at 11, still in icebox.
+var (
+	parkedAfterTheApproval = []json.RawMessage{rootIssueEvent(1, "issue.created", "todo", "root"), rootApprovalEvent(),
+		rootIssueEvent(10, "issue.updated", "icebox", "root")}
+	renamedAfterTheApproval = []json.RawMessage{rootIssueEvent(1, "issue.created", "todo", "root"), rootIssueEvent(8, "issue.updated", "icebox", "root"),
+		rootApprovalEvent(), rootIssueEvent(11, "issue.updated", "icebox", "the root, renamed")}
+)
+
+// A person's approval of a parked labelled root's spec, applied after the root's status changed
+// - late, or replayed from a message the intake gave up on, however late - queues nothing.
+// Dispatch's view the approval is prepared with is the issue as it is now, so it cannot say
+// whether the park it shows came before the approval or after it; the root's Dispatch event log,
+// which the preparation reads, says, and each approval here is built as the preparation builds it
+// from the log the case states (preparedApprovalOf). The person approved the spec at sequence 9
+// and moved the root to icebox at sequence 10, and the park reached the daemon first: the
+// approval queues nothing, whether the daemon records the root or not. An event after the
+// approval that changed no status, a rename after a park that came before it, leaves the root
+// queued. The root's issue events are applied before the approval, as the daemon applies them,
+// and they change nothing of the decision, which reads the log.
 func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 	event := func(seq int64, title string) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
@@ -364,17 +411,16 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 		recorded *record.Issue
 		// events are the root's issue events the daemon applied before the approval, which is at 9.
 		events []intake.DispatchIssue
-		// migrated starts the row's status change sequence at its status_seq, as the migration that
-		// added the column starts every row the copy held then (internal/store's
-		// TestMigration20261120144241StartsEachRowsStatusChangeAtItsStatusSequence).
-		migrated bool
+		// log is the root's Dispatch event log the approval is prepared from.
+		log []json.RawMessage
 		// queued is whether the approval queues the root as the person's handover.
 		queued bool
 	}{
-		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}},
-		{name: "a recorded lingering root parked after the approval", recorded: new(lingeringRoot("backlog")), events: []intake.DispatchIssue{event(10, "root")}},
-		{name: "a root parked before the approval and renamed after it", events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, queued: true},
-		{name: "a root parked and renamed before the migration", events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, migrated: true},
+		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}, log: parkedAfterTheApproval},
+		{name: "a recorded lingering root parked after the approval", recorded: new(lingeringRoot("backlog")), events: []intake.DispatchIssue{event(10, "root")},
+			log: parkedAfterTheApproval},
+		{name: "a root parked before the approval and renamed after it", events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")},
+			log: renamedAfterTheApproval, queued: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -385,13 +431,8 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 			for _, fact := range tc.events {
 				applyMirrored(t, pool, engine, fmt.Sprintf("event-%d", fact.Seq), fact)
 			}
-			if tc.migrated {
-				if _, err := pool.Exec(t.Context(), `update dispatch_issues set status_changed_seq = status_seq where key = 'LEGION-208'`); err != nil {
-					t.Fatalf("start the copy's row where the migration starts it: %v", err)
-				}
-			}
 
-			applyMirrored(t, pool, engine, "late-approval", approvalOf(askPerson, parkedRootView("icebox")))
+			applyMirrored(t, pool, engine, "late-approval", preparedApprovalOf(t, parkedRootView("icebox"), tc.log))
 
 			queued := slices.Contains(statusWrites(t, pool, "LEGION-208"), personHandoverWrite("icebox"))
 			if queued != tc.queued {
@@ -404,7 +445,8 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 
 // A person's approval that a later change of its parked root's status keeps from queuing the root
 // is no silent drop. Once the fact commits the daemon logs one warning naming the approval's
-// sequence and the copy's status change sequence, and the controller gets one parked-decision of
+// sequence and the sequence of the Dispatch event that changed the root's status after it, which
+// the preparation read from the root's event log, and the controller gets one parked-decision of
 // the approval, whose reason says it is older than the root's newest status reading and that todo
 // on the root brings it back. The root's own gate records the approval quietly, so it writes no
 // design-approved notice that the outbox would relay as a second parked-decision. A root the
@@ -423,18 +465,20 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 		recorded bool
 		// events are the root's issue events the daemon applied before the approval, which is at 9.
 		events []intake.DispatchIssue
+		// log is the root's Dispatch event log the approval is prepared from.
+		log    []json.RawMessage
 		queued bool
-		// warned is the copy's status change sequence the warning names, 0 for no warning.
+		// warned is the sequence of the status change the warning names, 0 for no warning.
 		warned float64
 		// told is every notice and controller notice the approval leaves, a relayed
 		// parked-decision's reason aside.
 		told []record.OutboxPayload
 	}{
-		{name: "a recorded root parked after the approval", recorded: true, events: []intake.DispatchIssue{event(10, "root")},
+		{name: "a recorded root parked after the approval", recorded: true, events: []intake.DispatchIssue{event(10, "root")}, log: parkedAfterTheApproval,
 			warned: 10, told: []record.OutboxPayload{relayed}},
-		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}, warned: 10},
+		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}, log: parkedAfterTheApproval, warned: 10},
 		{name: "a recorded root parked before the approval and renamed after it", recorded: true,
-			events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, queued: true},
+			events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, log: renamedAfterTheApproval, queued: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -450,7 +494,7 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 				applyMirrored(t, pool, engine, fmt.Sprintf("event-%d", fact.Seq), fact)
 			}
 
-			applyMirrored(t, pool, engine, "late-approval", approvalOf(askPerson, parkedRootView("icebox")))
+			applyMirrored(t, pool, engine, "late-approval", preparedApprovalOf(t, parkedRootView("icebox"), tc.log))
 
 			if queued := slices.Contains(statusWrites(t, pool, "LEGION-208"), personHandoverWrite("icebox")); queued != tc.queued {
 				t.Fatalf("the approval at sequence 9 queued the person's handover = %v, want %v", queued, tc.queued)
@@ -466,7 +510,7 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 			case tc.warned == 0 && len(warnings) != 0:
 				t.Fatalf("the approval logged the refusal %v, want no warning", warnings)
 			case tc.warned != 0 && (len(warnings) != 1 || warnings[0]["level"] != "WARN" || warnings[0]["issue"] != "LEGION-208" ||
-				warnings[0]["approval_seq"] != float64(9) || warnings[0]["status_changed_seq"] != tc.warned):
+				warnings[0]["approval_seq"] != float64(9) || warnings[0]["status_change_seq"] != tc.warned):
 				t.Fatalf("the refusal's warnings = %v, want one at WARN naming LEGION-208, the approval at 9 and the status change at %v; the engine logged:\n%s",
 					warnings, tc.warned, logged.String())
 			}

@@ -282,10 +282,17 @@ type DispatchArtifact struct {
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
 	// the daemon's workflowRuntime.prepareArtifact, for a person's approval that is not a carried
 	// one (CarriedApproval), outside the fact lock; nil for every other fact, a seed's or the boot
-	// catch-up's among them. The workflow reads its parent, label, status and primary document to
+	// catch-up's among them. MayQueueHandover reads its parent, label, status and primary document,
+	// for the preparation to decide whether to read the issue's event log and for the workflow to
 	// decide whether the approval queues the root: a nil view queues nothing and is never an
 	// error, since nothing but that decision reads it.
 	Issue *dispatch.Issue
+	// StatusChangedAt is the sequence of the first issue event of the issue's Dispatch event log
+	// after the approval (Mark.Seq) that carries another status than the issue event before it
+	// (StatusChangedAfter), set when the daemon prepares a person's approval that can queue its
+	// root (MayQueueHandover). It is 0 when no later event changed the status, and for every fact
+	// nothing read the log for.
+	StatusChangedAt int64
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -315,6 +322,21 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()
+}
+
+// MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
+// document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
+// backlog or icebox. Such an approval queues the root as the person's handover unless the root's
+// tree is live or its status changed after the approval (StatusChangedAt), which the workflow
+// decides. The daemon reads the issue's event log for it when it prepares the fact, and the
+// workflow decides from it, so the read side and the deciding side test one predicate.
+func (a DispatchArtifact) MayQueueHandover() bool {
+	if a.Issue == nil || !a.PersonApproval() {
+		return false
+	}
+	view := a.Issue
+	parked := view.Status == "backlog" || view.Status == "icebox"
+	return view.Parent == nil && view.HandedOver && parked && view.PrimaryArtifactID == a.ArtifactID
 }
 
 // GateAboveDispatch is the gate seed of a generation (Generation) finding the document at a version

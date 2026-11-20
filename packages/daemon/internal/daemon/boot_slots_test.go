@@ -197,16 +197,10 @@ const issueSlotsMigration = 20261103183833
 // database that lacks that column.
 const dispatchValueSequencesMigration = 20261120055717
 
-// intakeFailuresMigration is the later migration that names what dispatchValueSequencesMigration
-// creates: it starts dispatch_issues.status_changed_seq at status_seq, which
-// dispatchValueSequencesMigration adds. A store that withholds dispatchValueSequencesMigration
-// withholds it too, since it fails on a database that lacks that column.
-const intakeFailuresMigration = 20261120144241
-
 // preReleaseStore is a database of this test's own carrying every embedded migration except
-// issueSlotsMigration, dispatchValueSequencesMigration and intakeFailuresMigration, each applied as
-// Store.Migrate applies it — the migration's SQL, the widening of schema_version for a timestamped
-// version, and the version row.
+// issueSlotsMigration and dispatchValueSequencesMigration, each applied as Store.Migrate applies
+// it — the migration's SQL, the widening of schema_version for a timestamped version, and the
+// version row.
 //
 // It withholds issueSlotsMigration rather than cutting the series at its version because the two
 // halves of a pre-release store are wanted at once: the schema must take this release's own
@@ -216,11 +210,10 @@ const intakeFailuresMigration = 20261120144241
 // applies each migration the database has not recorded a row for, per version rather than by
 // max(version) (store.migrate and store.apply), so the gap a withheld version leaves is a
 // migration it still runs. One later migration names what issueSlotsMigration creates,
-// dispatchValueSequencesMigration, and one names what that one creates, intakeFailuresMigration,
-// so both are withheld too, and Store.Migrate applies the three in version order, each column
-// before the migration that names it. No test of the first boot writes the copy of Dispatch's
-// issues before it migrates, so dispatchValueSequencesMigration finds no row of the copy and marks
-// no project for a refill.
+// dispatchValueSequencesMigration, so it is withheld too, and Store.Migrate applies the two in
+// version order, the column before the migration that names it. No test of the first boot writes
+// the copy of Dispatch's issues before it migrates, so that second migration finds no row of the
+// copy and marks no project for a refill.
 //
 // It is built rather than checked in because the first boot on the release is reachable no other
 // way: nothing on intake.DaemonBooted says which boot is the first, so the grant that keeps every
@@ -229,7 +222,7 @@ const intakeFailuresMigration = 20261120144241
 // it from the schema that precedes it.
 func preReleaseStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, _ := storeWithholding(t, "legion_first_boot", issueSlotsMigration, dispatchValueSequencesMigration, intakeFailuresMigration)
+	st, _ := storeWithholding(t, "legion_first_boot", issueSlotsMigration, dispatchValueSequencesMigration)
 	return st
 }
 
