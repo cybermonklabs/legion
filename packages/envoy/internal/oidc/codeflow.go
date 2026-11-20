@@ -16,9 +16,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// tokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
-// one call to its revocation endpoint.
-const tokenTimeout = 10 * time.Second
+// TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
+// one call to its revocation endpoint. It is exported so that a caller that bounds a grant with a
+// deadline of its own can check that deadline against it, as Dispatch's membership test does.
+const TokenTimeout = 10 * time.Second
 
 // tokenClient is the HTTP client every call that carries the client's credentials is made with:
 // the code flow's own calls to the token and revocation endpoints, and CheckClient's discovery
@@ -26,7 +27,7 @@ const tokenTimeout = 10 * time.Second
 // re-send the form, and with it a code, a refresh token or the client's secret, to wherever the
 // redirect points.
 func tokenClient() *http.Client {
-	return &http.Client{Timeout: tokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	return &http.Client{Timeout: TokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 }

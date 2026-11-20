@@ -908,8 +908,8 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
-the NATS auth service and the sign-in code flow (`go list -deps -test -race` in packages/envoy), and every
-.md file under packages/envoy, which internal/dispatch/store's
+the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
+packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:104-120 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
@@ -1765,9 +1765,9 @@ internal/bus may be setting its handlers (natscred/probe_race_test.go, which onl
 build compiles, so this lane is its one run), the NATS auth service
 (internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
 callback, counts those waiting for a decision slot and waits them out at Close, the sign-in
-code flow (internal/oidc), whose grants share the one x/oauth2 config discovery built, and
-whose TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace fails only under the detector, the
-Dispatch API and the document service - all under the race detector. A read
+code flow (internal/oidc), whose sign-ins and refreshes use one shared x/oauth2 config at the
+same time (TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace checks that use for a data
+race), the Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
@@ -1779,8 +1779,8 @@ assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
 the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
-code flow),
-envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
+code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
@@ -1808,7 +1808,8 @@ runs in the test process (internal/testnats), so no job here needs a container r
 own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The Dispatch store's tests
+kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
+Dispatch store's tests
 (store_test.go:28) and delivery's take their databases from storetest.Open
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the

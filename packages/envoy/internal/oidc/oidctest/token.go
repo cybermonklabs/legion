@@ -195,20 +195,6 @@ func basicCredentials(r *http.Request) (clientID, clientSecret string, basic boo
 	return clientID, clientSecret, true, nil
 }
 
-// wait holds an answer back for delay, or until the client hangs up, and reports whether the
-// client is still there to answer.
-func wait(r *http.Request, delay time.Duration) bool {
-	if delay <= 0 {
-		return true
-	}
-	select {
-	case <-time.After(delay):
-		return true
-	case <-r.Context().Done():
-		return false
-	}
-}
-
 // handleRevoke answers a revocation as Cognito's /oauth2/revoke does for a
 // client with a secret: the client authenticates with HTTP Basic, the body
 // carries the token, and a token the pool does not know, or has revoked

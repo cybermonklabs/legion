@@ -155,19 +155,28 @@ func TestDomainMembershipEndsTheSessionWhenTheRefreshedAccountNoLongerQualifies(
 	})
 }
 
+// slowAnswer is how long the slow token endpoint below waits before each answer. One answer fits
+// both Dispatch's refresh bound (refreshTimeout) and the bound oidc gives one request
+// (oidc.TokenTimeout); two answers do not fit refreshTimeout. oidc.TokenTimeout less slowAnswer
+// is the row's margin under load.
+const slowAnswer = 7600 * time.Millisecond
+
 // A refresh Google refuses from a slow token endpoint still ends the sign-in when one request fits
 // the refresh's bound, in a process that restarted since the person signed in: its code flow is
 // new, so the refused refresh is that flow's first grant, and only the style the discovery
 // document names makes it one request. A client that guessed would ask by HTTP Basic and, refused,
-// again in the form, as nothing has taught it the style. The endpoint waits a tenth of a second
-// more than half of refreshTimeout before each answer, so the second answer could never come in
-// time, and the sign-in of a person Google refused would be kept. One request leaves 2.4 s of the
-// ten seconds oidc gives a request: this row's margin under load.
+// again in the form, as nothing has taught it the style. The endpoint waits slowAnswer before each
+// answer, so the second answer could never come in time, and the sign-in of a person Google
+// refused would be kept. The row fails first, naming the three durations, when they no longer let
+// one answer fit both bounds and keep two from fitting refreshTimeout.
 func TestDomainMembershipEndsTheSignInASlowTokenEndpointRefusesAfterARestart(t *testing.T) {
+	if slowAnswer >= oidc.TokenTimeout || slowAnswer >= refreshTimeout || 2*slowAnswer <= refreshTimeout {
+		t.Fatalf("slowAnswer is %s, refreshTimeout %s and oidc.TokenTimeout %s: this row needs one answer under both bounds and two answers over refreshTimeout", slowAnswer, refreshTimeout, oidc.TokenTimeout)
+	}
 	rig := newDomainMembershipRig(t)
 	rig.membership.SignIn = oidc.NewCodeFlow(rig.issuer.URL(), "dispatch-client", "dispatch-secret", memberDomain)
 	rig.issuer.RevokeGrants()
-	rig.issuer.DelayToken(refreshTimeout/2 + 100*time.Millisecond)
+	rig.issuer.DelayToken(slowAnswer)
 	rig.now = rig.now.Add(2 * time.Hour)
 	before := len(rig.issuer.TokenRequests())
 	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {

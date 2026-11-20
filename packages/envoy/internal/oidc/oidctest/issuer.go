@@ -95,8 +95,7 @@ type Issuer struct {
 	omitCodeFlow      bool
 	omitRevocation    bool
 	// tokenAuthMethods is the discovery document's token_endpoint_auth_methods_supported, no such
-	// member when empty (AdvertiseTokenAuthMethods). It is replaced whole and never changed in
-	// place, since every issuer starts from the one googleTokenAuthMethods.
+	// member when empty (AdvertiseTokenAuthMethods). Each issuer holds its own copy.
 	tokenAuthMethods []string
 	codeFlow         *codeFlow
 }
@@ -233,7 +232,7 @@ func New(t TB) *Issuer {
 	issuer.server = httptest.NewServer(mux)
 	t.Cleanup(issuer.server.Close)
 	issuer.issuerClaim = issuer.server.URL
-	issuer.tokenAuthMethods = googleTokenAuthMethods
+	issuer.tokenAuthMethods = slices.Clone(googleTokenAuthMethods)
 	return issuer
 }
 
@@ -786,6 +785,20 @@ func tokenError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
+}
+
+// wait holds an answer back for delay, or until the client hangs up, and reports whether the
+// client is still there to answer.
+func wait(r *http.Request, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	select {
+	case <-time.After(delay):
+		return true
+	case <-r.Context().Done():
+		return false
+	}
 }
 
 func randomValue() string {

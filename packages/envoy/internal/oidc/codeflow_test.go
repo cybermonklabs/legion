@@ -338,51 +338,36 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 	}
 }
 
-// A refresh the issuer refuses is one request to its token endpoint, by HTTP Basic, as the
-// issuer's discovery document allows (the test issuer lists Google's client_secret_post and
-// client_secret_basic), even as the first grant of a code flow: a process that restarted since the
-// person signed in. Nothing has taught that flow a style, so a client that guessed would ask by
-// HTTP Basic and, refused, again in the form.
-func TestCodeFlowRefreshTheIssuerRefusesIsOneTokenRequest(t *testing.T) {
-	issuer, flow := newCodeFlowFor(t)
-	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
-	restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
-	issuer.RevokeGrants()
-	before := len(issuer.TokenRequests())
-	if _, err := restarted.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
-		t.Fatalf("Refresh with a revoked refresh token: err = %v, want ErrGrantRefused", err)
-	}
-	if got := issuer.TokenRequests()[before:]; !slices.Equal(got, []string{"client_secret_basic"}) {
-		t.Fatalf("the refused refresh's token requests = %q, want one, by HTTP Basic", got)
-	}
-}
-
 // The client authenticates at the token endpoint as the issuer's discovery document lists
 // (token_endpoint_auth_methods_supported): by HTTP Basic where the list names
 // client_secret_basic, RFC 8414's default, whatever else it names and in whatever order, and in
 // the form where it names client_secret_post alone. Every grant is then one request: a code
-// exchange the issuer refuses, one it grants, and a refresh it refuses. A document that names
-// neither, or no list at all, leaves x/oauth2 to find the style itself: it asks by HTTP Basic
-// and, when that fails, again in the form, until a grant has succeeded in one, so
-// the refused exchange before the sign-in is two requests (the control that shows TokenRequests
-// sees a second one). Every grant starts from the one config discovery built, so the style the
-// sign-in found is the one the refused refresh uses.
+// exchange the issuer refuses, one it grants, a refresh it refuses, and a refused refresh on a code
+// flow made after the sign-in, as a process that restarted since the sign-in has. A document that
+// names neither, or no list at all, leaves x/oauth2 to find the style itself: it asks by HTTP Basic
+// and, when that fails, again in the form, until a grant has succeeded in one. So there a code
+// flow's first grant, refused, is two requests (the control that shows TokenRequests sees a second
+// one), and once the sign-in has succeeded every later grant of that flow is one, since each
+// starts from the one config discovery built.
 func TestCodeFlowAuthenticatesAtTheTokenEndpointAsTheDiscoveryDocumentLists(t *testing.T) {
 	basic, form := []string{"client_secret_basic"}, []string{"client_secret_post"}
 	guessed := []string{"client_secret_basic", "client_secret_post"}
 	for _, tc := range []struct {
-		name         string
-		methods      []string
-		firstRefused []string
-		signIn       []string
-		refused      []string
+		name    string
+		methods []string
+		// first is the token requests of a refused grant that is its code flow's first: a code
+		// exchange on a new flow, and a refresh on another flow made after the sign-in.
+		first []string
+		// signedIn is the token requests of the sign-in's code exchange, and of a refused refresh
+		// on the flow that signed the person in.
+		signedIn []string
 	}{
-		{"client_secret_basic alone", []string{"client_secret_basic"}, basic, basic, basic},
-		{"client_secret_post alone", []string{"client_secret_post"}, form, form, form},
-		{"both, in Google's order", []string{"client_secret_post", "client_secret_basic"}, basic, basic, basic},
-		{"both, client_secret_basic first", []string{"client_secret_basic", "client_secret_post"}, basic, basic, basic},
-		{"neither", []string{"private_key_jwt"}, guessed, basic, basic},
-		{"no list", nil, guessed, basic, basic},
+		{"client_secret_basic alone", []string{"client_secret_basic"}, basic, basic},
+		{"client_secret_post alone", []string{"client_secret_post"}, form, form},
+		{"both, in Google's order", []string{"client_secret_post", "client_secret_basic"}, basic, basic},
+		{"both, client_secret_basic first", []string{"client_secret_basic", "client_secret_post"}, basic, basic},
+		{"neither", []string{"private_key_jwt"}, guessed, basic},
+		{"no list", nil, guessed, basic},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issuer, flow := newCodeFlowFor(t)
@@ -392,21 +377,26 @@ func TestCodeFlowAuthenticatesAtTheTokenEndpointAsTheDiscoveryDocumentLists(t *t
 				t.Helper()
 				all := issuer.TokenRequests()
 				if got := all[seen:]; !slices.Equal(got, want) {
-					t.Fatalf("%s: token requests = %q, want %q", grant, got, want)
+					t.Errorf("%s: token requests = %q, want %q", grant, got, want)
 				}
 				seen = len(all)
 			}
 			if _, err := flow.Exchange(context.Background(), flowRedirect, "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
 				t.Fatal("Exchange of a code the issuer never issued succeeded")
 			}
-			requests("the refused code exchange", tc.firstRefused)
+			requests("the refused code exchange on a new flow", tc.first)
 			session := exchange(t, issuer, flow, personClaims("dispatch-members"))
-			requests("the sign-in's code exchange", tc.signIn)
+			requests("the sign-in's code exchange", tc.signedIn)
 			issuer.RevokeGrants()
 			if _, err := flow.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
 				t.Fatalf("Refresh with a revoked refresh token: err = %v, want ErrGrantRefused", err)
 			}
-			requests("the refused refresh", tc.refused)
+			requests("the refused refresh on the flow that signed in", tc.signedIn)
+			restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+			if _, err := restarted.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
+				t.Fatalf("Refresh with a revoked refresh token on a flow made after the sign-in: err = %v, want ErrGrantRefused", err)
+			}
+			requests("the refused refresh on a flow made after the sign-in", tc.first)
 		})
 	}
 }
@@ -472,9 +462,9 @@ func (r *formRecorder) all() []url.Values {
 	return slices.Clone(r.forms)
 }
 
-// A caller that names no redirect sends none: neither authorization URL and neither exchange's
-// token request carries a redirect_uri, as when the redirect was the config's RedirectURL, which
-// x/oauth2 leaves out when it is empty. A caller that names one sends it.
+// A caller that names no redirect sends none: neither authorization URL and no token request of
+// either exchange carries a redirect_uri. A caller that names one sends it in each token request
+// of its exchange.
 func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
 	_, flow := newCodeFlowFor(t)
 	recorder := &formRecorder{}
@@ -497,17 +487,25 @@ func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
 			t.Errorf("%s with no redirect = %s, want no redirect_uri", name, location)
 		}
 	}
+	seen := 0
+	sent := func(exchange string) []url.Values {
+		t.Helper()
+		all := recorder.all()
+		forms := all[seen:]
+		seen = len(all)
+		if len(forms) == 0 {
+			t.Fatalf("%s made no token request the recorder saw", exchange)
+		}
+		return forms
+	}
 	if _, err := flow.Exchange(ctx, "", "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
 		t.Fatal("Exchange of a code the issuer never issued succeeded")
 	}
+	exchanged := sent("Exchange with no redirect")
 	if _, err := flow.OnlineExchange(ctx, "", "a-code-the-issuer-never-issued", onlineSignIn("nonce-1")); err == nil {
 		t.Fatal("OnlineExchange of a code the issuer never issued succeeded")
 	}
-	forms := recorder.all()
-	if len(forms) != 2 {
-		t.Fatalf("the two exchanges made %d token requests, want 2", len(forms))
-	}
-	for i, form := range forms {
+	for i, form := range append(exchanged, sent("OnlineExchange with no redirect")...) {
 		if form.Has("redirect_uri") {
 			t.Errorf("token request %d with no redirect = %v, want no redirect_uri", i+1, form)
 		}
@@ -515,8 +513,10 @@ func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
 	if _, err := flow.Exchange(ctx, flowRedirect, "a-code-the-issuer-never-issued", "nonce-1"); err == nil {
 		t.Fatal("Exchange of a code the issuer never issued succeeded")
 	}
-	if forms := recorder.all(); len(forms) != 3 || forms[2].Get("redirect_uri") != flowRedirect {
-		t.Fatalf("token requests = %v, want a third naming redirect_uri %s", forms, flowRedirect)
+	for i, form := range sent("Exchange naming a redirect") {
+		if got := form.Get("redirect_uri"); got != flowRedirect {
+			t.Errorf("token request %d naming a redirect has redirect_uri %q, want %q", i+1, got, flowRedirect)
+		}
 	}
 }
 
