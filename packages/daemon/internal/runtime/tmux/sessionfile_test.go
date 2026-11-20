@@ -194,15 +194,15 @@ func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
 // the search runs as the user Oh My Pi runs as, so what that user cannot read holds no session Oh
 // My Pi could resume. With the session in another, readable folder, it is found; with the session
 // nowhere else, the search answers no file and no error, the session found nowhere, which the
-// claim's machine meets with a fresh agent charged nothing. CI's case is one of these: a recorded
-// file gone from directly under a temporary directory, as the real tmux rig's under /tmp, sends
-// the search to the folders of that directory's parent, and one of them, as
-// /tmp/snap-private-tmp, is another user's. An entry of the sessions directory that is no folder —
-// a file, one it may not read among them, a symlink to a file or to nothing — holds no session and
-// is skipped by its type, never as unread, so the list names none of them.
+// claim's machine meets with a fresh agent charged nothing. A recorded file gone from directly
+// under a temporary directory, as the real tmux rig's under /tmp, sends the search to the folders
+// of that directory's parent, and one of them, as /tmp/snap-private-tmp, may be another user's. An
+// entry of the sessions directory that is no folder — a file, one it may not read among them, a
+// symlink to a file or to nothing — holds no session and is skipped by its type, never as unread,
+// so the list names none of them.
 func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
 	recorded := filepath.Join(t.TempDir(), "sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
-	for name, shut := range map[string]func(t *testing.T, folder string) (skipped string){
+	for name, shut := range map[string]func(t *testing.T, folder string) (unread string){
 		"a folder it cannot read": func(t *testing.T, folder string) string {
 			unreadable(t, folder)
 			return folder

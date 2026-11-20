@@ -31,7 +31,13 @@ const (
 // My Pi sessions directory (Launcher.SessionsDir) is paneSessions(f).
 func homed(t *testing.T) *fakeServerRuntime {
 	t.Helper()
-	return newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+	return homedLogging(t, nil)
+}
+
+// homedLogging is homed with the runtime logging to log.
+func homedLogging(t *testing.T, log *slog.Logger) *fakeServerRuntime {
+	t.Helper()
+	return newFakeServerRuntimeWith(t, staticCredential, log, func(o *Options) {
 		o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home"))
 	})
 }
@@ -170,8 +176,7 @@ func TestAResumeWhoseSearchSkipsAFolderItCannotReadNamesItInAWarning(t *testing.
 		for where, elsewhere := range map[string]bool{"the session in another folder": true, "the session nowhere else": false} {
 			t.Run(by+", "+where, func(t *testing.T) {
 				var logs strings.Builder
-				f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
-					func(o *Options) { o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home")) })
+				f := homedLogging(t, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 				shut := filepath.Join(paneSessions(f), resumeFolder)
 				writeSession(t, filepath.Join(shut, name), time.Now())
 				readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets-legion-43--", name)
