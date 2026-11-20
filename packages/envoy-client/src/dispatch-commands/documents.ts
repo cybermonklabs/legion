@@ -50,7 +50,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
-import { attributesReordered, storedTextProblem, withoutFinalLineFeed } from "./stored-spelling";
+import { storedUpload } from "./stored-spelling";
 import {
   artifactNameExistsProblem,
   artifactUnderName,
@@ -766,13 +766,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     // compared. An attribute's position carries no meaning either, so a text whose typed
     // blocks differ only in that is sent as Dispatch stores it, and the answer says so. Every
     // other difference is refused.
-    if (stored !== undefined && withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)) {
-      const inOrder = attributesReordered(content, stored);
-      if (inOrder === undefined) {
-        throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
-      }
-      sent = stored;
-      reordered = inOrder;
+    if (stored !== undefined) {
+      const upload = storedUpload(content, stored, name);
+      if ("refusal" in upload) throw new ToolInputError(input.tool, [upload.refusal]);
+      sent = upload.sent;
+      reordered = upload.reordered;
     }
   }
   // A call with a path uploads that file, one with content stores that text (`sent`, above),

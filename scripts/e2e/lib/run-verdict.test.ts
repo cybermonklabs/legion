@@ -170,6 +170,29 @@ const marks = (path: string) => /^\s*run_end\s*$/m.test(text.get(path) ?? "");
 /** The line that opens a function a script defines over more than one line: `name() {`. */
 const opens = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{\s*$/;
 
+/** A line of code that opens an `if` it does not close: one whose own `fi` is not on it, as the
+ *  `fi` of `if …; then …; fi` is. */
+const opensIf = (word: string) => /^if\b/.test(word) && !/[\s;]fi(\s|;|$)/.test(word);
+
+/** A line of code that closes an `if`: its `fi` alone, or before a comment. */
+const closesIf = /^fi(\s+#.*)?$/;
+
+/**
+ * The command that starts on line INDEX of LINES, with each line it continues onto with a
+ * trailing backslash, as the shell reads its operators: each quoted text and each comment emptied.
+ */
+function commandAt(lines: string[], index: number): string {
+  let command = lines[index] ?? "";
+  for (let at = index; at < lines.length - 1 && lines[at].trimEnd().endsWith("\\"); at++) {
+    command += `\n${lines[at + 1]}`;
+  }
+  return command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''").replace(/(^|\s)#.*$/gm, "$1");
+}
+
+/** A control operator (`;`, `|`, `||`, `&&`, `&`) in a command commandAt reads: after a call on
+ *  its line it runs more, and `>&` and `&>` are redirections, not operators. */
+const controlOperator = /;|\||&&|(^|[^<>&])&(?!>)/;
+
 /**
  * What runs after the command on line INDEX of the script at PATH, in the shell it runs in, read
  * from TEXTS, each script's text by its path: a line for each command that runs after it, and
@@ -197,12 +220,12 @@ function runsAfter(
     if (!code(lines[next])) continue;
     const word = lines[next].trim();
     if (skipped > 0) {
-      if (/^if\b/.test(word) && !/\bfi$/.test(word)) skipped++;
-      else if (word === "fi") skipped--;
+      if (opensIf(word)) skipped++;
+      else if (closesIf.test(word)) skipped--;
       continue;
     }
     if (word.startsWith(")") || word === "exit 0") return [];
-    if (word === "fi") continue;
+    if (closesIf.test(word)) continue;
     if (/^(else|elif)\b/.test(word)) {
       skipped = 1;
       continue;
@@ -218,7 +241,8 @@ function runsAfter(
  * returns: what runs after each of its calls, in that script and in each script that sources it,
  * read from TEXTS (runsAfter). The function is the one the nearest `name() {` above the brace
  * opens. It must have one call at least, and each call must stand on a line of its own, as its
- * line's first word; a call inside another command is a command that can run more after it.
+ * line's first word, with no control operator after it on its line (controlOperator); a call
+ * inside another command, or followed on its line by one, is a command that can run more after it.
  */
 function afterFunction(
   texts: Map<string, string>,
@@ -238,11 +262,15 @@ function afterFunction(
   const wrong: string[] = [];
   let calls = 0;
   for (const caller of scripts.filter((other) => sources.get(other)?.includes(path))) {
-    (texts.get(caller) ?? "").split("\n").forEach((line, index) => {
+    const callerLines = (texts.get(caller) ?? "").split("\n");
+    callerLines.forEach((line, index) => {
       if (!code(line) || opens.test(line) || !named.test(line)) return;
       calls++;
       const where = `${shown(caller)}:${index + 1}`;
-      if (!new RegExp(`^\\s*${name}(\\s|$)`).test(line)) {
+      if (
+        !new RegExp(`^\\s*${name}(\\s|$)`).test(line) ||
+        controlOperator.test(commandAt(callerLines, index))
+      ) {
         wrong.push(
           `${what}, last in ${name}(), which ${where} calls inside another command: ${line.trim()}`
         );
@@ -352,5 +380,46 @@ describe("every script under scripts/e2e", () => {
         /^controller-sweep-kind\.sh:\d+ run_end, last in left\(\) called at controller-sweep-kind\.sh:\d+, runs more after it: controller-sweep-kind\.sh:\d+ pass$/
       );
     }
+  });
+
+  // busy-relaunch-delivery.sh's negative_control() ends in its run_end, and the script's last
+  // line of code calls it. A call followed on its own line by a control operator runs more after
+  // it there, so a run_end last in the function then has more run after it.
+  test("refuses a run_end last in a function whose call runs more after it on its line", () => {
+    const busy = join(e2e, "busy-relaunch-delivery.sh");
+    const original = text.get(busy) ?? "";
+    const chained = original.replace(
+      /\n {2}negative_control\nfi\n$/,
+      "\n  negative_control && note x\nfi\n"
+    );
+    expect(chained).not.toBe(original);
+    expect(runEndsWithMoreAfter(new Map([...text, [busy, chained]]))).toEqual([
+      expect.stringMatching(
+        /^busy-relaunch-delivery\.sh:\d+ run_end, last in negative_control\(\), which busy-relaunch-delivery\.sh:\d+ calls inside another command: negative_control && note x$/
+      ),
+    ]);
+  });
+
+  // An `else` branch does not run after a run_end in the branch before it, up to its `if`'s own
+  // `fi`, and a command after that `fi` does. The reader counts each `if` the branch opens and
+  // each it closes: a one-line `if …; then …; fi` closes on its own line, whatever follows its
+  // `fi` there, and a `fi` before a comment closes its `if`.
+  test.each([
+    ["a one-line if", "  if false; then note x; fi", "fi"],
+    ["a one-line if with more after its fi", "  if false; then note x; fi; note y", "fi"],
+    ["a fi before a comment", "  note x", "fi # the else branch"],
+  ])("reads the command after an if whose else branch holds %s", (_, branch, close) => {
+    const sweep = join(e2e, "controller-sweep-kind.sh");
+    const original = text.get(sweep) ?? "";
+    const branched = original.replace(
+      /\nrun_end\n$/,
+      `\nif true; then\n  run_end\nelse\n${branch}\n${close}\nnote after\n`
+    );
+    expect(branched).not.toBe(original);
+    expect(runEndsWithMoreAfter(new Map([...text, [sweep, branched]]))).toEqual([
+      expect.stringMatching(
+        /^controller-sweep-kind\.sh:\d+ run_end runs more after it: controller-sweep-kind\.sh:\d+ note after$/
+      ),
+    ]);
   });
 });

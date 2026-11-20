@@ -390,6 +390,18 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
+// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
+// merge can bring a new instance of a class the branch already answered. The implementer's merge
+// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
+// pins.
+test("a forward merge searches the new head for each earlier finding's class", () => {
+  expect(
+    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
+  ).toContain(
+    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
+  );
+});
+
 // R4: a planner waits on a decision its plan needs rather than completing around it
 // (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
 test("a planner waits on an open decision instead of completing around it", () => {

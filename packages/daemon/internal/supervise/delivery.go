@@ -182,7 +182,7 @@ type Delivery struct {
 	// ran with no provider error (promptResulted): the agent read what Carried credits, so the
 	// credit is final, and the write that records Ran folds it into the told rows (the claim store's
 	// settleDesignNews), where it outlives the delivery. It is set only on a confirmed delivery with
-	// a copy, and it goes with the copy: every write of Carried writes it false (credit, uncredit).
+	// a copy, and it goes with the copy: every write of Carried writes it false (credit).
 	Ran bool
 	// NewsOnly says the task was queued for news of the approved design alone
 	// (RequestDeliver.NewsOnly, the daemon's news-only start). It names its member's phase and run,
@@ -1994,7 +1994,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	// The confirmation goes, and with it the credit its copy held: the write ends it with the
 	// copy, where the turn's result had not yet made it final, and the relaunch's prompt carries
 	// the news again.
-	next.uncredit()
+	next.credit(nil)
 	doubt := m.confirmationInDoubt()
 	untold := m.untellInFlight()
 	stored := m.stored()
@@ -2075,7 +2075,7 @@ func (m *Machine) markUnread(ctx context.Context) error {
 // let-go (letGo). It answers whether the copy changed, so a caller that leaves the write of the
 // delivery to settle marks it unsaved (letGo). A let-go's take-back of a confirmation (interrupted)
 // writes no copy of the pending task: it drops the copy of the task that takes that task's place
-// once its write lands (uncredit).
+// once its write lands (credit, with no news).
 func (m *Machine) copyTurnNews(p *Delivery) bool {
 	if !p.ConfirmedAt.IsZero() {
 		return false
@@ -2088,16 +2088,11 @@ func (m *Machine) copyTurnNews(p *Delivery) bool {
 
 // credit writes news as the delivery's copy (Carried), not yet final (Ran). It is how every writer
 // of the copy writes it — a confirmation (confirmCarrying), the writer of an unconfirmed copy
-// (copyTurnNews) and a let-go's take-back of a confirmation (interrupted, uncredit) — so no copy is
-// ever written beside a stale mark that it is final.
+// (copyTurnNews) and a let-go's take-back of a confirmation (interrupted), which drops the copy
+// and with it the credit the confirmation held — so no copy is ever written beside a stale mark
+// that it is final.
 func (d *Delivery) credit(news []byte) {
 	d.Carried, d.Ran = news, false
-}
-
-// uncredit drops the delivery's copy, and with it the credit a confirmation held: a let-go's
-// take-back of the confirmation (interrupted), on the delivery that take-back writes.
-func (d *Delivery) uncredit() {
-	d.credit(nil)
 }
 
 // awaitResult records id as a prompt of the pending task Oh My Pi acknowledged, whose result is

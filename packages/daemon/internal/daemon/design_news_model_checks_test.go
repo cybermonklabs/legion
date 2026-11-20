@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 
@@ -170,18 +171,32 @@ func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise
 // every reader reads it, to the model (checkRow), counting the step ambiguous where a claim store
 // lags its machine. It reads the claim store and the told rows once, after the writes: nothing moves
 // them while it checks. A prompt whose turn runs while its claim holds another task, or none, was
-// given back: a newer task took its place (the supersede step's, or a start's of a newer entry),
-// which ends its credit, and its turn's result, when it comes, is another delivery's.
+// given back: a newer task took its place, which ends its credit, and its turn's result, when it
+// comes, is another delivery's. Only the steps since the last check that make such a replacement
+// can have made it (replaced), and any other fails the run: a rule that keeps a running turn's task
+// in place (supervise's Machine.queue) is broken.
 func (m *newsModel) check() {
 	m.t.Helper()
 	m.drain()
 	for _, a := range m.agents() {
-		if a.turn != "" && a.machine != nil {
-			if p := a.machine.Claim().Pending; p == nil || p.ID != a.turn {
-				a.superseded[a.turn] = true
-			}
+		if a.turn == "" || a.machine == nil || a.superseded[a.turn] {
+			continue
 		}
+		p := a.machine.Claim().Pending
+		if p != nil && p.ID == a.turn {
+			continue
+		}
+		if !m.replaced(a, p) {
+			held := "nothing"
+			if p != nil {
+				held = fmt.Sprintf("task %s of entry %d (news alone %t)", p.ID, p.Entry, p.NewsOnly)
+			}
+			m.fail("the %s's claim holds %s while the turn of %s runs, and no step since the last check makes that replacement",
+				a.name, held, a.turn)
+		}
+		a.superseded[a.turn] = true
 	}
+	m.superseding, m.entryStarts = "", false
 	_, stored := m.storedClaims()
 	told := m.toldRows()
 	ambiguous := false
@@ -192,6 +207,27 @@ func (m *newsModel) check() {
 	}
 	m.ambiguity.step(ambiguous)
 	m.ran["checks"]++
+}
+
+// replaced says whether the steps since the last check can have put pending, the task a's claim
+// holds (nil for none), in the place of the task whose turn a's agent runs. Two things do. The
+// supersede step's newer task leaves the reviewer's claim holding that task, or none where the
+// retirement landed and the write of the task was refused. The start of a newer entry, which a
+// re-entry, a re-admission, a hand-over or the sweep raises (newsModelEntryStarts), leaves the
+// claim holding a task of an entry above the one whose turn runs, or none on the same refusal. A
+// task of news alone carries no entry, so it never takes that place.
+func (m *newsModel) replaced(a *newsModelAgent, pending *supervise.Delivery) bool {
+	if a == m.reviewer && m.superseding != "" && (pending == nil || pending.ID == m.superseding) {
+		return true
+	}
+	if !m.entryStarts {
+		return false
+	}
+	var entry int64
+	if turn := a.row.prompts[a.turn]; turn != nil {
+		entry = turn.entry
+	}
+	return pending == nil || pending.Entry > entry
 }
 
 // checkRow holds row's told row, told, to the model, with the claim store as stored reads it, and

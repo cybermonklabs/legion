@@ -11929,6 +11929,40 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // INFRA-4678 R1: Dispatch writes U+2028 and U+2029 in a value unescaped, so a value may hold
+  // either, and a block whose value holds one is read as any other: its reorder goes up.
+  test.each([
+    ["U+2028", "\u2028"],
+    ["U+2029", "\u2029"],
+  ])("uploads a reordered block one of whose values holds %s, in the order Dispatch stores", async (_, separator) => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-one"';
+    const control = `negative_control="One line${separator}and the next."`;
+    const document = (opener: string) => `# Verification\n\n${opener}\nThe check.\n:::\n`;
+    const content = document(
+      `:::check{#c-separator ${serves} surface="cli" ${control} when="before_merge"}`
+    );
+    const stored = document(
+      `:::check{#c-separator ${serves} surface="cli" when="before_merge" ${control}}`
+    );
+    const posts: Array<Record<string, unknown>> = [];
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    });
+
+    expect(posts.map((body) => body.content)).toEqual([stored]);
+    expect(result.text.split("\n")[1]).toBe(
+      "This upload put the attributes of check block c-separator (line 3) in the order Dispatch stores: id, serves, surface, when, negative_control."
+    );
+  });
+
   // INFRA-4678 R1: the refusal names the first difference by the attribute or the word that
   // differs, whole. A quote of each line cut at 200 characters hid a difference past the cut: on
   // 2026-11-19 both quotes ended before it, and a writer read the cut as an attribute dropped.
@@ -11997,6 +12031,42 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual([]);
   });
 
+  // A text written with CR LF line ends holds a carriage return at the end of each line, which
+  // the store does not keep. The written opener then reads as no typed block's opener, and the
+  // stored one does, so both lines are cut as plain words: the refusal names the carriage
+  // return, not a word that only the two ways of cutting the lines made.
+  test("names the carriage return of a CR LF opener, not a word the two cuts made", async () => {
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: {
+        issue: "DSP-42",
+        name: "notes.md",
+        content: ':::check{#c serves="x"}\r\nThe check.\r\n:::\r\n',
+      },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(
+        ':::check{#c serves="x"}\nThe check.\n:::\n',
+        posts
+      ) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      'Dispatch stores this text under another spelling: line 1 reads the space "\\r" at character 24, where Dispatch ends the line.'
+    );
+    expect(posts).toEqual([]);
+  });
+
   // A line the store adds or drops is itself the difference, so a quote of it cut at 200
   // characters hides nothing, and a refusal nobody can read to the end is one nobody acts on: the
   // quote is cut and the cut named (review round 2, finding G).
@@ -12061,6 +12131,48 @@ describe("executeDispatchTool", () => {
     );
     expect(problem).not.toContain(word("b"));
     expect(problem).not.toContain(word("c"));
+    expect(posts).toEqual([]);
+  });
+
+  // A long word one spelling of which is the start of the other has nothing of the shorter from
+  // the character where the longer goes on, so the shorter is quoted up to its end, never as an
+  // empty word, and the refusal says which of the two ends there.
+  test.each([
+    [
+      "the written word",
+      250,
+      260,
+      `ends the word ${JSON.stringify("a".repeat(200))} (cut before the last 200 of its 250 characters) after character 250, where Dispatch goes on with the word ${JSON.stringify("a".repeat(10))} (cut before the last 10 of its 260 characters).`,
+    ],
+    [
+      "the stored word",
+      260,
+      250,
+      `reads the word ${JSON.stringify("a".repeat(10))} (cut before the last 10 of its 260 characters) at character 251, where Dispatch ends the word ${JSON.stringify("a".repeat(200))} (cut before the last 200 of its 250 characters).`,
+    ],
+  ])("names a long word whose other spelling goes on past %s by where it ends", async (_, written, held, difference) => {
+    const document = (length: number) => `# Notes\n\n${"a".repeat(length)}\n`;
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: document(written) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(document(held), posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      `Dispatch stores this text under another spelling: line 3 ${difference}`
+    );
     expect(posts).toEqual([]);
   });
 

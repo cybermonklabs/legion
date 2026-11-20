@@ -20,21 +20,43 @@ interface TypedOpener {
   readonly gaps: readonly string[];
 }
 
-/** A typed block's opening line: three colons or more, the type, then its attributes between
- *  `{` and the `}` that ends the line (`renderTypedAttributes` in pmdoc's schema.go writes it). */
-const TYPED_OPENER = /^(.*?:{3,}([A-Za-z0-9_-]+)\{)(.*)\}$/;
+/** A character of a typed block's type: a letter, a digit, `_` or `-`. */
+const TYPE_CHARACTER = /[A-Za-z0-9_-]/;
 
 /** The whitespace between two attributes, as Go's `unicode.IsSpace` reads an ASCII byte. */
 const ATTRIBUTE_SPACE = /[\t-\r ]/;
 
 /** `line` read as a typed block's opening line, or undefined for any other line and for one
- *  whose quoted value never closes. A quoted value runs to the next quote, so a space inside it
- *  splits no attribute, and a backslash in it escapes nothing: Dispatch's grammar gives it no
- *  meaning (pmdoc's parseDirectiveAttributes), so `\"` ends the value. */
+ *  whose quoted value never closes. The line is three colons or more, the type, then its
+ *  attributes between `{` and the `}` that ends the line (`renderTypedAttributes` in pmdoc's
+ *  schema.go writes it), and its head is the shortest start of the line that ends in such a
+ *  fence, type and `{`. One pass reads the line, so no line costs more than its length, and a
+ *  line may hold any character, U+2028 and U+2029 among them, which Dispatch writes unescaped
+ *  in a value. A quoted value runs to the next quote, so a space inside it splits no attribute,
+ *  and a backslash in it escapes nothing: Dispatch's grammar gives it no meaning (pmdoc's
+ *  parseDirectiveAttributes), so `\"` ends the value. */
 function typedOpener(line: string): TypedOpener | undefined {
-  const match = TYPED_OPENER.exec(line);
-  if (match === null) return undefined;
-  const [, head = "", type = "", inside = ""] = match;
+  if (!line.endsWith("}")) return undefined;
+  // The `{` after the first run of three colons or more that a type and a `{` follow. A run of
+  // colons, a type or any other character is passed once, so the scan is linear.
+  let open = -1;
+  let typeStart = 0;
+  for (let at = 0; at < line.length && open === -1; ) {
+    const colons = at;
+    while (at < line.length && line.charAt(at) === ":") at += 1;
+    if (at - colons < 3) {
+      if (at === colons) at += 1;
+      continue;
+    }
+    typeStart = at;
+    while (at < line.length && TYPE_CHARACTER.test(line.charAt(at))) at += 1;
+    if (at > typeStart && line.charAt(at) === "{") open = at;
+  }
+  if (open === -1) return undefined;
+  const head = line.slice(0, open + 1);
+  const type = line.slice(typeStart, open);
+  // The `{` is no `}`, so it stands before the `}` that ends the line.
+  const inside = line.slice(open + 1, -1);
   const attributes: WrittenAttribute[] = [];
   const gaps: string[] = [];
   let at = 0;
@@ -98,14 +120,16 @@ function inStoredOrder(given: TypedOpener, stored: TypedOpener): string | undefi
   return `${line}}`;
 }
 
-/** The stored opening line `held` read as a typed block's opener, when the written line `wrote`
- *  differs from it only in the order of its attributes: `wrote` with them put in `held`'s order
- *  is `held`. Undefined for every other pair of lines. */
-function storedInOtherOrder(wrote: string, held: string): TypedOpener | undefined {
-  const given = typedOpener(wrote);
-  const stored = typedOpener(held);
-  if (given === undefined || stored === undefined) return undefined;
-  return inStoredOrder(given, stored) === held ? stored : undefined;
+/** Whether the written opening line `given` differs from the stored line `held`, read as the
+ *  opener `stored`, only in the order of its attributes: `given` with them put in `stored`'s
+ *  order is `held`. False when either line is no typed block's opening line (typedOpener, which
+ *  gives undefined). The upload and the refusal both pass over such a line by this rule. */
+function onlyReordered(
+  given: TypedOpener | undefined,
+  held: string,
+  stored: TypedOpener | undefined
+): boolean {
+  return given !== undefined && stored !== undefined && inStoredOrder(given, stored) === held;
 }
 
 /** The id a typed block's `id` attribute, as Dispatch writes it, names: what follows `#`, or the
@@ -140,7 +164,7 @@ function reorderedBlockLine(line: number, opener: TypedOpener): string {
  * attribute's position carries no meaning, so such a text is stored in Dispatch's order rather
  * than refused, and the order is Dispatch's render's, never a copy of it.
  */
-export function attributesReordered(given: string, stored: string): string[] | undefined {
+function attributesReordered(given: string, stored: string): string[] | undefined {
   const written = withoutFinalLineFeed(given).split("\n");
   const holds = withoutFinalLineFeed(stored).split("\n");
   if (written.length !== holds.length) return undefined;
@@ -148,8 +172,14 @@ export function attributesReordered(given: string, stored: string): string[] | u
   for (const [index, held] of holds.entries()) {
     const wrote = written[index];
     if (wrote === held) continue;
-    const opener = wrote === undefined ? undefined : storedInOtherOrder(wrote, held);
-    if (opener === undefined) return undefined;
+    const opener = typedOpener(held);
+    if (
+      wrote === undefined ||
+      opener === undefined ||
+      !onlyReordered(typedOpener(wrote), held, opener)
+    ) {
+      return undefined;
+    }
     lines.push(reorderedBlockLine(index + 1, opener));
   }
   return lines;
@@ -213,8 +243,10 @@ function wordText(word: LineWord, from = 0, characters = Array.from(word.text)):
  * by the word that differs in each and the character it starts at (code points, counted from 1),
  * a word at most STORED_LINE_QUOTED characters long named whole. A word longer than that in
  * either spelling is quoted in each from the first character where the two differ, which is then
- * the character named, with the cut named. An attribute is named whole however long it is, and a
- * word beside one is quoted from its start.
+ * the character named, with the cut named. When one spelling of such a word is the start of the
+ * other, nothing of the shorter stands from that character, so the shorter is quoted up to its
+ * end, the longer from that character, and the refusal says which of the two ends there. An
+ * attribute is named whole however long it is, and a word beside one is quoted from its start.
  */
 function wordDifference(written: readonly LineWord[], holds: readonly LineWord[]): string {
   let before = 0;
@@ -241,6 +273,13 @@ function wordDifference(written: readonly LineWord[], holds: readonly LineWord[]
         Math.max(wrote.length, held.length) > STORED_LINE_QUOTED
       ) {
         while (from < wrote.length && wrote[from] === held[from]) from += 1;
+        const tail = Math.max(0, from - STORED_LINE_QUOTED);
+        if (from === wrote.length) {
+          return `ends ${wordText(given, tail, wrote)} after character ${before + from}, where Dispatch goes on with ${wordText(stored, from, held)}`;
+        }
+        if (from === held.length) {
+          return `reads ${wordText(given, from, wrote)} at character ${before + from + 1}, where Dispatch ends ${wordText(stored, tail, held)}`;
+        }
       }
       return `reads ${wordText(given, from, wrote)} at character ${before + from + 1}, where Dispatch stores ${wordText(stored, from, held)}`;
     }
@@ -275,7 +314,8 @@ function attributeDifference(
 /** How the line `wrote` and the stored line `held` first differ, `given` and `stored` being each
  *  read as a typed block's opening line (typedOpener), undefined for any other line. A typed
  *  block's opening line is read by its attributes first, then, with its attributes in the stored
- *  order, word by word. */
+ *  order, word by word. When only one of the two lines reads as an opener, both are cut as plain
+ *  words: cut in two ways, the two lines would differ at a word the cuts made, not the text. */
 function lineDifference(
   line: number,
   wrote: string,
@@ -283,14 +323,15 @@ function lineDifference(
   held: string,
   stored: TypedOpener | undefined
 ): string {
-  if (given !== undefined && stored !== undefined) {
-    const attribute = attributeDifference(line, given, stored);
-    if (attribute !== undefined) return attribute;
-    const reordered = inStoredOrder(given, stored);
-    if (reordered !== undefined && reordered !== wrote) {
-      const words = lineWords(reordered, typedOpener(reordered));
-      return `line ${line}, with its attributes put in the order Dispatch stores, ${wordDifference(words, lineWords(held, stored))}`;
-    }
+  if (given === undefined || stored === undefined) {
+    return `line ${line} ${wordDifference(lineWords(wrote, undefined), lineWords(held, undefined))}`;
+  }
+  const attribute = attributeDifference(line, given, stored);
+  if (attribute !== undefined) return attribute;
+  const reordered = inStoredOrder(given, stored);
+  if (reordered !== undefined && reordered !== wrote) {
+    const words = lineWords(reordered, typedOpener(reordered));
+    return `line ${line}, with its attributes put in the order Dispatch stores, ${wordDifference(words, lineWords(held, stored))}`;
   }
   return `line ${line} ${wordDifference(lineWords(wrote, given), lineWords(held, stored))}`;
 }
@@ -324,13 +365,7 @@ function firstStoredDifference(given: string, stored: string): string {
     if (wrote !== undefined && held !== undefined) {
       const givenOpener = typedOpener(wrote);
       const storedOpener = typedOpener(held);
-      if (
-        givenOpener !== undefined &&
-        storedOpener !== undefined &&
-        inStoredOrder(givenOpener, storedOpener) === held
-      ) {
-        continue;
-      }
+      if (onlyReordered(givenOpener, held, storedOpener)) continue;
       return lineDifference(line + 1, wrote, givenOpener, held, storedOpener);
     }
   }
@@ -365,7 +400,7 @@ function storedTextPrinted(stored: string): { readonly text: string; readonly cu
  * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
  * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
  */
-export function storedTextProblem(given: string, stored: string, name: string): string {
+function storedTextProblem(given: string, stored: string, name: string): string {
   const asBytes = pathKeepsBytesOf(name)
     ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
     : "";
@@ -383,6 +418,28 @@ export function storedTextProblem(given: string, stored: string, name: string): 
  *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
  *  one line feed is the only difference the check lets go up as written; a typed block's
  *  attributes in another order go up as Dispatch stores them (`attributesReordered`). */
-export function withoutFinalLineFeed(text: string): string {
+function withoutFinalLineFeed(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
+/**
+ * What an upload of the inline text `given` under the name `name` does, Dispatch's round trip
+ * (POST /api/v1/markdown/round-trip) storing it as `stored`. It sends `given` when the two differ
+ * in nothing but the final line feed the store adds (withoutFinalLineFeed). It sends `stored`,
+ * with the answer's line for each block (attributesReordered), when they differ only in the
+ * order of typed blocks' attributes. It is refused (storedTextProblem) for every other
+ * difference.
+ */
+export function storedUpload(
+  given: string,
+  stored: string,
+  name: string
+): { readonly sent: string; readonly reordered: readonly string[] } | { readonly refusal: string } {
+  if (withoutFinalLineFeed(stored) === withoutFinalLineFeed(given)) {
+    return { sent: given, reordered: [] };
+  }
+  const reordered = attributesReordered(given, stored);
+  return reordered === undefined
+    ? { refusal: storedTextProblem(given, stored, name) }
+    : { sent: stored, reordered };
 }

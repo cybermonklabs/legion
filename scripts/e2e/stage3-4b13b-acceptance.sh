@@ -1178,12 +1178,14 @@ begin a-reclosed-gate-holds-the-merge
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
 gate_artifact=${gate_artifacts[$root3]}
-spec_now=$(dispatch_get "artifacts/$gate_artifact/text" | jq -er .markdown)
-spec_note=$'\n\n## Proof note\n\nThe human added this section while the merger stood in merging. It asks for no change to the pull request.\n'
 # The upload replaces the spec whole, so it names the token of the version it replaces: the document
-# token the live read answers, which Dispatch checks under the write's own lock.
-spec_base=$(dispatch_get "artifacts/$gate_artifact/text" | jq -er '.token') ||
+# token the live read answers, which Dispatch checks under the write's own lock. One read answers the
+# text and its token, so the token names the version whose text the upload keeps.
+spec_read=$(dispatch_get "artifacts/$gate_artifact/text")
+spec_now=$(jq -er .markdown <<<"$spec_read")
+spec_base=$(jq -er .token <<<"$spec_read") ||
   fail "the spec of $root3 answers no document token for the upload to name as its base"
+spec_note=$'\n\n## Proof note\n\nThe human added this section while the merger stood in merging. It asks for no change to the pull request.\n'
 dispatch_human POST "issues/$root3/artifacts" \
   "$(jq -cn --arg name spec.md --arg content "$spec_now$spec_note" --arg base "$spec_base" '{name:$name,content:$content,summary:"4b.13b gate re-close",precondition:{document:$base}}')" >/dev/null
 until_true 180 "the new primary spec version to close $root3's gate" sh -c \
