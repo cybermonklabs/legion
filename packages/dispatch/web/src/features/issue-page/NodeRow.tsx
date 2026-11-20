@@ -1,3 +1,4 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
   type CSSProperties,
   type ReactNode,
@@ -1331,12 +1332,13 @@ export function MoreWords({
  * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
  * drawn from, and where a commit draws them from other words, a row measured before is measured
  * again in that commit as one that mounts, before the page is painted (`clampRedrawn`). Other
- * words are words of another value (`sameWords`): a later read answers the same words in objects
- * of its own - a names read under a new key, which a new comment on the issue starts, shares
- * none with the last - and a row drawn from them draws nothing new, so it keeps its length. A
- * caller that cannot say what its words are drawn from passes nothing. Undefined where the words
- * are drawn whole, or not measured yet; a row the reader scrolled away from keeps the cut it last
- * had, save one measured on the fallback face, which is measured again once the typeface arrives.
+ * words are words of another value, as TanStack Query's `replaceEqualDeep` compares two answers of
+ * a read (`api/queries.ts`): a later read answers the same words in objects of its own - a names
+ * read under a new key, which a new comment on the issue starts, shares none with the last - and
+ * a row drawn from them draws nothing new, so it keeps its length. A caller that cannot say what
+ * its words are drawn from passes nothing. Undefined where the words are drawn whole, or not
+ * measured yet; a row the reader scrolled away from keeps the cut it last had, save one measured
+ * on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
@@ -1356,38 +1358,11 @@ export function useClamp(
   // measured them yet, and leaves them to the mount's own pass.
   const drawn = useRef(drawnFrom);
   useLayoutEffect(() => {
-    if (drawn.current === drawnFrom) return;
-    const same = sameWords(drawn.current, drawnFrom);
+    // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+    const same = replaceEqualDeep(drawn.current, drawnFrom) === drawn.current;
     drawn.current = drawnFrom;
     const element = words.current;
     if (!same && cuttable && element !== null) clampRedrawn(element);
   }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
-}
-
-/** Whether `one` and `other` are the same words: the same text, or readings alike node by node,
- *  as two answers of a read hold them - arrays of the same values in order, and objects with the
- *  same keys holding the same values. */
-function sameWords(one: unknown, other: unknown): boolean {
-  if (one === other) return true;
-  if (typeof one !== "object" || typeof other !== "object" || one === null || other === null) {
-    return false;
-  }
-  if (Array.isArray(one) || Array.isArray(other)) {
-    return (
-      Array.isArray(one) &&
-      Array.isArray(other) &&
-      one.length === other.length &&
-      one.every((value, at) => sameWords(value, other[at]))
-    );
-  }
-  const keys = Object.keys(one);
-  return (
-    keys.length === Object.keys(other).length &&
-    keys.every(
-      (key) =>
-        Object.hasOwn(other, key) &&
-        sameWords((one as Record<string, unknown>)[key], (other as Record<string, unknown>)[key])
-    )
-  );
 }
