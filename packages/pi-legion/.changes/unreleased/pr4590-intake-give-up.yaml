@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The controller's `legion` tool has `replay_give_up` and `discard_give_up`. Each takes one record
+  the daemon's intake gave up (`giveUp`), or every open record of one consumer at or below a stream
+  sequence (`consumer` and `throughSeq`); `discard_give_up` also takes a `reason`. A replay applies
+  the stored message inside the daemon; a discard closes the records with the reason. The
+  `read_state` summary prints `intake give-ups <consumer> open <n> newest seq <seq>`. The
+  controller's skill routes the new `intake-gave-up` notice. The plugin's daemon API contract is
+  184.

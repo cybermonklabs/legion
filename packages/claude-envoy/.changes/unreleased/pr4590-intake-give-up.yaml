@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The plugin's daemon API contract is 184, the contract that adds the intake's give-ups to the
+  daemon's state and its replay and discard routes.
