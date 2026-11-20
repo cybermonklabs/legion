@@ -134,6 +134,16 @@ images:
     tag: buildkit-buildx-stable-1-cec9f139
     digest: sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
+  # actionlint, the workflow-file checker two steps run in a `run:` that names this copy by
+  # digest: the `ci-filters` job of .github/workflows/ci.yaml, and
+  # .github/workflows/workflow-files.yaml. rhysd publishes it, and it is the one image of this
+  # file a step runs as a command rather than a service, a base or a builder. It carries the
+  # shellcheck actionlint hands each inline `run:` body, 0.11.0 in this image, so the shellcheck
+  # version CI runs moves only when this row does.
+  - upstream: docker.io/rhysd/actionlint:1.7.12
+    tag: actionlint-1.7.12-b1934ee5
+    digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
   # The Postgres the Stage 1 live proof starts when no DSN is given: PostgreSQL 18, the major
   # version CI's `services:` Postgres and Cloud SQL run. The `test` job gives the script a DSN
   # (LEGION_E2E_PG_DSN), so CI does not reach this pull today; the devbox does, and it was the
