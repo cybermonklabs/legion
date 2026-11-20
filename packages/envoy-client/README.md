@@ -833,7 +833,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
 `@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -842,6 +842,32 @@ does (`pool-identity.ts`), for a machine with no Google service account of its o
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
 An identity with one of its variables missing is an error that names the variable.
+
+`device-login` is the identity of a machine that has none of its own, such as a person's laptop
+(`device-login.ts` in `@legion/broker-client`). The machine logs in once with
+`dispatch login --device` (below), and the login is kept in the file
+`AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
+the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
+`expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
+its `access_expires_at`. A trade presents that access token as the subject, under RFC 8693's own
+`urn:ietf:params:oauth:token-type:access_token`, with no actor, and every proof is signed with the
+login's key. A login made at another broker than `AGENT_SECRETS_URL` names is refused. It names
+the projects `AGENT_SECRETS_PROJECTS` lists, and its session is the caller's own, else
+`AGENT_SECRETS_SESSION`, else `device-login-<thumbprint>`, the first 12 characters of the key's
+thumbprint. The login is the person's own credential, so no `agent-secrets login` sign-in on the
+machine is read beside it. Only this client trades a device login; the Go client knows no such
+identity, so a machine that runs no Go binary can still trade one.
+
+A refresh rotates the login's refresh token and revokes every access token the login answered
+before, and the broker revokes the whole login when a rotated refresh token is presented again
+after its five-minute grace. So each trade runs under the login's lock, the file beside it with
+`.lock` added: it is created exclusively, its holder touches it every 10 s, and a lock untouched
+for 30 s is taken as one whose holder died. Under the lock a process reads the file again,
+refreshes only when the access token kept there has less than a minute left, keeps the rotated
+login, and trades. Two sessions of one machine never spend one refresh token, and none refreshes
+while another still presents the access token that the refresh would end. The broker's
+`invalid_grant` to a refresh is final (`DeviceLoginEndedError` in `token-errors.ts`): the login
+was revoked or ran out, and only a new `dispatch login --device` cures it.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1008,6 +1034,17 @@ so it runs with Dispatch off too, and a call it passed can still stop on either.
 is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
 arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
 nothing. A retraction's dry run sends nothing.
+
+`dispatch login --device [--person <address>]` logs the machine in at the secrets broker
+(`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
+it in a terminal, once per machine, so it reads no host, no session and no envoy.json. It reads
+`AGENT_SECRETS_URL`, and the person who approves the login from `--person`, else
+`AGENT_SECRETS_PERSON`. It prints the broker's page and the code to type there, waits while that
+person approves it in Dispatch, and keeps the login (above). Without `--device`, a person or a
+broker, it exits 2 before any request. It exits 1 when the broker refuses the login, the person
+denies it or its code expires, and then writes no file. The host it names is this machine's name
+in the form the broker takes (`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). On a machine
+whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
