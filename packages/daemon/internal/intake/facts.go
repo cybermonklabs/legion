@@ -1127,10 +1127,12 @@ func (f CloseRoot) Message() string {
 // different questions — a worker that kept dying and a worker that could never start — and the
 // failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
 // since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
-// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
-// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
-// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
-// (workflow's deathReason).
+// workflow's noticeFailure). StartFailureAt is when that start failed (supervise.Claim's
+// LastStartFailureAt), the zero time where the claim kept no moment for it, so a notice names a
+// start that failed days before the death that failed the claim as that old. A worker-died's
+// reason names neither whole: it names the first line of Death only where its notice carries no
+// failure record, Cause is supervise.CauseDied and no PodEnd was read, which is the tree
+// architect's notice alone, and StartFailure nowhere (workflow's deathReason).
 //
 // PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
 // read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
@@ -1140,12 +1142,13 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
-	Reason       string
-	Death        string
-	StartFailure string
-	PodEnd       string
+	Issue          string
+	Role           claim.Role
+	Reason         string
+	Death          string
+	StartFailure   string
+	StartFailureAt time.Time
+	PodEnd         string
 	// Cause is the one word for what failed the claim, chosen by the site that failed it and
 	// carried beside Reason's sentence (supervise.FailureCause, Claim.FailureCause): one sentence
 	// covers several events, and a notice that names the word says which of them this was. It is

@@ -265,15 +265,16 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
-		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
-		LastReady:        projectedAt.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:        projectedAt.Add(-30 * time.Second),
+		LastReady:          projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: projectedAt.Add(-4 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
@@ -318,13 +319,14 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateHead":        current.UpdateHead,
 			"updateReasons":     current.UpdateReasons,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates them: the view
-			// carries each as the record holds it.
-			"lastTurnStart":    current.LastTurnStart,
-			"lastTurnEnd":      current.LastTurnEnd,
-			"lastReady":        current.LastReady,
-			"lastDeathCause":   current.LastDeathCause,
-			"lastStartFailure": current.LastStartFailure,
+			// The turn times, the two causes, the moment the failed start failed and the ready:
+			// the view carries each as the record holds it.
+			"lastTurnStart":      current.LastTurnStart,
+			"lastTurnEnd":        current.LastTurnEnd,
+			"lastReady":          current.LastReady,
+			"lastDeathCause":     current.LastDeathCause,
+			"lastStartFailure":   current.LastStartFailure,
+			"lastStartFailureAt": current.LastStartFailureAt,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many sends failed and the last send error.

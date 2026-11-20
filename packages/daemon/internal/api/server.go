@@ -1033,6 +1033,7 @@ var stateNarrowings = []stateNarrowing{
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{pauseContract, carriesPause, withoutPause, "paused and lastPause"},
+	{lastStartFailureAtContract, carriesLastStartFailureAt, withoutLastStartFailureAt, "the claim views' lastStartFailureAt"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1225,6 +1226,15 @@ const entryTimesContract = 146
 // did not ask for it rather than what keeps such a caller reading at all. The two are one band: a
 // state carries one of them at most, and both describe the one pause record.
 const pauseContract = 178
+
+// lastStartFailureAtContract is the daemon contract that added each claim view's
+// `lastStartFailureAt`, when the claim's last start failed beside the sentence it failed with
+// (version.go's 190). A plugin before it is served the state without the key: one built before
+// sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body for a key it
+// does not name, and one built after strips the key instead, so the strip is what keeps the
+// moment from a caller that did not ask for it rather than what keeps such a caller reading at
+// all.
+const lastStartFailureAtContract = 190
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1836,6 +1846,25 @@ func carriesLeakCheckCause(state State) bool {
 func withoutLeakCheckCause(state State) State {
 	return mapClaimViews(state, func(view ClaimView) ClaimView {
 		view.LeakCheckCause = ""
+		return view
+	})
+}
+
+// carriesLastStartFailureAt is whether any claim view of state carries the key
+// lastStartFailureAtContract added: `lastStartFailureAt`, when the claim's last start failed. It
+// is written only beside a failure whose moment the daemon kept, so this is asked of the state
+// rather than answered true.
+func carriesLastStartFailureAt(state State) bool {
+	return anyClaimView(state, func(view ClaimView) bool { return view.LastStartFailureAt != nil })
+}
+
+// withoutLastStartFailureAt is state with no claim view carrying `lastStartFailureAt`, the one key
+// lastStartFailureAtContract added to this route; the sentence beside it stays, since the
+// contracts below this one serve it already. The state the source answered is left as it was
+// (mapClaimViews).
+func withoutLastStartFailureAt(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.LastStartFailureAt = nil
 		return view
 	})
 }

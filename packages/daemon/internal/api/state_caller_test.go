@@ -469,8 +469,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
 		// pause is whether the caller is served the project's pause, `paused` here
-		// (pauseContract, the contract that added it beside `lastPause`), this daemon's own
-		// contract, so a pod at it is served the key and every older pod is not.
+		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
+		// is served the key and every older pod is not.
 		pause bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -512,11 +512,16 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		// The band from entryTimesContract to below pauseContract, the last band under the
-		// declared contract: the entry times and the arms are served too, and the pause is the
-		// one key held back.
+		// The band from entryTimesContract to below pauseContract: the entry times and the arms
+		// are served too, and the pause is the one key of this fixture held back.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		// The band from pauseContract up, the pause served too. lastStartFailureAtContract stands
+		// above it and holds back a claim view's `lastStartFailureAt`, which this fixture carries
+		// none of: a pod below supervise.PodUpdateContract is read here with only the keys contract
+		// 45 knew, and no row strips `lastStartFailure` beside it, so last_start_failure_test.go
+		// reads that band over a state of its own (startFailureState).
+		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},

@@ -848,11 +848,15 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// questions. LastStartFailureAt is when that start failed, so a reader reads how old the
+	// failure is rather than taking a sentence of days ago for a current one, and is absent beside
+	// a failure whose moment no release kept (supervise.Claim.LastStartFailureAt): that moment is
+	// unknown, and none is served in its place. A caller in a pod whose plugin declares a contract
+	// below lastStartFailureAtContract is served no such key (withoutLastStartFailureAt).
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -984,12 +988,14 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Step: StepViewOf(c.Step),
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastReady:        instant(c.LastReady),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
+		// progress from one wedged in a turn. The failed start carries its own moment beside its
+		// sentence, absent where no release kept it, so it reads as old as it is.
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastReady:          instant(c.LastReady),
+		LastDeathCause:     c.LastDeathCause,
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: instant(c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather

@@ -47,7 +47,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
+	c.last_death_cause, c.last_start_failure, c.last_start_failure_at, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -415,7 +415,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
 		plugin_contract, plugin_relaunch_for, delivered_rows,
 		last_turn_start, last_turn_end,
-		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
+		last_death_cause, last_start_failure, last_start_failure_at, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
@@ -424,7 +424,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58,
+		$55, $56, $57, $58, $59,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -452,6 +452,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
 		last_death_cause = excluded.last_death_cause, last_start_failure = excluded.last_start_failure,
+		last_start_failure_at = excluded.last_start_failure_at,
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
@@ -505,7 +506,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
 		c.PluginContract, c.PluginRelaunchFor, delivered,
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
-		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
+		c.LastDeathCause, c.LastStartFailure, instant(c.LastStartFailureAt), instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
@@ -845,7 +846,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastSendFailure             *time.Time
 		lastSendError               *string
 		turnStart, turnEnd          *time.Time
-		lastReady                   *time.Time
+		lastReady, lastStartFailed  *time.Time
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
@@ -870,7 +871,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
+		&c.LastDeathCause, &c.LastStartFailure, &lastStartFailed, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -924,6 +925,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
+	// Null is a failed start whose moment no release kept (20261120072808_claim_last_start_failure_at),
+	// which the claim holds as the zero time: the moment unknown, never another made up for it.
+	c.LastStartFailureAt = orZero(lastStartFailed)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)

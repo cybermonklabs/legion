@@ -606,15 +606,18 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
 	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
 	// holding no task dies uncounted — which the record says in as many words.
+	// The failed start carries the moment it failed, as the claim recorded it; the notice's JSON
+	// carries it in UTC and without the clock's monotonic reading.
+	startFailedAt := failed.LastStartFailureAt.UTC().Round(0)
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
 			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
-			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure}}
-	if failed.LastDeathCause == "" || failed.LastStartFailure == "" {
-		t.Fatalf("the failed planner recorded death %q and start failure %q; want both, since the record below is what carries them to the architect",
-			failed.LastDeathCause, failed.LastStartFailure)
+			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure, StartFailureAt: &startFailedAt}}
+	if failed.LastDeathCause == "" || failed.LastStartFailure == "" || failed.LastStartFailureAt.IsZero() {
+		t.Fatalf("the failed planner recorded death %q and start failure %q at %s; want all three, since the record below is what carries them to the architect",
+			failed.LastDeathCause, failed.LastStartFailure, failed.LastStartFailureAt)
 	}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {

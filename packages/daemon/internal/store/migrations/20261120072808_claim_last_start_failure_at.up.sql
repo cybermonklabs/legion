@@ -1,0 +1,44 @@
+-- 20261120072808_claim_last_start_failure_at.up.sql — the moment a claim's last start failed,
+-- beside the sentence it failed with.
+--
+-- claims.last_start_failure_at is supervise.Claim.LastStartFailureAt: when the start whose error
+-- claims.last_start_failure holds failed, on the daemon's clock. launchNow writes the two together,
+-- in the one place a failed start is recorded, and nothing else writes either, so they always name
+-- one start. Each is kept until another failed start replaces it: a start that succeeds after the
+-- failure leaves both, and the moment is what says how old the failure is. Without it a sentence
+-- from days before read as a current failure: on 2026-11-20 one project's state carried the same
+-- launch failure on 576 claims, fixed two days earlier, and its reader took it as live.
+--
+-- Every row the table already holds takes null, which every surface reads as a failure whose
+-- moment is unknown, and nothing backfills it: no release before this one kept the moment, and
+-- last_ready or updated_at would be a moment of something else, which a reader would take for
+-- the failure's own.
+--
+-- The release before this one names each column it reads and writes (store's claimSelect and
+-- upsertClaim), so it neither reads nor writes this one. After a rollback that release still
+-- writes last_start_failure on each failed start and leaves this column as it stood, so a
+-- sentence it wrote would stand beside the moment of an earlier failure, and after the
+-- roll-forward every surface would show that earlier moment as the new failure's. The way back
+-- below, run with the daemon stopped before the roll-forward, drops the column, and the
+-- roll-forward adds it again at null: every failure then reads with its moment unknown until the
+-- claim's next failed start, which is true, rather than with a moment that is not its own.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction below, run with the daemon
+-- stopped:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table claims drop column if exists last_start_failure_at;
+--   delete from schema_version where version = 20261120072808;
+--   commit;
+--   SQL
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither, since it never names the column. Both are owed to the roll-forward: with the row
+-- deleted, store.apply finds no row of this version and runs this file again, and the drop is what
+-- lets it, since an add of a column that stands fails.
+--
+-- What the drop costs is the kept moments: after the roll-forward each claim's last failed start
+-- reads with its moment unknown until that claim's next one.
+alter table claims add column last_start_failure_at timestamptz;

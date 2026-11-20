@@ -286,10 +286,15 @@ const legionClaimView = z.object({
    * running agent — a launcher that refused the start, a failed init container, a pod that never
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
-   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates
-   * both: a cause older than it is one the agent running now has already survived. */
+   * faults. `lastStartFailureAt` is when that start failed, which says how old the failure is: a
+   * claim keeps its last failed start through every start that succeeds after it. It is absent
+   * beside a failure whose moment no daemon kept, which a reader takes as unknown, and absent from
+   * the whole state for a caller in a pod whose plugin declares a contract below 190 (the
+   * daemon's `withoutLastStartFailureAt`). `lastReady` is when the claim's agent last said it
+   * could be prompted. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
@@ -1646,10 +1651,12 @@ export const LegionOperatorClaimResponse = z.object({
   lastTurnEnd: timestamp.optional(),
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
-   * two causes answer separate questions and never overwrite each other, and `lastReady` dates
-   * them. `legion claims list --json` serves them. */
+   * two causes answer separate questions and never overwrite each other. `lastStartFailureAt` is
+   * when that start failed, absent beside a failure whose moment no daemon kept, which a reader
+   * takes as unknown. `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. These routes are the only surface a

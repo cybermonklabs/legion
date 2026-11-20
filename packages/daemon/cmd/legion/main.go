@@ -595,6 +595,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
+	for _, line := range startFailureLines(state.Issues, time.Now()) {
+		fmt.Fprintln(stdout, line)
+	}
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
 	}
@@ -1433,6 +1436,67 @@ func consumerLines(consumers []api.ConsumerLagView, startedAt, now time.Time) []
 			line += "; unavailable: " + consumer.Unavailable
 		}
 		lines[i] = line
+	}
+	return lines
+}
+
+// startFailureNamedCap is how many failed starts `legion state` names before it counts the rest.
+const startFailureNamedCap = 10
+
+// startFailureLines are the lines an operator reads for the claims of the state whose last start
+// failed (api.ClaimView.LastStartFailure): a header with how many, then one line per claim, newest
+// failure first — its issue, its role, its state now, how long before now the start failed with
+// the moment it failed, and the sentence it failed with. A failure the daemon kept no moment for
+// (api.ClaimView.LastStartFailureAt absent) reads `time unknown` and comes after every dated one,
+// since nothing says how old it is. The age is what this answers: a claim keeps its last failed
+// start until another replaces it, through every start that succeeds after it, so a failure of
+// days ago is still on the claim, and without its age it read as a current one. It names
+// startFailureNamedCap claims and then how many more there are, as waitingLineLines does; `legion
+// state --json` carries every one with its moment. The controller's claim is on no issue of the
+// state, so `legion claims list --json` is where its failed start is read.
+func startFailureLines(issues map[string]api.Issue, now time.Time) []string {
+	type failed struct {
+		issue string
+		role  legionclaim.Role
+		view  api.ClaimView
+	}
+	var claims []failed
+	for key, issue := range issues {
+		if issue.Architect != nil && issue.Architect.LastStartFailure != "" {
+			claims = append(claims, failed{key, legionclaim.RoleArchitect, *issue.Architect})
+		}
+		for role, worker := range issue.Workers {
+			if worker.Claim.LastStartFailure != "" {
+				claims = append(claims, failed{key, role, worker.Claim})
+			}
+		}
+	}
+	if len(claims) == 0 {
+		return []string{"last start failures: none"}
+	}
+	slices.SortFunc(claims, func(a, b failed) int {
+		switch at, bt := a.view.LastStartFailureAt, b.view.LastStartFailureAt; {
+		case at != nil && bt != nil && !at.Equal(*bt):
+			return bt.Compare(*at)
+		case at != nil && bt == nil:
+			return -1
+		case at == nil && bt != nil:
+			return 1
+		}
+		return cmp.Or(strings.Compare(a.issue, b.issue), strings.Compare(string(a.role), string(b.role)))
+	})
+	named := claims[:min(len(claims), startFailureNamedCap)]
+	lines := make([]string, 0, len(named)+2)
+	lines = append(lines, fmt.Sprintf("last start failures: %d, newest first", len(claims)))
+	for _, c := range named {
+		when := "time unknown"
+		if at := c.view.LastStartFailureAt; at != nil {
+			when = fmt.Sprintf("%s ago, at %s", now.Sub(*at).Truncate(time.Second), at.UTC().Format(time.RFC3339))
+		}
+		lines = append(lines, fmt.Sprintf("  %s %s %s: %s: %s", c.issue, c.role, c.view.State, when, c.view.LastStartFailure))
+	}
+	if len(claims) > startFailureNamedCap {
+		lines = append(lines, fmt.Sprintf("  and %d more", len(claims)-startFailureNamedCap))
 	}
 	return lines
 }

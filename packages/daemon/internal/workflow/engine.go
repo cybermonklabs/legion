@@ -1771,7 +1771,7 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 	if fact.Cause == "" {
 		return nil
 	}
-	return &record.NoticeFailure{
+	failure := &record.NoticeFailure{
 		Cause:          string(fact.Cause),
 		Detail:         fact.Reason,
 		LaunchFailures: record.FailureBudget{Count: fact.Budgets.LaunchFailures, Limit: fact.Limits.LaunchFailures},
@@ -1783,6 +1783,13 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 		Death:        fact.Death,
 		StartFailure: fact.StartFailure,
 	}
+	// The failed start's moment where the claim kept one, so a start that failed long before
+	// this failure reads as that old; none is made up where it kept none.
+	if !fact.StartFailureAt.IsZero() {
+		at := fact.StartFailureAt
+		failure.StartFailureAt = &at
+	}
+	return failure
 }
 
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {

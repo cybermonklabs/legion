@@ -71,6 +71,9 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	gotFailed, wantFailed := got.FailedAt, want.FailedAt
 	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The moment the last start failed is a timestamptz too, compared the same way.
+	gotStartFailed, wantStartFailed := got.LastStartFailureAt, want.LastStartFailureAt
+	got.LastStartFailureAt, want.LastStartFailureAt = time.Time{}, time.Time{}
 	// The handshake's two moments are timestamptz columns too, compared the same way.
 	gotHandshake, wantHandshake := got.Handshake, want.Handshake
 	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
@@ -83,6 +86,9 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	}
 	if !gotFailed.Equal(wantFailed) {
 		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotStartFailed.Equal(wantStartFailed) {
+		t.Errorf("the claim's last start failed at %v, want %v", gotStartFailed, wantStartFailed)
 	}
 	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
 		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",

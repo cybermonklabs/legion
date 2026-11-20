@@ -322,14 +322,18 @@ type Claim struct {
 	// launcher that refused the start, an init container that failed, a pod that never became
 	// ready (launchAfter's error). They are two answers to two questions, kept apart because a
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
-	// until another of its own kind replaces it. LastReady is when the agent last said it could be
-	// prompted, which is what says how old either cause is. All three are persisted: the operator
-	// reading a claim after a restart is the one who has to act on them, and the death's cause is
-	// what the record of that death names (endDied, EndedWork), which the restarted worker is told
-	// (RelaunchSentence, interruptedTask).
-	LastDeathCause   string
-	LastStartFailure string
-	LastReady        time.Time
+	// until another of its own kind replaces it. LastStartFailureAt is when that start failed, on
+	// the machine's clock, written with the sentence where a failed start is recorded (launchNow),
+	// so the two always name one start. It is the zero time beside a sentence a release before it
+	// wrote: that failure's moment is unknown, and every surface says so rather than read another
+	// moment in its place. LastReady is when the agent last said it could be prompted. All four are
+	// persisted: the operator reading a claim after a restart is the one who has to act on them,
+	// and the death's cause is what the record of that death names (endDied, EndedWork), which the
+	// restarted worker is told (RelaunchSentence, interruptedTask).
+	LastDeathCause     string
+	LastStartFailure   string
+	LastStartFailureAt time.Time
+	LastReady          time.Time
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -2709,7 +2713,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			}))
 			return errors.Join(err, m.persist(starting))
 		}
-		m.claim.LastStartFailure = err.Error()
+		// The sentence and its moment are written together, here and nowhere else, so a reader
+		// is never shown a failure without the time it happened (Claim.LastStartFailureAt).
+		m.claim.LastStartFailure, m.claim.LastStartFailureAt = err.Error(), m.deps.Clock.Now()
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}

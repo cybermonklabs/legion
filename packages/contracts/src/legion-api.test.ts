@@ -73,6 +73,9 @@ const schemas: Record<string, z.ZodType> = {
   // pause has ended, which carries `lastPause` and no `paused` (contract 178). state.json is the
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
+  // Written by internal/api's TestStateLastStartFailureGolden: claims whose last start failed,
+  // one with the moment it failed and one whose moment no daemon kept (contract 190).
+  "state-last-start-failure.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -2637,4 +2640,25 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(controller).success).toBeTrue();
   expect(LegionRegisterResponse.safeParse(controller).success).toBeFalse();
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
+});
+
+// A claim keeps its last failed start through every start that succeeds after it, so the failure
+// carries the moment it failed (contract 190): a sentence with no moment read as current days after
+// its failure was fixed. The moment is optional on both shapes a claim is served in, since a
+// failure no daemon kept the moment of has none, and the reader takes that as unknown.
+test("a failed start is read with the moment it failed, and with none where it was not kept", () => {
+  const state = LegionStateResponse.parse(fixture("state-last-start-failure.json"));
+  const workers = state.issues["LEGION-215"]?.workers;
+  expect(workers?.implementer?.claim.lastStartFailure).toContain("waitid: no child processes");
+  expect(workers?.implementer?.claim.lastStartFailureAt).toBe("2026-11-16T23:12:00Z");
+  expect(workers?.tester?.claim.lastStartFailure).toContain("the pod never became ready");
+  expect(workers?.tester?.claim.lastStartFailureAt).toBeUndefined();
+
+  const operator = LegionOperatorClaimResponse.parse(fixture("operator-claim.json"));
+  expect(operator.lastStartFailure).toContain("the pod never became ready");
+  expect(operator.lastStartFailureAt).toBe("2026-09-22T09:30:41Z");
+
+  const mutated = fixture("operator-claim.json") as Record<string, unknown>;
+  mutated.lastStartFailureAt = "four days ago";
+  expect(LegionOperatorClaimResponse.safeParse(mutated).success).toBeFalse();
 });

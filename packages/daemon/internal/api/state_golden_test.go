@@ -1170,6 +1170,60 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 	})
 }
 
+// startFailureState is a state whose claims carry a failed start each way the daemon serves one:
+// LEGION-215's implementer, working again since, carries the failed start before it with the
+// moment it failed, and its tester the sentence of a failed start whose moment no release kept,
+// which it serves with no `lastStartFailureAt` at all. populatedState carries neither: a pod below
+// supervise.PodUpdateContract is served it with only the keys contract 45 knew, and no row of
+// stateNarrowings strips `lastStartFailure`, so this state is the band's own.
+func startFailureState(t *testing.T) State {
+	t.Helper()
+	failedAt := time.Date(2026, 11, 16, 23, 12, 0, 0, time.UTC)
+	return State{
+		Daemon: DaemonInfo{
+			Project:       "LEGION",
+			SchemaVersion: 3,
+			Boots:         2,
+			FirstBootAt:   time.Date(2026, 11, 10, 6, 0, 0, 0, time.UTC),
+			StartedAt:     time.Date(2026, 11, 19, 17, 30, 0, 0, time.UTC),
+		},
+		Admission: Admission{Cap: 2, Active: []string{"LEGION-215"}, Waiting: []string{}},
+		Issues: map[string]Issue{
+			"LEGION-215": {
+				Key:           "LEGION-215",
+				Generation:    1,
+				Phase:         phase.Implementing,
+				Status:        "in_progress",
+				Tree:          "LEGION-215",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session:            "ses_implementer_215",
+						State:              "working",
+						LastStartFailure:   "launch legion-legion-legion-215-implementer: start through its authenticated launcher: the shared public leak check could not be installed: the served check could not be run: waitid: no child processes",
+						LastStartFailureAt: &failedAt,
+					}, Rounds: 1},
+					claim.RoleTester: {Claim: ClaimView{
+						Session:          "ses_tester_215",
+						State:            "idle",
+						LastStartFailure: "launch legion-legion-legion-215-tester: start through its authenticated launcher: the pod never became ready",
+					}},
+				},
+			},
+		},
+		PendingStatusWrites: []PendingStatusWrite{},
+		Settings:            SettingsOf(minimalSettingsConfig(t)),
+	}
+}
+
+// A claim's failed start is served with the moment it failed, and one whose moment no release
+// kept with no moment at all (startFailureState): the strict reader on the other side of this
+// wire parses both.
+func TestStateLastStartFailureGolden(t *testing.T) {
+	golden(t, "state-last-start-failure.json", startFailureState(t))
+}
+
 // goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
 var (
 	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
@@ -1527,6 +1581,7 @@ func TestErrorResponseGolden(t *testing.T) {
 func operatorClaim() OperatorClaim {
 	delivered := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
 	lastSendFailure := time.Date(2026, 9, 22, 9, 31, 2, 0, time.UTC)
+	startFailed := time.Date(2026, 9, 22, 9, 30, 41, 0, time.UTC)
 	return OperatorClaim{
 		Token:       "legion-legion-legion-209-implementer",
 		Tree:        "LEGION-208",
@@ -1559,6 +1614,10 @@ func operatorClaim() OperatorClaim {
 			LastSendError:     "prompt the agent: context deadline exceeded",
 		},
 		SuspensionHeld: true,
+		// The start before the one this agent runs in failed, and the claim keeps that failure
+		// with the moment it failed: an agent that came up after it reads it as that old.
+		LastStartFailure:   "launch legion-legion-legion-209-implementer: start through its authenticated launcher: the pod never became ready",
+		LastStartFailureAt: &startFailed,
 		// A plugin round an earlier daemon opened over this claim, whose process speaks a plugin
 		// contract this daemon does not. This release opens none — the stale-plugin lane asks
 		// its worker nothing and relaunches instead — and a boot takes every claim out of one it

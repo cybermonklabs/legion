@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 178,
-    "caller": 178
+    "daemon": 190,
+    "caller": 190
   },
   "admission": {
     "cap": 5,
@@ -329,6 +329,8 @@
             "session": "ses_implementer_210",
             "state": "failed",
             "pluginContract": 0,
+            "lastStartFailure": "launch legion-legion-legion-210-implementer: start through its authenticated launcher: the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found",
+            "lastStartFailureAt": "2026-09-22T08:47:03Z",
             "failure": {
               "cause": "died",
               "detail": "launch failures ran out",

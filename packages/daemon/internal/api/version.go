@@ -2454,4 +2454,26 @@ package api
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
-const DaemonAPIVersion = 178
+//
+// 190: a claim's last failed start carries the moment it failed. Each claim view of `GET
+// /legion/v1/state` (api.ClaimView) and each claim of the operator's claim routes
+// (api.OperatorClaim, `legion claims list --json`) gains `lastStartFailureAt`, an RFC 3339 time,
+// beside `lastStartFailure`: when the start whose sentence that key holds failed, written with
+// the sentence where a failed start is recorded (supervise's launchNow) and kept with it until
+// another failed start replaces both. It is absent where no start has failed, and absent beside a
+// failure no release before this one kept the moment of, which every reader takes as a moment
+// unknown: the daemon serves none in its place, neither the claim's `lastReady` nor the time of
+// its last write. A sentence with no moment read as current days after its failure was fixed: on
+// 2026-11-20 one project's state carried a launch failure fixed two days before on 576 claims.
+// A caller from a pod whose claims record a contract below 190 is served the state without the
+// key (api's stateNarrowings, withoutLastStartFailureAt), and the bands compose. The store keeps
+// the moment in `claims.last_start_failure_at` (migration 20261120072808), and the failure
+// record a notice of a failed claim carries gains `startFailureAt` beside `startFailure`
+// (record.NoticeFailure), absent where the claim kept no moment. `legion state` names the claims
+// whose last start failed with how long ago each failed, or `time unknown`, and the controller's
+// `read_state` summary does the same on each claim line it prints.
+// (This entry takes 190, above main's 178: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 251 open pull requests of cybermonklabs/legion, which ended
+// on 2026-11-20 before 07:28Z, found each of 179 to 189 declared by another open pull request and
+// none declaring 190.)
+const DaemonAPIVersion = 190

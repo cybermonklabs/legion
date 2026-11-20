@@ -7,6 +7,7 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -183,20 +184,23 @@ func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
 
 // A failed claim's notices name both of the causes the claim recorded — why its process last died
 // and why its last start failed — since the architect reading them has no other way to learn
-// either (dispatch://INFRA-714 R6).
+// either (dispatch://INFRA-714 R6). The failed start carries the moment it failed, so a start
+// that failed days before the death that failed the claim reads as that old.
 func TestAFailedClaimsNoticesNameTheDeathAndTheFailedStart(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "a root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+	startFailedAt := time.Date(2026, 11, 16, 23, 12, 0, 0, time.UTC)
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:3:failed", intake.ClaimFailed{
 		Issue: "LEGION-208", Role: claim.RoleTester, Reason: "deaths with work outstanding ran out",
-		Cause:        supervise.CauseDied,
-		Budgets:      supervise.Budgets{Deaths: 3},
-		Limits:       supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2},
-		Death:        "gone: pod legion-legion-208 (uid 8a1f) ended: OOMKilled",
-		StartFailure: "launch legion-LEGION-208-tester: its init container cloned no workspace",
+		Cause:          supervise.CauseDied,
+		Budgets:        supervise.Budgets{Deaths: 3},
+		Limits:         supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2},
+		Death:          "gone: pod legion-legion-208 (uid 8a1f) ended: OOMKilled",
+		StartFailure:   "launch legion-LEGION-208-tester: its init container cloned no workspace",
+		StartFailureAt: startFailedAt,
 	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("apply the failure: %v", err)
 	}
@@ -213,8 +217,40 @@ func TestAFailedClaimsNoticesNameTheDeathAndTheFailedStart(t *testing.T) {
 		if failure.StartFailure != "launch legion-LEGION-208-tester: its init container cloned no workspace" {
 			t.Errorf("the %s notice's start failure reads %q, want the launcher's own", kind, failure.StartFailure)
 		}
+		if failure.StartFailureAt == nil || !failure.StartFailureAt.Equal(startFailedAt) {
+			t.Errorf("the %s notice's start failure is dated %v, want %s, the moment it failed", kind, failure.StartFailureAt, startFailedAt)
+		}
 		if failure.Detail != "deaths with work outstanding ran out" {
 			t.Errorf("the %s notice's detail reads %q, want the sentence the failure wrote", kind, failure.Detail)
+		}
+	}
+}
+
+// A failed start whose moment the claim never kept — recorded before the daemon kept one — reaches
+// the notices with its sentence and no moment at all, which a reader takes as unknown: the notice
+// makes none up.
+func TestAFailedClaimsNoticesDateNoFailedStartWhoseMomentIsUnknown(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-208", Project: "LEGION", Title: "a root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
+	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:3:failed", intake.ClaimFailed{
+		Issue: "LEGION-208", Role: claim.RoleTester, Reason: "deaths with work outstanding ran out",
+		Cause:        supervise.CauseDied,
+		Budgets:      supervise.Budgets{Deaths: 3},
+		Limits:       supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2},
+		StartFailure: "launch legion-LEGION-208-tester: its init container cloned no workspace",
+	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("apply the failure: %v", err)
+	}
+
+	for kind, failure := range noticeKindFailures(t, pool, "LEGION-208") {
+		if failure == nil {
+			continue
+		}
+		if failure.StartFailure == "" || failure.StartFailureAt != nil {
+			t.Errorf("the %s notice's start failure reads %q dated %v, want the sentence with no moment", kind, failure.StartFailure, failure.StartFailureAt)
 		}
 	}
 }

@@ -676,8 +676,12 @@ type NoticeFailure struct {
 	// faults, and an agent deciding between a retry and an escalation reads them apart. Cause
 	// above says which of them ended this claim; these say what the runtime and the launcher
 	// last said, which no other surface tells the architect or the controller.
-	Death        string `json:"death,omitempty"`
-	StartFailure string `json:"startFailure,omitempty"`
+	// StartFailureAt is when that start failed, absent where the claim kept no moment for it,
+	// which a reader takes as unknown: a start that failed days before the death that failed
+	// the claim reads as that old, never as part of the failure the notice reports.
+	Death          string     `json:"death,omitempty"`
+	StartFailure   string     `json:"startFailure,omitempty"`
+	StartFailureAt *time.Time `json:"startFailureAt,omitempty"`
 }
 
 // FailureBudget is one of a failed claim's counts beside the limit it is measured against, both

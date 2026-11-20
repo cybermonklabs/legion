@@ -130,6 +130,16 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	}
 	limit := supervise.Limits{LaunchFailures: cfg.LaunchFailureLimit,
 		PromptFailures: cfg.PromptFailureLimit, PromptRetires: cfg.PromptRetireLimit}
+	// The failed start's moment is the one the claim recorded, which the operator's claim
+	// serves too.
+	planner, err := claim.NewToken(token, issue, claim.RolePlanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startFailedAt := d.claim(planner).LastStartFailureAt
+	if startFailedAt == nil {
+		t.Fatalf("the failed planner %s records no moment for its failed start", planner)
+	}
 	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: &record.NoticeFailure{
 		Cause:          string(supervise.CauseLaunchRefused),
 		Detail:         "launch failures ran out: pane launch failed",
@@ -139,7 +149,9 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		PromptRetires:  record.FailureBudget{Limit: limit.PromptRetires},
 		// The two causes the claim recorded, which the controller reading this line has no other
 		// way to learn (dispatch://INFRA-714 R6).
-		StartFailure: "pane launch failed",
+		// Beside them, the moment the failed start failed.
+		StartFailure:   "pane launch failed",
+		StartFailureAt: startFailedAt,
 	}}
 	if !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v beside its reason",

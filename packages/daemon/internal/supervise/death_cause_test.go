@@ -163,6 +163,48 @@ func TestAFailedStartIsKeptBesideTheLastDeathsCause(t *testing.T) {
 	}
 }
 
+// A failed start records when it failed beside why, on the machine's clock, where the failed start
+// is recorded (launchNow). A sentence with no time of its own reads as current days later: on
+// 2026-11-20, 576 claims of one project still carried a launch failure fixed two days before, and
+// a reader took it as live. The moment is the failure's own, neither the ready before it nor
+// a later launch: a start that then succeeds keeps the sentence and its moment as they were, and
+// the stored claim carries the moment the machine holds.
+func TestAFailedStartRecordsWhenItFailed(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+	// The failure comes after the ready, so a moment read off the ready is told from the
+	// failure's own.
+	h.clock.Advance(time.Second)
+	failedAt := h.clock.Now()
+	if !h.claim().LastStartFailureAt.IsZero() {
+		t.Fatalf("a claim no start has failed for records a failed start at %s, want none", h.claim().LastStartFailureAt)
+	}
+	dead := h.locator()
+	h.rt.ScriptResume(fake.SpawnResult{Err: errBoom})
+
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: failedAt}})
+
+	c := h.claim()
+	if !strings.Contains(c.LastStartFailure, errBoom.Error()) || !c.LastStartFailureAt.Equal(failedAt) {
+		t.Fatalf("the claim records the failed start as %q at %s, want the runtime's refusal %q at %s, the moment it failed",
+			c.LastStartFailure, c.LastStartFailureAt, errBoom, failedAt)
+	}
+	if stored := h.store.load(testToken); !stored.LastStartFailureAt.Equal(failedAt) {
+		t.Errorf("the stored claim records the failed start at %s, want it persisted at %s", stored.LastStartFailureAt, failedAt)
+	}
+
+	// The next try comes after the launch backoff and starts, and the failure before it stands
+	// as it was recorded.
+	h.advance(testLaunchBackoff)
+	h.relaunched()
+	if c := h.claim(); !strings.Contains(c.LastStartFailure, errBoom.Error()) || !c.LastStartFailureAt.Equal(failedAt) {
+		t.Errorf("after a start that succeeded the claim records the failed start as %q at %s, want %q at %s, as it was recorded",
+			c.LastStartFailure, c.LastStartFailureAt, errBoom, failedAt)
+	}
+}
+
 // A claim rebuilt from the store answers with the causes and the ready time it was written with:
 // the operator reading a claim after a restart is the one who has to act on them.
 func TestTheCausesAndTheReadyTimeSurviveARestart(t *testing.T) {
