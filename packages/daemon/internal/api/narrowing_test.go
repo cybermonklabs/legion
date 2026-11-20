@@ -453,7 +453,7 @@ func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
 // fix. The constant is never above the daemon's own contract, and it stands above pauseContract,
 // the row before it in stateNarrowings.
 func TestTheCachesSourceContractIsItsReleasedNumber(t *testing.T) {
-	const addedCachesSource = 193
+	const addedCachesSource = 197
 	if cachesSourceContract != addedCachesSource {
 		t.Fatalf("cachesSourceContract = %d, want %d, the contract whose entry in version.go added the source `caches`",
 			cachesSourceContract, addedCachesSource)

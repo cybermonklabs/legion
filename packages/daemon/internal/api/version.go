@@ -2464,7 +2464,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 193: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 197: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
 // /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
 // row's `source`, `caches` (capabilities.SourceCaches): what the repository caches' last health
 // reads said of their room, which is where that row is measured from. The row is present while no
@@ -2473,10 +2515,10 @@ package api
 // comes from, and decided where `capabilities.decided.repository-cache-room` records a reason
 // (capabilities.Deployment.cacheRoom). A capability `name` is a plain non-empty string to every
 // schema already published, so the row parses there, as `claude-code` did; its `source` does
-// not. A plugin from 25 through 192 reads `source` with a `z.enum` of the two words before it,
+// not. A plugin from 25 through 196 reads `source` with a `z.enum` of the two words before it,
 // `configuration` and `boot`, which refuses a word it does not name and with it the whole state
 // body: the controller's `read_state`, every role's `read_record` and claude-envoy's own reads of
-// the state. So a caller from a pod whose claims record a contract below 193 is served every
+// the state. So a caller from a pod whose claims record a contract below 197 is served every
 // capability row whose `source` is `caches` without its `source` (api's stateFor,
 // withoutCachesSource), which that schema takes as optional; the row itself stays, its name,
 // status, detail, decision and config line as they are, because a controller on an older plugin
@@ -2486,14 +2528,16 @@ package api
 // change is on a surface this contract names.
 // The bump relaunches every registered claim onto the new plugin, as every bump does (the
 // stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
-// at its own time, so for the length of the wave some pods still run a plugin below 193: those
+// at its own time, so for the length of the wave some pods still run a plugin below 197: those
 // are the callers the narrowing serves.
-// (This entry takes 193, the lowest number above main's 188 that no open pull request declared
-// when the merge of 2026-11-20 brought main in at 1c7c825367: a reading of `const
+// (This entry takes 197, the lowest number above main's 189 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at f21107b285: a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each open pull request that changes this file or
 // whose file list GitHub cut short, the reads .github/scripts/check-daemon-api-contract.sh makes
-// when it refuses, made for 110 of the 266 open pull requests between 2026-11-20T10:54:35Z and
-// 10:57:22Z, found 189 declared by #3831 and #4596, 190 by #4578, 191 by #4493, #4495, #4573 and
-// #4592, and 192 by #4175 and #4611, and no open head declaring 193. Read the base's own number
-// and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 193
+// when it refuses, made for 111 of the 282 open pull requests between 2026-11-20T16:59:21Z and
+// 17:01:52Z, found 190 declared by #4578, 191 by #2230, #4049 and #4573, 192 by #4173, #4175,
+// #4182, #4193, #4273 and #4392, 193 by #3659, #3712 and #4065 as well as by this change's own
+// head before this merge, 194 by #3831 and #4030, 195 by #4590, and 196 by #3993, #4432, #4493,
+// #4495 and #4580, and no open head declaring 197. Read the base's own number and every open
+// pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 197

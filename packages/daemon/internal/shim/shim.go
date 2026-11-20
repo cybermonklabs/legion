@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -125,8 +126,10 @@ type Config struct {
 	// spawnOnce reads (leakguard.Installed) before the wrapped process is started; empty is
 	// leakguard.InstallDir. The launcher installs the check the daemon served once for the pod,
 	// before any role starts, so the shim only reads it: with a pin in the environment
-	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) a role whose
-	// install is absent or of another tag runs no agent.
+	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) and the
+	// deployment's checker (leakguard.CheckerVar, which the runtime tells a role of a deployment
+	// that runs a shared leak check), a role whose install is absent or of another tag runs no
+	// agent.
 	//
 	// The installed check's path is what the shim names in PUBLIC_LEAK_CHECK for everything it
 	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
@@ -335,8 +338,9 @@ func (s *shim) connect() (acked bool, err error) {
 			break
 		}
 		// Nothing the daemon sends before its ack is meant for a child that does not exist yet
-		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts).
-		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %.80s", line)
+		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
+		// side's, so the URL rule reads it whole before it is cut (redact.Runes).
+		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %s", redact.Runes(string(line), 80))
 	}
 	// Spawned here, before the next line is read: the daemon's first RPC frame may share a read
 	// with the ack, and it must find a child to go to (cmdWorkerShimConnect's ack, worker-shim.ts).
@@ -428,9 +432,10 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 //
 // The pod's launcher installs the check the daemon served once for the pod, before it starts any
 // role, so the shim reads it and installs nothing (leakguard.Installed, at Config.LeakCheckDir).
-// With no pin in the environment, which is every tmux pane, nothing is read and nothing refused.
-// With a pin, an install that is absent or of another tag ends the shim with exit 1 and runs no
-// agent.
+// With no pin in the environment, which is every tmux pane, and with no deployment checker in it
+// (leakguard.CheckerVar), which is every role of a deployment that runs no shared leak check,
+// nothing is read and nothing refused. With both, an install that is absent or of another tag
+// ends the shim with exit 1 and runs no agent.
 //
 // The read is here, and before the start, for two orderings this placement guarantees. The
 // harness is started after it, so no turn of the agent reaches a write path before the check its
@@ -736,7 +741,8 @@ func summarize(frame shimwire.Frame) string {
 			args.Reset()
 			args.WriteString("{}")
 		}
-		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
+		// The rule before the cut: a userinfo cut before its "@" is one the log's rule cannot find.
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + redact.Runes(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
 		case "error":
@@ -760,13 +766,6 @@ func summarize(frame shimwire.Frame) string {
 		}
 	}
 	return ""
-}
-
-func truncate(s string, n int) string {
-	if runes := []rune(s); len(runes) > n {
-		return string(runes[:n])
-	}
-	return s
 }
 
 // outbox is every frame bound for the daemon: written to the connection when one is attached,

@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -701,7 +702,9 @@ func (r *Runtime) readCacheHealth(ctx context.Context) {
 		address := "http://" + net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(repocache.Port))
 		health, err := cacheHealthOf(ctx, client, address, repo)
 		if err != nil {
-			read.err = err.Error()
+			// The error is the HTTP client's or the cache's own answer, which legion state
+			// serves, so it is kept as any far side's error text is.
+			read.err = storetext.FarSideError(err.Error())
 		} else {
 			read.health = &health
 		}

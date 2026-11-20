@@ -1230,16 +1230,16 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // cachesSourceContract is the daemon contract that added `caches` to a capability row's `source`
-// (version.go's 193): the repository-cache-room row's, what the repository caches' last health
+// (version.go's 197): the repository-cache-room row's, what the repository caches' last health
 // reads said of their room (capabilities.SourceCaches). A plugin from 25, the contract that added
 // `source`, up to it reads the field with a `z.enum` of the two words before it, `configuration`
 // and `boot`, which refuses a word it does not name and with it the whole state body, so a caller
-// below 193 is served such a row without its `source` (withoutCachesSource), which that schema
+// below 197 is served such a row without its `source` (withoutCachesSource), which that schema
 // takes as optional. The row is not taken out: its `name` is a plain string to every schema, so
 // the rest of it parses, and the controller of an older plugin still has the right to see the
 // gap. TestTheCachesSourceContractIsItsReleasedNumber pins this constant to that literal, so a
 // forward merge that moves DaemonAPIVersion and leaves this behind fails there.
-const cachesSourceContract = 193
+const cachesSourceContract = 197
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

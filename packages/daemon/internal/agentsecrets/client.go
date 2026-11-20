@@ -31,6 +31,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -42,9 +45,9 @@ const launcherService = "legion-daemon"
 // loginRetryInitial and loginRetryMax bound the wait after a token login that no wait of seconds
 // changes: one the broker refused (any answer but a 5xx or a 200 with a body of the contract's
 // shape, so every 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake
-// that failed, or a host name that does not resolve — daemonSideFault), and one that could not be
-// made at all (a token file that could not be read or was empty). The first wait is
-// loginRetryInitial, each one after it doubles, up to loginRetryMax.
+// that failed or a TLS alert, or a host name that does not resolve — daemonSideFault), and one
+// that could not be made at all (a token file that could not be read or was empty). The first wait
+// is loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
 // there to decide: one given no HTTP answer at all, or a 5xx answer from the broker or its front
 // door. They bound it the same way and on the pod renewer's schedule: the broker is down, out of
@@ -264,7 +267,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, body, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
+	status, body, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			return nil, &brokerUnavailableError{err: err}
@@ -272,10 +275,10 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, err
 	}
 	if status >= 500 && status <= 599 {
-		return nil, &brokerUnavailableError{err: refusal(status, body)}
+		return nil, &brokerUnavailableError{err: refusal(status, body, cut)}
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, body)
+		return nil, refusal(status, body, cut)
 	}
 	var answer struct {
 		CredentialID string    `json:"credential_id"`
@@ -305,31 +308,28 @@ func (c *Client) serviceToken() (string, error) {
 }
 
 // daemonSideFault reports whether err, from a login POST that got no HTTP answer, is a fault on
-// the daemon's own side rather than a broker out of reach: a TLS handshake that failed — a
-// certificate that does not verify (crypto/tls wraps a missing or wrong trust root, a host name
-// that does not match and an expired certificate alike as *tls.CertificateVerificationError), an
-// answer that is not TLS at all, or an alert the far side sent — and a host name that does not
-// resolve. Nothing the daemon waits for fixes one of these: its trust store, its broker URL or its
-// resolver has to change, so the login takes the long schedule, as the daemon's Dispatch client
-// keeps the same certificate shapes out of the class it waits out (transportFailure,
-// internal/dispatch). Every other transport failure — a refused or reset connection, a timeout, an
-// unreachable network, a resolver that failed for any other reason — is the broker out of reach,
-// which the next seconds may fix.
+// the daemon's own side rather than a broker out of reach: a TLS failure — a handshake that failed
+// (a certificate that does not verify: crypto/tls wraps a missing or wrong trust root, a host name
+// that does not match and an expired certificate alike as *tls.CertificateVerificationError; or an
+// answer that is not TLS at all), or a TLS alert on the handshake or on a later record, the far
+// side's or one this client sent itself on an answer it could not take — and a host name that does
+// not resolve. Nothing the daemon waits for fixes one of these: its trust store, its broker URL or
+// its resolver has to change, so the login takes the long schedule, as the daemon's Dispatch
+// client keeps the same certificate and alert shapes out of the class it waits out
+// (TransportRefusal, internal/dispatch). Every other transport failure — a refused or reset
+// connection, a timeout, an unreachable network, a resolver that failed for any other reason — is
+// the broker out of reach, which the next seconds may fix.
 //
 // Two shapes are read as the standard library leaves them. net/http answers a plain-HTTP port with
 // http.ErrSchemeMismatch in place of the tls.RecordHeaderError it read (net/http/client.go), so
-// both of those are read here. An alert the far side sends over TCP arrives as a *net.OpError
-// whose Op is "remote error", holding crypto/tls's own unexported alert type (crypto/tls/conn.go);
-// tls.AlertError is the QUIC transport's shape, which this client never speaks, so the alert is
-// read by that Op.
+// both of those are read here. An alert, the far side's or this client's own, is read by
+// tlsalert.In.
 func daemonSideFault(err error) bool {
 	var verify *tls.CertificateVerificationError
 	var record tls.RecordHeaderError
-	var remote *net.OpError
 	var dns *net.DNSError
 	return errors.As(err, &verify) || errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) ||
-		(errors.As(err, &remote) && remote.Op == "remote error") ||
-		(errors.As(err, &dns) && dns.IsNotFound)
+		tlsalert.In(err) || (errors.As(err, &dns) && dns.IsNotFound)
 }
 
 // LoginStatus reports the login as LoginState describes it, from one snapshot.
@@ -448,12 +448,12 @@ func (b enrollmentBody) withoutNewFields() enrollmentBody {
 	return b
 }
 
-// refusesAnUnknownField reports whether a broker answered status and raw the way a broker from
-// before a field refuses a body carrying it: 400 INVALID_ENROLLMENT naming an unknown field, since
-// its readJSON decodes the body with DisallowUnknownFields.
-func refusesAnUnknownField(status int, raw []byte) bool {
+// refusesAnUnknownField reports whether a broker answered status and raw, cut where do's bound cut
+// it, the way a broker from before a field refuses a body carrying it: 400 INVALID_ENROLLMENT
+// naming an unknown field, since its readJSON decodes the body with DisallowUnknownFields.
+func refusesAnUnknownField(status int, raw []byte, cut bool) bool {
 	var api *APIError
-	return status == http.StatusBadRequest && errors.As(refusal(status, raw), &api) &&
+	return status == http.StatusBadRequest && errors.As(refusal(status, raw, cut), &api) &&
 		api.Code == "INVALID_ENROLLMENT" && strings.Contains(api.Message, "unknown field")
 }
 
@@ -484,20 +484,20 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
 	}
-	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw) {
+	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw, cut) {
 		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
 			"pod_uid", e.PodUID, "slot", e.Slot)
-		status, raw, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		status, raw, cut, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
 		if err != nil {
 			return Enrollment{}, err
 		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
-		return Enrollment{}, refusal(status, raw)
+		return Enrollment{}, refusal(status, raw, cut)
 	}
 	var answer enrollmentAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
@@ -512,14 +512,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 // Revoke is DELETE /v1/enrollments/{id}, authenticated with a launcher proof: 204 and 404 are
 // both "revoked" (the route is idempotent).
 func (c *Client) Revoke(ctx context.Context, id string) error {
-	status, raw, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
 	if err != nil {
 		return err
 	}
 	if status == http.StatusNoContent || status == http.StatusNotFound {
 		return nil
 	}
-	return refusal(status, raw)
+	return refusal(status, raw, cut)
 }
 
 // CarriedEnrollment is one enrollment POST /v1/enrollments/carried answers: a pod enrollment this
@@ -569,14 +569,14 @@ func (*CarriedAnswerTooLargeError) UnlistedCarry() bool { return true }
 // CarriedAnswerTooLargeError. With no live launcher credential it answers the non-permanent
 // NO_MACHINE_CREDENTIAL, as Enroll does; any other refusal is an *APIError.
 func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, raw[:min(len(raw), carriedAnswerBytes)])
+		return nil, refusal(status, raw, cut)
 	}
-	if len(raw) > carriedAnswerBytes {
+	if cut {
 		return nil, &CarriedAnswerTooLargeError{Limit: carriedAnswerBytes}
 	}
 	var answer carriedAnswer
@@ -630,14 +630,14 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+	status, raw, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
 		return time.Time{}, err
 	}
 	if status != http.StatusOK {
-		return time.Time{}, refusal(status, raw)
+		return time.Time{}, refusal(status, raw, cut)
 	}
 	var answer struct {
 		PodUID     string    `json:"pod_uid"`
@@ -718,31 +718,31 @@ func (*SupersededError) Permanent() bool { return true }
 // and a proof in flight during one stays valid. With no live credential it wakes the login loop
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
 // wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
-// replaced clears nothing. It reads the answer as do does, up to limit bytes and one more.
-func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, error) {
+// replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
+func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, bool, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, false, c.noCredentialError()
 	}
 	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
-	status, raw, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
+	status, raw, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
 		req.Header.Set("Proof", proof)
 	})
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if status == http.StatusUnauthorized {
 		c.update(func(cur loginState) (loginState, bool) {
 			return loginState{failure: "the broker refused the daemon's launcher credential; logging in again"}, cur.cred == cred
 		})
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, false, c.noCredentialError()
 	}
-	return status, raw, nil
+	return status, raw, cut, nil
 }
 
 // backoff is a wait after failed consecutive logins: initial after the first, doubled for each one
@@ -878,21 +878,23 @@ func (c *Client) noCredentialError() error {
 // their answers comes near it, and a longer one is cut there.
 const answerBytes = 1 << 16
 
-// do sends one broker call and reads its answer: at most limit bytes and one more, so a caller
-// that must tell a whole answer from one cut short (Carried) reads a body longer than limit as
-// one that was; every other caller reads the cut body as its contract's shape or not.
-func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, error) {
+// do sends one broker call and reads its answer through redact.ReadBounded: its first limit bytes,
+// and whether the bound cut it, which a caller that must tell a whole answer from one cut short
+// reads (Carried), and so does refusal, which quotes a body that is not the contract's shape;
+// every other caller reads the cut body as its contract's shape or not. A read that fails is an
+// error.
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, false, err
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -906,25 +908,27 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("broker %s %s: %w", method, path, err)
+		return 0, nil, false, fmt.Errorf("broker %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	raw, cut, err := redact.ReadBounded(resp.Body, limit)
 	if err != nil {
-		return 0, nil, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
+		return 0, nil, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
-	return resp.StatusCode, raw, nil
+	return resp.StatusCode, raw, cut, nil
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape
-// still yields one, with the status and the raw text as its message.
-func refusal(status int, raw []byte) error {
+// still yields one, with the status and the body's text as its message. raw is the body as do read
+// it, and cut whether do's bound cut it, which can stop inside a URL before its "@": the message
+// is what redact.Read keeps of raw.
+func refusal(status int, raw []byte, cut bool) error {
 	var body struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.Code == "" {
-		return &APIError{Status: status, Code: "UNKNOWN", Message: string(raw)}
+		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(string(raw), cut)}
 	}
 	return &APIError{Status: status, Code: body.Code, Message: body.Error}
 }

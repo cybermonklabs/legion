@@ -335,11 +335,12 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 	}
 }
 
-// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason nothing
-// can store: PostgreSQL's jsonb, where the daemon's outbox row holds the rating, and its text,
-// where Dispatch's record holds it, both refuse it. The decoder of the body refuses it before the
-// route reads it, as it refuses a NUL in any string of any body (decodeJSON): 400 naming planReason
-// and where in it the NUL stands, with nothing recorded, so the agent sends it again corrected.
+// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason
+// PostgreSQL cannot hold: its jsonb, where the daemon's outbox row holds the rating, and its text,
+// where Dispatch's record holds it, both refuse it, and the daemon's store would keep U+FFFD in its
+// place unseen by the agent. The decoder of the body refuses it before the route reads it, as it
+// refuses a NUL in any string of any body (decodeJSON): 400 naming planReason and where in it the
+// NUL stands, with nothing recorded, so the agent sends it again corrected.
 func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
@@ -347,7 +348,7 @@ func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 
 	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 		PlanRating: new(4), PlanReason: new("The plan fit\x00 the work.")}), http.StatusBadRequest,
-		"invalid request body: planReason holds a NUL character (U+0000) at character 13, which the daemon cannot store")
+		"invalid request body: "+nulError("planReason", 13))
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}
