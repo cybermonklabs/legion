@@ -132,7 +132,7 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 
 // TestHelpNamesTheKeyDirVariableNotItsValue: keygen's --out defaults to AGENT_SECRETS_KEY_DIR, the
 // directory of key.pem, and a help text is pasted wherever a person asks for help, so -h and the
-// usage a parse failure prints give the variable's name as the default, never its value. A default
+// usage a parse failure prints name the variable beside the flag, never its value. A default
 // that is the program's own constant still prints as it is (the control).
 func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
 	const secret = "hunter2pw-helpdir-80c4f1"
@@ -141,8 +141,8 @@ func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
 		code int
 		want []string
 	}{
-		{[]string{"keygen", "-h"}, 0, []string{`-out string`, `(default "$AGENT_SECRETS_KEY_DIR")`}},
-		{[]string{"keygen", "--no-such-flag"}, exitUsageError, []string{"an argument that is not a flag of this form (not printed)", `(default "$AGENT_SECRETS_KEY_DIR")`}},
+		{[]string{"keygen", "-h"}, 0, []string{`-out string`, "AGENT_SECRETS_KEY_DIR when not given"}},
+		{[]string{"keygen", "--no-such-flag"}, exitUsageError, []string{"an argument that is not a flag of this form (not printed)", "AGENT_SECRETS_KEY_DIR when not given"}},
 		{[]string{"enroll", "-h"}, 0, []string{`(default "` + defaultPodTokenFile + `")`}},
 	} {
 		t.Run(strings.Join(row.args, " "), func(t *testing.T) {

@@ -405,8 +405,9 @@ func writeCommandHelp(w io.Writer, c command) {
 // newFlagSet is the flag set of the form named name: its errors and its -h go to stderr, and -h
 // prints the form's synopsis and summary, then its flags when it defines any. A form with no
 // flags parses its arguments with it too, so its -h answers as every other form's does and any
-// flag is a usage error. A failure names the flag and never the value (flagSet.Parse), and a
-// default read from AGENT_SECRETS_KEY_DIR prints as the variable (printDefaults).
+// flag is a usage error. A failure names the flag and never the value (flagSet.Parse). No flag
+// takes a default from AGENT_SECRETS_KEY_DIR, which PrintDefaults would print: keygen and enroll
+// read it after Parse where --out is not given.
 func newFlagSet(name string, stderr io.Writer) *flagSet {
 	c := lookupCommand(name)
 	flags := &flagSet{flag.NewFlagSet(strings.TrimSpace("agent-secrets "+name), flag.ContinueOnError)}
@@ -417,7 +418,7 @@ func newFlagSet(name string, stderr io.Writer) *flagSet {
 		flags.VisitAll(func(*flag.Flag) { hasFlags = true })
 		if hasFlags {
 			fmt.Fprintln(flags.Output(), "\nflags:")
-			flags.printDefaults()
+			flags.PrintDefaults()
 		}
 	}
 	return flags
@@ -492,30 +493,6 @@ func (v parsingValue) IsBoolFlag() bool { return isBoolFlag(v.Value) }
 func isBoolFlag(value flag.Value) bool {
 	b, ok := value.(interface{ IsBoolFlag() bool })
 	return ok && b.IsBoolFlag()
-}
-
-// keyDirDefaultVariables are the variables a flag's default is read from whose value is the
-// directory of a file that holds a credential: keygen's and enroll's --out default to
-// AGENT_SECRETS_KEY_DIR, the directory of key.pem.
-var keyDirDefaultVariables = []string{"AGENT_SECRETS_KEY_DIR"}
-
-// printDefaults is PrintDefaults with each default that is the value of a keyDirDefaultVariables
-// variable shown as that variable ("$AGENT_SECRETS_KEY_DIR"), so neither -h nor the usage a
-// failure prints spells the directory: a help text is pasted wherever a person asks for help.
-func (f *flagSet) printDefaults() {
-	shown := map[*flag.Flag]string{}
-	f.VisitAll(func(named *flag.Flag) {
-		for _, variable := range keyDirDefaultVariables {
-			if value := os.Getenv(variable); value != "" && named.DefValue == value {
-				shown[named] = named.DefValue
-				named.DefValue = "$" + variable
-			}
-		}
-	})
-	f.PrintDefaults()
-	for named, value := range shown {
-		named.DefValue = value
-	}
 }
 
 func exitUsage(err error) int {
@@ -778,9 +755,15 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 		return refuseUnexpectedArgument(stderr, "keygen")
 	}
 	flags := newFlagSet("keygen", stderr)
-	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "directory to write key.pem into")
+	// --out's default, AGENT_SECRETS_KEY_DIR, is read after Parse rather than given to the flag,
+	// as enroll's is: PrintDefaults, which -h and every usage error print, would print it, and it
+	// is the directory of key.pem, a file that holds a credential.
+	out := flags.String("out", "", "directory to write key.pem into; AGENT_SECRETS_KEY_DIR when not given")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
+	}
+	if !flagGiven(flags, "out") {
+		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
 	}
 	if *out == "" {
 		fmt.Fprintln(stderr, "agent-secrets keygen: --out (or AGENT_SECRETS_KEY_DIR) is required")
