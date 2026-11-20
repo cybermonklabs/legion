@@ -339,14 +339,17 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 }
 
 // A refresh the issuer refuses is one request to its token endpoint, by HTTP Basic, as the
-// issuer's discovery document allows: the test issuer lists Google's client_secret_post and
-// client_secret_basic.
+// issuer's discovery document allows (the test issuer lists Google's client_secret_post and
+// client_secret_basic), even as the first grant of a code flow: a process that restarted since the
+// person signed in. Nothing has taught that flow a style, so a client that guessed would ask by
+// HTTP Basic and, refused, again in the form.
 func TestCodeFlowRefreshTheIssuerRefusesIsOneTokenRequest(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
+	restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
 	issuer.RevokeGrants()
 	before := len(issuer.TokenRequests())
-	if _, err := flow.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
+	if _, err := restarted.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
 		t.Fatalf("Refresh with a revoked refresh token: err = %v, want ErrGrantRefused", err)
 	}
 	if got := issuer.TokenRequests()[before:]; !slices.Equal(got, []string{"client_secret_basic"}) {

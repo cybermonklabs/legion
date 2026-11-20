@@ -2654,7 +2654,7 @@ envoy_go_race:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
-  - '!packages/envoy/internal/oidc/**/*_test.go'
+  - '!packages/envoy/internal/oidc/oidctest/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'

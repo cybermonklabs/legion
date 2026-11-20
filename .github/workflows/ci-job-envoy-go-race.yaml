@@ -38,7 +38,9 @@ jobs:
     # (internal/broker/natscallout) add two test binaries to that compile and two packages,
     # natscallout and natsgrant, since the rest of their race build (`go list -deps -test -race`)
     # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
-    # where cmd/listener took 785 s here (run 43875539224), so the sum stands.
+    # where cmd/listener took 785 s here (run 43875539224), so the sum stands. The sign-in code
+    # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
+    # on a dev box, all of it in-process against oidctest's issuer.
     timeout-minutes: 45
     services:
       postgres:
@@ -64,8 +66,8 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/broker/natscallout/
+      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
+        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/broker/natscallout/ ./internal/oidc/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
