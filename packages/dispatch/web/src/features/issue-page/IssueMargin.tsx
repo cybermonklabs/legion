@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  type FocusEventHandler,
   type ReactNode,
   type Ref,
   type RefCallback,
   type RefObject,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -82,7 +84,7 @@ import {
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
-import { firstUsable } from "./usable-control";
+import { firstUsable, usableControl } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type MarginSections, useMarginSections } from "./useMarginSections";
@@ -377,6 +379,40 @@ export function IssueMarginPanel({
         retrying={failure.read.isFetching}
       />
     ) : null;
+  // Another session's close disables some of Development's controls - the route's control and
+  // its editor's box, the labels' control, the priority's line, the Repository row, the parent's
+  // editor's box - and takes others off the page - Set or Edit parent issue, Blocked by's control,
+  // Add and its menu - and each takes the focus it held with it to the page's body. No hand-off
+  // above answers that, since each acts only as an element it holds leaves the page or as an
+  // editor closes. So the panel keeps the element the focus last went to in Development, which a
+  // focus anywhere else forgets, and as the issue closes, where that element takes no press now
+  // (`usableControl`) and the focus is still on it or on the body, the focus goes to Development's
+  // heading, where every other hand-off of the section ends. A focus a hand-off already moved to
+  // a control that takes it stays there. An issue closed as the panel is drawn moves nothing.
+  const developmentFocus = useRef<Element | null>(null);
+  const noteDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
+    developmentFocus.current = event.target instanceof Element ? event.target : null;
+  };
+  useEffect(() => {
+    // In the capture phase of the document, so it runs before the section's `onFocus`, which
+    // React calls from its root and which notes the focus again where it went to Development.
+    const forget = () => {
+      developmentFocus.current = null;
+    };
+    document.addEventListener("focusin", forget, true);
+    return () => document.removeEventListener("focusin", forget, true);
+  }, []);
+  const wasClosed = useRef(isClosed);
+  // A layout effect, so it runs in the commit that closes the issue, after the hand-offs above,
+  // and before a browser that moves the focus off a disabled control only later does so.
+  useLayoutEffect(() => {
+    const closing = isClosed && !wasClosed.current;
+    wasClosed.current = isClosed;
+    const left = developmentFocus.current;
+    if (!closing || left === null || usableControl(left)) return;
+    if (document.activeElement !== left && !focusOnDocument()) return;
+    developmentHeading.current?.focus({ preventScroll: true });
+  }, [isClosed]);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -413,6 +449,7 @@ export function IssueMarginPanel({
         drawerBox={drawerBox}
         headingRef={developmentHeading}
         name="development"
+        onFocus={noteDevelopmentFocus}
         sections={sections}
       >
         <Row glyph={<StatusGlyph glyph={STATUS_ROW_SHAPE} />} label={PROPERTY_LABELS.status}>
@@ -872,6 +909,7 @@ function PropertySection({
   drawerBox,
   headingRef,
   name,
+  onFocus,
   sections,
 }: {
   children: ReactNode;
@@ -880,6 +918,9 @@ function PropertySection({
   /** Takes the section's heading, its own control, so a focus can be handed to it. */
   headingRef?: Ref<HTMLButtonElement>;
   name: MarginSection;
+  /** Hears each focus that goes to an element of the section, one its rows draw in a portal
+   *  included. */
+  onFocus?: FocusEventHandler<HTMLElement>;
   sections: MarginSections;
 }): ReactNode {
   const open = sections.isOpen(name);
@@ -906,7 +947,8 @@ function PropertySection({
     return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
   }, [drawerBox, name]);
   return (
-    <section data-margin-section={name}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the section needs no role of its own.
+    <section data-margin-section={name} onFocus={onFocus}>
       <h2>
         <button
           aria-expanded={open}

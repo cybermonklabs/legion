@@ -4086,6 +4086,85 @@ test("the refused route's Retry hands its focus to the editor's box while it is 
   }
 });
 
+// Another session's close disables the route's control, and the focus a reader had on it went to
+// the page's body (`emulateChromiumFocusFixup` moves it there, as Chromium does), since no hand-off
+// of the panel answers a control that turns disabled. It goes to Development's heading, the button
+// that opens and closes the section the row is in.
+test("a close made elsewhere hands the focus of the route's control it disables to Development's heading", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const control = await screen.findByRole("button", { name: "Messages default to no route" });
+    act(() => control.focus());
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(control, "the close left the route's control enabled").toBeDisabled()
+    );
+    expect(
+      document.activeElement,
+      "the close disabled the route's control, and the focus did not go to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// A closed issue's Parent row draws no control, so another session's close takes Set parent issue
+// off the page, and the focus a reader had on it went to the page's body. It goes to Development's
+// heading, the button that opens and closes the section the row is in.
+test("a close made elsewhere hands the focus of Set parent issue it takes away to Development's heading", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const control = await screen.findByRole("button", { name: CONTROL_LABELS.set_parent });
+    act(() => control.focus());
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(control, "the close left Set parent issue on the page").not.toBeInTheDocument()
+    );
+    expect(
+      document.activeElement,
+      "the close took Set parent issue away, and the focus did not go to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// The parent's link takes a press on a closed issue too, so a close made elsewhere leaves the focus
+// a reader has on it where it is.
+test("a close made elsewhere leaves the focus on the parent's link, which still takes a press", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, parent: "CORE-2" });
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const link = await screen.findByRole("link", { name: "CORE-2" });
+    act(() => link.focus());
+    drawIssue(getIssue, queryClient, { ...closedIssue, parent: "CORE-2" });
+    await waitFor(() =>
+      expect(
+        within(rowAt("parent")).queryByRole("button", { name: CONTROL_LABELS.edit_parent }),
+        "the close left Edit parent issue on the page"
+      ).toBeNull()
+    );
+    expect(document.activeElement, "the close moved the focus off the parent's link").toBe(link);
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
 // The pins are read for their words only where there is a pin, so an issue with none costs no
 // request of the questions, comments and messages.
 test("with no pin, Pinned reads None and sends no request", async () => {
