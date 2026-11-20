@@ -133,9 +133,9 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 // section 2.3.1 requires of every issuer); else the form when it names client_secret_post. Either
 // makes every grant one request.
 //
-// With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect, as
-// before: the issuer behind such a document may take the form alone. AutoDetect asks by
-// HTTP Basic and, on any failure, a refusal included, again in the form, and keeps the style of
+// With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect: the
+// issuer behind such a document may take the form alone. AutoDetect asks by HTTP Basic and, on
+// any failure, a refusal included, again in the form, and keeps the style of
 // the first grant that succeeds; so until one has, a refused grant is two requests, and a
 // caller's bound must fit both.
 func tokenAuthStyle(methods []string) oauth2.AuthStyle {

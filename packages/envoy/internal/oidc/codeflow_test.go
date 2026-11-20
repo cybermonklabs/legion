@@ -340,9 +340,7 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 
 // A refresh the issuer refuses is one request to its token endpoint, by HTTP Basic, as the
 // issuer's discovery document allows: the test issuer lists Google's client_secret_post and
-// client_secret_basic. A client that guessed would ask by HTTP Basic, be refused, and ask again
-// with its secret in the form, and a caller whose bound fits one slow request would run out of
-// time before the second answer.
+// client_secret_basic.
 func TestCodeFlowRefreshTheIssuerRefusesIsOneTokenRequest(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
@@ -361,8 +359,8 @@ func TestCodeFlowRefreshTheIssuerRefusesIsOneTokenRequest(t *testing.T) {
 // client_secret_basic, RFC 8414's default, whatever else it names and in whatever order, and in
 // the form where it names client_secret_post alone. Every grant is then one request: a code
 // exchange the issuer refuses, one it grants, and a refresh it refuses. A document that names
-// neither, or no list at all, leaves x/oauth2 to find the style itself, as it does today: it asks
-// by HTTP Basic and, when that fails, again in the form, until a grant has succeeded in one, so
+// neither, or no list at all, leaves x/oauth2 to find the style itself: it asks by HTTP Basic
+// and, when that fails, again in the form, until a grant has succeeded in one, so
 // the refused exchange before the sign-in is two requests (the control that shows TokenRequests
 // sees a second one). Every grant starts from the one config discovery built, so the style the
 // sign-in found is the one the refused refresh uses.
