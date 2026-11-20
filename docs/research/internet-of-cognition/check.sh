@@ -307,13 +307,15 @@
 # whose title the list does not name fails too, so the list stays the committed set of the
 # pages that carry one; the list names each step once, and a title it names twice fails.
 # Every page whose Cost line gives its first step one engineer-day or less, read from the
-# first figure in digits before "engineer-day" on the line, carries one of the three
-# states, as R12 asks, and a page carrying its Cost on more than one line fails; the line
-# that passes counts the pages at one engineer-day or less and those above. The order of
-# the two steps is judged only when every step of the list is landed, on the one commit of
-# this pull request that carries each step's subject, and two commits of one subject fail,
-# naming them; otherwise landed-order passes naming the steps that are not landed, and that
-# the order is not judged for that reason.
+# figure before the first "engineer-day" on the line, in digits or in words (one, a, an,
+# half a, half an, two to ten), carries one of the three states, as R12 asks; a Cost line
+# that names engineer-days with a figure the gate cannot read fails, and so does a page
+# carrying its Cost on more than one line; the line that passes counts the pages at one
+# engineer-day or less and those above. The order of the two steps is judged only when
+# every step of the list is landed, on the one commit of this pull request that carries
+# each step's subject, and two commits of one subject fail, naming them; otherwise
+# landed-order passes naming the steps that are not landed, and that the order is not
+# judged for that reason.
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -643,7 +645,7 @@ citation-published|citations|every citation of a published document names a comm
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
-landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
+landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, a Cost that names engineer-days gives a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
@@ -1734,7 +1736,7 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                               225  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                471  joins the commands of a pipeline
+#   |                                472  joins the commands of a pipeline
 #   ;                                 73  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -1748,8 +1750,8 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   664  a command word and its arguments
-#   pipeline                         471  two or more commands joined by |
+#   simple command                   665  a command word and its arguments
+#   pipeline                         472  two or more commands joined by |
 #   list                             262  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
@@ -1776,14 +1778,14 @@ prepare_env() {
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      34  wrapped in a function that records its status
+#   program curl                      35  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
 #   program dispatch                  77  wrapped in a function that records its status
 #   program echo                      31  wrapped in a function that records its status
 #   program git                      388  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
 #   program grep                     247  wrapped in a function that records its status
-#   program jq                        73  wrapped in a function that records its status
+#   program jq                        74  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
@@ -1814,7 +1816,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 452  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 453  a parameter, its name in braces or not
 #   $?                                27  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -5778,14 +5780,22 @@ mode_landed() {
         # page whose first step is one engineer-day or less to a state: landed, with its
         # commit and its proof, or not landed, with the condition of R12 that stops it and its
         # record; not made, with its refutation, refutes the step and states it too. The cost
-        # is the first engineer-day figure on the page's Cost line, written in digits, as
-        # "1 engineer-day", "about 1 engineer-day, by our estimate" or "about 2
-        # engineer-days". A figure in words, as "about four engineer-days", is not read, as
-        # citation-figures reads none, so a page whose Cost line holds no figure in digits is
-        # no failure here and is counted apart. A page gives its first step one cost, on one
-        # Cost line, as page-parts of --shape holds every field once, so a page carrying the
-        # label on more than one line is a defect of the page and fails here too, naming it,
-        # and none of its lines is read as its cost.
+        # is the figure before the first "engineer-day" or "engineer-days" on the page's Cost
+        # line, the word that stands just before it, written in digits, as "1 engineer-day",
+        # "about 1 engineer-day, by our estimate" or "about 2 engineer-days", or in words: one
+        # engineer-day or less as "one", "a" or "an", or "half a" and "half an", and above one
+        # as "two" to "ten". Unlike citation-figures, which reads no number word because a row
+        # prints digits and a word names no spelling to look for in its output, this reader
+        # reads them: the Cost line is the page's own estimate, which no row prints, and R12's
+        # test of one engineer-day reads it, so a figure written in words is the same cost and
+        # a reader of digits alone would pass "about one engineer-day" as no cost. A Cost line
+        # that names engineer-days with a figure this reader cannot read, as "a few
+        # engineer-days", "eleven engineer-days" or "the engineer-days a converter took", fails,
+        # naming the page and the line, rather than counting as no cost; a Cost line that names
+        # no engineer-day at all, as "one commit", is no failure here and is counted apart. A
+        # page gives its first step one cost, on one Cost line, as page-parts of --shape holds
+        # every field once, so a page carrying the label on more than one line is a defect of
+        # the page and fails here too, naming it, and none of its lines is read as its cost.
         n_cost="$(printf '%s\n' "$page" | grep -cF '**Cost:**')"
         if [ "$n_cost" -gt 1 ]; then
             bad_proof=$((bad_proof + 1))
@@ -5794,18 +5804,34 @@ mode_landed() {
         else
             cost="$(printf '%s\n' "$page" | awk '
                 /\*\*Cost:\*\*/ {
-                    line = $0
-                    sub(/^.*\*\*Cost:\*\*/, " ", line)
-                    if (!match(line, /[^A-Za-z0-9_.][0-9]+(\.[0-9]+)?[ \t]+engineer[- ]days?/)) next
-                    figure = substr(line, RSTART + 1, RLENGTH - 1)
-                    split(figure, word, /[ \t]+/)
-                    print ((word[1] + 0 <= 1) ? "low" : "high") "\t" figure
+                    said = $0
+                    sub(/^.*\*\*Cost:\*\*[ \t]*/, "", said)
+                    line = tolower(said)
+                    if (!match(line, /engineer[- ]days?/)) next
+                    unit = substr(line, RSTART, RLENGTH)
+                    figure = substr(line, 1, RSTART - 1)
+                    gsub(/[^a-z0-9.]+/, " ", figure)
+                    sub(/^ +/, "", figure)
+                    sub(/[ .]+$/, "", figure)
+                    n = split(figure, word, / +/)
+                    last = (n > 0) ? word[n] : ""
+                    before = (n > 1) ? word[n - 1] : ""
+                    if (last ~ /^[0-9]+(\.[0-9]+)?$/) value = last + 0
+                    else if ((last == "a" || last == "an") && before == "half") { value = 0.5; last = "half " last }
+                    else if (last == "one" || last == "a" || last == "an") value = 1
+                    else if (last != "" && index(" two three four five six seven eight nine ten ", " " last " ")) value = 2
+                    else { print "unread\t" substr(said, 1, 240); exit }
+                    print ((value <= 1) ? "low" : "high") "\t" last " " unit
                 }')"
         fi
         case "${cost%%$'\t'*}" in
         low) cost_low=$((cost_low + 1)) ;;
         high) cost_high=$((cost_high + 1)) ;;
         two) ;;
+        unread)
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: a cost is written in digits, or as one, a, an, half a, half an, or two to ten, before engineer-day"
+            ;;
         *) cost_none=$((cost_none + 1)) ;;
         esac
         if [ $((n_landed + n_proven + n_refuted + n_not)) -eq 0 ]; then
@@ -6002,7 +6028,7 @@ mode_landed() {
         local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed"
         [ "$steps_refuted" -gt 0 ] && verdict="$verdict, and $steps_refuted more not made"
         verdict="$verdict, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice; of the $read_pages candidate pages, $cost_low give their first step a cost of one engineer-day or less and each of them carries a state, and $cost_high a cost above one engineer-day"
-        [ "$cost_none" -gt 0 ] && verdict="$verdict, and $cost_none give no cost in engineer-days written in digits, which is not read"
+        [ "$cost_none" -gt 0 ] && verdict="$verdict, and $cost_none give their cost in no engineer-days on their Cost line"
         [ "$steps_landed" -gt 0 ] && verdict="$verdict; each of the $steps_landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
         [ "$steps_not" -gt 0 ] && verdict="$verdict; each of the $steps_not pages not landed names the condition and every record sources.json commits for it, and Dispatch resolves every dispatch:// record among them, $resolved distinct: $not_landed"
         pass landed-proof "$verdict"
