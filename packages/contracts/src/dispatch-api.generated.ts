@@ -1230,7 +1230,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 404 SESSION_NOT_FOUND for a session the caller may not see, as for one nobody holds, before any group is read; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group whose every session the caller may see (session_groups). */
+    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 404 SESSION_NOT_FOUND for a session the caller may not see, as for one nobody holds, before any group is read; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group, among the sessions the caller may see, each by the newest title among the events it may read. The timeline lists every group whose every session the caller may see (session_groups). */
     post: operations["postApiV1DeliverySessionGroups"];
     delete?: never;
     options?: never;

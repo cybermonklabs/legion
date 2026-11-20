@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -21,7 +23,9 @@ import (
 // A session a write names - a group's sessions, what an edit adds or removes - is read as the
 // writer sees it (refuseHiddenSessions) before anything of a group is locked or read: one it may not
 // see is a session nobody holds, refused 404 SESSION_NOT_FOUND, so no refusal names the group that
-// holds it and no write reaches it.
+// holds it and no write reaches it. A session a write does not name is read as the writer sees it
+// too: the title rule holds a group's name only to the sessions the writer sees, each by the
+// titles it reads (groupTitleRule, delivery.CreateSessionGroup), so no refusal names another.
 
 // createDeliverySessionGroupInput is the body of POST /api/v1/delivery/session-groups.
 type createDeliverySessionGroupInput struct {
@@ -63,7 +67,7 @@ func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback(r.Context())
-	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor)
+	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor, groupTitleRule(r.Context()))
 	if err != nil {
 		s.writeSessionGroupError(w, err)
 		return
@@ -123,7 +127,7 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback(r.Context())
-	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor)
+	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor, groupTitleRule(r.Context()))
 	if err != nil {
 		s.writeSessionGroupError(w, err)
 		return
@@ -215,6 +219,18 @@ func (s *server) refuseHiddenSessions(w http.ResponseWriter, r *http.Request, li
 		return true
 	}
 	return false
+}
+
+// groupTitleRule is the read rule a group write's title rule reads under (delivery.CreateSessionGroup):
+// the writer's own (readableEvents), so a name is held only to the sessions it sees, each by the
+// titles it reads; and every event (events.EveryEvent), which holds a name to every session as
+// before, for a writer that sees every object (R9) and for work with no reader in ctx.
+func groupTitleRule(ctx context.Context) events.Readable {
+	reader, ok := readerFromContext(ctx)
+	if !ok || seesEveryObject(reader) {
+		return events.EveryEvent
+	}
+	return readableEvents(reader)
 }
 
 // writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.

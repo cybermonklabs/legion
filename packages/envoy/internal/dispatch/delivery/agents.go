@@ -66,9 +66,9 @@ func resolveSessionTitlesQuery(readable string) string {
 // ever claimed an issue, posted a message/comment/ask, or wrote a document under a title. A
 // session that never stamped one is simply absent from the returned map, and nothing here
 // backfills a name for it; SessionTitle falls back to its bare id. Each title is read among the
-// events readable passes: a read answered to one caller binds that caller's rule, and the group
-// rule, which holds one label to every session whoever writes the group, reads every event
-// (events.EveryEvent).
+// events readable passes: a read answered to one caller binds that caller's rule, and so does the
+// group rule, which holds a group's name to the titles its writer reads (groups.go
+// sessionsTitled); a writer that sees every object reads every event (events.EveryEvent).
 func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string, readable events.Readable) (map[string]string, error) {
 	titles := make(map[string]string, len(sessionIDs))
 	if len(sessionIDs) == 0 {
