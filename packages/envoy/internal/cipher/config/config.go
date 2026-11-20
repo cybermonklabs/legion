@@ -713,6 +713,13 @@ type Config struct {
 	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
+	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
+	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
+	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
+	// start, naming the key. This build reads and checks the list and acts on none of it: every
+	// token exchange, enrollment and exchange entry is decided as with the setting unset. Unset
+	// or blank, no project is private.
+	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
@@ -2385,6 +2392,9 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
+		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
 	}
 	if cfg.EnvoyURL != "" {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
