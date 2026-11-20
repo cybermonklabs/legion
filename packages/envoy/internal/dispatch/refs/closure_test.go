@@ -16,11 +16,11 @@ import (
 )
 
 // mainClosureQuery is main's closure statement at commit d36289cb84b1, the text closureQuery
-// rendered there, held here letter for letter as the oracle of the comparisons below and as the
-// before text of TestStatementTimings' closure pair. Every fragment it was built from
-// (documentOfTarget, documentBlockHeld, documentTarget, askPartLinksFrom, askPartLinksCurrent)
-// is written out, so it names no identifier of the package: a statement built from those would
-// move with them, and the two sides would agree however the reach of the read changed.
+// rendered there, held here letter for letter as the oracle of the comparisons below. Every
+// fragment it was built from (documentOfTarget, documentBlockHeld, documentTarget,
+// askPartLinksFrom, askPartLinksCurrent) is written out, so it names no identifier of the
+// package: a statement built from those would move with them, and the two sides would agree
+// however the reach of the read changed.
 const mainClosureQuery = `
 		with recursive closure as (
 			select case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end as ref_key, 1 as depth, r.from_kind as via_kind, r.from_id as via_id

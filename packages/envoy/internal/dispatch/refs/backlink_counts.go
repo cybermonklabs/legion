@@ -346,11 +346,12 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// every other arm's literal from_kind is a kind nodeLoaders resolves, so the filter would
 		// drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r")),
-		// block_refs_to (to_kind, to_id). The view's own arm lists a block[] pointer's row only
-		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
-		// with no limit is listed without the call; this arm repeats both, so the count is the
-		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
-		// the count the moment it leaves the list, with no rewrite of either.
+		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns. The
+		// view's own arm lists a block[] pointer's row only while block_ref_listed holds, the types
+		// test a typed block's pointer carries, and a row with no limit is listed without the call;
+		// this arm repeats both, so the count is the rows the list shows. A pointer whose target is
+		// retyped out of its allowed types leaves the count the moment it leaves the list, with no
+		// rewrite of either.
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))`),
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to

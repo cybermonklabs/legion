@@ -1110,7 +1110,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 
 // No credential material — no key, no launcher credential, no bearer, no ServiceAccount token —
 // ever reaches a pod or a launch secret: the daemon's login reads its own token from token_file and
-// holds the key it wins only in the *agentsecrets.Client's process memory, which sandbox.Options
+// holds the key it wins only in the *cipher.Client's process memory, which sandbox.Options
 // carry no field for at all. newSecretsLogin hands the runtime only the broker URL, audience and
 // pod token lifetime, and no launch's secrets ever name an AGENT_SECRETS_* variable.
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {

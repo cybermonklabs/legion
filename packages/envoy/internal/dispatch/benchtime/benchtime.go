@@ -24,20 +24,22 @@
 // equality oracle and reads from there rather than copying it again. For every pair of api and
 // docs and for refs' two backlink counts, it is the text the release before migration
 // 20261101182419 ran, except that api's readings named "over main's document arm" take this
-// release's statement with that release's document arm in its place. For refs.Closure, it is
-// main's closure statement at commit d36289cb84b1, which refs holds as mainClosureQuery.
+// release's statement with that release's document arm in its place.
 //
 // Report is that same two-sided reading with no bound, for a statement whose gain is real but
 // smaller than the run-to-run spread of the parts it shares a statement with: the gate then
 // belongs on the piece whose text differs, and the pair over that piece is what fails.
 //
-// A statement whose gain needs an index or a table a migration of this release adds has no such
-// pair: no one schema holds both sides of it. Before and After measure one side of such a
-// statement alone, each line naming the side it read, the after side on this release's schema
-// and the before side on a database migrated from the release before it, which holds none of
-// this release's migrations, 20261101182419 to 20261101182522; that is protocol 2. AfterSeries
-// measures a series alone and bounds nothing, as After does, for a read's new work that no
-// before text did and so has nothing to be measured against.
+// A statement whose gain needs a table a migration of this release adds has no such pair: no
+// one schema holds both sides of it. Before and After measure one side of such a statement
+// alone, each line naming the side it read, the after side on this release's schema and the
+// before side on a database migrated from the release before it, which holds none of this
+// release's migrations, 20261101182419 to 20261101182522; that is protocol 2. A statement whose
+// gain needs an index of this release has a pair all the same: its before side's Setup puts the
+// release before's index back in the measuring transaction, which explain rolls back, so one
+// database holds both sides and the two differ by that setup rather than by their text alone.
+// AfterSeries measures a series alone and bounds nothing, as After does, for a read's new work
+// that no before text did and so has nothing to be measured against.
 //
 // It is an ordinary package rather than a _test.go file because all three statement-owning
 // packages (api, refs, docs) run it and Go cannot share test-only code across packages, which is
@@ -86,10 +88,13 @@ const (
 type Statement struct {
 	SQL  string
 	Args []any
-	// Setup are the `set local` statements the caller runs the statement under, applied in the
-	// measuring transaction before the EXPLAIN. The related-item check's meaning query raises
-	// hnsw.ef_search to 400 for its own transaction, and a measurement under pgvector's default
-	// 40 would be of a statement production never runs.
+	// Setup are the statements the caller runs in the measuring transaction before the EXPLAIN,
+	// which explain rolls back at the end of the run, so nothing a setup changes outlasts it:
+	// `set local` settings, or a change of an index for the one read. The related-item check's
+	// meaning query raises hnsw.ef_search to 400 for its own transaction, and a measurement under
+	// pgvector's default 40 would be of a statement production never runs; the before side of a
+	// read whose gain needs an index of this release puts back the index the release before read
+	// through.
 	Setup []string
 }
 
@@ -145,7 +150,9 @@ func Open(t *testing.T, databaseURL string) *Runner {
 func (r *Runner) Subjects() Subjects { return r.subjects }
 
 // Conn is the measurement connection, for a subject a single package reads and no other does:
-// the mark ids of a document, the ask ids of an issue. A caller reads with it, and never writes.
+// the mark ids of a document, the ask ids of an issue. A caller writes no row with it, and may
+// change an index on it only inside a transaction it rolls back: an index change that committed
+// would outlast the run and change the plan of every statement measured after it.
 func (r *Runner) Conn() *pgx.Conn { return r.conn }
 
 // beforeSide and afterSide name the two sides of a pair in every line this package logs and in
@@ -259,11 +266,12 @@ func (r *Runner) bothSides(t *testing.T, name string, before, after []Statement)
 }
 
 // Before and After measure one side of a statement whose two sides no one schema holds, because
-// its gain needs an index or a table a migration of this release adds: the after text runs only
-// on this release's schema and the before text only on a database migrated from the release
-// before it. Neither sets a bound, since the two readings come from two runs and putting them
-// together is the caller's; each names the side it measured, so neither can be read as the
-// other's.
+// its gain needs a table a migration of this release adds: the after text runs only on this
+// release's schema and the before text only on a database migrated from the release before it.
+// A gain that needs an index alone is a pair, whose before side's Setup puts the release
+// before's index back (Statement.Setup). Neither sets a bound, since the two readings come from
+// two runs and putting them together is the caller's; each names the side it measured, so
+// neither can be read as the other's.
 func (r *Runner) Before(t *testing.T, name string, before Statement) {
 	t.Helper()
 	r.oneSide(t, name, beforeSide, []Statement{before})

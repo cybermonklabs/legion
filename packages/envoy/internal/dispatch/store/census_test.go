@@ -1185,6 +1185,81 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
+// blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
+// build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
+// replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, the version
+// before them, under options. Only version's entry is read, never the verdict of the whole set,
+// for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It
+// answers that entry, and fails the test when that migration is not pending or touches a table of
+// one byte or less, which no limit the tests set could refuse.
+func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOptions) *pgmigrate.MigrationCensus {
+	t.Helper()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, beforeBlockRefsSourceIndex)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, dropBlockRefsTargetIndex), options)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if entry.Migration.Version != version {
+			continue
+		}
+		if len(entry.Tables) == 0 {
+			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to refuse or exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+		return entry
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil
+}
+
+// blockRefsSourceIndex is a plain create index on block_refs, in the runner's one transaction. The
+// census admits it while block_refs, with its indexes and TOAST, is under the limit, which is
+// pgmigrate.CensusTableLimit when the options name none, and refuses it on block_refs' size above
+// the limit, as it refuses any index on such a table
+// (TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit): the build is then to take
+// the concurrent form, which has the size exception of its own.
+func TestCensusAdmitsTheBlockRefsSourceIndexUnderTheTableLimitAndRefusesItAbove(t *testing.T) {
+	under := blockRefsIndexCensus(t, blockRefsSourceIndex, pgmigrate.CensusOptions{})
+	if len(under.Refusals) != 0 || under.TableSizeExemption != "" || under.ConcurrentIndex {
+		t.Errorf("under the limit: refusals %q, exemption %q, concurrent index %v; want the plain build admitted, with no exemption", under.Refusals, under.TableSizeExemption, under.ConcurrentIndex)
+	}
+	if len(under.Tables) != 1 || under.Tables[0].Name != "block_refs" {
+		t.Errorf("tables = %+v, want block_refs alone", under.Tables)
+	}
+	above := blockRefsIndexCensus(t, blockRefsSourceIndex, pgmigrate.CensusOptions{TableLimit: 1})
+	if len(above.Refusals) != 1 || !strings.Contains(above.Refusals[0], "block_refs is ") || !strings.Contains(above.Refusals[0], "above the 1 bytes a table a migration touches may be") {
+		t.Errorf("above the limit: refusals = %q, want block_refs refused on its size", above.Refusals)
+	}
+	if above.TableSizeExemption != "" || above.ConcurrentIndex {
+		t.Errorf("above the limit: exemption %q, concurrent index %v; want neither", above.TableSizeExemption, above.ConcurrentIndex)
+	}
+}
+
+// dropBlockRefsTargetIndex is set local lock_timeout, then a plain drop index, RESTRICT by default,
+// which the census exempts from the table limit on block_refs, the table behind the index it
+// drops, as it exempts 20261114081436's drop. A set is one of the exempt kinds, and one of
+// lock_timeout keeps the census's catalog reads on (pgmigrate's exempt.go), so the exemption names
+// both kinds.
+func TestCensusExemptsTheDropOfTheBlockRefsTargetIndexAtAnyTableSize(t *testing.T) {
+	entry := blockRefsIndexCensus(t, dropBlockRefsTargetIndex, pgmigrate.CensusOptions{TableLimit: 1})
+	if len(entry.Refusals) != 0 {
+		t.Errorf("refusals = %q, want none", entry.Refusals)
+	}
+	if entry.TableSizeExemption != "set and drop index" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "set and drop index")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "block_refs" {
+		t.Errorf("tables = %+v, want block_refs alone", entry.Tables)
+	}
+}
+
 // An enabled event trigger on create trigger runs code of its own when the migration runs, so a
 // migration of only a trigger is not exempt while one exists, and the size refusal names it. A
 // disabled one changes nothing. A drop fires sql_drop as well as ddl_command_start and

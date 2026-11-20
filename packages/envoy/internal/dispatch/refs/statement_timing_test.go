@@ -15,13 +15,11 @@ import (
 // CI never runs a measurement; api/search_bench_test.go and api/related_recall_test.go are gated
 // the same way.
 //
-// Which protocol each statement is under, and why:
+// This change alters no closure statement, so the test holds no closure pair: a pair of one text
+// with itself measures no change, and passes or fails by chance. INFRA-4704's pull request, which
+// changes the closure, adds its closure pairs here.
 //
-//   - The closure is a protocol 1 pair. Its before text is main's closure statement at commit
-//     d36289cb84b1, which closure_test.go holds letter for letter as mainClosureQuery, every
-//     fragment it was built from written out, so the before side stays main's text whatever
-//     closureQuery becomes. Both texts read the same tables and the same indexes, so one schema
-//     holds both sides.
+// Which protocol each statement is under, and why:
 //
 //   - The two backlink counts are protocol 1 pairs. The release before this change counts over
 //     the whole graph_edges view (this package holds that read as backlinkCountOracle, with the
@@ -33,14 +31,6 @@ import (
 func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
-
-	// mainClosureQuery is the before text, the text the release before this change ran, held in
-	// closure_test.go as the equality oracle. It is read from there rather than copied again:
-	// two copies of one statement drift apart, and the oracle is already what a comparison of
-	// this package is held to.
-	runner.Pair(t, "refs.Closure",
-		benchtime.Statement{SQL: mainClosureQuery, Args: []any{subjects.Issue}},
-		benchtime.Statement{SQL: closureQuery, Args: []any{subjects.Issue}})
 
 	// The issue read's count: one issue's inbound edges, the number its page carries.
 	issueCount, ok := backlinkCountSQL("issue", nil)

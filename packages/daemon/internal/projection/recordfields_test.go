@@ -292,8 +292,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
 	}
-	state, err := Project(context.Background(), nil, store,
-		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{
+		Store: store, Project: "LEGION",
+		Claims: []supervise.Claim{current}, Now: projectedAt,
+	})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -306,7 +308,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		document := wire(t, worker.Claim)
 		// `capabilities` is no field of the claim record — it is what the claim's session last
 		// reported — so the claim built here carries none and the view's keys are the record's.
-		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, nil, wire(t, state.Issues[root]))
+		// `updateState` is no one field's either: it is a reading over several of the update
+		// columns (api.UpdateStateOf), so no entry of the table names it and it is named here.
+		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, []string{"updateState"}, wire(t, state.Issues[root]))
 
 		want := wire(t, map[string]any{
 			"session":           current.Session,
@@ -317,6 +321,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateRound":       current.UpdateRound,
 			"updateHead":        current.UpdateHead,
 			"updateReasons":     current.UpdateReasons,
+			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
 			// The turn times and the two causes, with the ready that dates them: the view
 			// carries each as the record holds it.
