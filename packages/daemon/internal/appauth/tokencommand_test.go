@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeBroker is a token_command that answers as `agent-secrets <NAME> [--github-owner O
@@ -579,6 +580,42 @@ func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
 		t.Fatalf("the command ran %d times, want once", strings.Count(string(data), "run"))
+	}
+}
+
+// An InstalledOwners caller whose deadline ended while the token_command ran (the boot's key
+// proof, which then waits and asks again), and who comes back only after the command finished,
+// gets that run's release: the command does not run again. The shared installation read that the
+// first caller started is the one left waiting on the run when it finishes, and it takes the run's
+// result. That read's answer must still reach the caller that comes back, as a finished run's
+// result does (finishedRunKeep), or a grant a person approved is asked for once more.
+func TestTokenModeAnInstalledOwnersCallerBackAfterTheRunFinishedGetsItsRelease(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	runs := filepath.Join(t.TempDir(), "runs")
+	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, now.Add(time.Hour).Format(time.RFC3339))
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
+	defer tokens.Close()
+	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := tokens.InstalledOwners(short, Implement); !errors.Is(err, ErrCommandPending) {
+		t.Fatalf("InstalledOwners past its deadline = %v, want ErrCommandPending", err)
+	}
+	// The command finishes while no caller waits: the shared read the first call started ends.
+	testwait.Eventually(t, "the shared installation read to end once the command finished", func() bool {
+		tokens.mu.Lock()
+		defer tokens.mu.Unlock()
+		_, reading := tokens.pendingInstallations[Implement]
+		return !reading
+	})
+	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelLater()
+	owners, err := tokens.InstalledOwners(later, Implement)
+	if err != nil || !slices.Equal(owners, []string{"acme"}) {
+		t.Fatalf("the caller back after the run finished = %v, %v; want acme, the finished run's release", owners, err)
+	}
+	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
+		t.Fatalf("the command ran %d times, want once: the caller back after the run finished ran it again", strings.Count(string(data), "run"))
 	}
 }
 
