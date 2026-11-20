@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4581
+body: The daemon API fixtures (`fixtures/daemon-api/version.json`, `state.json`) carry contract 187.
