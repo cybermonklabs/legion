@@ -4134,6 +4134,128 @@ awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f &&
 case_result "a page whose first step is 1 engineer-day and that states no landing fails --landed, naming the page" \
     "landed-[a-z-]+: .*Structured metadata on an Envoy message" "$(fixture_run "$dir" --landed)"
 
+# 137. A landed list names each step once (the architect's order of round 41, on the readers
+# that take a first match). Until round 41 mode_landed read the entry for a page's title with
+# jq select(.title == $t) | head -1, so a list that named one title twice held the page to
+# its first entry alone: the second entry's commit and proof command were never compared
+# with the page, and the list's own step loop passed it, since the page carries the Landed
+# line and the sentence it published stands in the tree. The case appends to the fixture's
+# landed list a second entry of its one step's title, landed, with the base commit and the
+# proof `false`, and runs --landed, which must fail landed-proof, naming the title and that
+# the list names it twice.
+dir="$(fresh landed-title-twice)"
+sources="$dir/repo/docs/research/internet-of-cognition/sources.json"
+jq --arg base "$(cat "$dir/base")" '.landed += [.landed[0] | .commit = $base | .command = "false"]' "$sources" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$sources"
+[ "$(jq '[.landed[] | select(.title == "An execution record under the gen_ai. names")] | length' "$sources")" = 2 ] || {
+    printf 'FAIL the second entry of the step could not be planted in the fixture landed list\n'
+    exit 1
+}
+case_result "a landed list naming one step's title twice fails --landed, naming the title" \
+    "landed-proof: sources\\.json.s landed list names the step .An execution record under the gen_ai\\. names. 2 times" "$(fixture_run "$dir" --landed)"
+
+# 138. A question of mas-lab is answered once, in one evidence file (the architect's order of
+# round 41: a second of what a file's shape allows one of is a defect of the file, refused by
+# name, and no reader learns to read several). Until round 41 mas-lab-question read only the
+# first file grep -rl found holding a question (head -1), in the order the file system lists
+# the directory, so a second file answering the same question was never read. The case
+# appends to the fixture's library-standard.md, which sorts after ctl.md, the file that
+# answers Question 1, a second answer to Question 1, which cites the row ctl.md's does, so
+# that only the second answer itself is the fault, and runs --replay, which must fail
+# mas-lab-question, naming the question and both files.
+dir="$(fresh mas-lab-second-answer)"
+printf '\n## Question 1: can its specification format express Legion%ss phase workflow?\n\nYes, by a reading of its schema [f-project-1].\n' "'" \
+    >>"$dir/repo/docs/research/internet-of-cognition/mas-lab/library-standard.md"
+[ "$(grep -rlF "Question 1: can its specification format express Legion's phase workflow?" "$dir/repo/docs/research/internet-of-cognition/mas-lab" | wc -l)" = 2 ] || {
+    printf 'FAIL the second answer to Question 1 could not be planted in the fixture mas-lab/library-standard.md\n'
+    exit 1
+}
+case_result "a question of mas-lab that a second file answers fails --replay, naming the question and both files" \
+    "mas-lab-question: .Question 1: can its specification format express Legion.s phase workflow\\?. stands on 2 lines of the evidence files of mas-lab, ctl\\.md \\(1\\), library-standard\\.md \\(1\\)" "$(fixture_run "$dir" --replay)"
+
+# 139. A line range a citation names is held to its file by both its ends, a bound (the
+# architect's order of round 41). Until round 41 resolve_symbol read the first number of a
+# symbol's line range alone (head -1), so 'handoff.go:3-9' resolved in a file of three
+# lines, and so did a range whose end stands before its start. The case writes the symbol
+# of the fixture's row f-our-1, which cites packages/daemon/internal/api/handoff.go, a file
+# of three lines, in three forms and runs --citations over each: 3-9, which runs past the
+# file's end, must fail citation-our-code, naming the row, the symbol and the file's length;
+# 3-1 must fail it, naming the range as one that ends before it starts; and 1-3, the honest
+# form, passes it.
+for form in past-end reversed honest; do
+    case "$form" in
+    past-end) symbol='handoff.go:3-9' ;;
+    reversed) symbol='handoff.go:3-1' ;;
+    honest) symbol='handoff.go:1-3' ;;
+    esac
+    dir="$(fresh "line-range-$form")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    sed -i "/\"id\":\"f-our-1\"/s/\"symbol\":\"TesterVerdictRequired\"/\"symbol\":\"$symbol\"/" "$claims_copy"
+    grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF "\"symbol\":\"$symbol\"" || {
+        printf 'FAIL the %s range could not be planted in the fixture row f-our-1\n' "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    past-end)
+        case_result "a line range that runs past its file's end fails --citations, naming the row, the range and the file's length" \
+            "citation-our-code: f-our-1 cites handoff\\.go:3-9, and packages/daemon/internal/api/handoff\\.go holds 3 lines" "$out"
+        ;;
+    reversed)
+        case_result "a line range whose end stands before its start fails --citations, naming the row and the range" \
+            "citation-our-code: f-our-1 cites handoff\\.go:3-1, a line range that ends before it starts" "$out"
+        ;;
+    honest) honest_result "a line range inside its file passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 140. The order of the two steps is judged on one commit of each (the architect's order of
+# round 41). Until round 41 landed_commit_of took the newest commit of the pull request whose
+# subject carries the phrase it reads (grep -m1), so with two commits of the shortfall rows'
+# subject the order was judged on one of them and the other was never read: a first rows
+# commit made after the combining rule would stand unjudged beside a later one. The case
+# writes into the fixture's history, whose one landed step leaves the order judged, a second
+# commit with the shortfall rows' subject between the first and the combining rule's commit,
+# so either rows commit is an ancestor of the rule's, and runs --landed, which must fail
+# landed-order, naming the two commits, rather than judge the order on a guess.
+dir="$(fresh rows-subject-twice)"
+(
+    cd "$dir/repo" || exit 1
+    rule="$(git log --format=%H -1 --grep='combines the reviewer')"
+    head="$(git rev-parse HEAD)"
+    git checkout --quiet --detach "$rule^" &&
+        git commit --quiet --allow-empty -m "feat(skills): each review round's two graders are recorded as two rows, not one verdict" &&
+        git cherry-pick --allow-empty "$rule" "$head" >/dev/null &&
+        git branch -f main HEAD && git checkout --quiet main
+) || {
+    printf 'FAIL the second commit of the shortfall rows could not be planted in the fixture history\n'
+    exit 1
+}
+[ "$(git -C "$dir/repo" log --format=%s | grep -c 'two graders are recorded as two rows')" = 2 ] &&
+    [ -z "$(git -C "$dir/repo" status --porcelain)" ] || {
+    printf 'FAIL the fixture history does not hold two commits of the shortfall rows with a clean tree\n'
+    exit 1
+}
+case_result "two commits of the pull request carrying the shortfall rows' subject fail --landed, naming both" \
+    "landed-order: 2 commits of this pull request carry the subject of the shortfall rows" "$(fixture_run "$dir" --landed)"
+
+# 141. A page gives its first step one cost, on one Cost line, in --landed too (the
+# architect's rule of round 41: a second of what a page allows one of is a defect of the
+# page, refused by name, and no reader learns to read several). As round 41 first wrote it,
+# --landed read every Cost line of a page and held the page to a state when any of them
+# was one engineer-day or less, so a page with two Cost lines, each above a day, passed
+# --landed with neither refused. The case writes a second Cost line, 3 engineer-days, under
+# the fixture's Envoy page, whose Cost is 2 engineer-days and which carries no state, and
+# runs --landed, which must fail landed-proof, naming the page and its two Cost lines.
+dir="$(fresh cost-twice)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** 2 engineer-days\n- **Cost:** 3 engineer-days/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* /{c++} END{exit !(c == 2 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the second Cost line could not be planted on the fixture Envoy page\n'
+    exit 1
+}
+case_result "a page carrying its Cost on two lines fails --landed, naming the page" \
+    "landed-proof: the page .Structured metadata on an Envoy message. carries its Cost on 2 lines" "$(fixture_run "$dir" --landed)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

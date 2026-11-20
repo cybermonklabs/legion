@@ -111,7 +111,8 @@
 # The expected-set rule: no assertion passes on no input, and no count that decides a
 # floor is read from the live input alone. Every count an assertion holds over is held to
 # a committed expected set or floor: each step of sources.json's landed list to a page of
-# the judgement that carries the state the list commits for it, Landed or Not landed; the
+# the judgement that carries the state the list commits for it, Landed, Landed: not made or
+# Not landed, and each page that carries a state to a step of that list; the
 # candidate pages to PAGE_FLOOR and PAGE_CAP, three and seven, and every assertion over the
 # pages (their eleven parts, their verdicts, what each commits us to, a refutation) to that
 # floor; the three fixed pages; the six named mas-lab directories and the three questions;
@@ -299,11 +300,20 @@
 # requests that record why; its page says Not landed with that condition word for word and
 # names each record, and each dispatch:// record resolves through live_read, since
 # --citations resolves the references of this directory's files and not the judgement's.
-# A page carries one state: Landed with Proven by, Landed: not made with Refuted by, or
-# Not landed; a page carrying two, or a line of a state twice, fails, so no reader that
-# takes a page's first line of a kind is fooled by a second. The order of the two steps is
-# judged only when every step of the list is landed; otherwise landed-order passes naming
-# the steps that are not, and that the order is not judged for that reason.
+# A step whose state is refuted has a page that says Landed: not made with its Refuted by
+# line. A page carries one state: Landed with Proven by, Landed: not made with Refuted by,
+# or Not landed; a page carrying two, or a line of a state twice, fails, so no reader that
+# takes a page's first line of a kind is fooled by a second, and a page carrying a state
+# whose title the list does not name fails too, so the list stays the committed set of the
+# pages that carry one; the list names each step once, and a title it names twice fails.
+# Every page whose Cost line gives its first step one engineer-day or less, read from the
+# first figure in digits before "engineer-day" on the line, carries one of the three
+# states, as R12 asks, and a page carrying its Cost on more than one line fails; the line
+# that passes counts the pages at one engineer-day or less and those above. The order of
+# the two steps is judged only when every step of the list is landed, on the one commit of
+# this pull request that carries each step's subject, and two commits of one subject fail,
+# naming them; otherwise landed-order passes naming the steps that are not landed, and that
+# the order is not judged for that reason.
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -610,9 +620,9 @@ absence-still-empty|replay|every absence search reads its corpus and still finds
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
 citation-row|replay|every citation of the two records under check has a row with a mark|a verification row deleted
 mas-lab-directory|replay|each of the six named directories of mas-lab has an evidence file at the clone commit|the evidence file of one directory deleted
-mas-lab-question|replay|each of the three questions of mas-lab is answered by a file naming its evidence|an answer with no evidence named
+mas-lab-question|replay|each of the three questions of mas-lab is answered once, in one evidence file, and the answer names its evidence|an answer with no evidence named
 interview-fixed-row|replay|the four rows the specification fixes for the authors' account are present by identifier|one fixed row deleted
-our-data-input|replay|each test against our own records names the Dispatch key or the commit its input came from|a test whose input is a fixture of the project
+our-data-input|replay|each test against our own records names one input, on one Input line, and it is the Dispatch key or the commit that input came from|a test whose input is a fixture of the project
 count-reruns|replay|the count of our own failures runs again: coordination/count.py, run through the gate's live read, prints evidence/count.json again, every figure equal but feed.events_read, the rows of the whole feed it read up to the run, which grows with the feed and is no figure of the window|a figure of the window in evidence/count.json changed by one
 count-window|replay|the count of our own failures names its window as two instants, in the window.json the count was run over|the window deleted
 count-class|replay|the count classes are the three the specification names, in count.md and in the count coordination/count.py prints again|a fourth class
@@ -627,15 +637,15 @@ front-page|shape|the front page carries the ranking, the one thing to do first, 
 question-list|shape|every page's question is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
+citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a line range whose end stands at or after its start and within the file, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
-landed-proof|landed|each step of sources.json's landed list has a page carrying the state the list commits for it and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
+landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
-landed-order|landed|when every step of sources.json's landed list is landed, the commit of the shortfall rows is an ancestor of the commit of the combining rule; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
+landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
@@ -1674,7 +1684,11 @@ coverage_report() {
   quoted words and holds each figure of a sentence that cites a row to the output or the
   command of a row it cites; the judgement of what they support is the reader's. A number
   written in words is not read, so a measured figure is written in digits, and an
-  estimate carries "by our estimate", which no row is held to print.
+  estimate carries "by our estimate", which no row is held to print. Nor does
+  citation-figures prove that a figure is the right one: a figure counts as printed when it
+  stands anywhere in a cited row's output or command, whatever it measures there, so a
+  printed number the sentence misnames passes, and so do two figures swapped between their
+  places.
 - whether a candidate that cannot be argued in one page was left off the list, and whether
   one fact is written once with the other half linking to it. Both are a reviewer's
   reading, and the plan of this issue names them so that nobody reads this gate as
@@ -2117,6 +2131,12 @@ failed_read() {
     for ((i = 0; i < ${#stages[@]}; i++)); do
         [ "${stages[$i]}" = 0 ] && continue
         declared=""
+        # The first declaration of the stage's text is its only one: the text is the one
+        # simple command whose status the stage carries (final_stage), and the classifier
+        # refuses that command before the row runs when it declares IOC_EXPECT_STATUS twice,
+        # as a prefix before another ("IOC_EXPECT_STATUS before another prefix") or as an
+        # argument ("an argument that assigns IOC_EXPECT_STATUS"), so no second one stands
+        # here unread.
         [[ "${texts[$i]}" =~ (^|\ )IOC_EXPECT_STATUS=([0-9]+)(\ |$) ]] && declared="${BASH_REMATCH[2]}"
         declared_status_holds "${stages[$i]}" "$declared" && continue
         search_missed "${texts[$i]}" "${stages[$i]}" && continue
@@ -4493,19 +4513,30 @@ replay_mas_lab() {
     done
     [ "$missing" -eq 0 ] && pass mas-lab-directory "each of the six named directories of mas-lab has an evidence file at the clone commit"
 
-    local unanswered=0 question
+    # A question is answered once, in one evidence file: the evidence's shape allows one
+    # answer to each, so a second line holding the question, in another file or in the same
+    # one, is a defect of the evidence, and fails, naming each file that holds it and how
+    # many times. A reader of the first file grep -rl lists (head -1) left a second answer
+    # unread, and which file it read was the file system's order. The one answer runs from
+    # the line that holds the question to the next line starting "## ", and names its
+    # evidence when it cites at least one claim id of a row of claims.jsonl.
+    local unanswered=0 question holders count file
     for question in \
         "Question 1: can its specification format express Legion's phase workflow?" \
         "Question 2: could its experiment harness measure whether a change to a role's prompt or skill made Legion better?" \
         "Question 3: what its boundary enforcement does that our refusals do not"; do
-        local file
-        file="$(grep -rl -F "$question" "$EVIDENCE/mas-lab/" 2>/dev/null | head -1)"
-        if [ -z "$file" ]; then
+        holders="$(grep -rcF -- "$question" "$EVIDENCE/mas-lab/" 2>/dev/null | grep -v ':0$' | sort)"
+        count="$(printf '%s\n' "$holders" | awk -F: 'NF { n += $NF } END { print n + 0 }')"
+        if [ "$count" -eq 0 ]; then
             unanswered=$((unanswered + 1))
             fail mas-lab-question "no evidence file answers: $question"
             continue
+        elif [ "$count" -gt 1 ]; then
+            unanswered=$((unanswered + 1))
+            fail mas-lab-question "'$question' stands on $count lines of the evidence files of mas-lab, $(printf '%s\n' "$holders" | sed 's#^.*/##; s/:\([0-9]*\)$/ (\1)/' | paste -sd, - | sed 's/,/, /g'), and a question is answered once, in one file"
+            continue
         fi
-        # The answer names its evidence: at least one claim id of a row of claims.jsonl.
+        file="${holders%:*}"
         local named=0 cid
         for cid in $(sed -n "/$(printf '%s' "$question" | sed 's/[][\.*^$\/]/\\&/g')/,/^## /p" "$file" | grep -o '\[[a-z0-9-]*\]' | tr -d '[]' | sort -u); do
             grep -qx "$cid" "$ids" && named=1
@@ -4515,7 +4546,7 @@ replay_mas_lab() {
             fail mas-lab-question "the answer to '$question' in ${file##*/} names no row of claims.jsonl"
         }
     done
-    [ "$unanswered" -eq 0 ] && pass mas-lab-question "each of the three questions is answered by a file that names its evidence"
+    [ "$unanswered" -eq 0 ] && pass mas-lab-question "each of the three questions is answered once, in one evidence file, and the answer names its evidence"
 }
 
 replay_interview() {
@@ -4538,8 +4569,16 @@ replay_interview() {
 
 replay_our_data() {
     # The three tests against our own records the specification names, each a file of
-    # tests/; a test whose file is missing fails, so an empty directory is no pass.
-    local bad=0 file name
+    # tests/; a test whose file is missing fails, so an empty directory is no pass. R7 gives
+    # each candidate one test against our own records, and a test names its input, so a
+    # file's input is read from every line that carries the Input label, never from the
+    # first alone (grep -m1), which passed a second Input line naming a fixture of the
+    # project. A file with no Input line names no input, and a file with more than one
+    # names more inputs than its one test has: it fails, naming the file and the count, and
+    # none of its lines is taken for the input, rather than each line being held to the
+    # rule below, which would pass a test naming two records of ours as its input. The one
+    # Input line is held to a record of ours: a Dispatch key or a commit, and no fixture.
+    local bad=0 file name input count
     for name in concord scope mas-lab; do
         file="$EVIDENCE/tests/$name.md"
         [ -s "$file" ] || {
@@ -4547,13 +4586,17 @@ replay_our_data() {
             fail our-data-input "the test $name against our own records has no file tests/$name.md"
             continue
         }
-        local input
-        input="$(grep -m1 '^Input:' "$file" || true)"
-        if [ -z "$input" ]; then
+        count="$(grep -c '^Input:' "$file" || true)"
+        if [ "${count:-0}" -eq 0 ]; then
             bad=$((bad + 1))
             fail our-data-input "${file##*/} names no input"
             continue
+        elif [ "$count" -gt 1 ]; then
+            bad=$((bad + 1))
+            fail our-data-input "${file##*/} carries $count Input lines, and a test against our own records names one input, so none of them is read as its input: $(grep '^Input:' "$file" | paste -sd' ' - | head -c 240)"
+            continue
         fi
+        input="$(grep '^Input:' "$file")"
         if ! printf '%s' "$input" | grep -qE 'dispatch://[A-Z]+-[0-9]+|[0-9a-f]{40}'; then
             bad=$((bad + 1))
             fail our-data-input "${file##*/} names an input that is neither a Dispatch key nor a commit of ours: $input"
@@ -4563,7 +4606,7 @@ replay_our_data() {
             fail our-data-input "${file##*/} drives a fixture of the project rather than a record of ours: $input"
         fi
     done
-    [ "$bad" -eq 0 ] && pass our-data-input "each test against our own records names the Dispatch key or the commit its input came from"
+    [ "$bad" -eq 0 ] && pass our-data-input "each test against our own records names one input, on one Input line, and it is the Dispatch key or the commit that input came from"
 }
 
 # The count of our own failures, taken again. coordination/count.py is the walker that
@@ -5040,7 +5083,8 @@ PYTHON
 # resolve_symbol <id> <repo root> <commit> <pathspec> <symbol>
 #
 # How a symbol is read, which is a reading of its own and so is written here. A symbol
-# ending in a line or a line range resolves when the file holds that line. Otherwise the
+# ending in a line resolves when the file holds that line, and one ending in a line range
+# when the range ends at or after its start and the file holds its last line. Otherwise the
 # symbol is split on commas and on the word "and", and each part is looked for in the
 # paths the citation names: as literal text, as a line, as a file name, as a prefixed
 # name, as a path, as a regular expression where the part holds `|` or `*`, and as the
@@ -5053,17 +5097,31 @@ PYTHON
 resolve_symbol() {
     local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part
     # A symbol that is a line or a line range, written `name.py:88-97` or as the bare
-    # range the record writes beside a file, resolves when the file holds that line.
-    local line_ref
-    line_ref="$(printf '%s' "$symbol" | grep -oE '(^|:)[0-9]+(-[0-9]+)?[^0-9]*$' | grep -oE '[0-9]+' | head -1)"
+    # range the record writes beside a file, resolves when the file holds that line, or the
+    # range's last line: both ends of a range are read, never its start alone, which passed
+    # a range running past the file's end, and a range whose end stands before its start
+    # names no lines and fails.
+    local line_ref="" line_end="" lines
+    if [[ "$symbol" =~ (^|:)([0-9]+)(-([0-9]+))?[^0-9]*$ ]]; then
+        line_ref="${BASH_REMATCH[2]}" line_end="${BASH_REMATCH[4]:-${BASH_REMATCH[2]}}"
+    fi
     if [ -n "$line_ref" ] && [ -z "${file##*[*/]}" ]; then
         line_ref=""
     fi
     if [ -n "$line_ref" ]; then
-        if [ "$(git -C "$root" show "$commit:${file%%:*}" 2>/dev/null | wc -l)" -ge "$line_ref" ]; then
+        if [ "$line_end" -lt "$line_ref" ]; then
+            fail "$family" "$id cites $symbol, a line range that ends before it starts"
+            return 1
+        fi
+        lines="$(git -C "$root" show "$commit:${file%%:*}" 2>/dev/null | wc -l)"
+        if [ "$lines" -ge "$line_end" ]; then
             return 0
         fi
-        fail "$family" "$id cites $symbol, and $file holds no such line at $commit"
+        if [ "$line_end" = "$line_ref" ]; then
+            fail "$family" "$id cites $symbol, and $file holds no such line at $commit"
+        else
+            fail "$family" "$id cites $symbol, and $file holds $lines lines at $commit, so the range $line_ref-$line_end runs past its end"
+        fi
         return 1
     fi
     # A citation may name more than one file. Each part of the symbol is looked for in
@@ -5679,7 +5737,7 @@ mode_landed() {
     local bad_proof=0 bad_refutation=0 refuted=0 page title commit command history entry want_commit want_command named
     local read_pages=0 found="$RUN_SCRATCH/landed-titles" steps="$RUN_SCRATCH/landed-steps"
     local unresolved="$RUN_SCRATCH/landed-unresolved" record resolved=0 state carried
-    local n_landed n_proven n_refuted n_not line said condition
+    local n_landed n_proven n_refuted n_not n_cost line said condition cost cost_low=0 cost_high=0 cost_none=0
     history="$(history_ref)"
     judgement_load
     : >"$found"
@@ -5695,6 +5753,14 @@ mode_landed() {
         live_read "Dispatch, the read of $record" "$RUN_SCRATCH/landed-record.out" dispatch_ref_read "$record" ||
             printf '%s\t%s\n' "$record" "$(cat "$RUN_SCRATCH/landed-record.out" "$RUN_SCRATCH/landed-record.out.err" | head -1 | head -c 160)" >>"$unresolved"
     done < <(jq -r 'select(.state == "not_landed") | .record // [] | if type == "array" then .[] else empty end | strings | select(startswith("dispatch://"))' "$steps" | sort -u)
+    # The list names each step once: a page is held to the entry of its title, so a title the
+    # list named twice would hold the page to the first entry jq finds and leave the other's
+    # commit and proof unread.
+    local named_twice named_times
+    while IFS=$'\t' read -r named_times named_twice; do
+        bad_proof=$((bad_proof + 1))
+        fail landed-proof "sources.json's landed list names the step '$named_twice' $named_times times, and the list names each step once, so which entry its page is held to would be a guess"
+    done < <(jq -r '.title // ""' "$steps" | sort | uniq -cd | sed 's/^ *\([0-9]*\) /\1\t/')
     while IFS= read -r -d $'\f' page; do
         read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
@@ -5706,7 +5772,48 @@ mode_landed() {
         n_proven="$(printf '%s\n' "$page" | grep -cE '\*\*Proven by:\*\*')"
         n_refuted="$(printf '%s\n' "$page" | grep -cE '\*\*Refuted by:\*\*')"
         n_not="$(printf '%s\n' "$page" | grep -cE '\*\*Not landed:\*\*')"
-        [ $((n_landed + n_proven + n_refuted + n_not)) -gt 0 ] || continue
+        # R12, read as the architect's reading beside the specification records it
+        # (dispatch://INFRA-3134/comment/de485c44-6b40-4018-8ac5-9cde3e5cdd65), holds every
+        # page whose first step is one engineer-day or less to a state: landed, with its
+        # commit and its proof, or not landed, with the condition of R12 that stops it and its
+        # record; not made, with its refutation, refutes the step and states it too. The cost
+        # is the first engineer-day figure on the page's Cost line, written in digits, as
+        # "1 engineer-day", "about 1 engineer-day, by our estimate" or "about 2
+        # engineer-days". A figure in words, as "about four engineer-days", is not read, as
+        # citation-figures reads none, so a page whose Cost line holds no figure in digits is
+        # no failure here and is counted apart. A page gives its first step one cost, on one
+        # Cost line, as page-parts of --shape holds every field once, so a page carrying the
+        # label on more than one line is a defect of the page and fails here too, naming it,
+        # and none of its lines is read as its cost.
+        n_cost="$(printf '%s\n' "$page" | grep -cF '**Cost:**')"
+        if [ "$n_cost" -gt 1 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries its Cost on $n_cost lines, and a page gives its first step one cost, so none of them is read as its cost"
+            cost=two
+        else
+            cost="$(printf '%s\n' "$page" | awk '
+                /\*\*Cost:\*\*/ {
+                    line = $0
+                    sub(/^.*\*\*Cost:\*\*/, " ", line)
+                    if (!match(line, /[^A-Za-z0-9_.][0-9]+(\.[0-9]+)?[ \t]+engineer[- ]days?/)) next
+                    figure = substr(line, RSTART + 1, RLENGTH - 1)
+                    split(figure, word, /[ \t]+/)
+                    print ((word[1] + 0 <= 1) ? "low" : "high") "\t" figure
+                }')"
+        fi
+        case "${cost%%$'\t'*}" in
+        low) cost_low=$((cost_low + 1)) ;;
+        high) cost_high=$((cost_high + 1)) ;;
+        two) ;;
+        *) cost_none=$((cost_none + 1)) ;;
+        esac
+        if [ $((n_landed + n_proven + n_refuted + n_not)) -eq 0 ]; then
+            if [ "${cost%%$'\t'*}" = low ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' gives its first step a cost of ${cost#*$'\t'}, one engineer-day or less, and carries no state: R12 holds such a page landed, with its commit and its proof, or not landed, with the condition that stops it and its record, or not made, with its refutation"
+            fi
+            continue
+        fi
         carried="$n_landed Landed, $n_proven Proven by, $n_refuted Refuted by and $n_not Not landed"
         if [ "$n_landed" -gt 1 ] || [ "$n_proven" -gt 1 ] || [ "$n_refuted" -gt 1 ] || [ "$n_not" -gt 1 ]; then
             bad_proof=$((bad_proof + 1))
@@ -5738,23 +5845,24 @@ mode_landed() {
                 bad_refutation=$((bad_refutation + 1))
                 fail landed-refutation "the page '$title' says its step is not made and carries no command with output"
             }
-            continue
         fi
         # The proof, or the reason, is the one this tree commits for the page's title, never
-        # the text of the live page, which no reviewer of this pull request reads. A page whose
-        # state is not the one the list commits for its title is failed once, by the list's
-        # step below.
+        # the text of the live page, which no reviewer of this pull request reads. A page that
+        # carries any of the three states is a step of the list, which stays the committed
+        # expected set of the pages that carry one. A page whose state is not the one the list
+        # commits for its title is failed once, by the list's step below.
         entry="$(jq -c --arg t "$title" 'select(.title == $t)' "$steps" | head -1)"
-        if [ -z "$entry" ] && [ "$state" = landed ]; then
+        if [ -z "$entry" ]; then
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' carries a Landed line, and the landed list of sources.json commits no proof for that title"
-            continue
-        elif [ -z "$entry" ]; then
-            bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' says its step is not landed, and the landed list of sources.json commits no step of that title"
+            case "$state" in
+            landed) fail landed-proof "the page '$title' carries a Landed line, and the landed list of sources.json commits no proof for that title" ;;
+            refuted) fail landed-proof "the page '$title' says its step is not made, and the landed list of sources.json commits no step of that title" ;;
+            *) fail landed-proof "the page '$title' says its step is not landed, and the landed list of sources.json commits no step of that title" ;;
+            esac
             continue
         fi
         [ "$(printf '%s' "$entry" | jq -r '.state // ""')" = "$state" ] || continue
+        [ "$state" != refuted ] || continue
         if [ "$state" = not_landed ]; then
             # The page says the condition sources.json commits, word for word, before the
             # records in brackets, and names each record the list commits for the step.
@@ -5806,13 +5914,14 @@ mode_landed() {
         fi
     done < <(page_blocks)
     # The expected set is committed: each step sources.json's landed list names is held to
-    # a page of the judgement that carries the state the list commits for it, so a
-    # judgement that lost a Landed or Not landed line, or a page, or every page, is no pass,
-    # and neither is a page that says Landed for a step the list says is not. A list with no
-    # step is no pass either. A landed step stands in this tree: each sentence it published
-    # is in its file in the checkout, ROOT, so a change the tree no longer carries is no
-    # landed step, whatever its commit and its proof say.
-    local steps_read=0 steps_landed=0 steps_not=0 not_landed="" page_state path sentence published
+    # a page of the judgement that carries the state the list commits for it, landed,
+    # not_landed or refuted, the last a page that says Landed: not made with its Refuted by
+    # line, so a judgement that lost a Landed or Not landed line, or a page, or every page,
+    # is no pass, and neither is a page that says Landed for a step the list says is not. A
+    # list with no step is no pass either. A landed step stands in this tree: each sentence
+    # it published is in its file in the checkout, ROOT, so a change the tree no longer
+    # carries is no landed step, whatever its commit and its proof say.
+    local steps_read=0 steps_landed=0 steps_not=0 steps_refuted=0 not_landed="" page_state path sentence published
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
         steps_read=$((steps_read + 1))
@@ -5867,9 +5976,16 @@ mode_landed() {
             done <"$unresolved"
             not_landed="${not_landed:+$not_landed; }'$title', not landed because it $condition"
             ;;
+        refuted)
+            steps_refuted=$((steps_refuted + 1))
+            [ "$page_state" = refuted ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits as not made, has no page of the judgement that says Landed: not made${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            ;;
         *)
             bad_proof=$((bad_proof + 1))
-            fail landed-proof "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed or not_landed"
+            fail landed-proof "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed, not_landed or refuted"
             ;;
         esac
     done <"$steps"
@@ -5882,7 +5998,10 @@ mode_landed() {
         fail landed-refutation "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so no page's refutation is judged"
     fi
     if [ "$bad_proof" -eq 0 ]; then
-        local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice"
+        local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed"
+        [ "$steps_refuted" -gt 0 ] && verdict="$verdict, and $steps_refuted more not made"
+        verdict="$verdict, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice; of the $read_pages candidate pages, $cost_low give their first step a cost of one engineer-day or less and each of them carries a state, and $cost_high a cost above one engineer-day"
+        [ "$cost_none" -gt 0 ] && verdict="$verdict, and $cost_none give no cost in engineer-days written in digits, which is not read"
         [ "$steps_landed" -gt 0 ] && verdict="$verdict; each of the $steps_landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
         [ "$steps_not" -gt 0 ] && verdict="$verdict; each of the $steps_not pages not landed names the condition and every record sources.json commits for it, and Dispatch resolves every dispatch:// record among them, $resolved distinct: $not_landed"
         pass landed-proof "$verdict"
@@ -5894,18 +6013,24 @@ mode_landed() {
     landed_third_change
 }
 
+# landed_commit_of <phrase>; every commit of this pull request whose subject carries
+# <phrase>, one hash per line, newest first. It prints each of them and never the newest
+# alone, since a second commit of one subject leaves which of them is the step a guess.
 landed_commit_of() {
     # shellcheck disable=SC2046
-    git -C "$ROOT" log --no-walk --format='%H %s' $(pr_commits) | grep -m1 -F "$1" | cut -d' ' -f1
+    git -C "$ROOT" log --no-walk --format='%H %s' $(pr_commits) | grep -F "$1" | cut -d' ' -f1
 }
 
 # landed_order; the order R12 names, the shortfall rows before the rule that combines the
 # reviewer's two graders, is between the steps of sources.json's landed list, and is judged
 # only when every one of them is landed: a step not landed has no commit in this tree to be
 # ordered, and the line that passes says which steps are not and that the order is not
-# judged for that reason. A list with no step holds no order and fails.
+# judged for that reason. A list with no step holds no order and fails. Each step is one
+# commit of this pull request, found by its subject: when more than one commit carries the
+# subject of a step, the order is not judged on one of them, and the assertion fails,
+# naming them.
 landed_order() {
-    local rows rule not_landed
+    local rows rule not_landed which phrase commits many=0
     if [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json" 2>/dev/null || printf 0)" -eq 0 ]; then
         fail landed-order "sources.json's landed list names no step, so no step of the order is held to a commit"
         return
@@ -5918,9 +6043,20 @@ landed_order() {
     rows="$(landed_commit_of 'two graders are recorded as two rows')"
     rule="$(landed_commit_of 'combines the reviewer')"
     if [ -z "$rows" ] || [ -z "$rule" ]; then
-        fail landed-order "the two changes this issue commits to are not both in this pull request (rows='$rows' rule='$rule')"
+        fail landed-order "the two changes this issue commits to are not both in this pull request (rows='$(printf '%s' "$rows" | paste -sd' ' -)' rule='$(printf '%s' "$rule" | paste -sd' ' -)')"
         return
     fi
+    for which in rows rule; do
+        commits="${!which}"
+        [ "$(printf '%s\n' "$commits" | wc -l)" -gt 1 ] || continue
+        many=$((many + 1))
+        case "$which" in
+        rows) phrase="the shortfall rows ('two graders are recorded as two rows')" ;;
+        *) phrase="the combining rule ('combines the reviewer')" ;;
+        esac
+        fail landed-order "$(printf '%s\n' "$commits" | wc -l) commits of this pull request carry the subject of $phrase: $(printf '%s\n' "$commits" | paste -sd' ' -), so the order is not judged on one of them"
+    done
+    [ "$many" -eq 0 ] || return
     if git -C "$ROOT" merge-base --is-ancestor "$rows" "$rule"; then
         pass landed-order "the commit of the shortfall rows is an ancestor of the commit of the combining rule"
     else
@@ -5994,9 +6130,9 @@ mode_published() {
         # The files each landed step changed stand there as the step left them, each read
         # by the sentences its own step added and not by a word the file carried before.
         # Each entry of sources.json's landed list whose state is landed lists them as its
-        # `published` pairs, so a change to a rule edits that one list; a step not landed
-        # changed no file and is not read, and the line that passes names it. A list with
-        # no step is no pass.
+        # `published` pairs, so a change to a rule edits that one list; a step not landed,
+        # or not made (refuted), changed no file and is not read, and the line that passes
+        # names it. A list with no step is no pass.
         local title sentence state
         [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
             missing=$((missing + 1))
@@ -6004,8 +6140,8 @@ mode_published() {
         }
         while IFS=$'\t' read -r title state; do
             missing=$((missing + 1))
-            fail published-tree "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed or not_landed"
-        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed") | [(.title // ""), (.state // "")] | @tsv' "$EVIDENCE/sources.json")
+            fail published-tree "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed, not_landed or refuted"
+        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed" and .state != "refuted") | [(.title // ""), (.state // "")] | @tsv' "$EVIDENCE/sources.json")
         while IFS= read -r title; do
             missing=$((missing + 1))
             fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
@@ -6022,8 +6158,8 @@ mode_published() {
             }
         done < <(jq -r '.landed[]? | select(.state == "landed") | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
         landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
-        not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state == "not_landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
-        [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed changed no file and are not read there: $not_landed"
+        not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
+        [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed or not made changed no file and are not read there: $not_landed"
     fi
     [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each of the $landed_steps landed steps changed$not_landed"
 
@@ -6492,11 +6628,24 @@ MD
     landed-order)
         (
             cd "$dir/repo" || exit 1
-            # Two more commits with the same two subjects, in the other order, so the
-            # newest row commit is a descendant of the newest rule commit.
-            git commit --quiet --allow-empty -m "feat(skills): the rule that combines the reviewer's two graders is written where the reviewer reads it"
-            git commit --quiet --allow-empty -m "feat(skills): each review round's two graders are recorded as two rows, not one verdict"
-        )
+            # The two steps' commits written again in the other order, one commit of each
+            # subject, the combining rule's first and the shortfall rows' after it, so the
+            # rows' commit is no ancestor of the rule's; landed_order fails two commits of
+            # one subject on its own, so a plant that added commits would prove no order.
+            # The landed step names the rows' commit, so its new hash is written wherever
+            # the fixture names it, and the plant changes nothing else.
+            local rows rule head rows_again
+            rows="$(cat "$dir/rows")"
+            rule="$(git log --format=%H -1 --grep='combines the reviewer')"
+            head="$(git rev-parse HEAD)"
+            git checkout --quiet --detach "$rows^" &&
+                git cherry-pick --allow-empty "$rule" "$rows" "$head" >/dev/null || exit 1
+            rows_again="$(git rev-parse HEAD~1)"
+            sed -i "s/$rows/$rows_again/g" docs/research/internet-of-cognition/sources.json "$dir/judgement.md"
+            printf '%s' "$rows_again" >"$dir/rows"
+            git add -A && git commit --quiet -m "docs(research): the landed step's commit, written in the other order" &&
+                git branch -f main HEAD && git checkout --quiet main
+        ) || return 1
         ;;
     landed-no-refusal)
         mkdir -p "$dir/repo/packages/daemon/internal/workflow"
