@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The Legion skills (`legion-worker`, `legion-architect`, `legion-controller`, `legion-retro`,
+  `legion-oracle`, `simplify-settled-diff`) take back the rules the skill cut of #4447 lost,
+  narrowed or widened, in their old words, each file within 150 lines and 8,000 bytes by moving
+  whole blocks into references named at their point of use. The worker's reference list again
+  names the action that sends an agent to each reference, and the worker's deletion and rename
+  procedures are references again. The two review agents carry the follow-the-code sentence,
+  which no skill holds any more.
