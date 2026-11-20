@@ -48,37 +48,38 @@
 #      (`op log`, exit 0 and no `Reindexing`); the run stops otherwise. Each R10 copy's jj reads
 #      its store the same way, and a copy whose jj cannot runs none of R10's role commands; its
 #      provisioning rows, on a fresh root, still run.
-#   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of
-#      another directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed
-#      per command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and
-#      pushed with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads, a
-#      commit, the shim's describedArgs, a second commit and the shim's adoptionArgs as
+#   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of another
+#      directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed per
+#      command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and pushed
+#      with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads, a commit,
+#      the shim's describedArgs, a second commit and the shim's adoptionArgs as
 #      packages/daemon/internal/shim/commands.go builds them: with the image's jj,
 #      JJ_PACK_MAPPED_LIMIT unset, on the original, with jj 0.45.1 on its copy. The fetch is one
-#      unmeasured `git fetch --no-tags <the feed> +refs/heads/*:refs/remotes/feed/*` into the
-#      copy's shared clone, by the setup git and outside every measured tree: every branch head of
-#      the feed as a remote-tracking ref the clone does not hold, since the clone, made from the
-#      feed, holds each as origin's. The clone holds their objects, so the fetch writes refs and no
-#      pack, which it prints; its setup verdict holds when it exits 0 and writes at least one ref
-#      the clone did not hold. Each commit, by the setup git too, appends one line to the walk file
-#      and commits it with `git add` and `git commit`, as the handoff commit is made, with the
-#      probe's identity and both of git's dates fixed; its setup verdict holds when HEAD moved to
-#      it, a child of the HEAD before. The two copies' commits before each command differ only in
-#      their parents, which a verdict checks: the commit before describedArgs is made on each
-#      copy's own handoff commit, and the one before adoptionArgs on that copy's commit before
-#      describedArgs. describedArgs, the next command, imports the new refs and the new HEAD at its
-#      start and snapshots against that HEAD's tree, and adoptionArgs, the command after the
-#      second commit, imports that one's HEAD the same way, as jj does in a workspace colocated
-#      with git, which a workspace whose .git is a worktree of the clone is: what a role's jj does
-#      once git has fetched new branches into the shared clone and committed in the workspace.
-#      That import makes the new working-copy commit under the command's own identity, so the
-#      adopter is @'s author already when the measured adoptionArgs's metaedit runs, which then
-#      changes nothing. The author is shown on an unmeasured run instead, after the measured one
-#      and outside every measured tree: `jj new` as the probe, @'s author read with
-#      --ignore-working-copy, the same adoptionArgs argv as the adopter, @'s author read again,
-#      and `jj op log -n1`'s description. c-shim-adoption-memory's author verdict holds when @'s
-#      author was the probe's before that adoptionArgs and is the adopter's after it, and the
-#      operation is metaedit's, `edit commit metadata for commit <id>`.
+#      unmeasured `git fetch --no-tags <the feed> +refs/heads/*:refs/remotes/feed/*` into the copy's
+#      shared clone, by the setup git and outside every measured tree: every branch head of the feed
+#      as a remote-tracking ref the clone does not hold, since the clone, made from the feed, holds
+#      each as origin's. The clone holds their objects, so the fetch writes refs and no pack, which
+#      it prints; its setup verdict holds when it exits 0 and writes at least one ref the clone did
+#      not hold. Each commit, by the setup git too, appends one line to a file, the walk file before
+#      describedArgs and third_file, of a third top-level directory, before adoptionArgs, and
+#      commits it with `git add` and `git commit`, as the handoff commit is made, with the probe's
+#      identity and both of git's dates fixed; its setup verdict holds when HEAD moved to it, a
+#      child of the HEAD before. The two copies' commits before each command differ only in their
+#      parents, which a verdict checks: the commit before describedArgs is made on each copy's own
+#      handoff commit, and the one before adoptionArgs on that copy's commit before describedArgs.
+#      describedArgs, the next command, imports the new refs and the new HEAD at its start and
+#      snapshots against that HEAD's tree, and adoptionArgs, the command after the second commit,
+#      imports that one's HEAD the same way and reads the old tree of third_file's directory from
+#      the pack, as jj does in a workspace colocated with git, which a workspace whose .git is a
+#      worktree of the clone is: what a role's jj does once git has fetched new branches into the
+#      shared clone and committed in the workspace. That import makes the new working-copy commit
+#      under the command's own identity, so the adopter is @'s author already when the measured
+#      adoptionArgs's metaedit runs, which then changes nothing. The author is shown on an
+#      unmeasured run instead, after the measured one and outside every measured tree: `jj new` as
+#      the probe, @'s author read with --ignore-working-copy, the same adoptionArgs argv as the
+#      adopter, @'s author read again, and `jj op log -n1`'s description. c-shim-adoption-memory's
+#      author verdict holds when @'s author was the probe's before that adoptionArgs and is the
+#      adopter's after it, and the operation is metaedit's, `edit commit metadata for commit <id>`.
 #   8. R3 to R5's verdicts.
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
@@ -168,6 +169,9 @@ walk_file=config/milestone.txt
 # The jj rows' second edit, in another directory than the walk file's. Firefox holds this file; a
 # repository that does not gets it as a new file, which is an edit of its own directory as well.
 second_file=browser/config/version.txt
+# The file the commit before adoptionArgs changes: one of a third top-level directory, which no
+# earlier commit of a copy touches, so the tree jj compares it against comes from the pack.
+third_file=toolkit/moz.build
 
 bound_kib=2097152            # 2 GiB, the bound of every row of the image's jj and of the settings
 fetch_floor=104857600        # 100 MiB: a fetch row whose new pack is smaller exercises nothing
@@ -849,6 +853,7 @@ echo "== the run"
 echo "repository: $repo"
 echo "walk file: $walk_file"
 echo "second edit: $second_file"
+echo "the file of the commit before adoptionArgs: $third_file"
 echo "image: ${PACK_MEMORY_IMAGE:-unnamed}"
 echo "image revision label: ${PACK_MEMORY_IMAGE_REVISION:-unread}"
 echo "uname: $(uname -a)"
@@ -1499,24 +1504,29 @@ fetch_feed_heads() {
   fi
 }
 
-# commit_before <copy> <workspace> <command>: the commit each copy's describedArgs, and then its
-# adoptionArgs, follows, so each of the shim's two commands is the first jj command after a commit
-# that moved HEAD. The setup git, outside every measured tree, appends one line to the walk file and
+# commit_before <copy> <workspace> <command> <file>: the commit each copy's describedArgs, and then
+# its adoptionArgs, follows, so each of the shim's two commands is the first jj command after a
+# commit that moved HEAD. The setup git, outside every measured tree, appends one line to file and
 # commits it as the handoff commit is made, `git add` and then `git commit`, with the probe's
 # identity and both of git's dates fixed at jj_timestamp, so HEAD moves and the jj command after it
-# imports the new HEAD and snapshots against its tree, which it reads from the pack. Each commit is
+# imports the new HEAD and snapshots against its tree. git writes the commit's own trees loose, so
+# the command reads from the pack only what the commit's diff reaches there: describedArgs reads
+# the commits of the fetch's new refs, and adoptionArgs the old tree of third_file's directory,
+# which no earlier commit of the copy changed (the walk file's tree is loose since the handoff
+# commit, so a second commit of it would read nothing from the pack). Each commit is
 # one id on every copy whose HEAD was one commit before it. Its setup verdict holds when the commit
 # exits 0 and HEAD moved to a child of the HEAD before it; committed and commit_body keep its id and
 # its text without the parent line, by copy and command, for the verdicts that compare the copies'
 # commits.
 declare -A committed=() commit_body=()
 commit_before() {
-  local copy=$1 dir=$2 command=$3 before after parent status want
+  local copy=$1 dir=$2 command=$3 file=$4 before after parent status want
   want="exit 0, HEAD moved to a new commit whose parent is the HEAD before it"
-  echo "the commit before $command in the $copy workspace, unmeasured:"
+  echo "the commit before $command in the $copy workspace, of $file, unmeasured:"
   before=$(setup_git -C "$dir" rev-parse HEAD 2>&1)
-  printf 'pack-memory probe: the commit %s imports\n' "$command" >> "$dir/$walk_file"
-  setup_git -C "$dir" add -- "$walk_file" &&
+  mkdir -p "$(dirname "$dir/$file")"
+  printf 'pack-memory probe: the commit %s imports\n' "$command" >> "$dir/$file"
+  setup_git -C "$dir" add -- "$file" &&
     GIT_AUTHOR_DATE=$jj_timestamp GIT_COMMITTER_DATE=$jj_timestamp \
       setup_git -C "$dir" commit --quiet -m "pack-memory probe: the commit $command imports"
   status=$?
@@ -1542,10 +1552,10 @@ shim_rows() {
   local -a adopter=(--env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email")
   shift 5
   fetch_feed_heads "$copy" "$shared"
-  commit_before "$copy" "$dir" describedArgs
+  commit_before "$copy" "$dir" describedArgs "$walk_file"
   measure "$copy-described" "$@" --env "JJ_RANDOMNESS_SEED=$seed" "${adopter[@]}" \
     -- "$jj" "${described_args[@]}" -R "$dir"
-  commit_before "$copy" "$dir" adoptionArgs
+  commit_before "$copy" "$dir" adoptionArgs "$third_file"
   measure "$copy-adoption" "$@" --env "JJ_RANDOMNESS_SEED=$((seed + 1))" "${adopter[@]}" \
     -- "$jj" "${adoption_args[@]}" -R "$dir"
 }
