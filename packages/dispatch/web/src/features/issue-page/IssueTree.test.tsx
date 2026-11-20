@@ -86,6 +86,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
+import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
@@ -9234,6 +9235,80 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
   }
 });
 
+// The class search of #4205's 6586a4be, on the class of the landing's line held while a document
+// is read: the landing on the nearest drawn ancestor of a turn only agents wrote in was dropped
+// while a document added to the issue had its blocks read, which holds the tree's reads out
+// again (`readsHeld`), since its following settles on no landing of the old page's. The tree was
+// drawn with no address to land on, and once the reads answered the landing's key came back as
+// a new landing's would: a zoom the reader had made after the landing was left, as a following
+// leaves a zoom its node is outside of. The landing stays while the reads are out, so the
+// reader's zoom stands, with the focus where they put it.
+//
+// The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
+// server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where
+// no turn of it is under a question (`underQuestion`) and none is a person's, and the tree draws
+// an ask only where it is a question (`tree-drafts.ts`'s `addAsks`): no agents-only comment hangs
+// under a drawn ask, and the walk up from one (`address-target.ts`'s `agentsOnlyAncestor`) meets
+// turns of its own thread, then an approval request, which is no node, or nothing, and ends at
+// the issue. A message thread is agents-only only where no turn of it is a person's, and the
+// server lists each root - `in_reply_to` null - with every message transitively replying to it
+// (`api/messages.go`'s `listIssueRootMessagesQuery` and `hydrateMessageThreads`): a message
+// answering a drawn message is a turn of that message's thread, which a person wrote in.
+test("an agents-only turn's landing on the issue, kept while a document added to the issue has its blocks read, leaves the reader's zoom after it standing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const agent = { id: "session-1", kind: "session" } as const;
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const blocksOut = Promise.withResolvers<never[]>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockReturnValue(blocksOut.promise as never);
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "agents-1", key: KEY, kind: "comment" }),
+      [...TWO_THREADS, readComment("agents-1", 5, null, agent)]
+    );
+    const { container } = body.view;
+    await waitFor(() =>
+      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+        KEY_REPORTS.agents_thread
+      )
+    );
+    expect(focusedRow(container), "the landing is not on the outline's tab stop").toBe("head-a");
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(container.querySelector("[data-crumb]"), "the zoom key zoomed nowhere").not.toBeNull()
+    );
+    const zoomedOn = focusedRow(container);
+    expect(zoomedOn, "the zoom left the focus on no row").toBeDefined();
+
+    // The issue's read answers with its spec and its decisions document, whose blocks are then
+    // read, and are out.
+    body.redraw(issueDetails());
+    await waitFor(() =>
+      expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
+    );
+    await nextFrame();
+    expect(
+      container.querySelector("[data-crumb]"),
+      "the reader's zoom was left while the added documents' blocks were read"
+    ).not.toBeNull();
+
+    await act(async () => blocksOut.resolve([]));
+    await nextFrame();
+    await nextFrame();
+    expect(
+      container.querySelector("[data-crumb]"),
+      "the reader's zoom was left once the added documents' blocks answered, as by a new landing"
+    ).not.toBeNull();
+    expect(
+      focusedRow(container),
+      "the focus left the row the reader zoomed to once the added documents' blocks answered"
+    ).toBe(zoomedOn);
+  } finally {
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 // The fallback's line took the focus the moment it drew, whatever the reader had done since they
 // followed the address: a reader who put the focus on a control and pressed a key there while the
 // item's read was still out lost it to the line. The line takes the focus only while the reader
@@ -10567,7 +10642,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asksOut = Promise.withResolvers<never>();
   try {
     const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
-      ["asks", KEY],
+      issueAsksQuery(KEY).queryKey,
     ]);
     const { container } = body.view;
     await failedLines(container, 2, "asks and one more names");
@@ -10589,7 +10664,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     // gate; a comment citing the issue the one more read failed on arrives meanwhile.
     asks.mockReturnValueOnce(asksOut.promise as never);
     await act(async () => {
-      void body.client.invalidateQueries({ queryKey: ["asks", KEY] });
+      void body.client.invalidateQueries({ queryKey: issueAsksQuery(KEY).queryKey });
     });
     await waitFor(
       () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),
@@ -10869,6 +10944,54 @@ test("a block or the children an address names that the tree holds none of draw 
       body.view.unmount();
     }
   } finally {
+    names.mockRestore();
+  }
+});
+
+// The class search of #4205's 6586a4be: the line `/children` draws on an issue with none left the
+// page while a document added to the issue had its blocks read, which holds the tree's reads out
+// again (`readsHeld`), though the children come with the issue's own read alone
+// (`tree-drafts.ts`'s `addChildren`); it was drawn anew once that read answered, and took the
+// focus again. The line stays drawn while the reads are out, with the focus on it.
+test("the line that the issue has no children stays drawn, with the focus on it, while a document added to the issue has its blocks read", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const blocksOut = Promise.withResolvers<never[]>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockReturnValue(blocksOut.promise as never);
+  try {
+    const body = renderAddressedBody(buildIssuePath({ key: KEY, kind: "children" }), TWO_THREADS);
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "No child issues" })
+    );
+    await waitFor(() =>
+      expect(document.activeElement, "the children's line does not hold the focus").toBe(heading)
+    );
+
+    // The issue's read answers with its spec and its decisions document, whose blocks are then
+    // read, and are out.
+    body.redraw(issueDetails());
+    await waitFor(() =>
+      expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
+    );
+    await nextFrame();
+    expect(
+      heading.isConnected,
+      "the children's line left the page while the added documents' blocks were read"
+    ).toBe(true);
+    expect(
+      document.activeElement,
+      "the focus left the children's line while the added documents' blocks were read"
+    ).toBe(heading);
+
+    await act(async () => blocksOut.resolve([]));
+    await nextFrame();
+    expect(
+      heading.isConnected,
+      "the children's line was drawn anew once the added documents' blocks answered"
+    ).toBe(true);
+    expect(document.activeElement, "the focus left the children's line").toBe(heading);
+  } finally {
+    blocks.mockRestore();
     names.mockRestore();
   }
 });

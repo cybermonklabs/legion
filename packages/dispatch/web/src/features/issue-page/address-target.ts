@@ -217,6 +217,12 @@ function landingReadKey(route: ItemRoute): QueryKey {
  *  link followed again to the same address among them - has seen so far
  *  (`useAddressFallback`). */
 interface Following {
+  /** Whether the following draws the line that the tree holds no node of the block or the
+   *  children its address names (`absent`), as last stored here. The children come with the
+   *  issue's own read alone (`tree-drafts.ts`'s `addChildren`), so the children's line, once
+   *  drawn, stays while the tree's reads are out again; a block's line goes then, since a
+   *  document added to the issue may hold the block. */
+  readonly absent: boolean;
   /** How many times the landing's read had failed as this following first read it (its
    *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
    *  following reads it. */
@@ -227,10 +233,10 @@ interface Following {
   /** The following: the location's own key (`useLocation().key`). */
   readonly key: string;
   /** The landing the old page's landing settled on during this following, as last stored here,
-   *  which the following draws again while the read runs again. A new one is stored only when
-   *  its kind changes (or another field of the following does), so a later answer of the same
-   *  kind - a second list of matches - is not stored, and this can be an earlier answer than
-   *  the last one drawn. */
+   *  which the following draws again while the read runs again, and while the tree's reads are
+   *  out again (`readsHeld`). A new one is stored only when its kind changes (or another field
+   *  of the following does), so a later answer of the same kind - a second list of matches - is
+   *  not stored, and this can be an earlier answer than the last one drawn. */
   readonly settled: Exclude<ItemLanding, { kind: "pending" }> | undefined;
 }
 
@@ -238,9 +244,10 @@ interface Following {
  * Where `address` lands where it names a node the tree holds none of (`reveal` undefined), once
  * every read the tree is built from has answered (`readsHeld`): before that the node may not
  * have arrived yet. Undefined while the tree holds the node, while the reads are out before the
- * following has settled on a landing, for an address naming no node or opening a document, and
- * while the old page's landing reads the item (`pending`) with no landing settled since the
- * address was followed.
+ * following has found the node or the ancestor a turn only agents wrote in lands on (`found`),
+ * settled on a landing or drawn the line that the issue has no children (below), for an address
+ * naming no node or opening a document, and while the old page's landing reads the item
+ * (`pending`) with no landing settled since the address was followed.
  *
  * Each following of the address (the location's own key) is decided on its own, once: a
  * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
@@ -266,8 +273,15 @@ interface Following {
  * The reads going out again after the following has settled on a landing - a document added to
  * the issue, whose blocks are then read - leave that landing drawn, with its failures counted as
  * before: the line, its alert and the focus it holds stay, where the line leaving the page and
- * coming back once the reads answered said its failure again and took the focus again. It goes
- * as before where the tree draws the address's node (`found`), and with the following.
+ * coming back once the reads answered said its failure again and took the focus again. So do the
+ * landing on the nearest drawn ancestor of a turn only agents wrote in - the issue, for every
+ * such turn the server stores - which the conversation's reads still tell while the blocks are
+ * read: dropped then, the tree had no address to land on, and once the reads answered the
+ * landing's key came back as a new landing's would, which left a zoom the reader had made after
+ * the landing; and the line that the issue has no children, which come with the issue's own read
+ * alone (`Following.absent`). A block's line goes while the reads are out, as a document added
+ * to the issue may hold the block. Each goes as before where the tree draws the address's node
+ * (`found`), and with the following.
  */
 export function useAddressFallback({
   address,
@@ -295,11 +309,13 @@ export function useAddressFallback({
   const following = useLocation().key;
   const [followed, setFollowed] = useState<Following | undefined>(undefined);
   const before = followed?.key === following ? followed : undefined;
-  const unresolved = readsHeld && reveal === undefined;
-  // A following that has settled on a landing keeps reading the item while the reads are out
-  // again, so the landing stays drawn (above).
+  // A following that has settled on a landing, or found the address's node or the ancestor a
+  // turn only agents wrote in lands on, keeps reading the item while the reads are out again, so
+  // the landing stays drawn (above).
   const unheld =
-    reveal === undefined && (readsHeld || before?.settled !== undefined) ? item : undefined;
+    reveal === undefined && (readsHeld || before?.settled !== undefined || before?.found === true)
+      ? item
+      : undefined;
   const unheldId = unheld?.id;
   const { asks, comments, messages } = reads;
   const openAsks = issue.open_asks;
@@ -339,26 +355,31 @@ export function useAddressFallback({
   const failures = state?.errorUpdateCount ?? 0;
   const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
   const settled = landing?.kind === "pending" ? before?.settled : landing;
+  const target = address.target;
+  const named =
+    address.document === undefined && (target?.kind === "block" || target?.kind === "children")
+      ? target
+      : undefined;
+  // A block or the children the tree holds no node of, once the reads are held; the children's
+  // line, once drawn, stays while they are out again (`Following.absent`).
+  const absent =
+    named !== undefined &&
+    !found &&
+    (readsHeld || (named.kind === "children" && before?.absent === true));
   if (
     before === undefined ||
+    before.absent !== absent ||
     before.found !== found ||
     before.failedBefore !== failedBefore ||
     before.settled?.kind !== settled?.kind
   ) {
-    setFollowed({ failedBefore, found, key: following, settled });
+    setFollowed({ absent, failedBefore, found, key: following, settled });
   }
   if (agentsOnly !== undefined && ancestor !== undefined) {
     return { ancestor, id: agentsOnly, kind: "agents-only" };
   }
   if (found) return undefined;
-  const target = address.target;
-  if (
-    unresolved &&
-    address.document === undefined &&
-    (target?.kind === "block" || target?.kind === "children")
-  ) {
-    return { kind: "absent", target };
-  }
+  if (absent) return { kind: "absent", target: named };
   if (read === undefined || settled === undefined || settled.kind === "turn") return undefined;
   return {
     failure: failures - (failedBefore ?? failures),
