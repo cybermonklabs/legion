@@ -246,6 +246,7 @@ on:
       - 'packages/envoy/internal/broker/oauthwire/*'
       - 'packages/envoy/internal/broker/policy/*'
       - 'packages/envoy/internal/broker/projectaccess/*'
+      - 'packages/envoy/internal/broker/projectrepos/*'
       - 'packages/envoy/internal/broker/proof/*'
       - 'packages/envoy/internal/broker/record/*'
       - 'packages/envoy/internal/broker/requests/*'
