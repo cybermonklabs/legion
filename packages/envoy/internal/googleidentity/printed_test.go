@@ -7,11 +7,12 @@ package googleidentity
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestNoCallPrintsAPartOfAHostThatCarriesACredential: GCE_METADATA_HOST is a host, so a value with
@@ -23,12 +24,9 @@ import (
 // a host where one prints.
 func TestNoCallPrintsAPartOfAHostThatCarriesACredential(t *testing.T) {
 	const secret = "hunter2pwMETA"
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
+	// A port held refused for the whole test (testport.Refused), not a closed listener's freed
+	// port, which another process on the machine can take and answer on.
+	closed := testport.Refused(t)
 	calls := map[string]func() error{
 		"Token": func() error { _, err := Token(context.Background(), "example-audience"); return err },
 		"Probe": func() error { _, err := Probe(context.Background()); return err },
