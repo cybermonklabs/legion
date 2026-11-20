@@ -29,6 +29,20 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is true
 	       or exists (select 1 from ask_followers f where f.ask_id = a.id and f.session_id = $1))`
 
+// eventSeen is the SQL predicate, on the event the alias e names, that holds when the reader whose
+// viewer is bound at $4 may read what the event is the record of, judged over the event's own owner
+// (events_one_owner: at most one of issue_key, artifact_id and project_key): an ask's or a
+// comment's event by the rule of the ask or comment that owner owns (access.ItemOwnerClause), a
+// project's event by that project's (access.ProjectClause), and an event of no owner, a message's
+// on no issue, by the parties of that message's conversation (access.PartyClause over
+// access.MessagePartiesSQL), as the event log reads each. An event is read under it wherever the
+// query reads one, so an event whose own owner the reader may not see carries nothing to the list,
+// whatever item its payload names: no decline's words, and no answer counted as replaced.
+var eventSeen = `(case when e.issue_key is not null or e.artifact_id is not null
+		then ` + access.ItemOwnerClause("e.issue_key", "e.artifact_id", "$4") + `
+	when e.project_key is not null then ` + access.ProjectClause("e.project_key", "$4") + `
+	else ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(e.payload->>'message_id', e.payload->>'id')`), "$4") + ` end)`
+
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
 //
@@ -93,7 +107,8 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // (access.SessionClause) is the empty list a session nobody knows has, and of the rest each item
 // passes its own rule: an answer, a decline and a comment that of what owns its ask or itself
 // (access.ItemOwnerClause), and a message that of its issue or its conversation
-// (access.MessageClause).
+// (access.MessageClause). Each event the query reads, of reached and of answer_events, passes its
+// own owner's rule beside that (eventSeen).
 var query = `
 	with session_seen as (
 		select ` + access.SessionClause("$1::text", "$4") + ` as seen
@@ -105,6 +120,7 @@ var query = `
 		                 'ask.resolved')
 		  and e.created_at >= $2
 		  and $3 = any(e.published_destinations)
+		  and ` + eventSeen + `
 	), mentioned as (
 		select cd.comment_id::text as id
 		from comment_deliveries cd
@@ -115,6 +131,7 @@ var query = `
 		select e.payload->>'id' as id, e.actor, e.payload->'answer' as answer
 		from events e
 		where e.type = 'ask.answered' and e.payload->>'id' in (select id from answer_ids)
+		  and ` + eventSeen + `
 	), decline_ids as (
 		-- A decline carries its own words, so the arm keeps the resolution the event recorded.
 		-- An ask holds at most one decline: a resolved ask is not resolved again (api's
