@@ -32,6 +32,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
@@ -51,12 +52,10 @@ interface DaemonInput {
 }
 
 /** A write the server refused or never answered, or a URL the field itself refused, with what
- *  the page says about it: the server's own reason where it gave one, else a generic line. An
- *  `input` refusal is the field's, so no Retry is offered for it - the URL has to change first. */
-type FailedAction =
-  | ({ readonly kind: "save"; readonly message: string } & DaemonInput)
-  | { readonly kind: "remove"; readonly message: string; readonly project: string }
-  | { readonly kind: "input"; readonly message: string };
+ *  the page says about it: the server's own reason where it gave one, what a write the reader
+ *  stopped may have done and what Retry does with it (`retry`), else a generic line. An `input`
+ *  refusal is the field's, so no Retry is offered for it - the URL has to change first. */
+type FailedAction = { readonly kind: "save" | "remove" | "input"; readonly message: string };
 
 /** What a project's entry held before a write changed it: its daemon, `null` for none, or
  *  `undefined` where the entry was never read. */
@@ -115,6 +114,7 @@ export function LegionDaemonsSection(): ReactNode {
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // Both writes show their refusal under the form, with the row they changed put back.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
+    method: "PUT",
     write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
@@ -122,8 +122,15 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(daemonKey(variables.project), context?.previous);
       setFailedAction({
         kind: "save",
-        message: apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
-        ...variables,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `saveDaemon`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `PUT` (`useKeyedWrite` method).
+              stoppedWriteNote(`the Legion daemon of ${variables.project}`, "saved", {
+                method: "PUT",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
       });
     },
     onMutate: async (variables) => {
@@ -155,6 +162,7 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
+    method: "DELETE",
     write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,
@@ -162,8 +170,15 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(daemonKey(named), context?.previous);
       setFailedAction({
         kind: "remove",
-        message: apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
-        project: named,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `removeDaemon`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `DELETE` (`useKeyedWrite`).
+              stoppedWriteNote(`the removal of ${named}'s Legion daemon`, "made", {
+                method: "DELETE",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
       });
     },
     onMutate: async (named) => {
@@ -178,14 +193,18 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(named) }),
   });
 
+  // The refusal on screen is the newest press of its write: a later press of either write that
+  // lands lets it go, and Retry waits while either is out. So Retry is that write's own (`retry`),
+  // which makes a press the reader stopped again as that press. Both are a `PUT` or a `DELETE`,
+  // which sends no key, so that is the same change sent again. The field's own refusal of a URL
+  // made no press, and offers no Retry.
   const retry = () => {
     if (failedAction?.kind === "save") {
-      const { kind: _kind, message: _message, ...variables } = failedAction;
-      saveDaemon.mutate(variables);
+      saveDaemon.retry();
       return;
     }
     if (failedAction?.kind === "remove") {
-      removeDaemon.mutate(failedAction.project);
+      removeDaemon.retry();
     }
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {

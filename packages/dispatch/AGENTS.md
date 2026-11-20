@@ -75,5 +75,5 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - Fix axe findings in `web/src`; `e2e/accessibility-exclusions.ts` is only for a fix that changes another row's claim.
 - Baselines come only from the pinned container (`e2e/visual-run.sh --update-snapshots`). From a pod:
   1. `gh run download <failed full-lane run id> --repo <owner>/<repo> --name dispatch-browser-visual-<attempt>`.
-  2. A failing row's `<route>-<scheme>-actual.png` is under `packages/dispatch/e2e/test-results/`.
+  2. A failing row's `-actual.png` is in the results directory `visual-run.sh` names on failure.
   3. Copy it over `e2e/__screenshots__/<project>/<route>-<scheme>.png` if every moved pixel is intended and a re-run gave the same bytes (else the page is unsettled); say why in the commit message.

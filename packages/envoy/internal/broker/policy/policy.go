@@ -758,8 +758,9 @@ func (secret Secret) requesterNames() []string {
 // none): a login record.CanonicalLogin answers may be a GitHub login rather than an email, for
 // a record decided before people were named by email, and such a login has a service name's own
 // alphabet, so an operator named "legion-daemon" would otherwise be served every secret that
-// lists the legion-daemon service. An empty Operator (a pod has no person) and an empty Service
-// (a session has no service) match nothing, never an entry.
+// lists the legion-daemon service. An empty Operator and an empty Service (a session has no
+// service) match nothing, never an entry. A pod's Operator is empty unless BROKER_POD_OPERATORS
+// maps the pod's account to the person its login carried (requests.Machine.requester).
 func (secret Secret) lists(r Requester) bool {
 	operator := record.CanonicalLogin(r.Operator)
 	for _, entry := range secret.requesterNames() {
@@ -897,8 +898,9 @@ func NewSet(secrets map[string]Secret) *Set {
 
 // Requester is an enrolled session or pod as the policy sees it.
 type Requester struct {
-	// Operator is the email of the person whose machine login the session enrolled under; empty
-	// for a pod.
+	// Operator is the email of the person whose machine login the session enrolled under. For a
+	// pod it is the person a person's pod login carried, while BROKER_POD_OPERATORS still maps the
+	// pod's account to that person (requests.Machine.requester), and empty for any other pod.
 	Operator string
 	// Service is the service of the machine login that enrolled the session, set only when the
 	// session is a pod whose verified service account is one of the accounts BROKER_SERVICES maps

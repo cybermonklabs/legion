@@ -33,8 +33,9 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   NOT_OWNER_NAME,
   ownerRepoPattern,
@@ -70,6 +71,7 @@ export function ProjectsSection(): ReactNode {
   const createProject = useKeyedWrite({
     inline: true,
     label: (input: CreateProjectInput) => `New project ${input.key}`,
+    method: "POST",
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
@@ -284,7 +286,10 @@ export function ProjectsSection(): ReactNode {
           {createProject.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(createProject.error, "Couldn't create the project.")}
+                message={
+                  stoppedNote(createProject, "the new project", "made") ??
+                  apiErrorMessage(createProject.error, "Couldn't create the project.")
+                }
                 onRetry={() => projectSubmitGuard.retryLast(createProject)}
                 retrying={createProject.isPending}
               />
@@ -338,13 +343,9 @@ function DefaultAssigneeCell({
         project={project}
         unread={unread}
       />
-      {write.error === null ? null : (
+      {write.refusal === null ? null : (
         <div className="mt-2">
-          <QueryError
-            message={apiErrorMessage(write.error, "Couldn't update the default assignee.")}
-            onRetry={write.retry}
-            retrying={write.pending}
-          />
+          <QueryError message={write.refusal} onRetry={write.retry} retrying={write.pending} />
         </div>
       )}
     </>
@@ -359,19 +360,23 @@ type SettingPick<TValue> = { value: TValue };
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type SettingSuperseded = { superseded: true };
 
+/** One save as the mutation cache holds it: the press the keyed write made of a pick
+ *  (`KeyedPress`), the pick inside it. */
 type SettingSave<TAnswer, TValue> = Mutation<
   TAnswer | SettingSuperseded | null,
   Error,
-  SettingPick<TValue>
+  KeyedPress<SettingPick<TValue>>
 >;
 
 /** What a row reads from one project's saves of one setting. */
 interface ProjectSettingWrite<TValue> {
-  /** The project's newest save when the server refused it, until another save starts. */
-  error: Error | null;
   /** Whether any save of this project is still out or waiting. */
   pending: boolean;
-  /** Resends the refused value; a no-op unless the project's newest save failed. */
+  /** What the row says of the project's newest save when it did not land - the server refused
+   *  it, or the reader stopped it - until another save starts; `null` otherwise. */
+  refusal: string | null;
+  /** Makes the project's newest save again: the stopped press itself, or a new press of the
+   *  refused value. A no-op unless that save did not land. */
   retry: () => void;
   /** The newest pick still saving or queued; `undefined` shows the stored value. */
   shown: SettingPick<TValue> | undefined;
@@ -399,6 +404,7 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   save,
   setting,
   store,
+  what,
 }: {
   /** What the shell's pending-writes indicator names a pick. */
   label: (value: TValue) => string;
@@ -409,7 +415,13 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   setting: string;
   /** The rows of `read` with a save's answer in them. */
   store: (rows: TRows | undefined, saved: TAnswer) => TRows | undefined;
+  /** The setting in the row's refusal, such as `the default assignee`. */
+  what: string;
 }): ProjectSettingWrite<TValue> {
+  // Every project setting is saved with a `PUT`. The row reads its refusal from the mutation
+  // cache, not from a `KeyedWriteResult`, so no write is in hand there to read the method from:
+  // the sentence of a stopped save names this one.
+  const method = "PUT";
   const queryClient = useQueryClient();
   const mutationKey = [`project-${setting}`, project];
   const mutation = useKeyedWrite<TAnswer | SettingSuperseded, SettingPick<TValue>>({
@@ -421,13 +433,15 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
     label: (pick) => label(pick.value),
+    method,
     write: async (pick, bounds): Promise<TAnswer | SettingSuperseded> => {
       // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
       const waiting = queryClient
         .getMutationCache()
         .findAll({ exact: true, mutationKey, status: "pending" });
-      if (waiting.at(-1)?.state.variables !== pick) {
+      const last = waiting.at(-1) as SettingSave<TAnswer, TValue> | undefined;
+      if (last?.state.variables?.variables !== pick) {
         return { superseded: true };
       }
       return save(pick.value, bounds);
@@ -470,7 +484,7 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
     filters: { exact: true, mutationKey },
     select: (save) => ({
       error: save.state.error,
-      pick: save.state.variables,
+      pick: save.state.variables?.variables,
       status: save.state.status,
     }),
   });
@@ -478,12 +492,35 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   // The cache lists mutations in the order they were made, so the last is the newest.
   const newest = saves.at(-1);
   const refused = newest?.status === "error" ? newest : undefined;
+  const error = refused?.error ?? null;
   return {
-    error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
+    refusal:
+      error === null
+        ? null
+        : error instanceof SendStoppedError
+          ? stoppedWriteNote(what, "saved", { method, stopped: error })
+          : apiErrorMessage(error, `Couldn't update ${what}.`),
     retry: () => {
-      if (refused?.pick !== undefined) {
-        mutation.mutate({ value: refused.pick.value });
+      // The pick is read from the mutation cache rather than from `saves`, which
+      // `useMutationState` gives: that hook shares its `select` result structurally, so it can
+      // hand back an older save's pick where the two are deep-equal. While the Retry is on screen
+      // the cache holds one settled save - each save's `onSettled` removes the project's settled
+      // saves - so the newest save is that one.
+      const newestSave = queryClient
+        .getMutationCache()
+        .findAll({ exact: true, mutationKey })
+        .at(-1) as SettingSave<TAnswer, TValue> | undefined;
+      const press = newestSave?.state.status === "error" ? newestSave.state.variables : undefined;
+      if (press === undefined) {
+        return;
+      }
+      // The Retry of the press the refusal is about, which is the very press the cache holds: one
+      // this row made and the reader stopped is made again as that press (`again`). A project
+      // setting is a `PUT`, which sends no key, so that is the same change sent again. A refusal
+      // Dispatch decided, or a press of a row mounted before this one, is retried as a new pick.
+      if (!mutation.again(press)) {
+        mutation.mutate({ value: press.variables.value });
       }
     },
     shown: pendingPicks.at(-1)?.pick,
@@ -507,6 +544,7 @@ function useDefaultAssigneeWrite(project: string): ProjectSettingWrite<string> {
       const others = rows.filter((row) => row.project !== saved.project);
       return [...others, saved];
     },
+    what: "the default assignee",
   });
 }
 
@@ -640,13 +678,9 @@ function DefaultRepositoryCell({
           {NOT_OWNER_NAME}
         </p>
       ) : null}
-      {write.error === null ? null : (
+      {write.refusal === null ? null : (
         <div className="mt-2">
-          <QueryError
-            message={apiErrorMessage(write.error, "Couldn't update the default repository.")}
-            onRetry={write.retry}
-            retrying={write.pending}
-          />
+          <QueryError message={write.refusal} onRetry={write.retry} retrying={write.pending} />
         </div>
       )}
     </>
@@ -667,6 +701,7 @@ function useDefaultRepositoryWrite(project: string): ProjectSettingWrite<string 
     setting: "default-repository",
     store: (rows, saved) =>
       rows?.map((row) => (row.key === saved.project ? withDefaultRepo(row, saved.repo) : row)),
+    what: "the default repository",
   });
 }
 

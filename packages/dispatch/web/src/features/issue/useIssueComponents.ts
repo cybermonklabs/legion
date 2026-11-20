@@ -9,10 +9,12 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { predictTree } from "../architecture/architecture-model";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface IssueComponentsWrite {
-  /** The failed save's message, until the next attempt starts. */
+  /** The failed save's message, or what a save the reader stopped may have done and what a new
+   *  save does, until the next attempt starts. */
   error: string | null;
   pending: boolean;
   /** Saves the attachment; resolves `true` once the server accepted it. */
@@ -101,7 +103,16 @@ export function useIssueComponents(
     },
   });
   return {
-    error: mutation.error === null ? null : mutation.error.message,
+    // A save the reader stopped may have been made, and nothing here makes it again: the next
+    // save is a press of its own. The error's own words are a composer's, of a message.
+    error:
+      mutation.error === null
+        ? null
+        : mutation.error instanceof SendStoppedError
+          ? stoppedWriteNote(`the components of ${issue.key}`, "saved", {
+              anew: "They are read again from Dispatch, and saving them again sends a new write.",
+            })
+          : mutation.error.message,
     pending: mutation.isPending,
     submit: async (input) => {
       try {

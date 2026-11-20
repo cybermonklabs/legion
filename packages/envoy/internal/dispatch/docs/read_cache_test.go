@@ -421,7 +421,10 @@ func TestColdReadAfterAnEditSeesTheEdit(t *testing.T) {
 	if cacheEntry(t, service, artifactID) == nil {
 		t.Fatal("the first cold read did not populate the rendering cache")
 	}
-	if _, err := joinedReplaceText(service, artifactID, "# Heading\n\nafter\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	// The cold read above answered the token this replacement names, so the write adds no read
+	// of its own to the count.
+	if _, err := joinedReplaceTextNaming(service, artifactID, "# Heading\n\nafter\n",
+		model.Actor{Kind: "user", ID: "alice"}, &model.EditPrecondition{Document: before.token}); err != nil {
 		t.Fatalf("replace document text: %v", err)
 	}
 	if err := service.Evict(context.Background(), artifactID); err != nil {

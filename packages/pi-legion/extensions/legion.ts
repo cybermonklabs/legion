@@ -621,7 +621,8 @@ export default function legionExtension(pi: PiApi): void {
     // Every Legion session watches its own tool calls; a subagent's instance returned above.
     armStallWatch(session);
     // The controller registers through the controller session and gets the `legion` tool's
-    // controller operations (`read_state`, `set_status`), each minting its own controller grant.
+    // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
+    // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no

@@ -193,6 +193,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -5603,6 +5607,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -7156,7 +7164,7 @@
     },
     "/api/v1/issues/{key}/references": {
       "get": {
-        "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY.",
+        "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later.",
         "operationId": "getApiV1IssuesByKeyReferences",
         "parameters": [
           {
@@ -7936,7 +7944,7 @@
     },
     "/api/v1/machine-logins": {
       "get": {
-        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it.",
+        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login.",
         "operationId": "getApiV1MachineLogins",
         "parameters": [
           {
@@ -7978,7 +7986,7 @@
     },
     "/api/v1/machine-logins/{id}/revoke": {
       "post": {
-        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one.",
+        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person.",
         "operationId": "postApiV1MachineLoginsByIdRevoke",
         "parameters": [
           {
@@ -10381,6 +10389,10 @@
                   },
                   "name": {
                     "description": "the artifact's name, trimmed",
+                    "type": "string"
+                  },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
                     "type": "string"
                   },
                   "summary": {
@@ -20265,6 +20277,9 @@
           },
           "document": {
             "type": "string"
+          },
+          "version": {
+            "type": "integer"
           }
         },
         "required": [
@@ -23312,6 +23327,16 @@
           "name": {
             "type": "string"
           },
+          "precondition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EditPrecondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "primary": {
             "description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload",
             "type": "boolean"
@@ -23358,6 +23383,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "person": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "service": {
             "type": [
               "null",
@@ -23376,6 +23407,7 @@
           "host",
           "service",
           "subject",
+          "person",
           "approved_by",
           "issued_at",
           "expires_at",
@@ -27116,6 +27148,36 @@
         ],
         "type": "object"
       },
+      "StandingReview": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "carried_from_version": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by",
+          "at",
+          "state",
+          "version"
+        ],
+        "type": "object"
+      },
       "StateResponse": {
         "properties": {
           "state": {
@@ -28429,6 +28491,9 @@
           },
           "session_writes_since_human": {
             "type": "integer"
+          },
+          "standing_review": {
+            "$ref": "#/components/schemas/StandingReview"
           },
           "suggestions": {
             "$ref": "#/components/schemas/Suggestions"
