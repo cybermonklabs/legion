@@ -6,9 +6,11 @@ body: |-
     write lands once. Before, it resent only after an answer that echoed the key in the last five
     minutes or a `GET /healthz` that said `idempotency_keys: true` within 5 s, and a probe that was
     refused, timed out or answered no JSON reported a write Dispatch had stored as one that may or
-    may not have taken effect. A `DispatchWriteUnsettledError`'s message always says that Dispatch
-    finishes an attempt it received and to read the write back before sending it again. Writes with
-    no key are unchanged.
+    may not have taken effect. Once an attempt may have landed, a 2xx read whole or a final refusal
+    Dispatch decided settles it; a page, a body that is not Dispatch JSON, or an auth refusal that
+    answered before the keyed layer leaves it unsettled. A `DispatchWriteUnsettledError`'s message
+    always says that Dispatch finishes an attempt it received and to read the write back before
+    sending it again. Writes with no key are unchanged.
 time: 2026-11-17T20:27:50.206250540Z
 custom:
     Issue: pr4379

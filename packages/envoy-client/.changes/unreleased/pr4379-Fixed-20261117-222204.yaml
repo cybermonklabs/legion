@@ -1,8 +1,0 @@
-kind: Fixed
-body: |-
-    A keyed write sent again after an answer that named no route (an older Dispatch's `404`) keeps
-    the key of its first attempt, and a multipart form's bytes are made once, so a write that was
-    stored, then answered `502`, then answered with no route lands once rather than twice.
-time: 2026-11-17T22:22:04.124253977Z
-custom:
-    Issue: pr4379

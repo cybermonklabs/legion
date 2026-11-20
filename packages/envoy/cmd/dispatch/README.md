@@ -912,7 +912,7 @@ a tab still open, and every `dispatch` client, which sends a failed write again 
 Fix forward instead; if you must roll back, stop this release first, knowing a write in flight at that moment may land twice.
 A rollback to a build whose keyed layer passes a caller it cannot resolve on to the handler, rather than answering that caller itself, brings the double write back too, for every `dispatch` client that sends a failed write again with no `/healthz` read (`packages/envoy-client/README.md`), for as long as that build serves:
 that build can run a keyed write with no key, so a write whose answer was lost, sent again under its key, can land twice.
-Once a deployment's sessions run such a client, do not roll Dispatch back past the build whose keyed layer answers that caller itself; fix forward instead.
+Once a deployment's sessions run such a client, do not roll Dispatch back past `b1c42d1d7d` (the first build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
 A tab opened before the deploy needs a reload:

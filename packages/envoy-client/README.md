@@ -696,10 +696,11 @@ markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATCH` route. A retry
 therefore always sends the same key and encoded body again, without reading a key echo, probing
 `/healthz`, or keeping process or session memory of a server capability. A transport failure, a
-silence cut, a gateway response, a 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the
-write's pacing and deadline. `dispatch-keyed-resend.test.ts` proves that a retry against a keyed
-server stores the write once even while `/healthz` is unavailable; `dispatch-write-outcomes.test.ts`
-drives the client through every (state, event) pair and every sequence of events up to its limits.
+silence cut, a gateway or Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the
+write's pacing and deadline. `dispatch-keyed-resend.test.ts` drives a Bun stand-in that stores a
+retry once even while `/healthz` is unavailable; `dispatch-keyed-resend-live.test.ts` proves that
+end to end against a real Dispatch server. `dispatch-write-outcomes.test.ts` drives every
+(state, event) pair and every sequence of events up to its limits.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with

@@ -1062,6 +1062,27 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("so it may or may not have taken effect");
   });
 
+  // A handler's 403 runs inside keyedWrites and is stored under the key. When its first answer is
+  // lost, the repeat's replay is the final refusal, not an auth refusal before the keyed layer.
+  test("a keyed handler 403 replayed after a silent attempt stands as Dispatch's refusal", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([
+      stall,
+      refusal(
+        403,
+        "ACTOR_SESSION_MISMATCH",
+        "the actor this write names is not the session its credential proved"
+      ),
+    ]);
+
+    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(2);
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error).toEqual(expect.objectContaining({ status: 403, code: "ACTOR_SESSION_MISMATCH" }));
+  });
+
   // A second 401 BROKER_TOKEN_NOT_ACTIVE, after the client presented afresh and sent again, is
   // Dispatch's auth refusing before its keyed layer ran: unsettled too.
   test("a second dead-token answer after a silent attempt leaves the write unsettled, carrying its key", async () => {

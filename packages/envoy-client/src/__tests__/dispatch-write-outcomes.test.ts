@@ -112,6 +112,9 @@ interface Kind {
   readonly running?: boolean;
   /** The status of the answer it is. */
   readonly status?: number;
+  /** Dispatch's error code, where its JSON body is one. A missing code is a page from something
+   *  in Dispatch's place. */
+  readonly code?: string;
   /** How a write that ends after it with nothing landed is told: its own error. */
   readonly own?: Ending;
   /** What a credential kind's presentation throws. */
@@ -299,6 +302,7 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     echoed: true,
     status: 422,
+    code: IDEMPOTENCY_KEY_REUSED,
     respond: (key) =>
       refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
   },
@@ -308,13 +312,24 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     echoed: true,
     status: 400,
+    code: "INVALID_REQUEST",
     respond: (key) => refused(400, "INVALID_REQUEST", "body is required", key),
+  },
+  {
+    name: "400 page",
+    role: "refusal",
+    at: "attempt",
+    echoed: false,
+    status: 400,
+    respond: () => page(400, "Bad Request"),
   },
   {
     name: "409 KEY_COMMITTED",
     role: "committed",
     at: "attempt",
     echoed: true,
+    status: 409,
+    code: IDEMPOTENCY_KEY_COMMITTED,
     respond: (key) => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
   },
   {
@@ -331,7 +346,22 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     echoed: false,
     status: 403,
+    code: "READ_ONLY_TOKEN",
     respond: () => refused(403, "READ_ONLY_TOKEN", "this token may only read"),
+  },
+  {
+    name: "403 handler",
+    role: "refusal",
+    at: "attempt",
+    echoed: false,
+    status: 403,
+    code: "ACTOR_SESSION_MISMATCH",
+    respond: () =>
+      refused(
+        403,
+        "ACTOR_SESSION_MISMATCH",
+        "the actor this write names is not the session its credential proved"
+      ),
   },
   {
     name: "403 page",
@@ -348,6 +378,15 @@ const KINDS: readonly Kind[] = [
     echoed: false,
     status: 404,
     respond: () => page(404, "Not Found"),
+  },
+  {
+    name: "404 judged",
+    role: "refusal",
+    at: "attempt",
+    echoed: false,
+    status: 404,
+    code: "NOT_FOUND",
+    respond: () => refused(404, "NOT_FOUND", "the issue this write names is gone"),
   },
   ...[301, 302, 303, 307, 308].map(
     (status): Kind => ({
@@ -564,6 +603,21 @@ type Decision = { readonly asks: true } | { readonly asks: false; readonly endin
 
 const UNSETTLED: Ending = { as: "unsettled" };
 
+/** The JSON codes every Dispatch layer outside keyedWrites writes for a 403 (server.go:848-887). */
+function isPreKey403Code(code: string | undefined): boolean {
+  switch (code) {
+    case "OAUTH_SCOPE_REQUIRED":
+    case "PROJECT_SCOPE":
+    case "PROJECT_SCOPE_DEPLOYMENT":
+    case "READ_ONLY_TOKEN":
+    case "SESSION_SCOPE":
+    case "SIGN_IN_REQUIRED":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
  * broker say each is (`Kind`), the write's state and the limits it has spent.
@@ -590,7 +644,9 @@ function oracle(events: readonly Kind[]): Decision[] {
         if (event.notJson) return end(UNSETTLED);
         return end({ as: "resolved" });
       case "refusal":
-        return event.status === 401 || event.status === 403 || event.status === 404
+        return event.code === undefined ||
+          event.status === 401 ||
+          (event.status === 403 && isPreKey403Code(event.code))
           ? endAfter(refusal)
           : end(refusal);
       case "committed":
@@ -835,6 +891,13 @@ test("every (state, event) pair goes as the rule says", async () => {
   expect(runs).toBeGreaterThan(1_500);
   expect([...findings].slice(0, 40)).toEqual([]);
 }, 120_000);
+
+test("a handler 403 after a possibly landed answer settles as its refusal", async () => {
+  const { run, error } = await drive([kind("201 body broken"), kind("403 handler")]);
+
+  expect(run.keys).toHaveLength(2);
+  expect(error).toEqual(expect.objectContaining({ name: "DispatchServiceError", status: 403 }));
+});
 
 /** The events of each kind of step that asks again, rotated along a path so each appears. */
 const ASKING_AGAIN: readonly (readonly Kind[])[] = [

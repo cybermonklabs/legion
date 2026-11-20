@@ -42,16 +42,13 @@ body: |-
   flight; a refused connection or a name that did not resolve reached nothing. A 2xx's body is
   read inside its attempt: a body the deadline or the caller's stop ends is that stop in flight,
   and a body that breaks off or is not the JSON its `Content-Type` says is asked again under the
-  key, paced by the `Retry-After` its headers carried and with the key they echoed read as
-  Dispatch's keyed layer. Once an attempt may have landed, only a 2xx whose body was read whole,
-  or a refusal Dispatch's keyed layer judged for the key, settles the write. A 2xx that is no
-  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not typed
-  JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
-  whatever the process knows, and one that carries no key back from a Dispatch this process
-  knows runs the keyed layer. Every other end — a 3xx, a gateway's
-  page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
-  BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
-  the caller's stop, or no attempt or time left, a 5xx included — is
+  key, paced by the `Retry-After` its headers carried. Once an attempt may have landed, a 2xx
+  whose body was read whole or a final refusal Dispatch decided settles the write. A 2xx that is
+  no answer of Dispatch settles nothing: one whose body is empty or not typed JSON (a captive
+  portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205). Every other
+  end — a 3xx, a gateway's page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second
+  `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the
+  deadline, the caller's stop, or no attempt or time left, a 5xx included — is
   `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
   cause. Before, a 5xx on every attempt, a 3xx, a cancellation or a refusal after a landing could
   each reach the caller as a plain refusal, which reads as nothing written and invited a resend

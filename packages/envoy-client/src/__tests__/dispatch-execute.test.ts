@@ -11812,7 +11812,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       if (pathname === "/api/v1/markdown/round-trip") {
         trips += 1;
         return trips === 1
@@ -11823,15 +11822,12 @@ describe("executeDispatchTool", () => {
             );
       }
       posts.push(pathname);
-      // The upload's answer is Dispatch's own, whose keyed layer the 503's /healthz named, so it
-      // carries the request's key back.
-      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
       return new Response(
         JSON.stringify({
           artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
           version: { number: 1 },
         }),
-        { headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+        { headers: { "Content-Type": "application/json" } }
       );
     };
 

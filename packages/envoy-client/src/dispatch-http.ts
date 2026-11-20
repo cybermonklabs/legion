@@ -702,6 +702,26 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
  *   can be told and has not been told yet in this call), and an old build's `404 NOT_FOUND` "no
  *   route for …".
  */
+/**
+ * The 403s every layer outside `keyedWrites` (server.go:848-887) writes in its JSON body. They
+ * claim no key, so after an earlier attempt may have landed they say nothing of that attempt.
+ * Every other JSON 403 reached the handler inside `keyedWrites`, whose answer is stored and
+ * replayed under the key (`storedStatus`, request_keys.go:1013-1019).
+ */
+function isPreKey403(code: string | undefined): boolean {
+  switch (code) {
+    case "OAUTH_SCOPE_REQUIRED":
+    case "PROJECT_SCOPE":
+    case "PROJECT_SCOPE_DEPLOYMENT":
+    case "READ_ONLY_TOKEN":
+    case "SESSION_SCOPE":
+    case "SIGN_IN_REQUIRED":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
   const { status } = answer.response;
   if (status >= 200 && status < 300) {
@@ -724,7 +744,9 @@ function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
-  return answer.error === undefined || status === 401 || status === 403 ? "unjudged" : "judged";
+  return answer.error === undefined || status === 401 || isPreKey403(answer.code)
+    ? "unjudged"
+    : "judged";
 }
 
 /**
