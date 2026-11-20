@@ -30,7 +30,8 @@ const (
 	// daemon's current one.
 	IdleHoldPluginContract
 	// IdleHoldUpdateRound: an update round of the pod is open on a live claim of it, so the pod
-	// is already being replaced and the replacement is waiting for its workers to push.
+	// is already being replaced and the replacement is waiting for its workers to do the steps of
+	// the update message (supervise.UpdateTask).
 	IdleHoldUpdateRound
 	// IdleHoldInTurn: a claim of the pod has a process in a turn, starting or stopping, or one
 	// whose launch is not yet known.
@@ -206,7 +207,8 @@ type IdleDecision struct {
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
 //     is): such a pod is already being replaced, and the replacement waits until every role in
-//     it has answered the update message, or until the round's bound. A release that deleted the
+//     it has answered the update message, no turn runs and no claim's activity report holds it
+//     (internal/daemon's roundEnd.holding), or until the round's bound. A release that deleted the
 //     pod under that wait would leave the round to read its own pod as one that went, and to
 //     tell the issue that the workers which had not answered lost what they had not pushed. A
 //     claim's own plugin round is not this condition's: that claim speaks a contract other than

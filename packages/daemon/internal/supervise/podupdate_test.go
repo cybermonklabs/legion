@@ -1,7 +1,8 @@
 package supervise
 
-// An update round is the daemon asking a claim's role to push its work and answer
-// ready_for_update before the process holding that claim is replaced. These tests pin what the
+// An update round is the daemon asking a claim's role to do the steps of its update message
+// (UpdateTask) and answer ready_for_update before the process holding that claim is replaced.
+// These tests pin what the
 // machine does with the round's events: a round that opens once, records its terms once and asks
 // nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
 // outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim

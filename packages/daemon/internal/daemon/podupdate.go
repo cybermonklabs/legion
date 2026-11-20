@@ -216,11 +216,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
 	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
 	// where the drift has gone away too — an operator rolled the release back — and the round
-	// replaces the pod all the same. The round has already asked every role in that pod to push
-	// its work and to start no new work, and no path is left that lets a role carry on in the pod
-	// it was told would be replaced. Replacing it is one restart of each role in its own session,
-	// which the alternative — a release of the answered roles that the daemon alone knows about —
-	// is not.
+	// replaces the pod all the same. The round has already asked every role in that pod to do the
+	// steps of its update message (supervise.UpdateTask) and to start no new work, and no path is
+	// left that lets a role carry on in the pod it was told would be replaced. Replacing it is one
+	// restart of each role in its own session, which the alternative — a release of the answered
+	// roles that the daemon alone knows about — is not.
 	terms := strings.Join(reasons, ", ")
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
@@ -1368,7 +1368,8 @@ func (s *supervision) writeOnIssue(ctx context.Context, issue string, post recor
 // A claim of the group in another round is left in it. Read while a replacement settles, one
 // group can hold the dead pod's round on one claim and the round over the pod that replaced it on
 // another, and posted each claim's own round, the end of the one would end the other as well: a
-// round its workers have been asked to push for, over a pod that is still there.
+// round whose workers have been given the steps of its update message (supervise.UpdateTask),
+// over a pod that is still there.
 func (s *supervision) endPodUpdates(group []supervise.Claim, round string) {
 	for _, c := range group {
 		if !memberOf(c, round) {

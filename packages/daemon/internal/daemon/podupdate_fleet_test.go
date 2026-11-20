@@ -5,8 +5,9 @@ package daemon
 // issue's pod is a round of its own: it is replaced only once its own workers have answered, and
 // an answer in one issue's pod replaces no other issue's. Nothing of the round suspends a root
 // architect, parks an issue or sends a root to await a person, and the daemon goes on serving every
-// claim in an open round — a worker tasked to push its work completes its phase through the same
-// route it would on any other day (api's handoff/complete).
+// claim in an open round — a worker tasked with the steps of its update message
+// (supervise.UpdateTask) completes its phase through the same route it would on any other day
+// (api's handoff/complete).
 //
 // The rig is podupdate_test.go's over two issues rather than one: real machines over a real
 // Postgres with the runtime faked, ticked by hand one sweep at a time. The completion is driven
@@ -623,11 +624,11 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // the issue that has not finished answering keep their round, their pod and their processes, and
 // their pod is replaced only once the last of them answers.
 //
-// The round refuses no completion while it waits, either: a worker tasked to push its work and
-// answer completes its phase through the daemon's own route, the issue moves on, and the round it
-// is in stays open — the worker pushes, reports and is replaced after, which is what the round is
-// for. And nothing of any of it moves a root out of the workflow: no root waits on a person, none
-// is parked, and no architect is suspended.
+// The round refuses no completion while it waits, either: a worker tasked with the steps of its
+// update message (supervise.UpdateTask) completes its phase through the daemon's own route, the
+// issue moves on, and the round it is in stays open — the worker does those steps, answers and
+// is replaced after, which is what the round is for. And nothing of any of it moves a root out
+// of the workflow: no root waits on a person, none is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
