@@ -11,8 +11,9 @@ import (
 )
 
 // SyncInterval is the longest the server waits between two passes that re-import every enabled
-// architecture source: each wait is more than 0.9 of it and at most it (duty.RunJittered). A push
-// of a source's branch imports that source at once (Importer.Pushed), and the Refresh button and
+// architecture source: each wait is more than 0.9 of it and at most it (duty.RunJittered). While
+// delivery settings are saved, a push of a source's branch imports that source at once
+// (Importer.Pushed, through the delivery intake, which runs only then), and the Refresh button and
 // the `dispatch architecture-sync` command are the impatient paths; this pass is the repair where
 // a push event never arrives (GitHub did not deliver it, or no process took it), and it keeps a
 // model honest on its own.

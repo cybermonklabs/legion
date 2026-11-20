@@ -456,9 +456,8 @@ func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
 }
 
-// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
-// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
-// length.
+// shownBodyRunes is how many runes of GitHub's text a line or an error shows (ShownBody): the
+// start of the text, in a line of bounded length.
 const shownBodyRunes = 512
 
 // ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most

@@ -351,7 +351,7 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   No sweep could read or write such a delivery's record or index entry, so it would otherwise fail every sweep, or leave every sweep incomplete with its cursor held, for as long as GitHub lists it.
   Each sweep that lists it logs `level=WARN msg="webhook redelivery left out a delivery whose GUID the bucket cannot key"` with `guid` and `error` (the bucket's refusal), decides the rest, and stays complete.
 
-- A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, an index entry's `key`, and an error of the bucket that quotes a key, as GitHub's text is shown elsewhere (`githubapp.ShownBody`):
+- A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, an index entry's `key`, and an error of the bucket that quotes a key, to a bound (`githubapp.ShownBody`):
   whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
