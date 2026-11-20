@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nkeys"
 
@@ -84,7 +85,7 @@ func TestTheBrokerBinaryRelaysAnEdgeListenersRepositories(t *testing.T) {
 // service (no BROKER_NATS_URLS, no seeds), as the first deployment's does, still reads the
 // edge-listener entries of BROKER_NATS_SERVICES, and answers the edge listener of PRIV its list.
 func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
-	env, dispatch, cluster, clusterKey := edgeOnlyBrokerEnv(t)
+	env, dispatch, cluster, clusterKey := edgeOnlyBrokerEnv(t, "edge-listener/edge-a/PRIV="+edgeListenerAccount)
 	live := newPlainBroker(startBroker(t, brokerOptions{Env: env}).Addr)
 	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", accountToken(t, cluster, clusterKey, edgeListenerAccount), "", "")
 	repositories, _ := answer["repositories"].([]any)
@@ -100,7 +101,7 @@ func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
 // BROKER_NATS_URLS and no seeds starts no NATS auth service: the boot records it off and counts
 // the edge listeners it read.
 func TestTheAuthServiceDoesNotStartFromItsServicesAlone(t *testing.T) {
-	env, _, _, _ := edgeOnlyBrokerEnv(t)
+	env, _, _, _ := edgeOnlyBrokerEnv(t, "edge-listener/edge-a/PRIV="+edgeListenerAccount)
 	broker := startBroker(t, brokerOptions{Env: env})
 	record := broker.AwaitRecord(t, "NATS auth service", nil)
 	if record["state"] != "off" || record["edge_listeners"] != float64(1) {
@@ -108,10 +109,44 @@ func TestTheAuthServiceDoesNotStartFromItsServicesAlone(t *testing.T) {
 	}
 }
 
-// edgeOnlyBrokerEnv is a broker's environment with PRIV's edge listener in BROKER_NATS_SERVICES and
-// no other NATS setting, reading Dispatch's answers from a stand-in where PRIV's issues resolve to
+// TestTheBrokerBinaryAnswersAGoogleEdgeListener: an edge listener on a VM, whose entry names a
+// Google account, is the broker's only Google caller: no BROKER_API_ACCOUNTS entry and no VM
+// service name one. The broker still starts with BROKER_GOOGLE_OIDC_AUDIENCE, builds the Google
+// verifier through its own boot, and answers that edge listener's identity token PRIV's list; a
+// Google account no entry names is 403 NOT_AN_EDGE_LISTENER.
+func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
+	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
+	google := oidctest.New(t)
+	googleKey := google.PublishKey(t, "google-key")
+	env, dispatch, _, _ := edgeOnlyBrokerEnv(t, "edge-listener/edge-g/PRIV=google:"+edgeGoogleAccount)
+	env = append(env, "BROKER_GOOGLE_OIDC_ISSUER="+google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE="+machineAudience)
+	live := newPlainBroker(startBroker(t, brokerOptions{Env: env}).Addr)
+	identity := func(account string) string {
+		t.Helper()
+		claims := google.Claims(account, machineAudience)
+		claims["email"] = account
+		claims["email_verified"] = true
+		claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
+		return google.Mint(t, googleKey, claims)
+	}
+	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", identity(edgeGoogleAccount), "", "")
+	repositories, _ := answer["repositories"].([]any)
+	if status != http.StatusOK || len(repositories) != 2 || repositories[0] != "acme/pub" || repositories[1] != "acme/two" {
+		t.Fatalf("the Google edge listener of PRIV was answered %d %v, want 200 with acme/pub and acme/two", status, answer)
+	}
+	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", identity("example-stranger@example-project.iam.gserviceaccount.com"), "", "")
+	if status != http.StatusForbidden || answer["code"] != "NOT_AN_EDGE_LISTENER" {
+		t.Fatalf("a Google account no entry names was answered %d %v, want 403 NOT_AN_EDGE_LISTENER", status, answer)
+	}
+	if calls := dispatch.Calls(); calls != 1 {
+		t.Fatalf("Dispatch was asked %d times, want 1", calls)
+	}
+}
+
+// edgeOnlyBrokerEnv is a broker's environment with services as BROKER_NATS_SERVICES and no other
+// NATS setting, reading Dispatch's answers from a stand-in where PRIV's issues resolve to
 // acme/pub and acme/two, and the cluster issuer whose tokens it takes.
-func edgeOnlyBrokerEnv(t *testing.T) ([]string, *projectrepostest.Server, *oidctest.Issuer, *oidctest.Key) {
+func edgeOnlyBrokerEnv(t *testing.T, services string) ([]string, *projectrepostest.Server, *oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	cluster := oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "signing-key")
@@ -131,7 +166,7 @@ func edgeOnlyBrokerEnv(t *testing.T) ([]string, *projectrepostest.Server, *oidct
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
-		"BROKER_NATS_SERVICES=edge-listener/edge-a/PRIV=" + edgeListenerAccount,
+		"BROKER_NATS_SERVICES=" + services,
 		"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
 		"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
 	}, dispatch, cluster, clusterKey

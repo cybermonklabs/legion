@@ -111,8 +111,12 @@ An **edge listener**, an Envoy listener that serves the sessions of named projec
 outside the deployment's network, calls one route with the same kind of identity token, and the
 broker knows it by its `BROKER_NATS_SERVICES` entry of kind `edge-listener`, not by
 `BROKER_API_ACCOUNTS`: `edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>`, which lists the
-projects it serves, at most 16, each once. It reaches `GET /v1/project-repositories` alone, and
-only about the projects its entry lists: the repositories the issues of that project resolve to,
+projects it serves, at most 16, each once. The account is written as `BROKER_API_ACCOUNTS` writes
+one and needs the same issuer: a Kubernetes service account needs `BROKER_K8S_OIDC_ISSUER`, and a
+`google:` account needs `BROKER_GOOGLE_OIDC_AUDIENCE`, for which it counts as a Google caller. An
+entry without its issuer refuses the start, naming the entry. It reaches
+`GET /v1/project-repositories` alone, and only about the projects its entry lists: the
+repositories the issues of that project resolve to,
 which the broker reads from Dispatch on every call and never keeps. Any other account, the Envoy
 listener's included, is answered `403 NOT_AN_EDGE_LISTENER`, and a project the entry does not
 list `403 PROJECT_NOT_LISTED`, before Dispatch is asked. Whenever the broker cannot get
@@ -729,7 +733,8 @@ account as a VM service. The remaining fleet settings are optional, subject to t
   and then logs one `google machine identity` line naming the issuer, the audience and the machine
   services. Unset, the broker reads and logs nothing about Google and takes no such token. Set, it
   needs a Google caller, or the broker refuses to start: a `google:` entry in
-  `BROKER_API_ACCOUNTS` or a VM service in `BROKER_VM_SERVICES`.
+  `BROKER_API_ACCOUNTS`, a VM service in `BROKER_VM_SERVICES` or a `google:` edge-listener entry
+  in `BROKER_NATS_SERVICES`.
 - `BROKER_VM_SERVICES`: whitespace-separated `<service>=<service account email>` entries. Use a
   dedicated user-managed account for each fleet: the broker refuses a project's default Compute
   Engine or App Engine account, which every workload in the project runs as by default. Without a

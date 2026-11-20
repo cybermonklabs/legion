@@ -7,7 +7,10 @@ body: |-
   the project access check presents. An edge listener is a `BROKER_NATS_SERVICES` entry of the new
   kind `edge-listener`, `edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>`, which lists the
   projects it serves, at most 16; it calls with the identity token a `BROKER_API_ACCOUNTS` caller
-  presents. Any other account is `403 NOT_AN_EDGE_LISTENER`, and a project its entry does not list
+  presents, and its account needs the same issuer: `BROKER_K8S_OIDC_ISSUER` for a Kubernetes
+  account, `BROKER_GOOGLE_OIDC_AUDIENCE` for a `google:` one, which counts as that audience's
+  Google caller. An entry without its issuer refuses the start. Any other account is
+  `403 NOT_AN_EDGE_LISTENER`, and a project its entry does not list
   `403 PROJECT_NOT_LISTED`, before Dispatch is asked. Dispatch's 503 or any other refusal, no
   answer within 2 seconds, a body the broker cannot read and an unset `BROKER_PROJECT_ACCESS_URL`
   are each `503 REPOSITORIES_UNKNOWN`, never a list; a 17th call of one edge listener waiting on

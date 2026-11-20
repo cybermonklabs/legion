@@ -74,6 +74,27 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 	return settings, nil
 }
 
+// edgeListenerEntries is the first edge-listener entry of Services that names a Kubernetes
+// account and the first that names a Google one, each "" when there is none: the callers of the
+// broker's API whose identity tokens need the cluster's issuer and Google's audience.
+func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
+	for _, text := range strings.Fields(n.Services) {
+		head, account, _ := CutNATSServiceEntry(text)
+		if !strings.HasPrefix(head, EdgeListenerKind+"/") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(account, googleAPIAccountTag):
+			if google == "" {
+				google = text
+			}
+		case kubernetes == "":
+			kubernetes = text
+		}
+	}
+	return kubernetes, google
+}
+
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
 // service connects as the user its seed names, so user info in a URL is a credential it never
 // uses, and the broker writes the URLs into its start line and the service's connect error. An

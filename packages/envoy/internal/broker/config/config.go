@@ -2351,11 +2351,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
 	}
-	// The audience is for a Google caller of either kind, and needs one: with neither, the broker
-	// would read Google's keys at boot and then accept no Google identity token at all.
-	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 {
-		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES; with neither, no Google identity token for that audience could ever be accepted")
-	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
 	if err != nil {
 		return Config{}, err
@@ -2404,6 +2399,22 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
 		return Config{}, err
+	}
+	// An edge listener is a caller of the API too (GET /v1/project-repositories), whether or not
+	// the auth service runs, so its entry needs the issuer whose identity token its account
+	// presents, as a BROKER_API_ACCOUNTS entry of the same kind does, and a Google one is a Google
+	// caller of BROKER_GOOGLE_OIDC_AUDIENCE.
+	kubernetesEdge, googleEdge := cfg.NATS.edgeListenerEntries()
+	if kubernetesEdge != "" && cfg.K8sOIDCIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q names a Kubernetes service account as an edge listener, which needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens it presents", kubernetesEdge)
+	}
+	if googleEdge != "" && cfg.GoogleOIDCAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q names a Google service account as an edge listener, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its Google identity token must carry", googleEdge)
+	}
+	// The audience is for a Google caller of any kind, and needs one: with none, the broker
+	// would read Google's keys at boot and then accept no Google identity token at all.
+	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 && googleEdge == "" {
+		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES; with none, no Google identity token for that audience could ever be accepted")
 	}
 	// The registration route's two settings, read after every other audience of the cluster
 	// issuer's tokens, so the registration audience is compared with each of them.

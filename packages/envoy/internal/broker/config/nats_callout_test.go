@@ -84,6 +84,7 @@ func TestNATSCalloutSettings(t *testing.T) {
 	// as it was given and the service stays off.
 	t.Run("only edge-listener services is no service", func(t *testing.T) {
 		e := validEnv()
+		e["BROKER_K8S_OIDC_ISSUER"], e["BROKER_K8S_OIDC_AUDIENCE"] = "https://issuer.example", "broker"
 		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener"
 		cfg, err := Load(env(e))
 		if err != nil {
@@ -93,6 +94,44 @@ func TestNATSCalloutSettings(t *testing.T) {
 			t.Fatalf("an environment naming only edge-listener services configured %+v, want them read and no service", cfg.NATS)
 		}
 	})
+	// An edge listener is a caller of the broker's API, so its entry needs the issuer whose
+	// identity token its account presents, as a BROKER_API_ACCOUNTS entry of the same kind does.
+	// A Google entry is a Google caller: it alone lets BROKER_GOOGLE_OIDC_AUDIENCE be set, and it
+	// is refused without that audience. A Kubernetes entry is refused without the cluster issuer.
+	t.Run("a Google edge listener is the audience's Google caller", func(t *testing.T) {
+		e := validEnv()
+		e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "https://broker.example/machines"
+		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-g/PRIV=google:example-edge@example-project.iam.gserviceaccount.com"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.GoogleOIDCAudience != e["BROKER_GOOGLE_OIDC_AUDIENCE"] || cfg.NATS.Services != e["BROKER_NATS_SERVICES"] || cfg.NATS.Enabled() {
+			t.Fatalf("a Google edge listener with its audience configured audience %q and %+v", cfg.GoogleOIDCAudience, cfg.NATS)
+		}
+	})
+	for name, row := range map[string]struct {
+		edit  map[string]string
+		names string
+	}{
+		"a Google edge listener with no Google audience": {map[string]string{
+			"BROKER_NATS_SERVICES": "edge-listener/edge-g/PRIV=google:example-edge@example-project.iam.gserviceaccount.com",
+		}, "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		"a Kubernetes edge listener with no cluster issuer": {map[string]string{
+			"BROKER_NATS_SERVICES": "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener",
+		}, "BROKER_K8S_OIDC_ISSUER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := validEnv()
+			for key, value := range row.edit {
+				e[key] = value
+			}
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), row.names) || !strings.Contains(err.Error(), "edge-listener") {
+				t.Fatalf("want a refusal naming %s and the edge-listener entry, got %v", row.names, err)
+			}
+		})
+	}
 
 	refusals := []struct {
 		name  string

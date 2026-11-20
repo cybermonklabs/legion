@@ -1072,15 +1072,17 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 // audience and needs it, and that an audience with neither, a Kubernetes API caller being no
 // Google caller, is refused at boot naming the audience and both ways to give it a caller.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
-	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES"
 	for _, row := range []struct {
-		name                                string
-		api, kubernetes, audience, services bool
-		wantError                           string
+		name                                      string
+		api, kubernetes, audience, services, edge bool
+		wantError                                 string
 	}{
 		{name: "neither caller"},
 		{name: "audience only", audience: true, wantError: noGoogleCaller},
 		{name: "audience with only a Kubernetes API caller", kubernetes: true, audience: true, wantError: noGoogleCaller},
+		{name: "audience with only a Google edge listener", audience: true, edge: true},
+		{name: "a Google edge listener without audience", edge: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
 		{name: "API caller without audience", api: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
 		{name: "VM caller without audience", services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
 		{name: "both callers without audience", api: true, services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
@@ -1102,6 +1104,9 @@ func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 			}
 			if row.services {
 				e["BROKER_VM_SERVICES"] = "example-service=" + exampleVMServiceAccount
+			}
+			if row.edge {
+				e["BROKER_NATS_SERVICES"] = "edge-listener/edge-g/PRIV=google:" + exampleListenerAccount
 			}
 			cfg, err := Load(env(e))
 			if row.wantError != "" {
