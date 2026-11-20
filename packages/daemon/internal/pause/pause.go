@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,14 +109,15 @@ func (e *UnavailableError) Error() string {
 // Both follow the flag, and so does the work they do: the catch-up must read the machines once the
 // gate holds every launch, and a machine posted the end of a pause must find the flag cleared. So
 // neither is a hook of the act's commit, which may run late, after a later act moved the flag. An
-// act whose outcome the store could not say sets no flag and runs neither; a Refresh, or a later
-// act the store refuses, that then finds the flag behind the store moves the flag and runs them
-// for the move it makes (follow).
+// act whose outcome the store could not say sets no flag and runs neither; its commit's hook,
+// which runs once the store says it committed, holds it as owed (owed), and the next Refresh, or a
+// later act the store refuses, runs it once the flag follows the store (follow). A pause or a
+// resume another daemon made is no act of this one: its Refresh moves the flag and runs nothing.
 type Effects interface {
 	// Paused runs once pause has committed and the flag is set. asked are the claims the pause's
-	// transaction asked to stop, none where the flag followed the store (follow); the daemon asks
-	// the stop of every other live role of the project but the controller, which catches a launch
-	// that passed the gate before the flag was set (decision 3).
+	// transaction asked to stop; the daemon asks the stop of every other live role of the project
+	// but the controller, which catches a launch that passed the gate before the flag was set
+	// (decision 3).
 	Paused(ctx context.Context, pause store.Pause, asked []store.PauseStopClaim)
 	// Resumed runs once the resume that ended pause has committed and the flag is cleared: the
 	// steps of decision 22 after the transaction, in their order, are the daemon's.
@@ -160,6 +162,75 @@ type Service struct {
 	mu sync.Mutex
 	// paused is the open pause's id, 0 while the project runs. A pause's id is never 0 (bigserial).
 	paused atomic.Int64
+	// owed is this daemon's own acts that committed and whose Effects have not run.
+	owed owedEffects
+}
+
+// owedEffects is this daemon's own pauses and resumes whose commit's hook ran — the store said
+// they committed — and whose Effects have not run yet: an act whose outcome the store could not
+// say returns without them. The hook records the act (pauseCommitted, resumeCommitted), and an
+// act that runs its Effects itself takes its record back (takePause, takeResume); follow runs the
+// rest. Hooks run on the outcome watcher's goroutine, without the service's lock, so the records
+// have a lock of their own, held only to read or write them.
+type owedEffects struct {
+	mu      sync.Mutex
+	pauses  []owedPause
+	resumes []store.Pause
+}
+
+// owedPause is a committed pause with the claims its transaction asked to stop.
+type owedPause struct {
+	pause store.Pause
+	asked []store.PauseStopClaim
+}
+
+func (o *owedEffects) pauseCommitted(pause store.Pause, asked []store.PauseStopClaim) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pauses = append(o.pauses, owedPause{pause: pause, asked: asked})
+}
+
+func (o *owedEffects) resumeCommitted(ended store.Pause) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resumes = append(o.resumes, ended)
+}
+
+// takePause drops the record of pause id, which its act's own Effects cover.
+func (o *owedEffects) takePause(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pauses = slices.DeleteFunc(o.pauses, func(p owedPause) bool { return p.pause.ID == id })
+}
+
+// takeResume drops the record of the resume that ended pause id, which its act's own Effects cover.
+func (o *owedEffects) takeResume(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resumes = slices.DeleteFunc(o.resumes, func(p store.Pause) bool { return p.ID == id })
+}
+
+// due answers the Effects owed once the flag holds the reading — open, while found — and keeps
+// what is not due yet. A pause is due while it is the open one; once it has ended its catch-up
+// asks nothing, so it is dropped. A resume is due once no pause is open, since a machine posted the
+// end of a pause must find the flag cleared; while a later pause stands it stays owed, and that
+// pause's end makes it due.
+func (o *owedEffects) due(open store.Pause, found bool) ([]owedPause, []store.Pause) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var pauses []owedPause
+	for _, p := range o.pauses {
+		if found && p.pause.ID == open.ID {
+			pauses = append(pauses, p)
+		}
+	}
+	o.pauses = nil
+	if found {
+		return pauses, nil
+	}
+	resumes := o.resumes
+	o.resumes = nil
+	return pauses, resumes
 }
 
 // New builds a Service. The flag reads no pause until Load.
@@ -226,20 +297,22 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 			return err
 		}
 		made, stops := pause, asked
-		store.OnCommit(ctx, func() { s.logPaused(made, stops, tell) })
+		store.OnCommit(ctx, func() {
+			s.logPaused(made, stops, tell)
+			s.owed.pauseCommitted(made, stops)
+		})
 		return nil
 	})
 	if standing := (*store.AlreadyPausedError)(nil); errors.As(err, &standing) {
 		// The refusal read the pause that stands, which another daemon of a rolling restart may
 		// have made since this one's last Refresh, or this daemon's own pause whose outcome the
 		// store could not say: the flag holds it from now.
-		if followed := s.follow(ctx, standing.Standing, true); followed != nil {
-			return store.Pause{}, errors.Join(err, followed)
-		}
+		s.follow(ctx, standing.Standing, true)
 	}
 	if err != nil {
 		return store.Pause{}, err
 	}
+	s.owed.takePause(pause.ID)
 	s.paused.Store(pause.ID)
 	if s.effects != nil {
 		s.effects.Paused(ctx, pause, asked)
@@ -298,21 +371,23 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 			return err
 		}
 		ended, rows := resumed.Pause, held
-		store.OnCommit(ctx, func() { s.logResumed(ended, rows, tell) })
+		store.OnCommit(ctx, func() {
+			s.logResumed(ended, rows, tell)
+			s.owed.resumeCommitted(ended)
+		})
 		return nil
 	})
 	if notPaused := (*store.NotPausedError)(nil); errors.As(err, &notPaused) {
 		// The refusal read no open pause, which another daemon may have ended since this one's
 		// last Refresh, or this daemon's own resume whose outcome the store could not say: the
 		// flag reads none from now.
-		if followed := s.follow(ctx, store.Pause{}, false); followed != nil {
-			return store.Pause{}, nil, errors.Join(err, followed)
-		}
+		s.follow(ctx, store.Pause{}, false)
 	}
 	if err != nil {
 		return store.Pause{}, nil, err
 	}
 	ended := resumed.Pause
+	s.owed.takeResume(ended.ID)
 	s.paused.Store(0)
 	if s.effects != nil {
 		s.effects.Resumed(ctx, ended)
@@ -359,41 +434,31 @@ func (s *Service) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.follow(context.WithoutCancel(ctx), open, found)
+	s.follow(context.WithoutCancel(ctx), open, found)
+	return nil
 }
 
-// follow moves the flag to the store's reading — open, while found — and runs the Effects of the
-// move, under the service's lock: Resumed for the pause the flag held, read back as it ended, and
-// Paused for the open pause, with no claims asked, since the claims its transaction asked are its
-// own. A flag that already holds the reading moves nothing and runs nothing, so a pause whose
-// commit this daemon saw runs its Effects once. A pause the flag held that cannot be read back
-// leaves the flag as it was, and the next Refresh moves it.
-func (s *Service) follow(ctx context.Context, open store.Pause, found bool) error {
-	was, now := s.paused.Load(), int64(0)
+// follow moves the flag to the store's reading — open, while found — under the service's lock, and
+// then runs the Effects of this daemon's own acts that the reading makes due (owedEffects.due):
+// those whose commit's hook ran while the act itself returned the store's unknown outcome. A pause
+// or a resume another daemon made moves the flag and runs nothing, as the daemon that made it runs
+// its own Effects and this daemon's machines meet the flag at their next decision.
+func (s *Service) follow(ctx context.Context, open store.Pause, found bool) {
 	if found {
-		now = open.ID
+		s.paused.Store(open.ID)
+	} else {
+		s.paused.Store(0)
 	}
-	if was == now {
-		return nil
-	}
-	var ended store.Pause
-	if was != 0 && s.effects != nil {
-		var err error
-		if ended, err = s.store.PauseByID(ctx, was); err != nil {
-			return fmt.Errorf("pause %s: read the pause the flag held: %w", s.project, err)
-		}
-	}
-	s.paused.Store(now)
+	pauses, resumes := s.owed.due(open, found)
 	if s.effects == nil {
-		return nil
+		return
 	}
-	if was != 0 {
+	for _, ended := range resumes {
 		s.effects.Resumed(ctx, ended)
 	}
-	if now != 0 {
-		s.effects.Paused(ctx, open, nil)
+	for _, p := range pauses {
+		s.effects.Paused(ctx, p.pause, p.asked)
 	}
-	return nil
 }
 
 // OpenPause is the project's open pause, and whether one is open, as the store holds it now.

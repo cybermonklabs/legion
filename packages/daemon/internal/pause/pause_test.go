@@ -766,6 +766,85 @@ func TestLoadAndRefreshFollowAPauseAnotherDaemonMade(t *testing.T) {
 	}
 }
 
+// A pause and a resume another daemon made are no acts of this one. Its Refresh, and its own acts
+// the store refuses for them, move its flag as main's do, and run none of its Effects: the daemon
+// that made each act runs its own, and this daemon's machines meet the flag at their next decision.
+// Only an act of this daemon's own whose outcome the store could not say is owed its Effects
+// (TestAPauseWhoseCommitReplyIsLostKeepsItsSuccessWork).
+func TestARefreshOfAnotherDaemonsPauseAndResumeRunsNoEffects(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.Clone(t, "legion_pause")
+	open := func() *store.Store {
+		st, err := store.Open(ctx, url)
+		if err != nil {
+			t.Fatalf("open the database: %v", err)
+		}
+		t.Cleanup(st.Close)
+		return st
+	}
+	clock := &testClock{at: pausedAt}
+	first, second := rigOn(t, open(), clock, capable()), rigOn(t, open(), clock, capable())
+	seedClaims(t, first.st)
+	none := func(when string) {
+		t.Helper()
+		if paused, resumed := second.effects.pausedCalls(), second.effects.resumedCalls(); len(paused) != 0 || len(resumed) != 0 {
+			t.Fatalf("%s: the second daemon's Effects.Paused ran %d times and Effects.Resumed %d, want none", when, len(paused), len(resumed))
+		}
+	}
+
+	pause, err := first.svc.Pause(ctx, operator, "the model provider is down")
+	if err != nil {
+		t.Fatalf("the first daemon's pause: %v", err)
+	}
+	if err := second.svc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if id, paused := second.svc.Paused(); !paused || id != pause.ID {
+		t.Fatalf("the second daemon's flag after Refresh = %d, %t; want pause %d", id, paused, pause.ID)
+	}
+	none("after a Refresh read the first daemon's pause")
+
+	clock.Advance(10 * time.Minute)
+	if _, _, err := first.svc.Resume(ctx, operator); err != nil {
+		t.Fatalf("the first daemon's resume: %v", err)
+	}
+	if err := second.svc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, paused := second.svc.Paused(); paused {
+		t.Fatal("the second daemon's flag after Refresh = paused, want none")
+	}
+	none("after a Refresh read the first daemon's resume")
+
+	clock.Advance(10 * time.Minute)
+	again, err := first.svc.Pause(ctx, controller, "the provider is down again")
+	if err != nil {
+		t.Fatalf("the first daemon's second pause: %v", err)
+	}
+	var standing *store.AlreadyPausedError
+	if _, err := second.svc.Pause(ctx, operator, "the operator's pause"); !errors.As(err, &standing) {
+		t.Fatalf("the second daemon's pause = %v, want an AlreadyPausedError", err)
+	}
+	if id, _ := second.svc.Paused(); id != again.ID {
+		t.Fatalf("the second daemon's flag after its refused pause = %d, want pause %d", id, again.ID)
+	}
+	none("after the second daemon's pause was refused")
+	if _, _, err := first.svc.Resume(ctx, controller); err != nil {
+		t.Fatalf("the first daemon's second resume: %v", err)
+	}
+	var notPaused *store.NotPausedError
+	if _, _, err := second.svc.Resume(ctx, operator); !errors.As(err, &notPaused) {
+		t.Fatalf("the second daemon's resume = %v, want a NotPausedError", err)
+	}
+	if _, paused := second.svc.Paused(); paused {
+		t.Fatal("the second daemon's flag after its refused resume = paused, want none")
+	}
+	none("after the second daemon's resume was refused")
+	if got := len(first.effects.pausedCalls()) + len(first.effects.resumedCalls()); got != 4 {
+		t.Fatalf("the first daemon's Effects ran %d times, want 4: one for each of its own acts", got)
+	}
+}
+
 // The pause logs one line naming the pause, who made it, why, and how many roles and which claims
 // it asked to stop; the resume logs one line naming the pause, who ended it, who made it and how
 // many rows it held, then one line for each row it held, naming the row, its kind, its issue and

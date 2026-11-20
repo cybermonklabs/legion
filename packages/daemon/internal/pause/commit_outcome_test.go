@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -166,8 +167,10 @@ func TestAPauseWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 			}
 		}
 		wantCounts(t, r.pauseWork(t), each(1), "after two Refreshes")
-		if calls := r.effects.pausedCalls(); len(calls) == 1 && (calls[0].asked != nil || calls[0].flag != r.openPause(t)) {
-			t.Errorf("the Refresh's Effects.Paused asked %v with the flag at %d, want no claims asked and the flag set", calls[0].asked, calls[0].flag)
+		if calls := r.effects.pausedCalls(); len(calls) == 1 &&
+			(!slices.Equal(tokens(calls[0].asked), []claim.Token{implementer, tester}) || calls[0].flag != r.openPause(t)) {
+			t.Errorf("the Refresh's Effects.Paused asked %v with the flag at %d, want the claims the pause's transaction asked and the flag set",
+				tokens(calls[0].asked), calls[0].flag)
 		}
 		var standing *store.AlreadyPausedError
 		if _, err := r.svc.Pause(ctx, operator, "again"); !errors.As(err, &standing) {
