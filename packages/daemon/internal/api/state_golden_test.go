@@ -1077,7 +1077,8 @@ func TestStateGolden(t *testing.T) {
 // repositoriesLiveContract: the state golden's own state, asked through the route itself, with its
 // `repositories` block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), and every other key as a caller at this contract is served it, since
-// no other row of stateNarrowings stands at or above 152. `packages/contracts/src/legion-api.test.ts`
+// no other row of stateNarrowings stands above the caller's 181: pauseContract's row (178) stands
+// below it, which is why the golden carries `paused`. `packages/contracts/src/legion-api.test.ts`
 // parses it with a copy of contract 152's schema of the block, so the narrowing is held to the
 // reader it is written for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {

@@ -3074,7 +3074,8 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // production check's look: the runtime suspends the issue's Sandbox under its pod lock once the
 // store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
 // (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
-// it, ends the pause's hold of that pod (podDeleted), and its end runs (endPods).
+// it, ends the pause's hold of that pod (podDeleted); a pod whose close the store did not refuse
+// ends (endPods).
 func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.supervisor == nil {
 		return errors.New("issue suspension executor has no claim supervisor")

@@ -1294,14 +1294,25 @@ def hold_infra_race_unit_script():
 hold_infra_race_unit_script()
 
 
-# The three packages the test job's race step runs, and which its plain step therefore leaves out.
+# The four packages daemon-go's race step runs, and which its plain step therefore leaves out, each
+# for goroutines of its product code that share state. internal/daemon: the outbox's lane registry,
+# lease renewal and held clock, which share state with the intake's commit hooks and the API.
+# internal/sessionproxy, and internal/launcher, which wires it: the accept loop, copy pairs, pair
+# tracking and bounded drain. internal/intake: the consumers' goroutines (Run's, one per durable
+# consumer, and Lag's, one per consumer read) and the lock they take (Consumers.mu). Its consumers
+# share one handle on the notification stream, and nats.go's Info writes a handle's cached info
+# under no lock while Lag's read of the oldest waiting message (GetMsg) reads it, so each read of
+# the stream's info, DispatchTarget's and createConsumer's, goes through a handle of its own. That
+# race is what this list now guards: under the detector,
+# TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn fails when either read is
+# put back on the shared handle, and a run without the detector passes it.
 # One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
-# in ci.yaml differs from the text built here, so the two steps cannot name different sets.
-# internal/record is not among them: its product code starts no goroutine and uses no sync, so the
-# detector has nothing of the package to find there. Its own tests do start goroutines, and the
-# cover the detector gave those is what this trade gives up. The plain step leaves out one more
+# in ci-job-daemon-go.yaml differs from the text built here, so the two steps cannot name different
+# sets. internal/record is not among them: its product code starts no goroutine and uses no sync,
+# so the detector has nothing of the package to find there. Its own tests do start goroutines, and
+# the cover the detector gave those is what this trade gives up. The plain step leaves out one more
 # package than the race step runs, the text checks, which are the text-check job's.
-DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
+DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher", "internal/intake"]
 # The job of ci-caches.yaml whose race build fills the cache the race step restores, and which
 # ci_workflow_rules.py's check_race_fill_packages holds to that list: a race build of any other
 # job of that file fills another family.
@@ -1461,7 +1472,7 @@ SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain step runs every package of the module but
-# the race step's three and the text checks, and this package moved into one of those while these
+# the race step's four and the text checks, and this package moved into one of those while these
 # tests stayed here would run them in that step too.
 if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
@@ -2482,8 +2493,8 @@ GATES = [
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
-    # the plain step over every package of the module but the three concurrent ones and the text
-    # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
+    # the plain step over every package of the module but the four concurrent ones and the text
+    # checks, the race step over those four, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
     # closure while it was aliased into the test filter and gated nothing of its own. The tests
     # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
@@ -2505,7 +2516,7 @@ GATES = [
         # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
         # never out of the build, so the closure here is the step's whole closure. The Run names
         # the packages the step's own `grep -Ev` keeps (packages_kept over DAEMON_PLAIN_PATTERN),
-        # rather than the superset ./...: the race step's Run below claims the three packages
+        # rather than the superset ./...: the race step's Run below claims the four packages
         # this step leaves out, which are this job's own, while the text checks are the
         # text-check job's, and a Run saying ./... would keep what only their tests read -
         # docs/kubernetes.md - on this job's filter. Only they read it: the way back checks in
@@ -2518,12 +2529,12 @@ GATES = [
              "supervise table's two pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
-        # its script is pinned too. What it compiles is every test file of the three packages,
+        # its script is pinned too. What it compiles is every test file of the four packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
         # (the plugin-pack gate below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
-            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the four concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
         ]),
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [

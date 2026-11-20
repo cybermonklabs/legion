@@ -1003,8 +1003,8 @@ jobs:
               - '.github/actions/install-omp/**'
               - *jj_install
             # The daemon-go job: what its two Go steps read together — the plain step, which
-            # tests every package of packages/daemon but the three concurrent ones, and the race
-            # step, which tests those three — so the filter covers the whole module's closure,
+            # tests every package of packages/daemon but the four concurrent ones, and the race
+            # step, which tests those four — so the filter covers the whole module's closure,
             # and what the Stage 1 proof beside them builds and sources. The
             # packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
             # for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read

@@ -635,9 +635,9 @@ func (c closeAuthority) EndPausePodHold(context.Context, string, string, store.P
 // An issue close the store authorizes ends the issue's pod, and its end writes the new name and
 // drops the repository kept for the issue without reading the Sandbox the runtime may still hold;
 // a close the store refuses finishes without acting, may leave the pod standing, and ends
-// nothing. Control: with the close's pod end removed (the record.IssueSuspend case's endPods), the
-// authorized close leaves the old name; with it run whatever the store answered, the refused one
-// writes the new name under the pod it left standing.
+// nothing. Control: with the close's pod end removed (suspendIssue's endPods), the authorized
+// close leaves the old name; with it run whatever the store answered, the refused one writes the
+// new name under the pod it left standing.
 func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
