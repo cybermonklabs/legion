@@ -354,7 +354,9 @@ func appTransient(err error) bool {
 // (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit (1 min) when
 // GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an attempt after that
 // asks GitHub afresh. In token mode that read is the App's token_command, and an attempt whose
-// bound ends while the command runs is pending (InstalledOwners answers ErrCommandPending).
+// bound ends while the command runs is pending (InstalledOwners answers ErrCommandPending); a read
+// that ends between two attempts keeps its answer for the next one (appauth's finishedRunKeep), so
+// the command does not run again.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)

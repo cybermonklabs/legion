@@ -226,10 +226,15 @@ type Manager struct {
 	pendingIdentities map[string]*pendingIdentity
 	// pendingInstallations holds, per App role, the installation read running for that App now,
 	// so overlapping reads share one (InstalledOwners). The entry is dropped the moment the
-	// read ends: nothing of the answer is kept, since the answer is a bundle's whole reach and
-	// must be GitHub's own at the build (credential.go's GitHubCredential).
+	// read ends, since the answer is a bundle's whole reach and must be GitHub's own at the
+	// build (credential.go's GitHubCredential); what outlives the read is keptInstallations.
 	pendingInstallations map[AppRole]*pendingInstallations
-	commands             map[scope]*commandRun
+	// keptInstallations holds, per App role in token mode, the ended installation read no
+	// caller waited for to its end, and which did not end pending, for the next caller of the
+	// role to take once, as a finished token_command run waits for a caller that comes back:
+	// a timer drops it after finishedRunKeep (InstalledOwners, readSharedInstallations).
+	keptInstallations map[AppRole]*pendingInstallations
+	commands          map[scope]*commandRun
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -272,12 +277,16 @@ type pendingIdentity struct {
 	err      error
 }
 
-// pendingInstallations is one App's installation read in flight, and what it answered, for
-// every caller that joined it rather than reading GitHub beside it (InstalledOwners).
+// pendingInstallations is one App's installation read, and what it answered, for every caller
+// that joined it rather than reading GitHub beside it (InstalledOwners). waiters counts, under
+// the Manager's mu, the callers waiting for it now: a caller that joins adds one, and one that
+// leaves on its own context before the read ends takes it away, so the read's end knows whether
+// any caller is given its answer (readSharedInstallations).
 type pendingInstallations struct {
-	done   chan struct{}
-	owners []string
-	err    error
+	done    chan struct{}
+	owners  []string
+	err     error
+	waiters int
 }
 
 // A Manager answers every interface a caller reaches it through. The daemon's wiring takes it
@@ -332,6 +341,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		identities:           map[string]GitIdentity{},
 		pendingIdentities:    map[string]*pendingIdentity{},
 		pendingInstallations: map[AppRole]*pendingInstallations{},
+		keptInstallations:    map[AppRole]*pendingInstallations{},
 		commands:             map[scope]*commandRun{},
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
@@ -712,18 +722,19 @@ type Source interface {
 // before, because its caller builds a bundle from the answer: an owner the account removed the
 // App from must stop minting at the next bundle, and one that installed it must mint at that
 // same bundle, with no cached set and no timer between the account's change and the role's
-// reach. What it read replaces the installation ids the Manager holds for the role, so a mint
-// that follows reaches the installation GitHub names now and an owner no longer listed is
-// looked for again rather than minted on a stale id.
+// reach. The one exception is token mode's read no caller waited for to its end, kept for the
+// next caller for finishedRunKeep (below). What it read replaces the installation ids the
+// Manager holds for the role, so a mint that follows reaches the installation GitHub names now
+// and an owner no longer listed is looked for again rather than minted on a stale id.
 //
 // Reads of one App that overlap in time share one read, as concurrent reads of an App's
 // identity do (identity, pendingInstallations): the answer is a fact about the App and the
 // moment, so the second caller is given what the first is reading rather than asking GitHub
-// the same question beside it. That is no cached set — nothing is held once the read ends, and
-// the next caller reads GitHub afresh — and it is what keeps the token-mode cost of a bundle
-// bearable: there the read is runTokenCommand with no owner, the release of every installation
-// the App has, which is a subprocess, a request to the secrets broker and a whole set of
-// tokens thrown away but for the owner names.
+// the same question beside it. That is no cached set — nothing is held once a read a caller
+// was given ends, and the next caller reads GitHub afresh — and it is what keeps the token-mode
+// cost of a bundle bearable: there the read is runTokenCommand with no owner, the release of
+// every installation the App has, which is a subprocess, a request to the secrets broker and a
+// whole set of tokens thrown away but for the owner names.
 //
 // The shared read belongs to no caller (readSharedInstallations): it runs on a context detached
 // from the one that started it, bounded by installationReadLimit, and every caller, the first
@@ -738,26 +749,54 @@ type Source interface {
 // which also wraps the context's error. The boot's key proof reads that answer as pending and
 // spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a person's
 // approval holds the boot without ending it. A read of GitHub under the App's JWT gets the
-// context's error alone: GitHub has not answered yet, and no person is waited on.
+// context's error alone: GitHub has not answered yet, and no person is waited on. A caller whose
+// context ends as the read ends is still counted as waiting by the read, and takes its answer.
+//
+// In token mode the read's answer outlives it when no caller waited for it to its end: every
+// caller that joined it has gone on its own context, as the boot's key proof goes between two
+// attempts. The read then keeps its answer for the role (keptInstallations), and the next caller
+// of the role takes it, once, within finishedRunKeep, as runTokenCommand keeps a finished run for
+// a caller that comes back. The read is the caller that took the run's result, so without the
+// keep the caller that comes back finds neither, runs the command again, and a grant a person
+// approved is asked for once more. Nothing is kept when a caller was given the answer, when the
+// read ended pending (ErrCommandPending: its run goes on, and the next read joins it), or under
+// the App's JWT, where a read asks no person and the next caller reads GitHub afresh.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	m.mu.Lock()
+	if kept, ok := m.keptInstallations[role]; ok {
+		delete(m.keptInstallations, role)
+		m.mu.Unlock()
+		return slices.Clone(kept.owners), kept.err
+	}
 	read, joined := m.pendingInstallations[role]
 	if !joined {
 		read = &pendingInstallations{done: make(chan struct{})}
 		m.pendingInstallations[role] = read
 		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
 	}
+	read.waiters++
 	m.mu.Unlock()
 	select {
 	case <-read.done:
 		return slices.Clone(read.owners), read.err
 	case <-ctx.Done():
-		if app, err := m.app(role); err == nil && app.TokenCommand != "" {
-			return nil, &TransientError{Err: fmt.Errorf("%s's release of every installation is still running after %w (a grant may wait on a person's approval): %w",
-				tokenCommandField(role), ctx.Err(), ErrCommandPending)}
-		}
-		return nil, ctx.Err()
 	}
+	// A read that ended before this caller left counted it as waiting and kept nothing, so its
+	// answer is this caller's.
+	m.mu.Lock()
+	select {
+	case <-read.done:
+		m.mu.Unlock()
+		return slices.Clone(read.owners), read.err
+	default:
+		read.waiters--
+		m.mu.Unlock()
+	}
+	if app, err := m.app(role); err == nil && app.TokenCommand != "" {
+		return nil, &TransientError{Err: fmt.Errorf("%s's release of every installation is still running after %w (a grant may wait on a person's approval): %w",
+			tokenCommandField(role), ctx.Err(), ErrCommandPending)}
+	}
+	return nil, ctx.Err()
 }
 
 // installationReadLimit bounds the one installation read every overlapping caller of an App
@@ -769,16 +808,32 @@ const installationReadLimit = time.Minute
 
 // readSharedInstallations makes the read the callers of InstalledOwners share and hands its
 // answer to every one of them through read. detached carries the values of the context that
-// started it and none of its cancellation.
+// started it and none of its cancellation. In token mode a read that ends with no caller
+// waiting for it, and not pending, is kept for the role's next caller (keptInstallations),
+// decided under mu as the read ends, and a timer drops it after finishedRunKeep, as forgetRun
+// drops a finished run.
 func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
 	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
 	defer cancel()
 	owners, err := m.readInstalledOwners(bounded, role)
+	app, appErr := m.app(role)
+	keep := appErr == nil && app.TokenCommand != "" && !errors.Is(err, ErrCommandPending)
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	read.owners, read.err = owners, err
 	delete(m.pendingInstallations, role)
 	close(read.done)
-	m.mu.Unlock()
+	if !keep || read.waiters > 0 {
+		return
+	}
+	m.keptInstallations[role] = read
+	time.AfterFunc(finishedRunKeep, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.keptInstallations[role] == read {
+			delete(m.keptInstallations, role)
+		}
+	})
 }
 
 // readInstalledOwners is the read itself, made once for every caller of role's App whose call
