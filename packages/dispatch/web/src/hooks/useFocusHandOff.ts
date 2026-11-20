@@ -60,11 +60,8 @@ export function useFocusHandOff(
 }
 
 /** Whether `pressed` holds a press of the reader's, which the press sets. Reading it forgets the
- *  press, so each read answers one press at most. A press is read only where a caller reads it:
- *  `useFocusHandOff` reads its `pressed` as the element leaves, and a caller that reads a flag of
- *  its own in `to` reads it only when the element leaves holding the focus, so a press whose
- *  element left without it stays held until that caller forgets it. */
-export function takePress(pressed: RefObject<boolean>): boolean {
+ *  press, so each read answers one press at most. */
+function takePress(pressed: RefObject<boolean>): boolean {
   const held = pressed.current;
   pressed.current = false;
   return held;

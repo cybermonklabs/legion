@@ -2310,6 +2310,205 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   }
 });
 
+/** The failure a read of Referenced by's list meets in the cases below. */
+function listReadFailed(): ApiError {
+  return new ApiError(500, { code: "INTERNAL", error: "read failed" });
+}
+
+// Where the list's first read failed, a press of Referenced by's Retry reads it again, and the list
+// says it loads at once: the line goes at the press, with the focus the reader left on Retry. That
+// press is the reader's, so the focus goes on in the row, and since the list draws no link while it
+// loads, to Referenced by's own control, which opens and closes the list.
+test("in Details, Referenced by's Retry, pressed after the list's first read failed, hands its focus to Referenced by's control as the list loads", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation((_to, options) =>
+    options === undefined ? Promise.reject(listReadFailed()) : Promise.resolve(NOTHING_REFERENCES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const control = await screen.findByRole("button", { name: referencedByControlName(3) });
+    await user.click(control);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const retry = await within(list).findByRole("button", { name: "Retry" });
+
+    getReferences.mockImplementation((_to, options) =>
+      options === undefined ? new Promise(() => undefined) : Promise.resolve(NOTHING_REFERENCES)
+    );
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await within(list).findByText("Loading references…");
+    expect(retry, "the list loads, but its Retry is still drawn").not.toBeInTheDocument();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "Retry's press took its line away as the list loads, and the focus fell to the page's body rather than to Referenced by's control"
+    ).toBe(control);
+  } finally {
+    stopBlurring();
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+/** What references CORE-1 once another issue waits on it: one source, which the list links. */
+const WAITER_REFERENCES: GraphReferences = {
+  ...NOTHING_REFERENCES,
+  edges: [waitingEdge("CORE-5", "Ship the release")],
+};
+
+/**
+ * Details with Referenced by's list, whose reads answer what `WAITER_REFERENCES` holds until
+ * `answerList` says otherwise; Blocks reads nothing. `open` opens the list, lets it answer, and
+ * fails its next read, made as an event about the issue's references makes it (`readListAgain`),
+ * so the list draws its line and Retry above what it answered. `restore` takes Details off the
+ * page and puts the spies back.
+ */
+function referencedByDetails() {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  let listAnswer = (): Promise<GraphReferences> => Promise.resolve(WAITER_REFERENCES);
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation((_to, options) =>
+    options === undefined ? listAnswer() : Promise.resolve(NOTHING_REFERENCES)
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const answerList = (answer: () => Promise<GraphReferences>) => {
+    listAnswer = answer;
+  };
+  const readListAgain = () =>
+    act(() =>
+      queryClient.refetchQueries({ exact: true, queryKey: ["references", "to", reference] })
+    );
+  return {
+    answerList,
+    open: async () => {
+      await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+      const list = await screen.findByRole("region", { name: "Referenced by" });
+      await within(list).findAllByRole("link");
+      answerList(() => Promise.reject(listReadFailed()));
+      await readListAgain();
+      return { list, retry: await within(list).findByRole("button", { name: "Retry" }) };
+    },
+    readListAgain,
+    restore: () => {
+      stopBlurring();
+      unmount();
+      getReferences.mockRestore();
+      restore();
+    },
+    user,
+  };
+}
+
+// A read of the list that fails after it answered keeps that answer under its line, and Retry
+// keeps the focus while the read it sent is out. Once that read answers the line goes, with the
+// focus on Retry; the reader's press took it away, so the focus goes on to the list's first link.
+test("in Details, Referenced by's Retry hands its focus to the list's first link once the read it sent answers", async () => {
+  const details = referencedByDetails();
+
+  try {
+    const { list, retry } = await details.open();
+    const answer = Promise.withResolvers<GraphReferences>();
+    details.answerList(() => answer.promise);
+    act(() => retry.focus());
+    await details.user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+
+    await act(async () => answer.resolve(WAITER_REFERENCES));
+    await waitFor(() =>
+      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the read Retry sent answered, and the focus fell to the page's body rather than to the list's first link"
+    ).toBe(within(list).getAllByRole("link")[0]);
+  } finally {
+    details.restore();
+  }
+});
+
+// The line goes too once an event reads the list again and that read answers. That is no press
+// of the reader's, so the focus they left on Retry stays on the page's body.
+test("in Details, Referenced by's line, gone as an event's read of the list answers, leaves the focus its Retry held on the page's body", async () => {
+  const details = referencedByDetails();
+
+  try {
+    const { list, retry } = await details.open();
+    details.answerList(() => Promise.resolve(WAITER_REFERENCES));
+    act(() => retry.focus());
+    await details.readListAgain();
+    await waitFor(() =>
+      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "an event's read of the list answered, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
+    expect(
+      within(list).getAllByRole("link")[0],
+      "the list's first link took the focus"
+    ).not.toHaveFocus();
+  } finally {
+    details.restore();
+  }
+});
+
+// A press of Retry whose read fails again takes nothing away: the line stays, with the focus on
+// Retry. Once an event then reads the list again and that read answers, the line goes, and that
+// is no press of the reader's, so the focus stays on the page's body.
+test("in Details, Referenced by's Retry whose read failed again hands nothing on once an event's read of the list answers", async () => {
+  const details = referencedByDetails();
+
+  try {
+    const { list, retry } = await details.open();
+    const answer = Promise.withResolvers<GraphReferences>();
+    details.answerList(() => answer.promise);
+    act(() => retry.focus());
+    await details.user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+    await act(async () => answer.reject(listReadFailed()));
+    await waitFor(() =>
+      expect(retry, "Retry still refuses a press after its read failed again").not.toHaveAttribute(
+        "aria-disabled"
+      )
+    );
+    expect(document.activeElement, "Retry lost the focus as the read it sent failed again").toBe(
+      retry
+    );
+
+    details.answerList(() => Promise.resolve(WAITER_REFERENCES));
+    await details.readListAgain();
+    await waitFor(() =>
+      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "an event's read of the list answered after Retry's read failed, and the focus left the page's body"
+    ).toBe(document.body);
+    expect(
+      within(list).getAllByRole("link")[0],
+      "the list's first link took the focus"
+    ).not.toHaveFocus();
+  } finally {
+    details.restore();
+  }
+});
+
 // Outside the new issue page Referenced by's Retry is as on every other page: disabled while the
 // read it sent is out.
 test("outside Details, Referenced by's Retry is disabled while the read it sent is out", async () => {

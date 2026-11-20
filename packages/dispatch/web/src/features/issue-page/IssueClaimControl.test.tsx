@@ -701,6 +701,42 @@ test("a release of the reader's that failed hands nothing on once the claim is r
   }
 });
 
+// A press belongs to the element it was made on. The reader pressed Release by pointer and moved
+// the focus away before the release landed, so the claim went with no focus to hand on. A read of
+// the issue that Dispatch answered before it had the release then drew that claim again, and
+// another session released it while the focus was on Release: that release is no press of the
+// reader's, so the focus stays on the page's body rather than go to the row's None.
+test("a release whose claim went without the focus answers no later release made elsewhere", async () => {
+  const { release, restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    const out = Promise.withResolvers<Issue>();
+    release.mockReset();
+    release.mockImplementationOnce(() => out.promise);
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    await view.user.click(control);
+    await waitFor(() => expect(control).toHaveTextContent(ANSWER_LINES.saving_release));
+    act(() => control.blur());
+    await act(async () => out.resolve({ ...base, claim: null }));
+    await screen.findByText(CONTROL_LABELS.none);
+
+    view.drawClaim(claim);
+    const again = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => again.focus());
+    view.drawClaim(null);
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "another session released the claim drawn again, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(none, "the row's None took the focus").not.toHaveFocus();
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
 // The reader pressed the failed release's Retry, and while the release it sent again was out the
 // issue was claimed again in another session, which takes the line, and Retry with it, away. That
 // claim is no press of the reader's, so the focus stays on the page's body rather than go to the

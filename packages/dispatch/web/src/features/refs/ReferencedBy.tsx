@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -241,16 +242,26 @@ export function ReferencedByToggle({
 export function ReferencedBy({
   className,
   reference,
+  retried,
   retryKeepsFocus = false,
+  retryRef,
   toggle,
 }: {
   className?: string;
   reference: string;
+  /** Notes the reader's press of Retry, with `retryKeepsFocus`, for the hand-off of its host
+   *  (`useFocusHandOff`'s `pressed`): set as Retry is pressed, and forgotten where the list still
+   *  reads as failed once the read the press sent, or joined, has ended, since that press then
+   *  took nothing away. */
+  retried?: RefObject<boolean>;
   /** Whether Retry keeps the focus while the read it sent is out: drawn `aria-disabled` then, in
    *  place of `disabled`, since Chromium moves the focus of a control that turns disabled to the
    *  page's body. A press while the read is out joins it (`cancelRefetch: false`) and sends
    *  nothing new. The new issue page's Details passes it; elsewhere Retry is `disabled` then. */
   retryKeepsFocus?: boolean;
+  /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`).
+   *  Without it Retry is drawn as on every page. */
+  retryRef?: Ref<HTMLButtonElement>;
   /** The control that discloses this panel: its `id` (which the control names in
    *  `aria-controls`) and the fact that it already reads `Referenced by (N)`, so the panel
    *  carries no heading of its own under it. Absent where the page shows the list outright,
@@ -276,7 +287,12 @@ export function ReferencedBy({
     ? {
         "aria-disabled": query.isFetching || undefined,
         disabled: false,
-        onClick: () => void query.refetch({ cancelRefetch: false }),
+        onClick: () => {
+          if (retried !== undefined) retried.current = true;
+          void query.refetch({ cancelRefetch: false }).then((answer) => {
+            if (answer.isError && retried !== undefined) retried.current = false;
+          });
+        },
       }
     : undefined;
 
@@ -298,6 +314,7 @@ export function ReferencedBy({
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
             {...retryInDetails}
+            ref={retryRef}
             type="button"
           >
             Retry

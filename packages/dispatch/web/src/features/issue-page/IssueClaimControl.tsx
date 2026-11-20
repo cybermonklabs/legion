@@ -2,7 +2,7 @@ import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
-import { takePress, useFocusHandOff } from "../../hooks/useFocusHandOff";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
@@ -72,8 +72,9 @@ export function IssueClaimControl({
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
   // The reader's press of Retry, which the line notes as it is pressed (`retried`), and of Release
-  // or Retry, noted as it sends the release and forgotten as that release fails. Each hand-off
-  // reads its press once (`takePress`), so a later loss no press caused moves nothing.
+  // or Retry, noted as it sends the release and forgotten as that release fails. Each is forgotten
+  // as its element leaves the page, with the focus or not (`useFocusHandOff`'s `pressed`), so a
+  // later loss no press caused moves nothing.
   const retried = useRef(false);
   const released = useRef(false);
   // A claim drawn in place of the one the release was pressed on is another session's: the claim's
@@ -82,10 +83,8 @@ export function IssueClaimControl({
     if (held !== null && held !== pressedOn) released.current = false;
   }, [held, pressedOn]);
   // The line goes too when the issue is claimed again in another session, which no Retry did.
-  const retryLeft = useFocusHandOff(() =>
-    takePress(retried) && onHeld ? releaseControl.current : null
-  );
-  const claimLeft = useFocusHandOff(() => (takePress(released) ? none.current : null));
+  const retryLeft = useFocusHandOff(() => (onHeld ? releaseControl.current : null), retried);
+  const claimLeft = useFocusHandOff(() => none.current, released);
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
   // drops a press made before React has drawn the release out, and `isPending` one made after
   // this row was drawn afresh, with a guard that starts free.

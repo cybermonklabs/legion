@@ -530,6 +530,24 @@ export function IssueMarginPanel({
         retrying={failure.read.isFetching}
       />
     ) : null;
+  // Referenced by's Retry goes with its line: at its press where the list's first read failed,
+  // since the list then says it loads, and otherwise once the read the press sent answers. Where
+  // the reader's press of Retry took it away, the focus it held goes on to the list's first link,
+  // and where the list draws none - while it loads, or with nothing to list - to Referenced by's
+  // own control, which opens and closes the list; each passes over a control that takes no press
+  // (`usableControl`). A line that goes with no press of its Retry - the list read again on an
+  // event, or after a press whose read failed - leaves the focus on the page's body.
+  const referencesValue = useRef<HTMLDivElement>(null);
+  const referencesControl = useRef<HTMLButtonElement>(null);
+  const referencesRetried = useRef(false);
+  const referencesRetryLeft = useFocusHandOff(
+    () =>
+      firstUsable(
+        referencesValue.current?.querySelector<HTMLElement>("a[href]"),
+        referencesControl.current
+      ),
+    referencesRetried
+  );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -908,7 +926,7 @@ export function IssueMarginPanel({
             versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
           />
         </Row>
-        <Row wide>
+        <Row valueRef={referencesValue} wide>
           {/* Details' own control of the list, with the name, the role and the states of the
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
               count of zero is a fact and not a control, as there: opening it would only say
@@ -925,6 +943,7 @@ export function IssueMarginPanel({
               aria-expanded={referencesOpen}
               className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
               onClick={() => setReferencesOpen((open) => !open)}
+              ref={referencesControl}
               type="button"
             >
               {referencedByControlName(issue.referenced_by_count)}
@@ -937,7 +956,9 @@ export function IssueMarginPanel({
             <ReferencedBy
               className="w-full"
               reference={issueReference}
+              retried={referencesRetried}
               retryKeepsFocus
+              retryRef={referencesRetryLeft}
               toggle={{ id: referencesPanelId }}
             />
           ) : null}

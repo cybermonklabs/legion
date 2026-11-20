@@ -333,15 +333,13 @@ export function RepoControl({
   // Whether the focus is on the row's text or in the box, its clear control included. Whichever
   // of them takes the other's place takes the focus the other held, which the one leaving the
   // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
-  // lands, on the text, which then says what the issue resolves to; and "None" and the
-  // repository's text, each drawn in the other's place when the issue's repository changes under
-  // them, hand it on alike. Only a focus still on the document is taken (`focusOnDocument`):
+  // lands, on the text, which then says what the issue resolves to. "None" and the repository's
+  // text, drawn in each other's place as the issue's repository changes under them, hand nothing
+  // on, since that change is no press of the reader's: where the row drew text in its last commit
+  // (`wasText`) and draws text again, the focus the one leaving held stays on the page's body, as
+  // for every change the reader did not make, and the row no longer counts it as held. Between
+  // the text and the box, only a focus still on the document is taken (`focusOnDocument`):
   // anywhere else, the reader put it there.
-  // A change made elsewhere that draws "None" in the repository's text's place, or the text in
-  // None's place, is no press of the reader's, so that swap moves nothing: where the row drew text
-  // in its last commit (`wasText`) and draws text again, the effect returns, the focus the one
-  // leaving held stays on the page's body, as for every change the reader did not make, and the
-  // row no longer counts it as held.
   const focusHeld = useRef(false);
   const wasText = useRef(showsText);
   useEffect(() => {
