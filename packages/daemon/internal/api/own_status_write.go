@@ -16,17 +16,17 @@ import (
 // (dispatch.Client.SetStatus), which applyOwnStatusWrite applies to the record.
 func (s *server) setDispatchStatus(w http.ResponseWriter, r *http.Request, issue, status string) (dispatch.Issue, bool) {
 	if s.dispatch == nil {
-		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return dispatch.Issue{}, false
 	}
 	written, err := s.dispatch.SetStatus(r.Context(), issue, status)
 	var dispatchError *dispatch.Error
 	switch {
 	case errors.As(err, &dispatchError):
-		writeFailure(w, http.StatusBadGateway, dispatchError.Code, dispatchError.Message)
+		s.writeFailure(w, r, http.StatusBadGateway, dispatchError.Code, dispatchError.Message)
 		return dispatch.Issue{}, false
 	case err != nil:
-		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", "Dispatch status update failed")
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", "Dispatch status update failed")
 		return dispatch.Issue{}, false
 	}
 	return written, true
@@ -58,7 +58,7 @@ func (s *server) setDispatchStatus(w http.ResponseWriter, r *http.Request, issue
 // its retry gets the issue back at the sequence of that write's own event, and applies it then.
 func (s *server) applyOwnStatusWrite(w http.ResponseWriter, r *http.Request, written dispatch.Issue) bool {
 	if failure := s.recordOwnStatusWrite(r.Context(), written); failure != nil {
-		writeFailure(w, failure.status, failure.code, failure.message)
+		s.writeFailure(w, r, failure.status, failure.code, failure.message)
 		return false
 	}
 	return true
@@ -93,7 +93,7 @@ func (s *server) recordOwnStatusWrite(ctx context.Context, written dispatch.Issu
 		}
 		fact = prepared
 	}
-	result, err := intake.ApplyFact(ctx, s.pool, "api", requestFactID("status/own-write"), fact, s.handlers...)
+	result, err := s.apply(ctx, "api", requestFactID("status/own-write"), fact)
 	if err != nil {
 		return &ownWriteFailure{http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("Dispatch shows %s %s, but the record did not take it (%v); retry", written.Key, written.Status, err)}
 	}

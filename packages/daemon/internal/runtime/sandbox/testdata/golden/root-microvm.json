@@ -17,6 +17,7 @@
         "annotations": {
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
+          "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
           "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"3\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"19Gi\"},\"requests\":{\"cpu\":\"3\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"19Gi\"}},\"disk\":\"20Gi\",\"sandbox\":{\"runtime_class\":\"microvm\",\"compute_class\":\"example-microvm\",\"storage_class\":\"example-microvm-rwo\",\"metadata\":{\"workload_pool\":\"example-project.svc.id.goog\",\"identity_provider\":\"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster\"}}}"
         },
         "labels": {
@@ -523,6 +524,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-architect-boot"
@@ -573,6 +578,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-planner-boot"
@@ -623,6 +632,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-implementer-boot"
@@ -673,6 +686,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-tester-boot"
@@ -723,6 +740,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-reviewer-boot"
@@ -773,6 +794,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-merger-boot"

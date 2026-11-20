@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // keptPublishAnswer is the publish route's 202 for a role message it kept: the envelope as it was
@@ -273,7 +274,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
 	}
-	var refusal roleHolderError
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -553,8 +554,8 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		return nil
 	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	kept, ok := keepRoleMessage(cfg, role, item)
-	if !ok {
+	kept, err := keepRoleMessage(cfg, role, item)
+	if err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -752,7 +753,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 	var fresh []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-budget-%02d", i))
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		if !expired(i + 1) {
@@ -793,7 +794,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-two-drains-%02d", i))
-		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -906,7 +907,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, tc.role+"-1")
 			tc.prepare(&item, holder)
-			if _, kept := keepRoleMessage(cfg, tc.role, item); !kept {
+			if _, err := keepRoleMessage(cfg, tc.role, item); err != nil {
 				t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)
@@ -1087,7 +1088,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 	// The claim is written before the listener's own registry opens, which is what a restart
 	// leaves behind: that registry restores the claim and gives it one session TTL of grace
 	// (store.ExpiredRoleClaimRetained) even while its holder's session registration is gone.
-	writer, err := store.Open(client.Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}

@@ -208,6 +208,11 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/envoy-session-states.$$.XXXXXXXX")
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh); each
+# start that clears its environment (`env -i`: the listeners, Dispatch, the CLI and both agents)
+# names the mark itself, and a fork of this shell that execs nothing carries none and is stopped by
+# its pid (run_marks' comment there). The transcript's tee, started above, carries none.
+export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
 fail() {
@@ -219,6 +224,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -297,43 +304,59 @@ max_age_shown=2h0m0s
 shipping_max_age=5m
 shipping_max_age_shown=5m0s
 
-# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid to PIDFILE.
-# Every agent this proof stalls needs one. A stopped process in the run's own process group makes
-# the kernel send that whole group a SIGHUP and a SIGCONT the moment the group counts as orphaned
-# — which under a supervisor it already does — so a plain `kill -STOP` would kill this script and
-# un-stall the very session it meant to stall. The pid comes back through a file because `setsid
-# --fork` returns at once and `$!` is the pid of a process that has already gone.
+# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
+# time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
+# COMMAND's own). Every agent this proof stalls needs one. A stopped process in the run's own
+# process group makes the kernel send that whole group a SIGHUP and a SIGCONT the moment the group
+# counts as orphaned — which under a supervisor it already does — so a plain `kill -STOP` would kill
+# this script and un-stall the very session it meant to stall. The pid comes back through a file
+# because `setsid --fork` returns at once and `$!` is the pid of a process that has already gone.
 own_session() {
   local pidfile=$1
   shift
-  # shellcheck disable=SC2016 # $$ and $@ are the new session's own, expanded by the shell it runs
-  setsid --fork bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' own-session "$pidfile" "$@"
+  setsid --fork sh -c "$record_pid_sh" record-pid "$pidfile" "$@"
 }
 
-# agent_pid PIDFILE VAR waits for the pid the new session wrote and assigns it to VAR.
+# agent_pid PIDFILE VAR waits for the pid and start the new session wrote, assigns the pid to VAR and
+# records its start (started_at), which stop_agent's signals are held to.
 agent_pid() {
-  local waited=0
+  local waited=0 pid start
   while [ ! -s "$1" ]; do
     waited=$((waited + 1))
     [ "$waited" -lt 60 ] || return 1
     sleep 0.5
   done
-  printf -v "$2" '%s' "$(cat "$1")"
+  read -r pid start <"$1" || return 1
+  [ -n "$start" ] || return 1
+  started_at[$pid]=$start
+  printf -v "$2" '%s' "$pid"
 }
 
-# stop_agent PID ends one agent process the run started, and only while its command line or its
-# environment still names this run's work directory, so a pid the kernel gave to another process
-# since is never signalled. It is continued first: a check stops an agent with SIGSTOP, and a
-# stopped process keeps a TERM pending. The agent leads a session of its own (own_session), so
-# what it started goes with it.
+# stop_agent PID ends one agent process the run started, and only while it still carries the run's
+# mark (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process
+# since is never signalled: a shell that works under this run's work directory names it in its PWD
+# and on its command line, and carries no mark. It is continued first: a check stops an agent with
+# SIGSTOP, and a stopped process keeps a TERM pending. The agent leads a session of its own
+# (own_session), so the TERM to its group (signal_group) reaches what it started. A member that
+# outlives that TERM cannot be reached through its group once stop_pid has ended the leader, so
+# what the agent started is read while the agent is held stopped (proc_descendants, each with its
+# start), and each that still runs after stop_pid and still carries the run's mark is ended by that
+# start (kill_held): Claude Code's mid-run stop (claude_stop) is followed by a `--resume` of the
+# same session id, beside which nothing of the old one may run on. Cleanup's sweep
+# (stop_marked_processes) ends what a stop could not read.
 stop_agent() {
+  local started=
   [ -n "${1:-}" ] || return 0
-  grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
-  kill -TERM -- -"$1" 2>/dev/null || true
+  if freeze_if "$1" "${started_at[$1]:-}" STOP; then
+    started=$(proc_descendants "$1" "${started_at[$1]}") || started=
+    kill -CONT "$1" 2>/dev/null || true
+  fi
+  signal_group "$1" TERM
   stop_pid "$1"
-  kill -KILL -- -"$1" 2>/dev/null || true
+  [ -z "$started" ] || kill_held "$work" "${run_marks[@]}" <<<"$started" || true
 }
 
 cleanup() {
@@ -352,7 +375,11 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$natsd_pid"
+  # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
+  # process the run marked (both agents carry LEGION_E2E_RUN).
+  stop_marked_processes "$work" || true
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -557,6 +584,7 @@ watch_exceptions() {
     }
   ') >>"$evidence/logs/exceptions.log" 2>&1 &
   exceptions_pid=$!
+  record_start "$exceptions_pid" || true
 }
 
 # ---- prerequisites --------------------------------------------------------------------------------
@@ -643,6 +671,7 @@ if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from this checkout"
+  dispatch_identity_start
 fi
 if [ -n "$needs_omp" ] || [ -n "$needs_claude" ]; then
   (cd "$root" && bun install --frozen-lockfile) >"$evidence/logs/bun-install.log" 2>&1 ||
@@ -708,12 +737,13 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # id of its own, because the durable consumer a listener binds is named after it and a second
 # listener of the same name is refused the bind and shuts itself down.
 start_listener() {
-  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
+    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
+    "$work/bin/envoy-listener"
 }
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
@@ -732,7 +762,7 @@ note "listener A on 127.0.0.1:$port_a, listener B on 127.0.0.1:$port_b"
 # without restarting the listeners whose /healthz it then reads.
 set_max_age() {
   rm -f "$work/maxage.port"
-  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
@@ -765,7 +795,7 @@ if [ -n "$needs_dispatch" ]; then
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
   # session that answers nothing.
-  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
@@ -773,7 +803,8 @@ if [ -n "$needs_dispatch" ]; then
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
     DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
-    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "$work/bin/envoy-dispatch"
+    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
   await_start dispatch "$dispatch_pid" 120 "Dispatch to serve" \
     curl -fsS --max-time 3 "$dispatch_url/healthz"
@@ -783,16 +814,17 @@ echo "ok services"
 
 # ---- Dispatch's own surface ---------------------------------------------------------------------------
 # Every write names its own session as `actor`, the identity `dispatch claim` fills from the host's
-# own runtime, and reaches Dispatch over the run's agent token.
+# own runtime, and reaches Dispatch over the run's agent token, which curl reads on standard input,
+# in no command line.
 dispatch_project=ESS$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')
 
 dispatch_api() { # dispatch_api METHOD PATH [BODY]
   local method=$1 path=$2 body=${3:-}
   answer=$evidence/answers/$check.dispatch.$RANDOM.json
-  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method"
-    -H "Authorization: Bearer $(cat "$work/dispatch-token")")
+  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H @-)
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
-  api_status=$(curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
+  api_status=$(printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" |
+    curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ] || [ "$api_status" = 201 ]
 }
 
@@ -821,7 +853,7 @@ dispatch_cli() {
   local session=$1
   shift
   mkdir -p "$work/cli-home" "$work/cli-state"
-  env -i PATH="$PATH" HOME="$work/cli-home" XDG_CONFIG_HOME="$work/cli-home/config" \
+  env -i PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" XDG_CONFIG_HOME="$work/cli-home/config" \
     XDG_STATE_HOME="$work/cli-state" XDG_DATA_HOME="$work/cli-home/data" \
     XDG_CACHE_HOME="$work/cli-home/cache" DISPATCH_STATE_DIR="$work/cli-state/dispatch" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN="$(cat "$work/dispatch-token")" \
@@ -905,7 +937,7 @@ omp_launch() {
   mkfifo "$in"
   : >"$out"
   own_session "$pidfile" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" LEGION_E2E_RUN="$work" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
@@ -1010,7 +1042,7 @@ claude_start() { # claude_start SESSION [--resume]
   mkfifo "$work/claude.in"
   touch "$work/claude.out"
   own_session "$work/claude.pid" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" LEGION_E2E_RUN="$work" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url" \
     ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
@@ -1315,6 +1347,7 @@ watch_role_forwards() {
     }
   ') >>"$evidence/logs/role-forwards.log" 2>&1 &
   role_forwards_pid=$!
+  record_start "$role_forwards_pid" || true
   wait_until 60 "the watcher of notifications.agent.$1 to subscribe" \
     grep -q "subscribed notifications.agent.$1" "$evidence/logs/role-forwards.log"
 }
@@ -1590,7 +1623,7 @@ check_gone_only_past_the_horizon() {
   # 10s — the session reaper, which deletes the dead holder's record, and the role claim reaper,
   # which then releases its claim.
   rm -f "$work/shortlistener.port"
-  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \

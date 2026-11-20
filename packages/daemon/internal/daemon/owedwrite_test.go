@@ -125,6 +125,18 @@ func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step 
 	return s.now().PutClaimStep(ctx, token, step)
 }
 
+func (s *switchStore) HoldSessions(ctx context.Context, project string, token claim.Token, holds []supervise.Hold) ([]claim.Token, error) {
+	return s.now().HoldSessions(ctx, project, token, holds)
+}
+
+func (s *switchStore) ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
+	return s.now().ClaimHolds(ctx, project, token)
+}
+
+func (s *switchStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.now().ReleaseHolds(ctx, c, holds)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value
@@ -159,6 +171,15 @@ func (s detachedWrites) PutClaimAndDelivery(ctx context.Context, c supervise.Cla
 
 func (s detachedWrites) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
 	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.RetireDelivery(ctx, c, deliveryID) })
+}
+
+func (s detachedWrites) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	var freed []supervise.Hold
+	err := withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) (err error) {
+		freed, err = s.Store.ReleaseHolds(ctx, c, holds)
+		return err
+	})
+	return freed, err
 }
 
 // withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops
@@ -373,11 +394,15 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 }
 
 // boot builds the supervision over the store the rig holds and takes up every claim the store
-// holds now, which is what a daemon's boot does. It is called again by the restart test, so a
-// second supervision is this one and not a test's own arrangement; the rig's handles read the
-// newest from here on.
+// holds now, which is what a daemon's boot does: it holds every recorded session name first, as
+// the boot does before restore builds a machine (holdRecordedSessions). It is called again by the
+// restart test, so a second supervision is this one and not a test's own arrangement; the rig's
+// handles read the newest from here on.
 func (r *owedWriteRig) boot() {
 	r.t.Helper()
+	if _, err := r.st.HoldRecordedSessions(r.ctx, owedProject); err != nil {
+		r.t.Fatalf("hold the recorded session names: %v", err)
+	}
 	logs := &syncBuffer{}
 	switcher := &switchStore{target: r.real}
 	sup := newSupervisor(r.ctx, r.st, owedProject, r.t.TempDir(), quietLogger())

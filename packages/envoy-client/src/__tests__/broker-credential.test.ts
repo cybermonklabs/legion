@@ -1,130 +1,31 @@
 // packages/envoy-client/src/__tests__/broker-credential.test.ts
 //
 // The credential a machine makes out of the identities it holds: when a session uses it (only
-// when no bearer is configured at all), what it puts on a request, that it renews mid-session
-// with nothing restarted, and, where a person signed in on the machine, that it trades that
-// person under the right session name, remembers a sign-in refused for good, and never trades
-// the machine in its place, unless the process turned the person trade off.
+// when no bearer is configured at all, or when DISPATCH_TOKEN_BROKER tells it to hold its
+// credential at the broker), what it puts on a request, that it renews mid-session with nothing
+// restarted, that each session of one process trades under its own name and a session the host
+// has left keeps nothing, and that a pool machine has the same route. A person signed in on the
+// machine is broker-credential-signins.test.ts's; a pod session whose registration has not landed
+// is broker-credential-registration.test.ts's.
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import * as path from "node:path";
-import {
-  PERSON_TRADE_VAR,
-  type SignInRecord,
-  signInSessionName,
-} from "@legion/broker-client/signins";
-import {
-  type IssuerAnswer,
-  signedIn,
-  signInPath,
-  stubIssuer,
-  thumbprintOf,
-  writeSignIn,
-} from "@legion/broker-client/test/sign-ins";
-import {
-  SUBJECT_TOKEN_TYPE_KUBERNETES,
-  SUBJECT_TOKEN_TYPE_PERSON,
-} from "@legion/broker-client/wire";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { consumerDelivery } from "../../test/subscribe-answer";
-import { brokerCredential, forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
+import { brokerCredential, forgetBrokerSession } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
 import { envoySettings } from "../envoy-settings";
 import { createEnvoyClient } from "../transport";
+import { brokerStandIns } from "./broker-stand-ins";
 
-afterEach(forgetBrokerClients);
+const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
+  brokerStandIns("broker-credential");
 
-const servers: { stop: (closeActive?: boolean) => void }[] = [];
-afterEach(() => {
-  for (const server of servers.splice(0)) server.stop(true);
-});
-
-const tempDir = temporaryDirectories("broker-credential");
-
-/** The config a caller with no envoy.json reads: the neutral file, which does not exist. */
-function noFile(env: DispatchEnvironment) {
-  return readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-}
-
-/** One trade the stub broker was asked. */
-interface Trade {
-  readonly form: URLSearchParams;
-  readonly proof: Record<string, unknown>;
-}
-
-/** A broker that mints an access token good for `seconds`, numbering each one. */
-function stubBroker(seconds: number): { url: string; trades: Trade[] } {
-  const trades: Trade[] = [];
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      const parts = (request.headers.get("DPoP") ?? "").split(".");
-      trades.push({
-        form: new URLSearchParams(await request.text()),
-        proof: JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
-      });
-      return Response.json({
-        access_token: `broker-access-token-${trades.length}`,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: seconds,
-        credential_id: "cred-1",
-      });
-    },
-  });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades };
-}
-
-/** One request the stub Dispatch was sent. */
-interface Asked {
-  readonly authorization: string;
-  readonly proof: string;
-}
-
-/** A Dispatch that answers an empty issue list and keeps what it was sent. */
-function stubDispatch(): { url: string; asked: Asked[] } {
-  const asked: Asked[] = [];
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => {
-      asked.push({
-        authorization: request.headers.get("Authorization") ?? "",
-        proof: request.headers.get("DPoP") ?? "",
-      });
-      return Response.json([]);
-    },
-  });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, asked };
-}
-
-/** A pod's projected token file. */
-function projectedFile(token: string): string {
-  const file = path.join(tempDir(), "token");
-  writeFileSync(file, `${token}\n`);
-  return file;
-}
-
-/** The environment of a pod that has an identity to trade and no Dispatch bearer at all. It
- * names no `AGENT_SECRETS_SESSION`: nothing in a plugin's environment sets one, and the session
- * a trade writes under is the one the caller passes. */
-function podEnvironment(brokerUrl: string, dispatchUrl: string): DispatchEnvironment {
-  return {
-    HOME: tempDir(),
-    DISPATCH_URL: dispatchUrl,
-    ENVOY_URL: dispatchUrl,
-    AGENT_SECRETS_URL: brokerUrl,
-    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-    AGENT_SECRETS_MACHINE_TOKEN_FILE: projectedFile("projected.service.account.token"),
-  };
-}
+/** The Dispatch token a person holds on the machine, which a session told to trade never uses. */
+const PERSON_TOKEN = fixtureSecret("dsp");
 
 test("a configured bearer is still the credential, whatever this machine could trade", () => {
   const broker = stubBroker(600);
@@ -151,11 +52,11 @@ test("told to hold its credential at the broker, a session reads no person's tok
   // the controller writing Dispatch as the operator; set, the session trades for its own.
   const broker = stubBroker(600);
   const env = podEnvironment(broker.url, "http://dispatch.test");
-  const config = personalFile(env, "http://dispatch.test", "a-person-s-dispatch-token");
+  const config = personalFile(env, "http://dispatch.test", PERSON_TOKEN);
 
   const shadowed = dispatchSettings(env, config, { session: "legion-demo-controller" });
   if (!shadowed.enabled) throw new Error(`Dispatch is off: ${shadowed.error}`);
-  expect(shadowed.credential.secret()).toBe("a-person-s-dispatch-token");
+  expect(shadowed.credential.secret()).toBe(PERSON_TOKEN);
 
   const forced = dispatchSettings({ ...env, DISPATCH_TOKEN_BROKER: "1" }, config, {
     session: "legion-demo-controller",
@@ -169,7 +70,7 @@ test("told to hold its credential at the broker, a session reads no bearer varia
   const broker = stubBroker(600);
   const env = {
     ...podEnvironment(broker.url, "http://dispatch.test"),
-    DISPATCH_TOKEN: "a-person-s-dispatch-token",
+    DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER: "1",
   };
   const resolution = dispatchSettings(env, noFile(env), { session: "legion-demo-controller" });
@@ -183,7 +84,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
   const broker = stubBroker(600);
   const env = {
     ...podEnvironment(broker.url, "http://dispatch.test"),
-    DISPATCH_TOKEN: "a-person-s-dispatch-token",
+    DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER: "1",
   };
 
@@ -223,8 +124,10 @@ test("a DISPATCH_TOKEN_BROKER that is neither 1 nor unset is refused", () => {
   const resolution = dispatchSettings(env, noFile(env));
   expect(resolution.enabled).toBe(false);
   expect(resolution.enabled === false && resolution.error).toContain(
-    'DISPATCH_TOKEN_BROKER is "true" and takes 1'
+    "DISPATCH_TOKEN_BROKER takes 1"
   );
+  // Its value is not quoted, which a token pasted into the wrong variable would be.
+  expect(resolution.enabled === false && resolution.error).not.toContain('"true"');
 });
 
 test("with no bearer at all, the session's credential is its own identity traded at the broker", async () => {
@@ -240,12 +143,12 @@ test("with no bearer at all, the session's credential is its own identity traded
   // One trade of the pod's own token, under the session this caller named: nothing in the
   // environment does.
   expect(broker.trades.length).toBe(1);
-  expect(broker.trades[0]?.form.get("subject_token")).toBe("projected.service.account.token");
+  expect(broker.trades[0]?.form.get("subject_token")).toBe(projectedToken);
   expect(broker.trades[0]?.form.get("session")).toBe("example-worker-session");
   // The access token is presented under the DPoP scheme, with a proof naming this request and
   // hashing the token it is presented beside: a bearer copy of it buys nothing.
   const asked = dispatch.asked[0];
-  expect(asked?.authorization).toBe("DPoP broker-access-token-1");
+  expect(asked?.authorization).toBe(`DPoP ${broker.trades[0]?.token}`);
   const claims = JSON.parse(
     Buffer.from(asked?.proof.split(".")[1] ?? "", "base64url").toString("utf8")
   );
@@ -253,7 +156,7 @@ test("with no bearer at all, the session's credential is its own identity traded
   expect(claims.htu).toBe(`${dispatch.url}/api/v1/issues`);
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode("broker-access-token-1")
+    new TextEncoder().encode(broker.trades[0]?.token ?? "")
   );
   expect(claims.ath).toBe(Buffer.from(digest).toString("base64url"));
 });
@@ -273,8 +176,8 @@ test("a session past its token's life trades again, with nothing restarted", asy
 
   expect(broker.trades.length).toBe(2);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-access-token-1",
-    "DPoP broker-access-token-2",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
   ]);
 });
 
@@ -301,9 +204,9 @@ test("each session of one process trades under its own name, read at every trade
     "session-two",
   ]);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-access-token-1",
-    "DPoP broker-access-token-2",
-    "DPoP broker-access-token-1",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
+    `DPoP ${broker.trades[0]?.token}`,
   ]);
 });
 
@@ -314,27 +217,31 @@ test("the listener takes the same credential, and a configured bearer still wins
   if (!brokered.enabled) throw new Error("Envoy is off");
   expect(brokered.credential?.scheme).toBe("DPoP");
 
-  const written = envoySettings({ ...env, ENVOY_TOKEN: "listener-token" }, noFile(env), {
+  const listenerToken = fixtureSecret("listener");
+  const written = envoySettings({ ...env, ENVOY_TOKEN: listenerToken }, noFile(env), {
     nats: false,
   });
   if (!written.enabled) throw new Error("Envoy is off");
   expect(written.credential?.scheme).toBe("Bearer");
-  expect(written.credential?.secret()).toBe("listener-token");
+  expect(written.credential?.secret()).toBe(listenerToken);
 });
 
-/** A broker whose tokens name the session the trade asked to write under, as the real one's do
- *  (the broker records the minted token against that session and the listener reads it back at
- *  the introspection route). */
-function sessionBroker(): { url: string; sessions: string[] } {
+/** A broker that mints a random token for each trade and records it against the session the
+ *  trade asked to write under, as the real one does (the listener reads that session back at the
+ *  introspection route): `sessionOf` maps each token minted to its session. */
+function sessionBroker(): { url: string; sessions: string[]; sessionOf: Map<string, string> } {
   const sessions: string[] = [];
+  const sessionOf = new Map<string, string>();
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
       sessions.push(session);
+      const token = fixtureSecret("broker");
+      sessionOf.set(token, session);
       return Response.json({
-        access_token: `token-for-${session}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -342,21 +249,25 @@ function sessionBroker(): { url: string; sessions: string[] } {
     },
   });
   servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, sessions };
+  return { url: `http://127.0.0.1:${server.port}`, sessions, sessionOf };
 }
 
-/** One call the stub listener was sent: the session its body acts as, and the session the token
- *  it presented names. */
+/** One call the stub listener was sent: the session its body acts as, and the token it
+ *  presented. */
 interface Acted {
   readonly path: string;
   readonly body: string;
   readonly token: string;
 }
 
-/** A listener that binds the session a broker token names, as the real one does
- *  (`sessionNotBound`, packages/envoy/cmd/listener/brokerauth.go): a body naming another session
- *  is 403, and nothing else about the call is judged. */
-function sessionBoundListener(): { url: string; acted: Acted[] } {
+/** A listener that binds the session a broker token was minted for (`sessionOf`, a
+ *  {@link sessionBroker}'s), as the real one does (`sessionNotBound`,
+ *  packages/envoy/cmd/listener/brokerauth.go): a body naming another session is 403, and nothing
+ *  else about the call is judged. */
+function sessionBoundListener(sessionOf: ReadonlyMap<string, string>): {
+  url: string;
+  acted: Acted[];
+} {
   const acted: Acted[] = [];
   const server = Bun.serve({
     port: 0,
@@ -368,7 +279,7 @@ function sessionBoundListener(): { url: string; acted: Acted[] } {
         typeof sent === "object" && sent !== null && "session_id" in sent ? sent.session_id : "";
       const body = typeof named === "string" ? named : "";
       acted.push({ path: new URL(request.url).pathname, body, token });
-      if (token !== `token-for-${body}`) {
+      if (sessionOf.get(token) !== body) {
         return Response.json(
           { error: `this request acts as session ${body}, and its credential names another` },
           { status: 403 }
@@ -394,7 +305,7 @@ test("a role handed back for the session this process left presents that session
   // hand-back fails, and the role stays with a session whose subject this process has closed
   // until the registration's TTL lapses.
   const broker = sessionBroker();
-  const listener = sessionBoundListener();
+  const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
   const resolution = envoySettings(env, noFile(env), { nats: false, session: () => current });
@@ -425,10 +336,13 @@ test("a role handed back for the session this process left presents that session
     delivery: { consumer: true, epoch: "epoch-1" },
   });
 
-  expect(listener.acted.map((one) => [one.path, one.body, one.token])).toEqual([
-    ["/v1/roles/set", "session-one", "token-for-session-one"],
-    ["/v1/interests/unsubscribe", "session-one", "token-for-session-one"],
-    ["/v1/interests/subscribe", "session-two", "token-for-session-two"],
+  // Each call presented a token the broker minted for the session its body acts as.
+  expect(
+    listener.acted.map((one) => [one.path, one.body, broker.sessionOf.get(one.token)])
+  ).toEqual([
+    ["/v1/roles/set", "session-one", "session-one"],
+    ["/v1/interests/unsubscribe", "session-one", "session-one"],
+    ["/v1/interests/subscribe", "session-two", "session-two"],
   ]);
   // One trade per session, and the session this process left answered out of the token it
   // already held rather than trading again.
@@ -442,7 +356,7 @@ test("a session the host has left keeps no key and no renewing token", async () 
   // that session's role is handed back, Claude Code's handoff once the old id is deregistered —
   // and that session's client goes, while the session running now keeps the token it holds.
   const broker = sessionBroker();
-  const listener = sessionBoundListener();
+  const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
   const resolution = envoySettings(env, noFile(env), { nats: false, session: () => current });
@@ -484,7 +398,7 @@ test("a session the host has left keeps no key and no renewing token", async () 
 
 test("a pool machine has a route: Dispatch and the listener are given its broker credential", () => {
   // This client federates at a workload identity pool as the Go client does
-  // (@legion/broker-client/pool-identity), so a pool machine with no bearer trades at the broker
+  // (@legion/cipher-client/pool-identity), so a pool machine with no bearer trades at the broker
   // like any other, rather than reading as a machine with nothing to present.
   const broker = stubBroker(600);
   const env = {
@@ -523,15 +437,19 @@ test("stale() has the session's client drop its token, so its next headers() tra
   await credential.headers("GET", url);
   expect(broker.trades).toHaveLength(1);
   credential.stale?.();
-  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[1]?.token}`
+  );
 
   // A session a call names is told apart as `headers` tells it apart: only its client drops.
   await credential.headers("POST", url, "session-two");
   credential.stale?.("session-two");
   expect((await credential.headers("POST", url, "session-two")).Authorization).toBe(
-    "DPoP broker-access-token-4"
+    `DPoP ${broker.trades[3]?.token}`
   );
-  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[1]?.token}`
+  );
   expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
     "session-one",
     "session-one",
@@ -540,427 +458,37 @@ test("stale() has the session's client drop its token, so its next headers() tra
   ]);
 });
 
-const PERSON = "ada@example.com";
-const CLIENT_ID = "example-device-client";
-/** The name this machine trades its own identity under, as a daemon's environment sets it. */
-const MACHINE_SESSION = "legion-demo-controller";
-/** What the broker answers a trade proved with the box key of a sign-in its person revoked. */
-const REVOKED = `${PERSON} revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with \`agent-secrets login\`.`;
-
-/** One trade the stub broker was asked, and the thumbprint of the key its proof was signed with. */
-interface ProvedTrade {
-  readonly form: URLSearchParams;
-  readonly thumbprint: string;
-}
-
-/**
- * A broker that mints a token good for ten minutes for every trade, numbering each, except a
- * trade proved with a key whose thumbprint `revoked` holds, which it refuses as it refuses a
- * sign-in its person revoked.
- */
-function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<string> } {
-  const trades: ProvedTrade[] = [];
-  const revoked = new Set<string>();
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
-      const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
-      const thumbprint = await thumbprintOf(jwk);
-      trades.push({ form: new URLSearchParams(await request.text()), thumbprint });
-      if (revoked.has(thumbprint)) {
-        return Response.json(
-          { error: "invalid_grant", error_description: REVOKED },
-          { status: 400 }
-        );
-      }
-      return Response.json({
-        access_token: `broker-token-${trades.length}`,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: 600,
-      });
-    },
-  });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades, revoked };
-}
-
-/** The issuer {@link PERSON}'s sign-in is renewed at, stopped after the test; `answer` replaces
- *  a refresh's answer where it gives one. */
-async function issuerFor(answer?: (count: number) => IssuerAnswer | undefined) {
-  const issuer = await stubIssuer({
-    clientId: CLIENT_ID,
-    person: PERSON,
-    ...(answer === undefined ? {} : { answer }),
-  });
-  servers.push(issuer);
-  return issuer;
-}
-
-/**
- * The environment of a pod whose sign-in directory (`signins`) holds `records`, with the sign-in
- * client at `issuerUrl` configured and `AGENT_SECRETS_SESSION` naming the machine's own session,
- * as a daemon's environment sets it. The pod's projected token is the actor: which kind of
- * machine a person signs in on changes nothing this file reads.
- */
-async function signedInPod(
-  brokerUrl: string,
-  dispatchUrl: string,
-  issuerUrl: string,
-  records: readonly SignInRecord[]
-): Promise<{ env: DispatchEnvironment; signins: string }> {
-  const signins = path.join(tempDir(), "signins");
-  for (const record of records) await writeSignIn(signins, record);
-  const secret = path.join(tempDir(), "client-secret");
-  writeFileSync(secret, "example-device-client-secret\n", { mode: 0o600 });
-  return {
-    env: {
-      ...podEnvironment(brokerUrl, dispatchUrl),
-      AGENT_SECRETS_SESSION: MACHINE_SESSION,
-      AGENT_SECRETS_SIGNIN_DIR: signins,
-      AGENT_SECRETS_SIGNIN_ISSUER: issuerUrl,
-      AGENT_SECRETS_SIGNIN_CLIENT_ID: CLIENT_ID,
-      AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: secret,
-    },
-    signins,
-  };
-}
-
-/** A Dispatch client of `env` for a caller acting as `session`, or as none. */
-function dispatchOf(env: DispatchEnvironment, session?: string): DispatchClient {
-  const resolution = dispatchSettings(env, noFile(env), session === undefined ? {} : { session });
-  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
-  return new DispatchClient(resolution.url, resolution.credential);
-}
-
-/** The words `call` failed with; a call that succeeds fails the test. */
-async function refusalOf(call: Promise<unknown>): Promise<string> {
-  return await call.then(
-    () => {
-      throw new Error("expected the call to be refused");
-    },
-    (error: unknown) => (error instanceof Error ? error.message : String(error))
-  );
-}
-
-test("a person's trade asks under the caller's own session, else the sign-in's name, never AGENT_SECRETS_SESSION", async () => {
-  // The machine trades under AGENT_SECRETS_SESSION, and the broker holds a name for one identity,
-  // so the person asking under it would be refused.
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-
-  await dispatchOf(env).listAllIssues({});
-  await dispatchOf(env, "ses_01a9").listAllIssues({});
-
-  expect(
-    broker.trades.map((trade) => [
-      trade.form.get("subject_token_type"),
-      trade.form.get("session"),
-      trade.thumbprint,
-    ])
-  ).toEqual([
-    [SUBJECT_TOKEN_TYPE_PERSON, signInSessionName(record), record.thumbprint],
-    [SUBJECT_TOKEN_TYPE_PERSON, "ses_01a9", record.thumbprint],
-  ]);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-  ]);
-});
-
-test("a caller acting as no session and one acting as AGENT_SECRETS_SESSION's session trade apart, whichever calls first", async () => {
-  // With a sign-in, a caller acting as no session trades under the sign-in's own name and one
-  // acting as the session AGENT_SECRETS_SESSION names trades under that session. One token for
-  // both would name one of them wrongly, whichever called first, and the listener refuses every
-  // write of a session whose token names another (`sessionNotBound`).
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-  const asNone = () => dispatchOf(env).listAllIssues({});
-  const asMachineSession = () => dispatchOf(env, MACHINE_SESSION).listAllIssues({});
-
-  await asNone();
-  await asMachineSession();
-  await asNone();
-  await asMachineSession();
-  // A process that has traded nothing yet, whose first caller is the other one.
-  forgetBrokerClients();
-  await asMachineSession();
-  await asNone();
-  await asMachineSession();
-  await asNone();
-
-  expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
-    signInSessionName(record),
-    MACHINE_SESSION,
-    MACHINE_SESSION,
-    signInSessionName(record),
-  ]);
-  // Every call presents the token its own caller's trade was answered.
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-    "DPoP broker-token-3",
-    "DPoP broker-token-4",
-    "DPoP broker-token-3",
-    "DPoP broker-token-4",
-  ]);
-});
-
-test("with nobody signed in, a caller acting as no session and one acting as AGENT_SECRETS_SESSION's session both trade the machine under it", async () => {
+// Red team 3 (the review of 4dad905e68): a caller told that the token it presented is not live
+// names that presentation, and the credential drops that token alone. A host that moved to
+// another session between the presentation and the answer, or a client that has traded a fresh
+// token since, keeps the token it holds: dropping a still-valid token costs a trade for nothing.
+test("stale() for a presentation drops that presentation's token alone, never the current session's or a fresher one", async () => {
   const broker = stubBroker(600);
-  const dispatch = stubDispatch();
-  const env = {
-    ...podEnvironment(broker.url, dispatch.url),
-    AGENT_SECRETS_SESSION: MACHINE_SESSION,
-  };
+  const env = podEnvironment(broker.url, "http://dispatch.test");
+  let session = "session-one";
+  const credential = brokerCredential(env, () => session);
+  const url = "http://dispatch.test/api/v1/issues";
 
-  await dispatchOf(env).listAllIssues({});
-  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
-  forgetBrokerClients();
-  await dispatchOf(env, MACHINE_SESSION).listAllIssues({});
-  await dispatchOf(env).listAllIssues({});
+  const deadOne = await credential.headers("GET", url);
+  // The host moves to another session while Dispatch answers the first presentation.
+  session = "session-two";
+  const two = await credential.headers("GET", url);
+  expect(broker.trades).toHaveLength(2);
 
-  // Every trade is the machine's identity under the session AGENT_SECRETS_SESSION names, and every
-  // call presents a token the broker answered.
-  expect(broker.trades.length).toBeGreaterThan(0);
-  for (const trade of broker.trades) {
-    expect([trade.form.get("subject_token"), trade.form.get("session")]).toEqual([
-      "projected.service.account.token",
-      MACHINE_SESSION,
-    ]);
-  }
-  expect(dispatch.asked).toHaveLength(4);
-  for (const one of dispatch.asked) {
-    expect(one.authorization).toStartWith("DPoP broker-access-token-");
-  }
-});
-
-test("a client the factory failed to make is not kept: a store the person corrected is read with no restart", async () => {
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const ada = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const grace = await signedIn("grace@example.com", { client_id: CLIENT_ID });
-  const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [ada, grace]);
-  const client = dispatchOf(env, "ses_01a9");
-
-  expect(await refusalOf(client.listAllIssues({}))).toBe(
-    "2 people are signed in on this machine (ada@example.com, grace@example.com), so this session must say which one it acts for: set AGENT_SECRETS_PERSON to one of them"
+  credential.stale?.(undefined, deadOne);
+  // The session the host is on now keeps its token: no trade.
+  expect((await credential.headers("GET", url)).Authorization).toBe(two.Authorization);
+  expect(broker.trades).toHaveLength(2);
+  // The session whose token was dead trades afresh when it is next presented.
+  session = "session-one";
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[2]?.token}`
   );
-  expect(broker.trades).toHaveLength(0);
+  expect(broker.trades).toHaveLength(3);
 
-  await rm(signInPath(signins, grace.person));
-  await client.listAllIssues({});
-  expect(broker.trades.map((trade) => trade.thumbprint)).toEqual([ada.thumbprint]);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-1"]);
-});
-
-test("a sign-in the broker refused for good fails every later call in its words, asking nothing and never trading the machine", async () => {
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-  broker.revoked.add(record.thumbprint);
-
-  const refused = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
-  expect(refused).toBe(
-    `the secrets broker refused ${PERSON}'s sign-in on this machine: HTTP 400 invalid_grant: ${REVOKED}`
-  );
-  const asked = issuer.requests.length;
-
-  // The same session's later calls, Dispatch's and the listener's alike, are refused in the same
-  // words with no refresh at the issuer, no trade at the broker and no request to Dispatch.
-  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(refused);
-  const listener = envoySettings(env, noFile(env), { nats: false, session: "ses_01a9" });
-  if (!listener.enabled) throw new Error("Envoy is off");
-  expect(
-    await refusalOf(
-      Promise.resolve(listener.credential?.headers("POST", `${dispatch.url}/v1/roles/set`))
-    )
-  ).toBe(refused);
-  expect(issuer.requests).toHaveLength(asked);
-  expect(dispatch.asked).toHaveLength(0);
-  // The one trade made is the person's: the machine is never traded in the person's place.
-  expect(broker.trades.map((trade) => trade.form.get("subject_token_type"))).toEqual([
-    SUBJECT_TOKEN_TYPE_PERSON,
-  ]);
-});
-
-test("after a refusal, a new sign-in with a new box key gets a client of its own, which trades with that key", async () => {
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-  broker.revoked.add(record.thumbprint);
-  const client = dispatchOf(env, "ses_01a9");
-  expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
-
-  // `agent-secrets login` again: a new box key, written over the person's record.
-  const renewed = await signedIn(PERSON, { client_id: CLIENT_ID });
-  await writeSignIn(signins, renewed);
-  await client.listAllIssues({});
-
-  expect(broker.trades.map((trade) => trade.thumbprint)).toEqual([
-    record.thumbprint,
-    renewed.thumbprint,
-  ]);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-2"]);
-});
-
-test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor(() => ({
-    status: 400,
-    body: { error: "invalid_grant", error_description: "Token has been expired or revoked." },
-  }));
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-
-  const ended = await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
-  expect(ended).toBe(
-    `${issuer.url} no longer honours ${PERSON}'s sign-in on this machine; run: agent-secrets login`
-  );
-  const refreshes = issuer.requests.filter((one) => one.path === "/token").length;
-  expect(refreshes).toBe(1);
-
-  expect(await refusalOf(dispatchOf(env, "ses_01a9").listAllIssues({}))).toBe(ended);
-  expect(issuer.requests.filter((one) => one.path === "/token")).toHaveLength(refreshes);
-  expect(broker.trades).toHaveLength(0);
-  expect(dispatch.asked).toHaveLength(0);
-});
-
-test("a process that turns the person trade off writes Dispatch as the machine where a person signed in, and the same process without it as the person", async () => {
-  // `legion controller start` sets PERSON_SIGNIN_TRADE=off, so the controller, which keeps its
-  // operator's HOME and so finds the operator's sign-in, writes Dispatch as the service.
-  const broker = signInBroker();
-  const dispatch = stubDispatch();
-  const issuer = await issuerFor();
-  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
-  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-
-  await dispatchOf({ ...env, [PERSON_TRADE_VAR]: "off" }, "ses_01a9").listAllIssues({});
-  // Nobody's sign-in was renewed for it.
-  expect(issuer.requests).toHaveLength(0);
-  // The setting is in the client's key, so the process without it is answered a client of its
-  // own, which trades the person.
-  await dispatchOf(env, "ses_01a9").listAllIssues({});
-
-  expect(
-    broker.trades.map((trade) => [
-      trade.form.get("subject_token_type"),
-      trade.form.get("subject_token"),
-      trade.form.has("actor_token"),
-      trade.form.get("session"),
-    ])
-  ).toEqual([
-    [SUBJECT_TOKEN_TYPE_KUBERNETES, "projected.service.account.token", false, "ses_01a9"],
-    [SUBJECT_TOKEN_TYPE_PERSON, issuer.idTokens[0], true, "ses_01a9"],
-  ]);
-  // The machine's proof is signed with a key of this process's, the person's with the box key.
-  expect(broker.trades[0]?.thumbprint).not.toBe(record.thumbprint);
-  expect(broker.trades[1]?.thumbprint).toBe(record.thumbprint);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-  ]);
-});
-
-/** The session a pod of the registration tests trades under. */
-const POD_SESSION = "implementer-g1";
-
-/** A broker that refuses every trade as unregistered (`registeredPodSession`) until `registered()`
- *  says the pod's deployment registered its session, and then mints a token. */
-function registeringBroker(registered: () => boolean): { url: string; trades: number[] } {
-  const trades: number[] = [];
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      await request.text();
-      trades.push(trades.length + 1);
-      if (!registered()) {
-        return Response.json(
-          {
-            error: "invalid_grant",
-            error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${POD_SESSION}'. A pod writes under a session name its deployment registered for it.`,
-          },
-          { status: 400 }
-        );
-      }
-      return Response.json({
-        access_token: `registered-token-${trades.length}`,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: 600,
-      });
-    },
-  });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades };
-}
-
-/** Turns of the event loop until `ready()` holds: no timer, so the test runs at the client's pace. */
-async function until(ready: () => boolean): Promise<void> {
-  while (!ready()) await new Promise((resolve) => setImmediate(resolve));
-}
-
-/** What `call` settled with by the next turn of the event loop, or "pending": the test's bound. A
- *  credential answers headers or a promise of them, so either is taken. */
-async function outcome(call: unknown): Promise<unknown> {
-  const bound = Promise.withResolvers<"pending">();
-  setImmediate(() => bound.resolve("pending"));
-  return await Promise.race([
-    Promise.resolve(call).then(
-      (value) => value,
-      (error: unknown) => error
-    ),
-    bound.promise,
-  ]);
-}
-
-test("an unregistered pod session's call fails at its deadline naming the session, and the next call goes through once the registration lands", async () => {
-  let registered = false;
-  const broker = registeringBroker(() => registered);
-  const warned = spyOn(console, "warn").mockImplementation(() => {});
-  try {
-    const credential = brokerCredential(
-      podEnvironment(broker.url, "http://dispatch.test"),
-      POD_SESSION
-    );
-    const url = "http://dispatch.test/v1/issues";
-    // The call's deadline is a signal the test ends, standing in for the call's own timer.
-    const deadline = new AbortController();
-    const call = credential.headers("GET", url, undefined, deadline.signal);
-    await until(() => warned.mock.calls.length === 1);
-    expect(String(warned.mock.calls[0]?.[0])).toContain(POD_SESSION);
-    deadline.abort();
-    const refused = await outcome(call);
-    expect(refused, "the call did not return at its deadline").toBeInstanceOf(Error);
-    expect((refused as Error).name).toBe("RegistrationPendingError");
-    expect((refused as Error).message).toContain(POD_SESSION);
-    expect((refused as Error).message).toContain("retried");
-    // The control: a call that passes no deadline does not return while the registration is
-    // missing.
-    const waiting = credential.headers("GET", url);
-    expect(await outcome(waiting)).toBe("pending");
-    registered = true;
-    const next = await credential.headers("GET", url, undefined, new AbortController().signal);
-    expect(next.Authorization).toStartWith("DPoP registered-token-");
-    expect(((await waiting) as Record<string, string>).Authorization).toBe(next.Authorization);
-  } finally {
-    warned.mockRestore();
-  }
+  // A presentation told stale after its client traded a fresher token leaves the fresher one.
+  const fresher = await credential.headers("GET", url);
+  credential.stale?.(undefined, deadOne);
+  expect((await credential.headers("GET", url)).Authorization).toBe(fresher.Authorization);
+  expect(broker.trades).toHaveLength(3);
 });

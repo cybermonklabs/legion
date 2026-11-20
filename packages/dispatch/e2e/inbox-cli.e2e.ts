@@ -21,7 +21,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { cliSession, runDispatch } from "./dispatch-cli";
-import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
@@ -33,10 +33,12 @@ import { asUser } from "./users";
  * browser renders from the same data.
  *
  * What it proves, in one seeded workspace: `dispatch inbox` lists exactly the questions and
- * credential requests the Inbox page lists; its counts are the page's own numbers; and every act
- * the token makes - an answer, a review, a message - is recorded as the person with the agent
- * beside them, which every reader renders. Last, the Settings checkbox that narrows a token to
- * the person scope alone stops it approving, and ticking it back lets it approve again.
+ * credential requests the Inbox page lists, and marks expired the one request the page marks
+ * expired; its counts are the page's own numbers, neither of which counts that expired request as
+ * needing the person; and every act the token makes - an answer, a review, a message - is
+ * recorded as the person with the agent beside them, which every reader renders. Last, the
+ * Settings checkbox that narrows a token to the person scope alone stops it approving, and
+ * ticking it back lets it approve again.
  *
  * The second row reads the `Unread threads` band on the command's own surface (INFRA-450): the
  * two threads of this seed the reader has not caught up with, each named by its owner, the agent
@@ -113,6 +115,13 @@ function printedAsks(printed: CommandSection): string[] {
   return printed.rows.map((row) => (row.split(" · ").at(-1) ?? "").split("/").at(-1) ?? "").sort();
 }
 
+/** Whether a printed credential request is an expired one: the field after its request time is
+ *  the mark, `expired` with the deadline or alone, which a pending request's line never carries
+ *  (`credentialRequestLine`, `packages/envoy-client/src/dispatch-commands/session.ts`). */
+function printedExpired(row: string): boolean {
+  return /^expired( |$)/.test(row.split(" · ")[3] ?? "");
+}
+
 /** The ids of the rows a locator holds, in the order the page draws them. */
 function rowIds(rows: Locator): Promise<string[]> {
   return rows.evaluateAll((found) => found.map((row) => row.getAttribute("data-inbox-row") ?? ""));
@@ -159,12 +168,15 @@ function callDetails(home: string): Record<string, unknown> {
   return entry.details ?? {};
 }
 
-/** A sidebar entry's number: the badge after its name, 0 when it carries none, and undefined when
- *  the sidebar has no such entry at all. */
-async function railCount(page: Page, name: RegExp): Promise<number | undefined> {
-  const entry = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name });
-  if ((await entry.count()) === 0) return undefined;
-  const digits = /(\d+)\s*$/.exec((await entry.innerText()).trim());
+/** A sidebar entry, found by how its name begins. */
+function railEntry(page: Page, name: RegExp): Locator {
+  return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name });
+}
+
+/** A sidebar entry's number, read off the entry's text: the badge after its name, 0 when it
+ *  carries none. */
+function badgeNumber(text: string): number {
+  const digits = /(\d+)\s*$/.exec(text.trim());
   return digits === null ? 0 : Number(digits[1]);
 }
 
@@ -184,6 +196,8 @@ function withToken(path: string, token: string, body: object): Promise<Response>
 interface SeededInbox {
   readonly approvalAsk: string;
   readonly deferredAsk: string;
+  /** The deadline of the expired credential request, as the broker wrote it. */
+  readonly expiredDeadline: string;
   readonly gateIssue: string;
   readonly ordinaryAsk: string;
   readonly reviewedArtifact: string;
@@ -192,10 +206,11 @@ interface SeededInbox {
 
 /**
  * One person's workspace as the Inbox shows it: questions waiting on them, one waiting on an
- * agent, one they deferred, an approval request, a credential request from the broker, a question
- * on someone else's issue (not theirs, so neither list holds it) and one on a project document
- * (which waits on the project's default assignee, the reader, so both lists hold it), an unread
- * reply thread and a one-off message to a session that has been answered.
+ * agent, one they deferred, an approval request, two credential requests from the broker (one
+ * pending, one whose deadline passed before anybody decided it), a question on someone else's
+ * issue (not theirs, so neither list holds it) and one on a project document (which waits on the
+ * project's default assignee, the reader, so both lists hold it), an unread reply thread and a
+ * one-off message to a session that has been answered.
  */
 async function seedInbox(): Promise<SeededInbox> {
   await setLiveSessions([worker]);
@@ -254,6 +269,10 @@ async function seedInbox(): Promise<SeededInbox> {
     asker
   );
 
+  // The broker lists its pending requests first and its expired ones after them. The pending one
+  // carries no state, as an older broker sends it; the expired one carries the mark and the
+  // deadline a current broker names, an hour gone.
+  const expiredDeadline = new Date(Date.now() - 3_600_000).toISOString();
   await setPendingCredentialRequests([
     {
       approve_url: "https://secrets.internal.example/approve/record-inbox-cli",
@@ -264,6 +283,18 @@ async function seedInbox(): Promise<SeededInbox> {
       requested_at: new Date().toISOString(),
       session: { enrollment: worker.session_id, request: worker.session_id },
     },
+    expiredCredentialRequest(
+      {
+        approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
+        approver: "alice",
+        identifiers: ["RETIRED_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-inbox-cli-expired",
+        requested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+        session: { enrollment: worker.session_id, request: worker.session_id },
+      },
+      expiredDeadline
+    ),
   ]);
 
   // A thread of alice's that an agent has written in since she last read it.
@@ -291,6 +322,7 @@ async function seedInbox(): Promise<SeededInbox> {
   return {
     approvalAsk: approval.ask.id,
     deferredAsk: deferredAsk.id,
+    expiredDeadline,
     gateIssue: gate.key,
     ordinaryAsk: ordinaryAsk.id,
     reviewedArtifact: reviewed.primary_artifact_id,
@@ -320,6 +352,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await page.goto("/settings");
     await page.getByLabel("Token label").fill("Inbox reader");
     await page.getByRole("button", { name: "New token" }).click();
+    // textContent waits for the code element to attach, and an element's text is never null,
+    // so the check below only narrows the type.
     const token = await page.getByRole("status").locator("code").first().textContent();
     if (token === null) throw new Error("Settings minted no agent token");
     expect(token).toMatch(/^dsp_[A-Za-z0-9_-]{43}$/);
@@ -339,16 +373,32 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // (`features/sidebar/Sidebar.tsx`, `features/inbox/useInboxCount.ts`): the work waiting on
     // the reader plus the threads they have not caught up with, which is the command's
     // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
-    // thread term is load-bearing rather than a zero that would pass either way.
+    // thread term is load-bearing rather than a zero that would pass either way. It also lists
+    // one expired credential request, which nobody can decide any more, so neither number
+    // counts it (`awaitsDecision`, `@legion/contracts`): a command that counted it would print a
+    // `Needs you` one above the rail's.
+    const pendingRequests = printedRequests.rows.filter((row) => !printedExpired(row));
+    expect(pendingRequests).toHaveLength(1);
+    expect(printedRequests.rows.filter(printedExpired)).toEqual([
+      expect.stringContaining(` · expired ${seeded.expiredDeadline} · `),
+    ]);
     const needsYou = section(sections, "Needs you").count;
     const unreadThreads = section(sections, "Unread threads").count;
-    expect(needsYou).toBe(section(sections, "Needs you").rows.length + printedRequests.count);
+    expect(needsYou).toBe(section(sections, "Needs you").rows.length + pendingRequests.length);
     expect(unreadThreads).toBeGreaterThan(0);
     expect(unreadThreads).toBe(
       (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
     );
-    await expect.poll(() => railCount(page, /^Inbox/)).toBe(needsYou + unreadThreads);
-    expect(await railCount(page, /^Replies/)).toBeUndefined();
+    // An Inbox entry the rail has not drawn yet reads as no number, which the poll waits out.
+    const inboxEntry = railEntry(page, /^Inbox/);
+    await expect
+      .poll(async () =>
+        (await inboxEntry.count()) === 0 ? undefined : badgeNumber(await inboxEntry.innerText())
+      )
+      .toBe(needsYou + unreadThreads);
+    // Read once the poll above has held the rail's Inbox entry, so the rail has drawn: no
+    // Replies entry at this instant is none in the rail.
+    expect(await railEntry(page, /^Replies/).count()).toBe(0);
 
     await page.goto("/");
     await expect(inboxRow(page, seeded.ordinaryAsk)).toBeVisible();
@@ -381,14 +431,19 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     );
 
     // The credential requests, line for line: the page lists one row per request the command
-    // prints, each naming the same secret.
+    // prints, in the same order, each naming the same secret, and marks "Expired" the one row
+    // the command marks expired and no other.
     const requests = page.getByRole("region", { name: "Credential requests" });
     expect(printedRequests.count).toBe(printedRequests.rows.length);
     await expect(requests.getByRole("listitem")).toHaveCount(printedRequests.rows.length);
     for (const [index, row] of printedRequests.rows.entries()) {
       const identifiers = row.split(" · ")[1] ?? "";
       expect(identifiers).not.toBe("");
-      await expect(requests.getByRole("listitem").nth(index)).toContainText(identifiers);
+      const requestRow = requests.getByRole("listitem").nth(index);
+      await expect(requestRow).toContainText(identifiers);
+      await expect(requestRow.getByText("Expired", { exact: true })).toHaveCount(
+        printedExpired(row) ? 1 : 0
+      );
     }
 
     // 3. An answer the agent makes with the token is the person's answer, with the agent beside

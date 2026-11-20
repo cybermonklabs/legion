@@ -2,13 +2,15 @@
   "url": "https://github.com/cybermonklabs/legion",
   "default_permissions": {
     "actions": "write",
+    "attestations": "read",
     "checks": "write",
     "contents": "write",
     "issues": "write",
     "metadata": "read",
     "packages": "read",
     "pull_requests": "write",
-    "security_events": "write"
+    "security_events": "write",
+    "statuses": "read"
   },
   "description": "Legion architect, planner, tester and reviewer: reviews pull requests and posts check runs."
 }

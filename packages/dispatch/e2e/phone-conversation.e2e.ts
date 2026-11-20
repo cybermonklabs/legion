@@ -417,10 +417,10 @@ test("on a phone, a thread's Reply over its card's refused reply keeps that draf
   }
 });
 
-// The thread composer's refusal is the thread's while it shows: Back, Escape from the thread and
-// Escape in the composer's field each drop it, its draft with it, as they drop the card's own
-// reply's, so neither the thread opened again nor the next Reply brings it back.
-test("on a phone, Back and Escape from a thread reply's refusal drop its draft and refusal @phone", async ({
+// Back and Escape from the thread are the host's moves, so the thread composer's refusal is held
+// for its comment: the draft and the refusal are there each time the thread opens again. Escape in
+// the composer's field is the reader's own Cancel reply, which takes them to the docked composer.
+test("on a phone, Back and Escape from a thread reply's refusal keep its draft and refusal for the thread's return @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -438,42 +438,37 @@ test("on a phone, Back and Escape from a thread reply's refusal drop its draft a
     const refusal = thread.getByText(WRITE_REFUSED_TEXT);
     const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     refuse();
-    const sendRefused = async (draft: string) => {
-      await expect(field).toHaveValue("");
-      await field.fill(draft);
-      await threadForm.getByRole("button", { exact: true, name: "Send" }).click();
-      await expect(refusal).toBeVisible();
+    const draft = "Refused, then Back";
+    const expectHeld = async () => {
       await expect(field).toHaveValue(draft);
-    };
-    const expectDropped = async () => {
-      await expect(field).toHaveCount(0);
-      await expect(refusal).toHaveCount(0);
-      await expect(threadForm.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+      await expect(refusal).toBeVisible();
     };
 
     await commentTurn(page, earlier.id).getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Back");
+    await expect(field).toHaveValue("");
+    await field.fill(draft);
+    await threadForm.getByRole("button", { exact: true, name: "Send" }).click();
+    await expectHeld();
     await leaveThread(page);
     await openThread(page, earlier.id);
-    await expectDropped();
+    await expectHeld();
 
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Escape");
     // Escape from outside the composer is the thread dialog's own close.
     await thread.getByRole("button", { name: /^Copy reference/ }).focus();
     await page.keyboard.press("Escape");
     await expect(threadView(page)).toHaveCount(0);
     await openThread(page, earlier.id);
-    await expectDropped();
+    await expectHeld();
 
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Escape in the field");
     await field.press("Escape");
     await expect(thread).toBeVisible();
-    await expectDropped();
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await expect(field).toHaveValue("");
+    await expect(field).toHaveCount(0);
     await expect(refusal).toHaveCount(0);
+    await expect(threadForm.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+    await leaveThread(page);
+    const docked = page.getByRole("form", { name: "Comment composer" });
+    await expect(docked.getByRole("textbox", { name: "Comment" })).toHaveValue(draft);
+    await expect(docked.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
   } finally {
     await alice.close();
   }
@@ -1225,6 +1220,7 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
     // falling through when it never comes.
     await expect.poll(() => sent).toBe(true);
 
+    // The wait above drew Reply and nothing has pressed or scrolled since, so its box is there.
     const before = await reply.boundingBox();
     if (before === null) throw new Error("the thread's Reply has no box");
     await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
@@ -1383,11 +1379,20 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     const jump = page.getByTestId("jump-to-latest");
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(page.getByRole("button", { name: "Accept suggestion" })).toBeVisible();
-    // Where the page settled on the latest turn, the one place in the band with no pill.
-    const settled = await page.evaluate(() => window.scrollY);
+    // Where the page settled on the latest turn, the one place in the band with no pill: read
+    // until two reads a poll apart agree, so the page has come to rest there.
+    let settled = Number.NaN;
+    await expect
+      .poll(async () => {
+        const was = settled;
+        settled = await page.evaluate(() => window.scrollY);
+        return settled === was;
+      })
+      .toBe(true);
     // The band ends where the newest card has gone off the top of the screen - its bottom is
     // the scroll position the sweep stops at - so every control on that card is hit-tested on
-    // its way up, not only the header row the card opens with.
+    // its way up, not only the header row the card opens with. The page came to rest above with
+    // the cards drawn, so the bottom read here is where the first card stays.
     const end = await turns.evaluate((list) => {
       const first = list.firstElementChild;
       if (first === null) throw new Error("expected a first turn");
@@ -1402,6 +1407,58 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     await page.evaluate((y) => window.scrollTo(0, y), end);
     if (Math.abs(end - settled) > 1) await expect(jump).toBeVisible();
     expect(lost).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Every text field on the page whose value holds `text`, visible or not: a composer under the
+ *  thread's dialog is one the person reaches with Back. */
+function fieldsHolding(page: Page, text: string): Promise<string[]> {
+  return page.evaluate((wanted) => {
+    const found: string[] = [];
+    for (const node of document.querySelectorAll("textarea, input")) {
+      if (
+        (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) &&
+        node.value.includes(wanted)
+      ) {
+        found.push(node.getAttribute("aria-label") ?? node.id);
+      }
+    }
+    return found;
+  }, text);
+}
+
+// Cancel reply is the person's own move, so a reply Dispatch refused goes with it: on a desktop
+// the docked composer keeps the text as a new comment (ConversationTab.test.tsx). On a phone the
+// thread's composer ends with Cancel reply, and the text was gone from every field of the page,
+// through Back, Reply again and a reload, on this branch and on main alike (INFRA-1503's tester,
+// 2026-11-16, in the iphone project).
+test("on a phone, a thread reply Dispatch refused keeps its typed text through Cancel reply @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Phone cancel after a refusal" });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" });
+  const typed = "Refused thread reply, typed by hand";
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(phone);
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await commentTurn(page, earlier.id).getByRole("button", { exact: true, name: "Reply" }).click();
+    const form = threadView(page).getByRole("form", { name: "Comment composer" });
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    await form.getByLabel("Comment").fill(typed);
+    await form.getByRole("button", { exact: true, name: "Send" }).click();
+    refuse();
+    await expect(page.getByText(WRITE_REFUSED.error).first()).toBeVisible();
+    // The probe sees the text where it is: in the thread's own field, before Cancel reply.
+    expect(await fieldsHolding(page, typed)).toHaveLength(1);
+
+    await form.getByRole("button", { name: "Cancel reply" }).click();
+    await expect.poll(() => fieldsHolding(page, typed).then((found) => found.length)).toBe(1);
   } finally {
     await alice.close();
   }

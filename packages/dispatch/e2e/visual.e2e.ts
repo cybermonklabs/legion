@@ -24,9 +24,12 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row
- *  cannot assume the page is as a row before it left it - a row that wrote would be seen by
- *  every row after it - so each row signs in and navigates afresh, and no row writes.
+ *  baseline was taken against is the one the host wrote once. What that costs is that a row's
+ *  write would be seen by every row after it, so each row signs in and navigates afresh, and the
+ *  seed writes first each read mark a page of the shot set writes as it draws - the broadcast
+ *  page's read of its replies and the Spec tab's read of the spec (`e2e/review-seed.ts`) - so a
+ *  page's own write changes nothing any row compares. The review runs its rows in normal and in
+ *  reverse order (`e2e/visual-order.ts`) so that a row reading another row's write fails by name.
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -76,10 +79,12 @@ import {
   type ReviewSeed,
   railInboxLink,
   shotRoutes,
+  topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
+import { inVisualOrder, visualOrder } from "./visual-order";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -97,7 +102,7 @@ const SKIP_REASON =
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
 // runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
-// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
+// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
 // untouched by that reset, which is why only this half is written again here. `./agents` and
@@ -188,13 +193,18 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // the number's pill, for the reason the header above is: the pill's width can move
         // with the digit, and the link is a full-width row of the rail whose box holds still.
         // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
-        // no rail, so on them this matches nothing. The number itself is proven by its own
-        // tests, not by these pixels.
+        // no rail; they draw the same number in the compact top bar's badge, which is masked
+        // for the same reason. That badge is a pill in a row, so its own box is what the mask
+        // paints: a one-digit count holds that box still, and a count of 10 or more would
+        // widen it and move the badge beside it. CI run 44308307388 read 6 on `issue-spec`'s
+        // phone row against the baseline's 5, with nothing else moved in that badge. The
+        // number itself is proven by its own tests, not by these pixels.
         //
-        // Why it is not waited for instead: the number CI draws after the broadcast row's
-        // read mark is not the number this seed gives anywhere else. The baselines read 7 on
-        // rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in dark on
-        // `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
+        // Why it is not waited for instead: the number CI drew after the broadcast page's
+        // read mark was not the number this seed gave anywhere else. These were measured while
+        // that mark was still the page's own, before the seed wrote it first: the baselines
+        // read 7 on rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in
+        // dark on `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
         // file's own path (`e2e/visual-seed.ts` on a `e2e/harness-up.ts` stack, the rows in
         // host Chromium, alice's counts read every 3 s for six minutes) read 7 on rows 1-4
         // and 6 on every row after the read mark, for three passes over the rows. After the
@@ -204,8 +214,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // ruled out. In the host run every delivery attempt of the seed stayed `sent`, and
         // none was accepted as `user_turn`, so the sweep owed nothing. CI run 43517763817
         // logs no resend from the sweep. Its count went from 7 to 5 about 16 s after its
-        // seed, and the read mark was the only write the page made. No seed state can pin a
-        // step that was never found, so this mask stands in for one.
+        // seed, and the read mark was the only write the page made. The seed now writes that
+        // mark before any row (`e2e/review-seed.ts`), so no row's page moves the number; the
+        // drop CI drew past it was never explained, no seed state can pin a step that was never
+        // found, and so this mask stands in for one.
         //
         // Nothing else is masked, and the Decisions panel is why that matters. It prints the
         // id of the spec block a decision shaped until the reference graph answers, and a
@@ -225,6 +237,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
             .last(),
           page.getByText(/, as of /),
           railInboxLink(page),
+          topBarInboxBadge(page),
         ],
         // MEASURED, both numbers, by starting at zero.
         // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
@@ -288,7 +301,11 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   });
 }
 
-for (const route of shotRoutes) {
+// The rows of each project in the order `DISPATCH_E2E_VISUAL_ORDER` asks for (e2e/visual-order.ts
+// says why the review runs in two orders); the config puts the projects in that order too.
+const order = visualOrder();
+
+for (const route of inVisualOrder(shotRoutes, order)) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
     await shoot(browser, route);
@@ -300,7 +317,7 @@ for (const route of shotRoutes) {
 // The ` @phone` tag is what puts a row in the `visual-phone` project and keeps it out of
 // `visual` (e2e/playwright.config.ts), so the two shots of one page land in two baseline
 // directories under the same file name.
-for (const route of phoneShotRoutes) {
+for (const route of inVisualOrder(phoneShotRoutes, order)) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
     await shoot(browser, route);

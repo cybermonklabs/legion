@@ -10,8 +10,8 @@
 // legacy one: the legacy watcher arms an init timer while its scan is pending, and that timer's
 // callback can send on the channels the subscription's end has just closed, a "send on closed
 // channel" panic in a goroutine nats.go owns that ends the process whenever the subscription ends
-// mid-scan -- a Stop, nats.go's own unsubscribe, a connection closed or drained (nats.go v1.50.0
-// kv.go:1145-1172, unfixed through v1.55.0). The jetstream watcher has no timer and closes its
+// mid-scan -- a Stop, nats.go's own unsubscribe, a connection closed or drained (nats.go v1.55.0
+// kv.go:1210-1236, unfixed through v1.55.0). The jetstream watcher has no timer and closes its
 // updates only on its subscription goroutine's exit, so no send can follow the close, and a watcher
 // may be stopped at any moment provided it is read until it closes. It has no idle bound either, so
 // the watcher owns its scan's: a read whose scan delivers nothing for ScanIdleTimeout ends as timed

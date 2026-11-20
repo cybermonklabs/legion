@@ -25,7 +25,8 @@ type Launcher interface {
 	// whose environment is env (the pane's: the daemon's allow-listed variables, the XDG base
 	// directories under the state directory, and the operator's pane variables) in workDir, keeps
 	// its sessions, one folder per working directory: where a resume looks for a recorded session
-	// that was carried onto this host from elsewhere (sessionFileOf).
+	// that was carried onto this host from elsewhere (sessionFileOf), and for the file of a
+	// session the claim recorded by its id alone (sessionFileByID).
 	SessionsDir(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string) (string, error)
 }
 
@@ -46,9 +47,17 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand on promptFile; an Oh My Pi pane carries no pairs of its own.
+// Launch is innerCommand on promptFile. An Oh My Pi pane carries one pair of its own, and only when
+// it resumes a recorded session: runtime.SessionExclusiveVariable set to 1, so a resume of a
+// session another live process still holds ends the pane's Oh My Pi rather than moving it onto a
+// session id the daemon never recorded. The pair comes after the operator's pane variables, which
+// may not name it (runtime.PaneVariableRefusal). A fresh launch carries no pairs.
 func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), nil, nil
+	var pairs []string
+	if spec.ResumeSessionFile != "" {
+		pairs = []string{"-e", runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue}
+	}
+	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), pairs, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

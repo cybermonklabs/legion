@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The CI store's summary loop logs `checks held a head` for a head's record that is not settled
+  after 10 minutes with no event. The line names what holds the record: each check run that is not
+  finished, each check suite that is not completed with its App and the run count GitHub's
+  `check_suite` event gave, and whether the record is overflowed, has no check run id, has no
+  schema or holds a claim. It is a warning when every recorded check run has finished, and
+  information otherwise. The loop writes it once for each snapshot and hold of a record while the
+  listener runs, and again after the record changes or the listener restarts.
+
+  The loop also logs `checks settlement published` for each settlement it publishes, with the
+  head, the generation, the snapshot and whether the settlement supersedes an earlier one.

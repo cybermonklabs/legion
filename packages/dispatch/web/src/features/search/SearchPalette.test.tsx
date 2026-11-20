@@ -190,6 +190,8 @@ async function searchFor(user: UserEvent, query: string): Promise<HTMLInputEleme
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
+  // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
@@ -276,6 +278,8 @@ test("renders document-owned results under the document and opens their discussi
 });
 
 test("an ask hit says where it stands and shows its latest answer", async () => {
+  // Each snippet and answer is Markdown (`MarkdownPreview`), empty until the lazy engine loads.
+  await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const answer = {
     at: "2026-10-01T00:00:00Z",
@@ -565,7 +569,9 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
     // A focus refetch, or the refresh after a gap in the live socket, answers the same query
     // re-ranked.
     search.mockResolvedValue(searchAnswer([second, first]));
-    await view.queryClient.refetchQueries();
+    await act(async () => {
+      await view.queryClient.refetchQueries();
+    });
     await waitFor(() => expect(screen.getAllByRole("option")[0]?.id).not.toBe(shown));
     expect(input).toHaveAttribute("aria-activedescendant", shown);
   } finally {
@@ -667,7 +673,9 @@ test("a background refresh that fails keeps the hits the query has, and the high
 
     // The tab-return refresh fails; TanStack keeps the answer it already has.
     search.mockRejectedValue(new Error("503"));
-    await view.queryClient.refetchQueries();
+    await act(async () => {
+      await view.queryClient.refetchQueries();
+    });
     await waitFor(() =>
       expect(
         view.queryClient.getQueryState(["search", "astrolabe", { keywords_only: true }])?.status

@@ -202,8 +202,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// path writes nothing about a slot: a root keeps the row it was started with through its
 	// whole wait (record.KeepsSlot), so its resume takes no new one (admit's slotFor), and where
 	// it stands in the line is the `waitingLine` on its own state, which the projection writes
-	// (api.WaitingLineView). An architect reads the rule in
-	// skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
+	// (api.WaitingLineView). An architect reads the rule in its role prompt,
+	// packages/daemon/internal/prompts/roles/architect-root.md. The members
 	// the opening releases are started by admission's own pass over this same fact, which gives
 	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
@@ -912,8 +912,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// This opening writes nothing about a slot: a root keeps the row it was started with
 		// through its whole wait (record.KeepsSlot), so its resume takes no new one (admit's
 		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
-		// which the projection writes (api.WaitingLineView). An architect reads the rule in
-		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
+		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
+		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
@@ -948,7 +948,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
-// nobody, and the architect, which holds accepting itself, is told once.
+// nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
+// passed over, since that phase is an architect's own: the root's is the root's architect, told
+// once as such, and a child's own architect is not told of the root's gate, whose merge hold
+// reaches the child's merger once it holds merging.
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -971,9 +974,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The members first, then the tree's architect, which owns the tree and so is named on the
-	// tree root; the phase it works itself (accepting) is that same claim, and is told once with
-	// it.
+	// The members first, then the root's architect, since the gate is the root's. A member in
+	// accepting is passed over, since that phase is an architect's own: the root's is the root's
+	// architect, told once below, and a child's own architect is not told of the root's gate, whose
+	// merge hold reaches the child's merger once it holds merging.
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
 		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
@@ -1005,21 +1009,21 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			return err
 		}
 	}
-	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
-// every phase holder of the tree (tellGateMoved). It is the one way a gate row that can move the
-// standing gate is written, so that no path writes one silently: the artifact event's own apply
-// (applyArtifact), the registration (gateRegistered) and the reset of a gate recorded above the
-// version Dispatch holds (gateAboveDispatch) all go through it, and the gate seed reaches it
-// through the last two, since what the seed reads is applied as one of those facts (the outbox's
-// seedGate). A registration alone can take the standing gate either way — it writes a row at a new
-// version, which closes it, or carries the approval its read found, which opens it — and before
-// this helper only the artifact path told anyone, so a merger could be left merging under a
-// document nobody had approved, or waiting for an opening it was never told of
+// every phase worker of the tree and the root's architect (tellGateMoved). It is the one way a
+// gate row that can move the standing gate is written, so that no path writes one silently: the
+// artifact event's own apply (applyArtifact), the registration (gateRegistered) and the reset of a
+// gate recorded above the version Dispatch holds (gateAboveDispatch) all go through it, and the
+// gate seed reaches it through the last two, since what the seed reads is applied as one of those
+// facts (the outbox's seedGate). A registration alone can take the standing gate either way — it
+// writes a row at a new version, which closes it, or carries the approval its read found, which
+// opens it — and before this helper only the artifact path told anyone, so a merger could be left
+// merging under a document nobody had approved, or waiting for an opening it was never told of
 // (dispatch://INFRA-714/spec R5).
 //
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record

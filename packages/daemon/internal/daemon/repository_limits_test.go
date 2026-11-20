@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -165,7 +166,7 @@ func linesFor(lines []map[string]any, repo string) []map[string]any {
 // what the boot's reconciliation and admission read of the repository's default branch.
 func heldAdmission(t *testing.T, w *workflowRuntime, repo string) {
 	t.Helper()
-	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: repo}, false, 0); err != nil {
+	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: repo}, false, 0, false); err != nil {
 		t.Fatalf("prepare an admission on %s: %v, want it prepared on the branch held", repo, err)
 	}
 }
@@ -281,8 +282,8 @@ func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnsw
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
@@ -326,8 +327,8 @@ func TestABootLeavesOutARepositoryWhoseReadAfterARateLimitGetsNoAnswer(t *testin
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
@@ -580,6 +581,176 @@ func TestTheBootsReadsAfterARateLimitRunMappingReadsAtATime(t *testing.T) {
 	}
 }
 
+// Several repositories whose default-branch reads GitHub's rate limit refused together each wait
+// GitHub's own wait, never doubled, and the total each wait line names counts the time the waits
+// overlap once: three unheld reads, each asked by GitHub to wait 2 s from an answer just now, wait
+// out through waitOutLimits on a runtime holding the start's waits at the production policy. Each
+// of the three lines names a waitUntil 2 s after the answers, not 2, 4 and 8 s, and a total of about
+// 2 s, not 6 s, and all three repositories are read once more about 2 s after the answers.
+func TestTheBootsDefaultBranchReadsRefusedTogetherEachWaitGitHubsOwnWait(t *testing.T) {
+	const wait = 2 * time.Second
+	named := map[string]string{}
+	var unheld []limitedRead
+	answered := time.Now()
+	for _, repo := range []string{"acme/one", "acme/two", "acme/three"} {
+		named[repo] = repo + "@main"
+		unheld = append(unheld, limitedRead{mapped: mappedRepository{Repo: ghrepo.MustParse(repo)},
+			answer: &githubrest.Answer{Status: http.StatusTooManyRequests, RateLimited: true, RetryAfter: wait, Limit: githubrest.LimitHeaders{RetryAfter: "2"}},
+			err:    errors.New("GitHub answered GET /repos/" + repo + " with 429"), wait: wait, until: answered.Add(wait)})
+	}
+	github := newLimitedGitHub(t, named, func(http.ResponseWriter, string, int) bool { return false })
+	logs := &syncBuffer{}
+	w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(logs, nil)), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
+		startWaits: newStartWaits(startRateLimits, time.Now)}
+
+	served, unread, err := w.waitOutLimits(context.Background(), unheld)
+
+	if err != nil || len(served) != len(unheld) || len(unread) != 0 {
+		t.Fatalf("waitOutLimits = %d served, %d unread, %v; want all %d served", len(served), len(unread), err, len(unheld))
+	}
+	waits := loggedLines(t, logs.String(), waitLine)
+	if len(waits) != len(unheld) {
+		t.Fatalf("wait lines = %v, want one for each repository", waits)
+	}
+	for _, line := range waits {
+		if want := answered.Add(wait).UTC().Format(time.RFC3339); line["waitUntil"] != want {
+			t.Errorf("%v's waitUntil = %v, want GitHub's own wait from its answer, %s", line["repo"], line["waitUntil"], want)
+		}
+		if waited := loggedDuration(t, line, "waited"); waited < wait-500*time.Millisecond || waited > wait {
+			t.Errorf("%v's waited = %s, want about %s: the waits overlap, and their time counts once", line["repo"], waited, wait)
+		}
+	}
+	for repo := range named {
+		if reads := github.readsOf(repo); len(reads) != 1 || reads[0].Before(answered.Add(wait)) || reads[0].After(answered.Add(wait+3*time.Second)) {
+			t.Errorf("GitHub was read for %s at %v, want once, soon after %s", repo, reads, answered.Add(wait))
+		}
+	}
+}
+
+// Each wait the start decides for GitHub's rate limit, one row for each row of the plan's table
+// "One rate-limit refusal of a start's call", on the production policy and a clock of the test's
+// own, so no row waits: an App call's wait (startWaits.wait) is GitHub's time with at most the
+// maximum, or, where GitHub names none, a minute doubling for each further such refusal of that
+// call, and ends at the start's end, after which the call ends the start; a default-branch read's
+// (startWaits.readUntil) is #4043's wait from GitHub's answer with at most the maximum, never
+// doubled, and none once it is over or at the end; the total waited counts overlapping waits once;
+// and the backfill's wait has the maximum and no end.
+func TestStartWaitsDecidesEachWait(t *testing.T) {
+	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); startRateLimits != want {
+		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", startRateLimits, want)
+	}
+	start := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
+	retryAfter := func(seconds string) *githubrest.Answer {
+		return &githubrest.Answer{Status: http.StatusTooManyRequests, RateLimited: true, Limit: githubrest.LimitHeaders{RetryAfter: seconds}}
+	}
+	spent := func(reset time.Duration) *githubrest.Answer {
+		return &githubrest.Answer{Status: http.StatusForbidden, RateLimited: true,
+			Limit: githubrest.LimitHeaders{Remaining: "0", Reset: strconv.FormatInt(start.Add(reset).Unix(), 10)}}
+	}
+	noHeader := &githubrest.Answer{Status: http.StatusTooManyRequests, RateLimited: true}
+	bodyAlone := &githubrest.Answer{Status: http.StatusForbidden, Body: `{"message":"API rate limit exceeded for installation ID 7."}`,
+		Limit: githubrest.LimitHeaders{Remaining: "14671"}}
+	const mint, logins = "GitHub App tokens mint", "GitHub App logins read"
+	// step is one refusal: of an App call, or of a default-branch read where call is empty.
+	type step struct {
+		at     time.Duration // the clock, from the start
+		call   string
+		answer *githubrest.Answer
+		wait   time.Duration // GitHub's wait: answerLimit's for an App call, #4043's for a read
+		ago    time.Duration // how long before at GitHub answered a read
+		until  time.Duration // the wait's end, from the start: at itself for no wait
+		waited time.Duration
+		ended  bool
+	}
+	for _, row := range []struct {
+		name  string
+		steps []step
+	}{
+		{name: "an App call's Retry-After at most the maximum", steps: []step{
+			{call: mint, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
+		}},
+		{name: "an App call's Retry-After above the maximum", steps: []step{
+			{call: mint, answer: retryAfter("7200"), wait: 2 * time.Hour, until: time.Hour, waited: time.Hour},
+		}},
+		{name: "an App call's spent limit with its reset ahead", steps: []step{
+			{call: mint, answer: spent(20 * time.Minute), wait: 20 * time.Minute, until: 20 * time.Minute, waited: 20 * time.Minute},
+		}},
+		{name: "an App call that names no time, the n-th such refusal of the call", steps: []step{
+			{call: mint, answer: noHeader, wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{at: time.Minute, call: mint, answer: spent(-time.Minute), wait: time.Minute, until: 3 * time.Minute, waited: 3 * time.Minute},
+			{at: 3 * time.Minute, call: mint, answer: bodyAlone, wait: time.Minute, until: 7 * time.Minute, waited: 7 * time.Minute},
+		}},
+		{name: "the first refusal that names no time of another call", steps: []step{
+			{call: logins, answer: noHeader, wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{at: time.Minute, call: logins, answer: noHeader, wait: time.Minute, until: 3 * time.Minute, waited: 3 * time.Minute},
+			{at: 3 * time.Minute, call: mint, answer: noHeader, wait: time.Minute, until: 4 * time.Minute, waited: 4 * time.Minute},
+		}},
+		{name: "an App call whose wait passes the end", steps: []step{
+			{call: mint, answer: retryAfter("1800"), wait: 30 * time.Minute, until: 30 * time.Minute, waited: 30 * time.Minute},
+			{at: 50 * time.Minute, call: mint, answer: retryAfter("3600"), wait: time.Hour, until: 70 * time.Minute, waited: 50 * time.Minute},
+		}},
+		{name: "an App call at or past the end", steps: []step{
+			{call: mint, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
+			{at: 70 * time.Minute, call: logins, answer: retryAfter("30"), wait: 30 * time.Second, waited: 30 * time.Second, ended: true},
+			{at: 75 * time.Minute, call: mint, answer: noHeader, wait: time.Minute, waited: 30 * time.Second, ended: true},
+		}},
+		{name: "a default-branch read's wait, counted from GitHub's answer", steps: []step{
+			{answer: retryAfter("30"), wait: 30 * time.Second, ago: 5 * time.Second, until: 25 * time.Second, waited: 25 * time.Second},
+		}},
+		{name: "a default-branch read's wait above the maximum", steps: []step{
+			{answer: retryAfter("7200"), wait: 2 * time.Hour, until: time.Hour, waited: time.Hour},
+		}},
+		{name: "a default-branch read's wait past the end", steps: []step{
+			{call: mint, answer: retryAfter("60"), wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{at: 65 * time.Minute, answer: retryAfter("1800"), wait: 30 * time.Minute, until: 70 * time.Minute, waited: 6 * time.Minute},
+		}},
+		{name: "default-branch reads refused together, each its own wait, never doubled", steps: []step{
+			{answer: noHeader, wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{answer: noHeader, wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{answer: noHeader, wait: time.Minute, until: time.Minute, waited: time.Minute},
+		}},
+		{name: "a default-branch read whose wait is already over", steps: []step{
+			{answer: retryAfter("120"), wait: 2 * time.Minute, ago: 3 * time.Minute},
+		}},
+		{name: "a default-branch read at or past the end", steps: []step{
+			{call: mint, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
+			{at: 70 * time.Minute, answer: retryAfter("60"), wait: time.Minute, until: 70 * time.Minute, waited: 30 * time.Second},
+		}},
+		{name: "overlapping waits count once", steps: []step{
+			{call: mint, answer: retryAfter("60"), wait: time.Minute, until: time.Minute, waited: time.Minute},
+			{at: 30 * time.Second, answer: retryAfter("60"), wait: time.Minute, until: 90 * time.Second, waited: 90 * time.Second},
+			{at: 40 * time.Second, answer: retryAfter("10"), wait: 10 * time.Second, until: 50 * time.Second, waited: 90 * time.Second},
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			now := start
+			waits := newStartWaits(startRateLimits, func() time.Time { return now })
+			for index, step := range row.steps {
+				now = start.Add(step.at)
+				var until time.Time
+				var waited time.Duration
+				var ended bool
+				if step.call != "" {
+					until, waited, ended = waits.wait(step.call, step.answer, step.wait)
+				} else {
+					until, waited = waits.readUntil(limitedRead{answer: step.answer, wait: step.wait, until: now.Add(step.wait - step.ago)})
+				}
+				if ended != step.ended || waited != step.waited || !step.ended && !until.Equal(start.Add(step.until)) {
+					t.Fatalf("step %d: until %s, waited %s, ended %v; want until %s, waited %s, ended %v",
+						index+1, until.Sub(start), waited, ended, step.until, step.waited, step.ended)
+				}
+			}
+		})
+	}
+	t.Run("the backfill, which has no end: GitHub's wait with at most the maximum", func(t *testing.T) {
+		for wait, want := range map[time.Duration]time.Duration{17 * time.Second: 17 * time.Second, 2 * time.Hour: time.Hour} {
+			if got := backfillWait(wait); got != want {
+				t.Errorf("the backfill's wait for GitHub's %s = %s, want %s", wait, got, want)
+			}
+		}
+	})
+}
+
 // liveBootDispatch is a Dispatch for a daemon's boot whose project maps repos, the first its
 // default, and lists listed, answering every other call every boot makes (servedBootCall).
 func liveBootDispatch(t *testing.T, project string, repos []string, listed []map[string]any) string {
@@ -766,7 +937,7 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
 				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 			w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools"), Default: true}}, nil)
-			_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0)
+			_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0, false)
 			var later *intake.RetryLater
 			if !errors.As(err, &later) || later.After != tc.want {
 				t.Fatalf("prepare = %v, want an intake.RetryLater after %s", err, tc.want)
@@ -775,5 +946,139 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 				t.Fatalf("GitHub was read for zeta/tools %d times, want once", got)
 			}
 		})
+	}
+}
+
+// retriesIn30 answers a read with GitHub's 429 for its secondary limit, asking for 30 s.
+func retriesIn30(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "30")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+}
+
+// The start's wait for a default-branch read GitHub's rate limit refused gets the maximum and the
+// start's end (c-boot-mint-rate-limit case 7), then reads once more, as #4043's does. Every read of
+// zeta/tools, which no record holds a branch for, is a 429 asking for 30 s. With the maximum at 1 s,
+// the wait line's waitUntil is a second ahead and the read once more comes a second after the
+// first; with the bound at 1 s and the maximum at 10 s, the wait ends at the bound. Either way the
+// read once more is refused again, zeta/tools is left out for now, and acme/widgets is served.
+func TestABootsDefaultBranchReadWaitsAtMostTheMaximumAndEndsItsWaitAtTheBound(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy func(*rateLimitPolicy)
+	}{
+		{name: "the maximum", policy: func(policy *rateLimitPolicy) { policy.Max = time.Second }},
+		{name: "the bound", policy: func(policy *rateLimitPolicy) { policy.Bound, policy.Max = time.Second, 10*time.Second }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withStartRateLimits(t, tc.policy)
+			github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
+				if repo != "zeta/tools" {
+					return false
+				}
+				retriesIn30(w)
+				return true
+			})
+			logs := &syncBuffer{}
+			w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs), func(w *workflowRuntime) {
+				w.startWaits = newStartWaits(startRateLimits, time.Now)
+			})
+
+			waits := loggedLines(t, logs.String(), waitLine)
+			if len(waits) != 1 || waits[0]["repo"] != "zeta/tools" {
+				t.Fatalf("wait lines = %v, want one naming zeta/tools", waits)
+			}
+			until, err := time.Parse(time.RFC3339, fmt.Sprint(waits[0]["waitUntil"]))
+			if ahead := until.Sub(loggedAt(t, waits[0])); err != nil || ahead > time.Second {
+				t.Fatalf("the wait line's waitUntil = %v, %s after the line (%v); want at most a second ahead, not GitHub's 30 s", waits[0]["waitUntil"], ahead, err)
+			}
+			if waited := loggedDuration(t, waits[0], "waited"); waited <= 0 || waited > time.Second {
+				t.Errorf("the wait line's waited = %s, want the second it waits", waited)
+			}
+			if reads := github.readsOf("zeta/tools"); len(reads) < 2 || reads[1].Sub(reads[0]) < 900*time.Millisecond || reads[1].Sub(reads[0]) > 5*time.Second {
+				t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more about a second after it", reads)
+			}
+			if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+				t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
+			}
+			if !served(w, "acme/widgets") {
+				t.Fatal("acme/widgets is not served, want it served beside the repository left out")
+			}
+		})
+	}
+}
+
+// The start's backfill of a record without repository details waits at most the maximum for each
+// rate limit and goes on past the start's end until GitHub answers (c-boot-mint-rate-limit case 8,
+// the maximum shortened to 500 ms and the bound to 1 s): GitHub refuses the read of the record's
+// repository four times with a 429 asking for 30 s, then answers. Each read comes 500 ms after the
+// one before, the reads go on past the 1 s bound, and the record is filled.
+func TestABootsBackfillWaitsAtMostTheMaximumAndPastTheBoundUntilGitHubAnswers(t *testing.T) {
+	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max, policy.Bound = 500*time.Millisecond, time.Second })
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('LEGION-7', 'LEGION-7', 'LEGION', 'LEGION-7', 'planning', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	const refusals = 4
+	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
+		if repo != "zeta/tools" || read > refusals {
+			return false
+		}
+		retriesIn30(w)
+		return true
+	})
+	logs := &syncBuffer{}
+	w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: slog.New(slog.NewJSONHandler(logs, nil))}
+	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}}}
+	// GitHub's whole Retry-After four times over would take two minutes; the bound ends a backfill
+	// that waits it well before.
+	bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	err := backfillRepositories(bounded, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, w.log)
+	waits := loggedLines(t, logs.String(), "so the boot waits and reads it again")
+	if err != nil {
+		t.Fatalf("backfill = %v, want the record filled once GitHub answers; its wait lines: %v", err, waits)
+	}
+	if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {
+		t.Fatalf("unfilled after the backfill = %v, want none", unfilled)
+	}
+	if len(waits) != refusals {
+		t.Fatalf("wait lines = %v, want %d", waits, refusals)
+	}
+	reads := github.readsOf("zeta/tools")
+	if len(reads) != refusals+1 {
+		t.Fatalf("GitHub was read for zeta/tools %d times, want the %d refused and the one answered", len(reads), refusals)
+	}
+	for index := 1; index < len(reads); index++ {
+		if gap := reads[index].Sub(reads[index-1]); gap < 500*time.Millisecond || gap > 3*time.Second {
+			t.Errorf("read %d came %s after the one before, want the 500ms maximum", index+1, gap)
+		}
+	}
+	if span := reads[len(reads)-1].Sub(reads[0]); span <= time.Second {
+		t.Errorf("the reads spanned %s, want past the 1s bound", span)
+	}
+}
+
+// A read of a default branch after the start keeps the wait GitHub names, whatever the start's
+// maximum (c-boot-mint-rate-limit case 10, the maximum shortened to 5 s): an event's preparation
+// whose read a 429 refuses, asking for 17 s, is delivered again after 17 s, not 5 s.
+func TestAnEventsDefaultBranchReadAfterTheStartStillWaitsTheRetryAfterGitHubNames(t *testing.T) {
+	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 5 * time.Second })
+	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, _ string, _ int) bool {
+		w.Header().Set("Retry-After", "17")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"You have exceeded a secondary rate limit."}`)
+		return true
+	})
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools"), Default: true}}, nil)
+	_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0, false)
+	var later *intake.RetryLater
+	if !errors.As(err, &later) || later.After != 17*time.Second {
+		t.Fatalf("prepare = %v, want an intake.RetryLater after GitHub's 17s", err)
 	}
 }

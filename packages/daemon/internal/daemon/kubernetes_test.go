@@ -30,10 +30,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -192,6 +196,105 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 		if !strings.HasPrefix(request, "GET ") {
 			t.Errorf("the cluster check sent %s; it may only read", request)
 		}
+	}
+}
+
+// The store opens outside the start budget the cluster check spends, and the steps after the open
+// get a budget of their own (c-boot-db-retry case 7). Here the real cluster check uses 22 s of the
+// 30 s budget, and the database accepts the first connection and never answers it: the first
+// attempt ends at its own limit, the second opens the store, and the fresh database is migrated
+// to the binary's newest migration more than 30 s into the start. That is the start LINUX's
+// daemon could not make on 2026-10-26, which opened its store on what the cluster check had left
+// of the budget and exited with `context deadline exceeded`.
+func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget(t *testing.T) {
+	const censusTakes = 22 * time.Second
+	var census sync.Once
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		switch r.URL.Path {
+		case "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/sandboxes.agents.x-k8s.io":
+			body = map[string]any{"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+				"metadata": map[string]any{"name": "sandboxes.agents.x-k8s.io"},
+				"spec":     map[string]any{"versions": []any{map[string]any{"name": "v1beta1", "served": true}}}}
+		case "/apis/apps/v1/namespaces/agent-sandbox-system/deployments/agent-sandbox-controller":
+			body = map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+				"metadata": map[string]any{"name": "agent-sandbox-controller", "namespace": "agent-sandbox-system"},
+				"status":   map[string]any{"availableReplicas": 1}}
+		case "/apis/agents.x-k8s.io/v1beta1/namespaces/legion/sandboxes":
+			// The census is the first read of the project's Sandboxes, and the only slow one.
+			census.Do(func() {
+				select {
+				case <-time.After(censusTakes):
+				case <-r.Context().Done():
+				}
+			})
+			body = map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "SandboxList", "metadata": map[string]any{}, "items": []any{}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			body = map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "code": 404}
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer apiServer.Close()
+	cfg := kubernetesConfig(t, apiServer.URL)
+	database := testdb.Database(t, "legion_daemon_late_open")
+	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	newest := all[len(all)-1].Version
+	reader, err := store.Open(context.Background(), database)
+	if err != nil {
+		t.Fatalf("open the fresh database to read its schema version: %v", err)
+	}
+	t.Cleanup(reader.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen}) }()
+	// What follows the migration is not this test's: the runtime this configuration builds may
+	// refuse it (it names no session store), and the test stops the start once it reads the
+	// migration, so run may return before or after the stop, with anything but a refusal of the
+	// store it opened.
+	var version int
+	var ended error
+	returned := false
+	testwait.Holds(2*time.Minute, 250*time.Millisecond, func() bool {
+		if version, _ = reader.SchemaVersion(context.Background()); version == newest {
+			return true
+		}
+		select {
+		case ended = <-done:
+			returned = true
+			return true
+		default:
+			return false
+		}
+	})
+	took := time.Since(started)
+	if returned {
+		// run may have returned between the migration's end and the read before it.
+		version, _ = reader.SchemaVersion(context.Background())
+	} else {
+		cancel()
+		select {
+		case ended = <-done:
+		case <-time.After(time.Minute):
+			t.Fatal("run did not return within a minute of its stop")
+		}
+	}
+	if version != newest {
+		t.Fatalf("run returned %v %s into the start, and its database's schema version is %d, want %d", ended, took.Round(time.Second), version, newest)
+	}
+	if ended != nil && strings.Contains(ended.Error(), "connect to Postgres") {
+		t.Errorf("run = %v, want no refusal of the store it opened", ended)
+	}
+	if took <= bootTimeout {
+		t.Errorf("the database was migrated %s into the start, inside its first %s budget: the cluster check and the first attempt did not spend what this test is for", took, bootTimeout)
 	}
 }
 
@@ -446,7 +549,7 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 // the issue pod requests less than it may use, which the runtime renders as a Burstable pod, and the
 // controller's keeps request == limit at sizes the file set — and its ephemeral storage the limit
 // the file or the default set with the request under it; and the image probe carries its own fixed
-// reservation (probeReservation), 250m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
+// reservation (probeReservation), 500m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
 // translated the same way and no pod's share — a probe that reserved the controller's 1 CPU and
 // 4Gi could not boot the daemon on a pool with room for less.
 func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T) {
@@ -499,46 +602,18 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 	if !reflect.DeepEqual(probe.Resources, wantProbe) {
 		t.Errorf("the image probe carries %+v, want its own reservation %+v", probe.Resources, wantProbe)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
 		if request := probe.Resources.Requests[kind]; request.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe requests %s %s, want %s", kind, request.String(), want)
 		}
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
 		if limit := probe.Resources.Limits[kind]; limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe is limited to %s %s, want %s", kind, limit.String(), want)
 		}
 	}
 	if reflect.DeepEqual(probe.Resources, opts.Resources.Controller) {
 		t.Errorf("the image probe carries the controller's reservation %+v; it must carry its own", opts.Resources.Controller)
-	}
-}
-
-// runtime.kubernetes.skills_repository reaches sandbox.Options unchanged: every issue pod then runs
-// the skills init container and every role installs from the volume it fills, while leaving the
-// setting out keeps the runtime skills-free.
-func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
-	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
-	k := config.Kubernetes{
-		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
-	}
-	k.SkillsRepository = ghrepo.MustParse("theorem-labs/verification-skills")
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions: %v", err)
-	}
-	if opts.SkillsRepository != k.SkillsRepository {
-		t.Errorf("Options.SkillsRepository = %v, want %v", opts.SkillsRepository, k.SkillsRepository)
-	}
-
-	k.SkillsRepository = ghrepo.Repository{}
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions without a skills repository: %v", err)
-	}
-	if !opts.SkillsRepository.IsZero() {
-		t.Errorf("Options.SkillsRepository = %v without runtime.kubernetes.skills_repository, want none", opts.SkillsRepository)
 	}
 }
 
@@ -572,8 +647,8 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 
 // runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
 // and the microvm block with its ComputeClass, its storage class (the one the loader settled,
-// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
-// leaving the block out runs every pod in gVisor.
+// runtime.kubernetes.storage_class where the file names none), its keep_volume and its metadata
+// endpoint, while leaving the block out runs every pod in gVisor.
 func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
@@ -582,7 +657,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	k.Sandbox = config.SandboxConfig{
 		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &config.MetadataConfig{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -593,7 +668,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	want := sandbox.SandboxConfig{
 		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &sandbox.MetadataEndpoint{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -639,11 +714,40 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.volume_trim reaches the runtime's Options as the settings each issue pod's
+// launcher is handed on the answer to its hello — the two marks, the minimum age and the
+// interval, each in its own member — and `enabled: false` hands the runtime none at all, which
+// the launcher reads as no settings (sandbox.Options.VolumeTrim). Every number differs from the
+// others, so two members crossed read back wrong. The negative controls are Enabled inverted,
+// which hands the enabled block's runtime nothing and the disabled one's the settings, and the
+// two marks swapped.
+func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.VolumeTrim = config.VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := shimwire.LauncherVolumeTrim{HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	if opts.VolumeTrim == nil || *opts.VolumeTrim != want {
+		t.Errorf("Options.VolumeTrim = %+v, want %+v", opts.VolumeTrim, want)
+	}
+
+	cfg.Runtime.Kubernetes.VolumeTrim.Enabled = false
+	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions with the trimmer off: %v", err)
+	}
+	if opts.VolumeTrim != nil {
+		t.Errorf("Options.VolumeTrim = %+v with volume_trim.enabled false, want none: no settings is what the launcher reads as the trimmer off", *opts.VolumeTrim)
+	}
+}
+
 // The path that failed live (stage 4b's daemon-controller-liveness, 2026-10-10): a legion.yaml
 // under `controller: daemon` whose controller reservation no node can hold (the checkpoint's
 // `cpu: "100000"`, set so the relaunched controller pod is Unschedulable) is read by the loader as
 // written — the controller's requirements carry the 100000 CPU — while the image probe the daemon
-// builds from the same configuration carries its own 250m / 1Gi and nothing of the controller's,
+// builds from the same configuration carries its own 500m / 1Gi and nothing of the controller's,
 // so the daemon's boot probe still schedules. This is the manifest-level proof: the probe pod's
 // container takes ImageProbe.Resources as it is (TestManifestGoldens, probe.json), and a boot-level
 // run needs a cluster.
@@ -712,7 +816,7 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("imageProbe: %v", err)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi"} {
 		request, limit := probe.Resources.Requests[kind], probe.Resources.Limits[kind]
 		if request.Cmp(resource.MustParse(want)) != 0 || limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe carries %s request %s / limit %s beside a 100000-CPU controller, want its own %s as both",
@@ -798,7 +902,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 }
 
 // The daemon holds the operator's pod to the exchange identity's names, before its boot and for
-// `legion start --check-config`, only where runtime.kubernetes.agent_secrets names an
+// `legion config check`, only where runtime.kubernetes.agent_secrets names an
 // exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
 // operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
 // agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,
@@ -1006,7 +1110,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 
 // No credential material — no key, no launcher credential, no bearer, no ServiceAccount token —
 // ever reaches a pod or a launch secret: the daemon's login reads its own token from token_file and
-// holds the key it wins only in the *agentsecrets.Client's process memory, which sandbox.Options
+// holds the key it wins only in the *cipher.Client's process memory, which sandbox.Options
 // carry no field for at all. newSecretsLogin hands the runtime only the broker URL, audience and
 // pod token lifetime, and no launch's secrets ever name an AGENT_SECRETS_* variable.
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {
@@ -1081,12 +1185,10 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
+	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool {
+		return strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") && client.LoginStatus().State == "issued"
+	}) {
+		t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -1095,6 +1197,56 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	}
 	if strings.Contains(logged.String(), "enter code") {
 		t.Fatalf("log = %s, want no confirmation code", logged.String())
+	}
+}
+
+// The machines' Enroller hands the broker the claim a process runs for beside the rest of its
+// identity, so the broker files the pod's requests under the claim and the claim's next pod reads
+// them.
+func TestTheBrokerEnrollerSendsTheClaim(t *testing.T) {
+	var mu sync.Mutex
+	var enrolled []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/launcher-credentials/token":
+			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "cred-1", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/enrollments":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			enrolled = append(enrolled, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"enrollment_id":"enr-1","lease_expires_at":"2026-09-26T12:15:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
+		URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
+	}
+	enroller, _, client := newSecretsLogin(cfg, quietLogger())
+	if !testwait.Holds(5*time.Second, time.Millisecond, func() bool { return client.LoginStatus().State == "issued" }) {
+		t.Fatalf("login state %q, want issued", client.LoginStatus().State)
+	}
+	const claim = "legion-acme-acme-12-planner"
+	id, err := enroller.Enroll(context.Background(), supervise.PodEnrollment{
+		PodUID: "pod-uid-1", Slot: "planner-g1", Thumbprint: "tp", PodToken: "a.b.c", Session: "ses_planner", Claim: claim,
+	})
+	if err != nil || id != "enr-1" {
+		t.Fatalf("Enroll = %q, %v; want enr-1", id, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(enrolled) != 1 || enrolled[0]["claim"] != claim || enrolled[0]["session_id"] != "ses_planner" || enrolled[0]["slot"] != "planner-g1" {
+		t.Fatalf("the broker was sent %v, want one enrollment stating claim %s beside its session and slot", enrolled, claim)
 	}
 }
 

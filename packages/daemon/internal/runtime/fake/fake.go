@@ -24,6 +24,7 @@ var (
 	_ runtime.Runtime            = (*Runtime)(nil)
 	_ runtime.IssuePodReader     = (*Runtime)(nil)
 	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
+	_ runtime.IssueVolumeReader  = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -83,6 +84,18 @@ type Runtime struct {
 	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
+	// OnSpawn, when set, runs at the start of every Spawn, after the call is recorded, with that
+	// call's own context: a test that must act while a launch is still in the runtime blocks here
+	// and watches that context for the caller's cancellation. A non-nil answer is the Spawn's,
+	// nothing is started and no scripted answer is spent.
+	OnSpawn func(ctx context.Context) error
+	// RefuseLookupByID, when set, stands for a pod whose launcher has not said it can look a
+	// session up by its id, on every try: Resume records its call and then answers an error that
+	// wraps runtime.ErrSessionLookupUnavailable to a spec that has ResumeSession and no
+	// ResumeByAgent, before OnResume and the scripted answers. Neither of those can stand for it,
+	// since OnResume does not see the spec and a scripted answer is spent by one call whatever it
+	// asked. A test clears it to stand for a pod replaced by one with a newer launcher.
+	RefuseLookupByID bool
 
 	mu           sync.Mutex
 	pending      *sync.Cond
@@ -94,6 +107,7 @@ type Runtime struct {
 	drift        map[claim.Token][]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
+	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	holdReplace  func()
 	replaceNoPod bool
@@ -105,12 +119,13 @@ type Runtime struct {
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
 func NewRuntime() *Runtime {
 	fake := &Runtime{
-		Now:       time.Now,
-		failures:  map[string]error{},
-		drift:     map[claim.Token][]string{},
-		gone:      map[claim.Token]bool{},
-		issuePods: map[string]string{},
-		sessions:  map[claim.Token]string{},
+		Now:         time.Now,
+		failures:    map[string]error{},
+		drift:       map[claim.Token][]string{},
+		gone:        map[claim.Token]bool{},
+		issuePods:   map[string]string{},
+		keptVolumes: map[string]time.Time{},
+		sessions:    map[claim.Token]string{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -215,6 +230,22 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.issuePods[issue] = pod
 }
 
+// ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
+// answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
+// the configuration renders and was made at created: true for a since whose second is after
+// created, false for any other. A zero created clears it, which is also how a test scripts a
+// Sandbox that the next launch replaces. An issue no call named keeps no volume, which is every
+// pod's case but a microVM pod's under keep_volume.
+func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if created.IsZero() {
+		delete(r.keptVolumes, issue)
+		return
+	}
+	r.keptVolumes[issue] = created
+}
+
 // ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
 // Sandbox runtime answers the session it chose for a Claude Code role's launch. A claim no call
 // named has no session the runtime chose, which is an Oh My Pi role's case; "" clears it.
@@ -314,10 +345,20 @@ func (r *Runtime) Methods() []string {
 	return methods
 }
 
-func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+// Spawn records its call, then runs OnSpawn when a test set one, then answers the next scripted
+// answer, or a locator of its own once the script runs out.
+func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
+	hook := r.OnSpawn
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return runtime.Locator{}, err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
 	if len(r.spawns) > 0 {
 		next := r.spawns[0]
 		r.spawns = r.spawns[1:]
@@ -326,7 +367,8 @@ func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Loca
 	return r.mint(spec.Claim), nil
 }
 
-// Resume records its call, then runs OnResume when a test set one, then refuses a previous
+// Resume records its call, then answers runtime.ErrSessionLookupUnavailable to a resume by id
+// while RefuseLookupByID is set, then runs OnResume when a test set one, then refuses a previous
 // incarnation of another claim, as every runtime does.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.mu.Lock()
@@ -343,7 +385,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 	}
 	r.calls = append(r.calls, call)
 	hook := r.OnResume
+	refused := r.RefuseLookupByID && spec.ResumeSession != "" && !spec.ResumeByAgent
 	r.mu.Unlock()
+	if refused {
+		return runtime.Locator{}, fmt.Errorf("resume %s by session %s: the pod's launcher has not said it can look a session up by its id: %w",
+			spec.Claim, spec.ResumeSession, runtime.ErrSessionLookupUnavailable)
+	}
 	if hook != nil {
 		if err := hook(ctx); err != nil {
 			return runtime.Locator{}, err
@@ -526,6 +573,17 @@ func (r *Runtime) IssuePod(issue string) (string, bool) {
 	r.calls = append(r.calls, Call{Method: "IssuePod", Issue: issue})
 	pod, read := r.issuePods[issue]
 	return pod, read
+}
+
+// IssueKeepsVolume answers what ScriptKeptVolume set for the issue: true where its kept Sandbox
+// was made before since, cut to the second as the Sandbox runtime cuts it, since the API server
+// records a creation time to the second. It records no call: the daemon asks it only for the
+// words of a message, which a test reads instead.
+func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	created, kept := r.keptVolumes[issue]
+	return kept && created.Before(since.Truncate(time.Second))
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the

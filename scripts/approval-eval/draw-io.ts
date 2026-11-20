@@ -10,12 +10,13 @@ import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
  * The two files one draw writes that are read back, each with one owner: `draw.json`, the
  * record the draw writes of itself, and `slices.json`, the case ids it drew into each slice.
  *
- * `draw.ts` writes both into the directory holding the slices, and four commands read them
+ * `draw.ts` writes both into the directory holding the slices, and five commands read them
  * back: `run-round.ts` for the cases of the scored slices and the cut its dating rule applies,
  * `analyze.ts` for those cases, that cut and the key the cases were grouped by, `strata.ts`
- * for the cut, and `refusals.ts` for the issue facts the never-decide rule needs. So the shape
- * of each file, where it sits and the rule that reads each fact out of it live here, and the
- * writer and every reader import them.
+ * for the cut, `refusals.ts` for the issue facts the never-decide rule needs, and
+ * `s10-inputs.ts` for the final test's trees and the claim run and build the draw was made in.
+ * So the shape of each file, where it sits and the rule that reads each fact out of it live
+ * here, and the writer and every reader import them.
  *
  * A draw written before a field was recorded does not carry it, which is why `readDraw` hands
  * back `DrawFacts` and not the record's own type: the record's type says what a draw writes
@@ -107,6 +108,70 @@ export interface DrawExcluded {
 }
 
 /**
+ * One tree item 6 leaves eligible, as a draw under a registered read records it: every case of
+ * the corpus in it, and whether its drawable cases went to report. A draw under a registered read
+ * puts every eligible tree in report whole, whatever report's targets, since item 8 lets only
+ * never-decide and the run's own (c) and (d) narrow the final test; it applies no never-decide
+ * rule (`DrawRecord.neverDecideApplied`), since the claim leaves never-decide to S10's fact check
+ * and judges, as they decide it live, and it leaves no case of such a tree out as a question no
+ * arm can be scored on. The claim's measure is read over these trees. A tree in no slice is one a
+ * draw written before that left every case of out, and it counts there too.
+ */
+export interface FinalTestTree {
+  /** The tree's group key, as `trees.ts` makes it. */
+  group: string;
+  /** Report, where its drawable cases went, and null where it had no drawable case. */
+  slice: "report" | null;
+  /** Every case of the corpus in the tree, left-out ones included, sorted. */
+  cases: string[];
+}
+
+/**
+ * The claim run a stage after the build was made in, and the build it read: the reply that
+ * started the run (`claimRunOf` in `reserve.ts`) as the build's `snapshot.json` records it, and
+ * the sha256 of the bytes read of each of the build's three files (`Corpus` in `corpus-io.ts`,
+ * `readTrees` in `trees.ts`). A draw under a registered read records it (`DrawRecord.claimRun`),
+ * and every later stage of the run records the same chain and takes only the files it names
+ * (`s10-inputs.ts`), so no directory, and no file of one, can be put in another's place.
+ */
+export interface BuildChain {
+  id: string;
+  snapshotSha256: string;
+  corpusSha256: string;
+  treesSha256: string;
+}
+
+/** What each field of a `BuildChain` is called where a refusal names it, in the order compared. */
+export const BUILD_CHAIN_NAMES: Readonly<Record<keyof BuildChain, string>> = {
+  id: "claim run",
+  snapshotSha256: "snapshot.json",
+  corpusSha256: "corpus.jsonl",
+  treesSha256: "trees.json",
+};
+
+/**
+ * The one comparison every stage of the claim run holds a record to the chain it runs in with:
+ * the first field `names` lists in which `found` (a record read back, whatever its shape) is not
+ * `wanted`, worded as the tail of a refusal, and null where every such field is the same. A field
+ * `found` does not hold is read as of no record.
+ */
+export function chainRefusal<T extends object>(
+  found: unknown,
+  wanted: T,
+  names: Readonly<Partial<Record<keyof T & string, string>>>
+): string | null {
+  const record = recordOf(found);
+  for (const [field, name] of Object.entries(names) as Array<[keyof T & string, string]>) {
+    const was = record?.[field];
+    const is = wanted[field];
+    if (was === is) continue;
+    const shown = was === undefined || was === null ? "of no record" : String(was);
+    return `its ${name} is ${shown}, and this run's is ${String(is)}`;
+  }
+  return null;
+}
+
+/**
  * Where a draw's report slice, the final test, came from: the reserve of INFRA-2897's next final
  * test, read under a registration of `claim.ts`, by item 6 of the reserve's version 2
  * (`reserve.ts`, `trees.ts`).
@@ -141,14 +206,16 @@ export interface FinalTestDraw {
    * 5-grams at or above `threshold`, with the groups each case was in before the join.
    */
   nearDuplicates: { threshold: number; joins: NearDuplicateJoin[] };
+  /** Every tree item 6 leaves eligible, in the order of its group key. */
+  trees: FinalTestTree[];
 }
 
 /**
  * What a reader of a draw is handed: the facts `readDraw` read out of the bytes and checked,
  * and nothing it did not check.
  *
- * `draw.json` holds the whole of `DrawRecord` below, and a reader of one needs three of its
- * facts. Those three are checked where the file is read, so the type says what the bytes hold
+ * `draw.json` holds the whole of `DrawRecord` below, and a reader of one needs some of its
+ * facts. Those are checked where the file is read, so the type says what the bytes hold
  * rather than what a draw of the current shape would have written, and a fact a draw does not
  * carry - one of an earlier shape, or one holding something that is no such fact - is absent
  * here rather than read a second time by every caller.
@@ -168,6 +235,20 @@ export interface DrawFacts {
    * that record carries are provenance no reader of a draw reads, and are not read here.
    */
   roots?: ReadonlyArray<{ key: string } & IssueFacts>;
+  /**
+   * The eligible trees of a draw under a registered read, as `finalTest.trees` records them. A
+   * draw that read no reserve, or one made before the trees were recorded, carries none.
+   */
+  finalTestTrees?: readonly FinalTestTree[];
+  /** The reference `finalTest` records, for a draw under a registered read of the reserve. */
+  finalTestReference?: string;
+  /**
+   * Whether the draw applied the never-decide rule, where the draw records it, which is never
+   * other than whether it records the rule, the roots it was handed and how many it read.
+   */
+  neverDecideApplied?: boolean;
+  /** The claim run and the build a draw under a registered read records. */
+  claimRun?: BuildChain;
 }
 
 /** What one draw recorded of itself, which is what `draw.json` holds. */
@@ -186,9 +267,26 @@ export interface DrawRecord {
   groups: Record<CaseKind, number>;
   postCutCases: number;
   documentsUnread: number;
-  backlogLegionRootsRead: number;
-  backlogLegionRoots: BacklogRoots;
-  rule: DrawRule;
+  /** How many roots the never-decide rule was handed; null where the draw applied no rule. */
+  backlogLegionRootsRead: number | null;
+  /** The roots the never-decide rule was handed; null where the draw applied no rule. */
+  backlogLegionRoots: BacklogRoots | null;
+  /** What the never-decide rule was for this draw; null where the draw applied no rule. */
+  rule: DrawRule | null;
+  /**
+   * Whether the draw applied the never-decide rule. A draw under a registered read applies none:
+   * it reads no backlog roots and puts no case to the rule, so no case is held and none is left
+   * out as `rule-unreadable`, and every eligible tree goes to report whole with every case it
+   * holds; S10's fact check and judges decide never-decide over the final test, as they decide it
+   * live. Every other draw applies it. A draw made before this was recorded carries none, and
+   * applied it.
+   */
+  neverDecideApplied?: boolean;
+  /**
+   * The claim run a draw under a registered read was made in and the build it read; null for a
+   * draw that read no reserve. A draw made before this was recorded carries none.
+   */
+  claimRun?: BuildChain | null;
   excluded: DrawExcluded;
   /**
    * The final test's source, for a draw made under a registered read of the reserve. Null for a
@@ -350,6 +448,99 @@ function rootsAt(value: unknown, path: string): Array<{ key: string } & IssueFac
 }
 
 /**
+ * The eligible trees a draw under a registered read recorded, and none where it recorded no
+ * final test or recorded one before the trees were. A tree that names no group, a group named
+ * twice, a slice that is none of the four, a case that is no string, or a case named twice, is
+ * the file being no draw: the claim's measure counts trees, so a tree read wrongly is a count
+ * read wrongly, and one tree written as two would count twice.
+ */
+function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null {
+  if (value === undefined || value === null) return null;
+  const record = recordOf(value);
+  if (record === null) throw new CorpusError(`${path} holds a finalTest that is no record`);
+  const held = record.trees;
+  if (held === undefined) return null;
+  if (!Array.isArray(held)) throw new CorpusError(`${path} holds finalTest trees that are no list`);
+  const groups = new Set<string>();
+  const seen = new Map<string, string>();
+  return held.map((entry, at) => {
+    const tree = recordOf(entry);
+    const group = tree === null ? null : stringOf(tree.group);
+    if (tree === null || group === null || group === "") {
+      throw new CorpusError(`${path} finalTest tree ${at + 1} names no group`);
+    }
+    if (groups.has(group)) throw new CorpusError(`${path} names the finalTest tree ${group} twice`);
+    groups.add(group);
+    // A tree with no drawable case is written with a slice of null, so a missing slice is no
+    // tree a draw wrote, not a tree in no slice; and a draw under a registered read puts every
+    // eligible tree in report, so a tree in another slice is no such draw either.
+    const slice = tree.slice;
+    if (slice !== null && slice !== "report") {
+      throw new CorpusError(
+        `${path} finalTest tree ${group} names no slice, or another than report, where a draw ` +
+          "under a registered read puts every eligible tree"
+      );
+    }
+    if (!Array.isArray(tree.cases)) {
+      throw new CorpusError(`${path} finalTest tree ${group} holds no list of cases`);
+    }
+    const cases = tree.cases.map((one) => {
+      const caseId = stringOf(one);
+      if (caseId === null) {
+        throw new CorpusError(`${path} finalTest tree ${group} names a case that is no string`);
+      }
+      const other = seen.get(caseId);
+      if (other !== undefined) {
+        throw new CorpusError(
+          `${path} names the case ${caseId} in the trees ${other} and ${group}`
+        );
+      }
+      seen.set(caseId, group);
+      return caseId;
+    });
+    return { group, slice, cases };
+  });
+}
+
+/**
+ * The reference of the registered read a draw's final test records, and none where the draw
+ * recorded no final test. A reference that is there and is no string is the file being no draw.
+ */
+function finalTestReferenceAt(value: unknown, path: string): string | null {
+  const record = recordOf(value);
+  if (record === null) return null;
+  const fault = stringFault(record, "reference");
+  if (fault !== null) throw new CorpusError(`${path} finalTest ${fault}`);
+  return stringOf(record.reference);
+}
+
+/**
+ * The claim run a draw under a registered read records, and none where the draw recorded none.
+ * One that is there and names no reply id, or no sha256 of each of the build's three files, is
+ * the file being no draw: a stage after it reads the claim run's chain from it.
+ */
+function claimRunAt(value: unknown, path: string): BuildChain | null {
+  if (value === undefined || value === null) return null;
+  const record = recordOf(value);
+  const id = stringOf(record?.id);
+  const [snapshotSha256, corpusSha256, treesSha256] = [
+    record?.snapshotSha256,
+    record?.corpusSha256,
+    record?.treesSha256,
+  ].map((one) => {
+    const sha256 = stringOf(one);
+    return sha256 !== null && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : null;
+  });
+  if (!id || !snapshotSha256 || !corpusSha256 || !treesSha256) {
+    throw new CorpusError(
+      `${path} holds a claimRun that names no reply id, or no sha256 of each of the build's ` +
+        "snapshot.json, corpus.jsonl and trees.json"
+    );
+  }
+  return { id, snapshotSha256, corpusSha256, treesSha256 };
+}
+
+/**
  * The draw at `path`, and null where there is none there.
  *
  * One policy for every reader: a directory holding no `draw.json` carries no draw, and a
@@ -372,6 +563,15 @@ export async function readDraw(path: string): Promise<DrawFacts | null> {
   } catch {
     return null;
   }
+  return drawFactsOf(text, path);
+}
+
+/**
+ * The facts of a `draw.json` whose text the caller read itself, under `readDraw`'s one policy:
+ * `s10-inputs.ts` reads the bytes once, so the sha256 it records is of the bytes these facts
+ * were read from.
+ */
+export function drawFactsOf(text: string, path: string): DrawFacts {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -387,6 +587,29 @@ export async function readDraw(path: string): Promise<DrawFacts | null> {
   if (groupKey !== null && groupKey !== "") facts.groupKey = groupKey;
   const roots = record.backlogLegionRoots;
   if (roots !== undefined && roots !== null) facts.roots = rootsAt(roots, path);
+  const trees = finalTestTreesAt(record.finalTest, path);
+  if (trees !== null) facts.finalTestTrees = trees;
+  const reference = finalTestReferenceAt(record.finalTest, path);
+  if (reference !== null) facts.finalTestReference = reference;
+  const applied = record.neverDecideApplied;
+  if (applied !== undefined && typeof applied !== "boolean") {
+    throw new CorpusError(`${path} holds a neverDecideApplied that is no boolean`);
+  }
+  // One fact written in four fields: a draw that says it applied the rule records the rule, the
+  // roots and how many it read, and one that says it applied none records none of them.
+  const ruled = [record.rule, record.backlogLegionRoots, record.backlogLegionRootsRead].map(
+    (one) => one !== null && one !== undefined
+  );
+  if (applied !== undefined && ruled.some((one) => one !== applied)) {
+    throw new CorpusError(
+      `${path} holds a neverDecideApplied of ${applied} beside ` +
+        `${ruled[0] ? "a" : "no"} rule, ${ruled[1] ? "" : "no "}backlog roots and ` +
+        `${ruled[2] ? "a" : "no"} count of them read`
+    );
+  }
+  if (applied !== undefined) facts.neverDecideApplied = applied;
+  const claimRun = claimRunAt(record.claimRun, path);
+  if (claimRun !== null) facts.claimRun = claimRun;
   return facts;
 }
 
@@ -406,6 +629,11 @@ export async function readSlices(path: string): Promise<DrawnSlices | null> {
   } catch {
     return null;
   }
+  return slicesOf(text, path);
+}
+
+/** The slices of a `slices.json` whose text the caller read itself, as `readSlices` reads them. */
+export function slicesOf(text: string, path: string): DrawnSlices {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

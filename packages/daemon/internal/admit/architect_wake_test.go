@@ -136,10 +136,7 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 		}
 		putArchitectTask(t, pool, token, generation, entry, f.queuedAt, f.confirmed, f.interrupted)
 		if !f.firstQueuedAt.IsZero() {
-			if _, err := pool.Exec(ctx, `update claims set handshake_entry = $2, handshake_generation = $3, handshake_queued_at = $4
-				where token = $1`, string(token), entry, int64(generation), f.firstQueuedAt); err != nil {
-				t.Fatalf("record the handshake of entry %d of the claim %s as first queued at %s: %v", entry, token, f.firstQueuedAt, err)
-			}
+			putArchitectHandshake(t, pool, token, entry, generation, f.firstQueuedAt, time.Time{})
 		}
 	}
 }
@@ -177,6 +174,24 @@ func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, gener
 		generation, phase, entry, confirmed_at, interrupted) values ($1, 'outbox:21', 'Carry the tree on.', $2, $3, '', $4, $5, $6)`,
 		string(token), queued, int64(generation), entry, at, interrupted); err != nil {
 		t.Fatalf("record the task the architect claim %s holds: %v", token, err)
+	}
+}
+
+// putArchitectHandshake records the claim's handshake of entry, of generation's run, as the claim's
+// machine keeps it (record.RoleClaim.Handshake): a task of that entry first queued at queued, and
+// first confirmed by a turn at confirmed, none where confirmed is the zero time. The first arm
+// counts the entry's task from the queued moment, and the gate arm counts its bound from no
+// earlier than the confirmed one where there is one.
+func putArchitectHandshake(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry int64, generation uint64, queued, confirmed time.Time) {
+	t.Helper()
+	var at *time.Time
+	if !confirmed.IsZero() {
+		at = &confirmed
+	}
+	if _, err := pool.Exec(context.Background(), `update claims set handshake_entry = $2, handshake_generation = $3, handshake_queued_at = $4,
+		handshake_confirmed_at = $5 where token = $1`, string(token), entry, int64(generation), queued, at); err != nil {
+		t.Fatalf("record the handshake of entry %d of the claim %s as first queued at %s and confirmed at %v: %v",
+			entry, token, queued, at, err)
 	}
 }
 
@@ -672,13 +687,15 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 // lane that died mid-run leaves on the row until the outbox's sweep runs the row again, holds
 // nothing, as the store's own due predicate reads it (record.QueuedSupervise.Running). A queued
 // start is the daemon's own next move: the outbox's start of a failed or a retired claim
-// relaunches it on its kept session, and a controller woken now would take `fresh_session`, which
-// discards that session. Every re-admission of a closed tree makes this shape: the linger's end
-// retires the architect's claim, and the promotion queues the architect's start in the same pass
-// that reads the arms. A start in its run against the claim is still the next move: the outbox
-// records the start on the claim (claims.last_start_row) before it relaunches the claim, so a pass
-// that reads the record in that moment reads the claim failed or retired beside the start that is
-// relaunching it, whatever an earlier run of that start that waited added to its attempts.
+// relaunches it, on its kept session, or a new one once supervise's Machine.forgetSession has
+// dropped that (an architect's start asks for no new session), and a controller woken now would
+// take `fresh_session`, which discards that session. Every re-admission of a closed tree makes this
+// shape: the linger's end retires the architect's claim, and the promotion queues the architect's
+// start in the same pass that reads the arms. A start in its run against the claim is still the
+// next move: the outbox records the start on the claim (claims.last_start_row) before it
+// relaunches the claim, so a pass that reads the record in that moment reads the claim failed or
+// retired beside the start that is relaunching it, whatever an earlier run of that start that
+// waited added to its attempts.
 //
 // workflow.Stranded is asked here too, of the claims the store holds for the very fixture the
 // pass then reads, and the two readings answer different questions. Stranded asks whether nothing

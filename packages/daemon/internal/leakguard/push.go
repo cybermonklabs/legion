@@ -2,11 +2,15 @@ package leakguard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -107,26 +111,30 @@ func PushName(remote string) string {
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, this repository's own rules read the push's records: each
 // ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line.
+// committer, the message, each added or renamed path, and each added line. Under a deployment
+// that runs no shared check (sharedCheck) the rules are the whole of it.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
-	}
-	var lines strings.Builder
-	for _, update := range req.Updates {
-		lines.WriteString(update.Line())
-		lines.WriteString("\n")
-	}
-	// bash runs the check rather than the check running itself: that is the shape git's own
-	// pre-push hook calls it in, and the one the check documents for a push.
-	if err := g.shared(ctx, what, child{
-		argv:  []string{"bash", check, req.Remote, req.URL},
-		dir:   req.Dir,
-		stdin: strings.NewReader(lines.String()),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		var lines strings.Builder
+		for _, update := range req.Updates {
+			lines.WriteString(update.Line())
+			lines.WriteString("\n")
+		}
+		// bash runs the check rather than the check running itself: that is the shape git's own
+		// pre-push hook calls it in, and the one the check documents for a push.
+		if err := g.shared(ctx, what, child{
+			argv:  []string{"bash", check.path, req.Remote, req.URL},
+			dir:   req.Dir,
+			stdin: strings.NewReader(lines.String()),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
 	if err != nil {
@@ -383,17 +391,43 @@ func short(commit string) string {
 	return commit[:min(len(commit), 7)]
 }
 
-// git runs one git command in dir and answers its standard output and error together, failing
-// where git itself does: a record this package could not read is a setup failure, never a push
-// read as clean.
+// git runs one git command in dir and answers its standard output, failing where git itself does:
+// a record this package could not read is a setup failure, never a push read as clean. A failure
+// quotes only what git wrote on its standard error (gitSaid), never its standard output, which is
+// the push's own content (a diff, a commit's message) and can be large, while git says why it
+// failed on its standard error. Reading the two apart also keeps a warning git writes on its
+// standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := gitArgv(args...)
-	status, printed, err := g.run(ctx, child{argv: argv, dir: dir})
+	var stderr bytes.Buffer
+	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, gitSaid(stderr.String()))
 	}
-	return printed, nil
+	return out, nil
+}
+
+// gitErrorBytes is the most of git's standard error a failure of Guard.git quotes: git says why it
+// failed in a line or a few, and a failure that wrote more is cut there rather than carried whole
+// into the setup failure a role reads.
+const gitErrorBytes = 4096
+
+// gitSaid is what a failure of Guard.git quotes of the standard error git wrote: trimmed and, past
+// gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left out before them.
+// The end is what is kept because git writes its `fatal:` line last, after any warnings. git can
+// quote a remote's URL, a token in its userinfo or its query, so the end is cut by redact.Tail,
+// which reads the whole of it through the URL rule first: a cut made first could start inside that
+// userinfo or query and leave a part of it where the rule no longer finds it. The cut moves forward
+// to the start of a character, looking at most utf8.UTFMax bytes ahead and staying put where none
+// starts there, so a valid character is never split and an invalid run cannot take the whole
+// quote.
+func gitSaid(stderr string) string {
+	said, cut := redact.Tail(strings.TrimSpace(stderr), gitErrorBytes)
+	if cut == 0 {
+		return said
+	}
+	return fmt.Sprintf("(%d bytes left out) …%s", cut, said)
 }

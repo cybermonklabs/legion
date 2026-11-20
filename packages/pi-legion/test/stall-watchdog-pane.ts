@@ -19,6 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
@@ -41,6 +42,11 @@ const PROJECT = "watch";
 export const ROLE = "implementer";
 const TREE = "WATCH-1";
 export const ISSUE = "WATCH-2";
+
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with:
+ * random, as the daemon's are, since the pane holds each (`@legion/contracts/held-secrets`). */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /** The daemon's assignment, sent as the RPC prompt. Every turn of the pane's own conversation
  * carries it, which is what tells a turn from a side request. */
@@ -409,12 +415,16 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: `${PROJECT}-secret`,
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The stall notice's record check and the phase reminder's both read one issue's record
+    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({
@@ -423,6 +433,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       });
     }
     if (url.pathname.startsWith("/legion/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, the
+    // publish below, and any other `/v1/` read answer with an interest. A path outside it is a
+    // route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
     if (url.pathname === "/v1/messages/publish") {
@@ -440,7 +456,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // Registration, the role claim, and any other `/v1/` read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
     // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
     // its claim boot fails.
@@ -492,7 +508,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
         LEGION_PROJECT: PROJECT,
-        LEGION_BOOT_TOKEN: `${PROJECT}-boot`,
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: options.stateDir,
         LEGION_WORKSPACE: workspace,
         LEGION_STALL_CALL_GRACE_MS: "1000",

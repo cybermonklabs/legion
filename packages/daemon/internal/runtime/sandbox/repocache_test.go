@@ -717,7 +717,7 @@ func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
 	}
 	g.spawn(rootSpec(t))
 	sandboxes := g.dyn.Resource(sandboxGVR).Namespace(testNamespace)
-	if err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, slogTo(io.Discard)); err != nil {
+	if err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, g.opts.IssueDisks(), slogTo(io.Discard)); err != nil {
 		t.Fatalf("census of a cache Sandbox and an issue pod = %v, want none", err)
 	}
 	malformed := map[string]func(u *unstructured.Unstructured){
@@ -749,7 +749,7 @@ func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
 	if err := g.dyn.Tracker().Create(sandboxGVR, issue, testNamespace); err != nil {
 		t.Fatal(err)
 	}
-	err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, slogTo(io.Discard))
+	err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, g.opts.IssueDisks(), slogTo(io.Discard))
 	if err == nil {
 		t.Fatal("census of malformed caches passed")
 	}
@@ -879,6 +879,67 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 	}
 	if !strings.Contains(logs.String(), "acme/widgets") || !strings.Contains(logs.String(), "168h0m0s") {
 		t.Errorf("the retirement was not logged with its repository and how long it was kept:\n%s", logs)
+	}
+}
+
+// The set the sweep judges caches against is the repositories the project works, which is the
+// mapping's and those of its live issue records (Options.Mapped), so a repository no mapping
+// names gets and keeps a cache for as long as a live record names it: one volume and one pod per
+// such repository. Once no record and no mapping names it — its last issue is done — the cache is
+// marked, kept for its retention and retired, which is the one rule the sweep has.
+func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T) {
+	// The mapping names acme/widgets; stranger/tools is named by a live issue record alone.
+	recorded := ghrepo.MustParse("stranger/tools")
+	var live atomic.Bool
+	live.Store(true)
+	logs := &logBuffer{}
+	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
+		o.Mapped = func() []ghrepo.Repository {
+			if live.Load() {
+				return []ghrepo.Repository{cacheRepo, recorded}
+			}
+			return []ghrepo.Repository{cacheRepo}
+		}
+	}))
+	name := CacheSandboxName(testProject, recorded)
+	sweep := func(what string) {
+		t.Helper()
+		g.clearActions()
+		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		}
+	}
+
+	sweep("with a repository only a record names")
+	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
+		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
+	}
+	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+
+	sweep("of the cache of a repository a live record still names")
+	if writes := g.sandboxWrites(); len(writes) != 0 {
+		t.Errorf("the sweep of a cache a live record names wrote %q, want it kept untouched", writes)
+	}
+	if s := g.sandbox(name); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
+		t.Fatalf("the cache of %s is %v, want it kept unmarked while a record names it: no mapping names it and it is served all the same", recorded, s)
+	}
+
+	live.Store(false)
+	sweep("once no record and no mapping names it")
+	g.eventually("the mark in the store", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	})
+	g.advance(168 * time.Hour)
+	sweep("past the retention")
+	if g.sandbox(name) != nil {
+		t.Fatalf("the cache of %s past its retention is %v, want it retired", recorded, g.sandbox(name))
+	}
+	if g.sandbox(CacheSandboxName(testProject, cacheRepo)) == nil {
+		t.Fatal("the mapped repository's cache was retired with it, want it kept")
+	}
+	if !strings.Contains(logs.String(), recorded.String()) {
+		t.Errorf("the retirement was not logged with its repository:\n%s", logs)
 	}
 }
 

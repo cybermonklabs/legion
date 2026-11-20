@@ -94,10 +94,16 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 }
 
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first.
+// since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
+// daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
+// rule.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
+	config, err := store.PoolConfig(Clone(t, prefix))
+	if err != nil {
+		t.Fatalf("configure a pool on the cloned database: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
@@ -136,8 +142,9 @@ func Main(prefix string, run func() int) int {
 	if shared.template == "" {
 		return code
 	}
-	// No `with (force)`: the template takes no connection (prepare), so there is none to end.
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
+	// Through testdb.Drop: the template takes no connection (prepare), so a forced drop of it ends
+	// nothing, and Drop's retry waits out a backend that has not exited yet.
+	if err := testdb.Drop(context.Background(), shared.admin, shared.template); err != nil {
 		fmt.Fprintf(os.Stderr, "testpg: drop the template database %s: %v\n", shared.template, err)
 		if code == 0 {
 			code = 1
@@ -164,7 +171,8 @@ func dropInBackground(name string) {
 		// member of pg_signal_backend as soon as one session belongs to another role — an
 		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
 		// pod shares one server whose test login holds neither privilege, so without the wait
-		// this drop fails the package (dispatch://INFRA-714 round six).
+		// this drop fails the package (dispatch://INFRA-714 round six). Drop also waits out the
+		// 55006 a forced drop answers while a backend it terminated has not exited yet.
 		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))

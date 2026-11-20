@@ -12,7 +12,9 @@
 # means booting and running it, so the rig is part of the proof rather than a test beside it.
 #
 # THE VERBS, in the order the `tool-fallback` job runs them; `tool-fallback-arm` runs
-# `start-fault`, `probe`, `installed-bun` and `stop-fault`.
+# `installed-bun` and `version-answers` before the fault, then `start-fault`, `probe`,
+# `installed-bun`, `shorten-ladder`, and one `probe`, `version-answers` and `refusals` per
+# faulted install, then `stop-fault`.
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
@@ -82,7 +84,7 @@
 #   stop-fault
 #       The same four proxy variables, emptied in $GITHUB_ENV and printed. The steps after it
 #       must not go through a proxy that stops with the job: the ci-ok-report step every job
-#       ends with uploads an artifact.
+#       ends with can call GitHub's API with gh.
 #       The two bypass lists stay as `start-fault` wrote them, because with no proxy set
 #       nothing reads them.
 #
@@ -273,7 +275,8 @@ stand_in="$stand_in_bin/curl"
 
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
-# and no case installs them, so nothing would serve their payload.
+# and no case installs them, so nothing would serve their payload. The -aarch64 rows are the
+# `tool-fallback-arm` job's, whose installs read their real sources and no origin of this rig's.
 STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
@@ -322,27 +325,30 @@ LADDER_CEILING=150
 # over the log the stand-in wrote.
 # That variable is set at exactly one step's `env:` in
 # .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
-# keeps the pinned ladder. That one install makes three fetches through the stand-in: the
-# release asset behind the fault, which
-# ci_tools__fetch_release reads (.github/scripts/ci-tools.sh:1006), and then the pull token and
-# the blob of the copy the `crane` row names as its second source, which ci_tools__fetch_ghcr
-# asks for one after the other (.github/scripts/ci-tools.sh:770, 775). Merge_group run
-# 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read those three
-# as records 18 to 20 of its listing, at 63 s, 0 s and 1 s.
+# keeps the pinned ladder. That one install makes four fetches through the stand-in: the
+# release asset behind the fault, which ci_tools__fetch_release reads
+# (.github/scripts/ci-tools.sh:1152), and then the pull token, the blob request to the package
+# and the read of the store that request's redirect points at, which ci_tools__fetch_ghcr makes
+# one after the other (.github/scripts/ci-tools.sh:758, 922-923, 940). ghcr.io answers a blob's GET
+# with a 307 to pkg-containers.githubusercontent.com (measured 2026-11-17), and a request that
+# carries the bearer follows no redirect, so that store is read in a curl call of its own.
+# Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read
+# three, as records 18 to 20 of its listing at 63 s, 0 s and 1 s, when the blob request still
+# followed that redirect inside its own call.
 # A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
-# stand-in writes one line for each time it is called; a redirect is followed inside that same
-# process, so it adds none either. Of the five second-source words only `ghcr-mirror` costs two
-# requests, so another second source for that row can only lower this count, and a primary that
-# answers after all lowers it to one.
+# stand-in writes one line for each time it is called; a redirect ci_tools_curl follows is
+# followed inside that same process, so it adds none either. Of the five second-source words only
+# `ghcr-mirror` costs more than one request, so another second source for that row can only
+# lower this count, and a primary that answers after all lowers it to one.
 # What moves this number is a change in this tree: a ghcr path that reads a manifest before it
 # asks for the blob, or a second attempt inside ci_tools_fetch. The ladder-report step prints
 # the count it read beside this bound, so the reading that moves it is in the log of the job
 # that holds it.
 # This line is not the only place the number stands: .github/scripts/ci-tools-proof.test.sh
 # writes it in the text of every case that reads the count and builds its fixture on a kept
-# case of three records, so a bound moved here alone reddens that file, which is the reading
+# case of four records, so a bound moved here alone reddens that file, which is the reading
 # that asks for the measurement.
-LADDER_RECORDS=3
+LADDER_RECORDS=4
 
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
 # Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
@@ -914,9 +920,9 @@ SH
 # The request is the first argument that starts with http:// or https://, and its authority is
 # the text up to the first /, ? or #, with any user@ before that removed.
 # Of the arguments, only the host of that URL reaches the log: never its path, query, fragment
-# or user, and no other argument. This helper is handed credentials as arguments — -u for a
-# ghcr token, an Authorization header for a blob — and .github/scripts/ci-tools.sh passes them
-# that way exactly so that they reach no log line.
+# or user, and no other argument. No credential is among them: .github/scripts/ci-tools.sh hands
+# curl a ghcr token request's credential in a config on standard input (`-K -`) and a blob's
+# Authorization header on standard input (`-H @-`), which this helper leaves to the real curl.
 url=""
 for argument in "$@"; do
   case $argument in
@@ -1079,8 +1085,8 @@ start_fault() {
 
 # stop_fault: the four proxy variables emptied, which is where a job stops going through the
 # fault. The proxy process itself ends with the job; what must end before that is every later
-# step reading it, since the ci-ok-report step each job ends with uploads an artifact and a
-# proxy about to go would carry that upload.
+# step reading it, since the ci-ok-report step each job ends with can call GitHub's API with gh and a
+# proxy about to go would carry those calls.
 stop_fault() {
   [ "$#" -eq 0 ] || die "stop-fault takes no argument, and this call gave $#"
   note "no later step of this job goes through the fault proxy:"

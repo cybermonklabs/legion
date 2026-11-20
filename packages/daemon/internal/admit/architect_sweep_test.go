@@ -155,9 +155,9 @@ func architectSweepStarts(t *testing.T, pool *pgxpool.Pool, root string) []conve
 //
 // The second is the measured defect (dispatch://INFRA-2614): record.AtWork answers false for a
 // root at admitted whose design gate has opened, while the root's own architect is the only role
-// of the tree at work. The fourth is the first root again, its claim holding the task of the entry
-// before unconfirmed: a task the row has moved past is no start on its way, so it holds nothing
-// back (dispatch://INFRA-2614 R4).
+// at work on the root itself. The fourth is the first root again, its claim holding the task of
+// the entry before unconfirmed: a task the row has moved past is no start on its way, so it holds
+// nothing back (dispatch://INFRA-2614 R4).
 func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -243,7 +243,7 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 		},
 		{
 			name: "an issue that is no tree root", change: func(f *architectSweepFixture) { f.tree = "LEGION-800" },
-			why: "a child's own sub-architect claim is outside the rule, since no daemon start creates one",
+			why: "a child's own sub-architect claim is outside the rule, since its start carries no task and raises no entry",
 		},
 		{
 			name: "a root past admitted under its own power", change: func(f *architectSweepFixture) { f.stands = phase.Implementing },
@@ -258,7 +258,7 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 			change: func(f *architectSweepFixture) {
 				f.state, f.suspendedBy = supervise.StateSuspended, supervise.SuspendedByOperator
 			},
-			why: "`legion claims stop` stopped that architect and only the operator's own resume starts it again",
+			why: "`legion claims suspend` suspended that architect, and an operator's suspension holds against every rule of the daemon's (supervise's Claim.RuleHolds)",
 		},
 		{
 			name: "a root whose architect claim is retired", change: func(f *architectSweepFixture) { f.state = supervise.StateRetired },
@@ -632,8 +632,8 @@ func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 //     (TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow), and on a root
 //     past admitted whose architect was not given the entry a resume raised
 //     (TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted);
-//   - the one claim that reach leaves out is a child's own sub-architect, which no daemon start
-//     creates and which workflow.ArchitectHears answers false for.
+//   - the one claim that reach leaves out is a child's own sub-architect, whose start carries no
+//     task and raises no entry and which workflow.ArchitectHears answers false for.
 //
 // Each role is seeded behind the entry its phases row names and read for the one start the rule
 // writes it, so "inside the rule" is what the pass does rather than a list.
