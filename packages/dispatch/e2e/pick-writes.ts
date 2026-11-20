@@ -20,8 +20,9 @@ import { drawer, peekTrigger } from "./inbox-drawer";
 import { keptWrites, pendingWrites } from "./keyed-writes";
 import { settledState } from "./settled";
 
-/** At least how long `holdIssuePatches` holds each save: long enough for a row to make its next
- *  pick, reload, or have a read sent and answered while the save is out, as a slow network would. */
+/** At least how long `holdIssuePatches` holds each save, as `Date.now()` in the runner reads it:
+ *  long enough for a row to make its next pick, reload, or have a read sent and answered while
+ *  the save is out, as a slow network would. */
 export const PICK_HOLD_MS = 3_000;
 
 /** One save (`PATCH /issues/<KEY>`) as the route held it: what it carried, when it reached the
@@ -48,12 +49,13 @@ export interface HeldPatches {
 
 /**
  * Holds every save of `issueKey` the page makes - a pick, a board move, a key of the issue page -
- * with Playwright's route control, each for at least `PICK_HOLD_MS` and until the row lets the
- * saves go (`release`), then passes it on to the server. The write store sends the writes of one
- * issue one at a time (`web/src/features/writes/write-store.ts`, one line per `issue:<KEY>`), so
- * a held save keeps every save behind it off the wire. A save still held when its document
- * reloads is passed on all the same, as the browser sent it: the reloaded page sends it again
- * under the same `Idempotency-Key`, and the server applies the key once.
+ * with Playwright's route control, each until `Date.now()` reads `PICK_HOLD_MS` past its
+ * `arrivedAt` and until the row lets the saves go (`release`), then passes it on to the server.
+ * The write store sends the writes of one issue one at a time
+ * (`web/src/features/writes/write-store.ts`, one line per `issue:<KEY>`), so a held save keeps
+ * every save behind it off the wire. A save still held when its document reloads is passed on
+ * all the same, as the browser sent it: the reloaded page sends it again under the same
+ * `Idempotency-Key`, and the server applies the key once.
  */
 export async function holdIssuePatches(page: Page, issueKey: string): Promise<HeldPatches> {
   const path = `/api/v1/issues/${issueKey}`;
@@ -70,7 +72,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([nowReaches(patch.arrivedAt + PICK_HOLD_MS), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
@@ -81,6 +83,21 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/**
+ * Resolves once `Date.now()` reads `at` or later: the clock a `HeldPatch` is stamped on, and so
+ * the clock of every row that reads how long a save was held. A Node timer is on another clock.
+ * It counts whole milliseconds of libuv's own monotonic reading, and on a loop the browser keeps
+ * waking - a row's `watchShown` binding fires at every animation frame - a timer of N ms can end
+ * before `Date.now()` has moved N. So a timer that ends early is set again for what is left, as
+ * `e2e/delivery-live-probe.ts` arms its `--minutes` again.
+ */
+async function nowReaches(at: number): Promise<void> {
+  for (let left = at - Date.now(); left > 0; left = at - Date.now()) {
+    // What is left of the span on Date.now(), after a Node timer that may have ended early.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every

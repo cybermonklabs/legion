@@ -199,6 +199,8 @@ test("picker keeps the newest pick: a reload before the saves end sends both pic
     // P1 is out, held: P2 waits its turn in the store's line, kept for a reload.
     await picker.selectOption("2");
     await expect(picker).toHaveValue("2");
+    // The row is about a reload before the saves end, so P1 must still be held at it.
+    expect(held.holding(), "the saves still held when the page reloads").toBe(1);
     await page.reload();
     await expect(picker).toBeVisible();
     held.release();
