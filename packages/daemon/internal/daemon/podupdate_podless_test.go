@@ -447,8 +447,8 @@ func pauseKeepsThePod(t *testing.T, check func(t *testing.T, rig *podUpdateRig))
 // before podUpdateStart (store.Store.Resume). It ended the pause and started the stuck clock of
 // each held launch at its own moment. The hold of the pod ended at that moment too, for the reason
 // end. So no hold stands, the pause still owes each stopped role a launch, and no held start has
-// run yet (heldStart runs one).
-func (r *podUpdateRig) recordPause(end store.PausePodHoldEnd, stopped ...claim.Role) {
+// run yet (heldStart runs one). It answers the pause's id.
+func (r *podUpdateRig) recordPause(end store.PausePodHoldEnd, stopped ...claim.Role) int64 {
 	r.t.Helper()
 	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
 	pause := openLegionPause(r.t, r.pool, heldAt)
@@ -464,6 +464,7 @@ func (r *podUpdateRig) recordPause(end store.PausePodHoldEnd, stopped ...claim.R
 	if ended, err := r.st.EndPausePodHold(r.ctx, "LEGION", podUpdateIssue, end, resumedAt); err != nil || !ended {
 		r.t.Fatalf("end the pod's hold for the reason %s = %t, %v; want the hold ended", end, ended, err)
 	}
+	return pause
 }
 
 // heldStart runs the held start of role, a role a project's pause stopped (recordPause), as the

@@ -595,6 +595,120 @@ func TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession(
 	rig.wantLaunchKeptForOwed(stopped, stopped)
 }
 
+// byIssueNotDueLine is the line of a replacement by issue that the daemon's last word refused
+// under the pod's launch turn (issueReplacementDue). Its reason field is that refusal, which names
+// what keeps the pod.
+const byIssueNotDueLine = "supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open"
+
+// takeHeldWakeUnderLaunchTurn has the next replacement that hold stops under the pod's launch turn
+// (fake's HoldReplacePod or HoldReplaceIssuePod) take a wake of role there, held by pause, as the
+// outbox takes the delivery of a row that pause held (store.Store.TakePodWake, outbox's
+// wakeForDelivery). The wake opens a resume of pause for role (store.PodRecords.PauseOfWake). The
+// hold clears itself, so the sweeps after that replacement find the runtime as it left it. It
+// sweeps until that replacement has taken the wake, and so has asked its last word.
+func (r *podUpdateRig) takeHeldWakeUnderLaunchTurn(hold func(func()), role claim.Role, pause int64) {
+	r.t.Helper()
+	woke := false
+	hold(func() {
+		hold(nil)
+		taken, err := r.st.TakePodWake(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], pods.WakeDelivery, r.clock.Now(), pause)
+		if err != nil || !taken {
+			r.t.Fatalf("take the wake of the %s that the pause held = %t, %v; want it taken", role, taken, err)
+		}
+		woke = true
+	})
+	testwait.Eventually(r.t, fmt.Sprintf("a replacement to take the wake of the %s under the pod's launch turn", role), func() bool {
+		r.tick()
+		return woke
+	})
+}
+
+// dispatch://INFRA-4109 review round 5: the last word on a replacement through a process reads
+// the project pause's holds again under the pod's launch turn (replacementDue). A project's pause
+// held the pod and stopped no role. Its resume ended the hold a minute before the round opened
+// (recordPause). So when the sweep reads the holds, the pause owes no role a launch. An idle
+// release suspended the reviewer, so the round passes over it (R1). The implementer answers, the
+// read of the workspace finds no work, and the sweep goes to the replacement. While the runtime
+// waits for the pod's launch turn, the outbox takes the delivery of a row that the pause held for
+// the reviewer. That wake opens a resume of the pause for the reviewer
+// (store.PodRecords.PauseOfWake). The pause now owes the reviewer a launch, so the round no
+// longer passes over the reviewer (podHolds.owes). The last word refuses the replacement because
+// the reviewer has not answered, and the next sweeps keep the pod.
+//
+// Where the last word reads the holds the sweep read, the round still passes over the reviewer,
+// and the replacement deletes the pod that the pause keeps for the reviewer's work.
+func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testing.T) {
+	const woken = claim.RoleReviewer
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(woken, supervise.SuspendedByReleased))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	rig.drifts(podUpdateDrift)
+	pause := rig.recordPause(store.PausePodHoldResumed)
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(woken, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.settleAll()
+	rig.takeHeldWakeUnderLaunchTurn(rig.rt.HoldReplacePod, woken, pause)
+
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times, want none: the pause owes the %s a launch", len(calls), woken)
+	}
+	refusals := loggedMessages(t, rig.logs.String(), backgroundNotDueLine)
+	if len(refusals) != 1 {
+		t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
+	}
+	if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, fmt.Sprintf("%s has not answered it", woken)) {
+		t.Errorf("the refusal's reason is %q, want it to name the %s as not answered", reason, woken)
+	}
+	rig.wantPodKept(fmt.Sprintf("the answer of the %s", woken))
+}
+
+// dispatch://INFRA-4109 review round 5: the last word on a replacement by issue reads the project
+// pause's holds again under the pod's launch turn (issueReplacementDue). The members are those of
+// pauseKeepsThePod, with the wake pacing off: the implementer, which an idle release suspended
+// before the round's ask reached it, and the tester, which answered and which the daemon then
+// suspended. No process runs in the pod. A project's pause held the pod and stopped no role. Its
+// resume ended the hold a minute before the round opened (recordPause). So when the sweep reads
+// the holds, the pause owes no role a launch, nothing holds the pod, and the sweep goes to the
+// replacement by issue. While the runtime waits for the pod's launch turn, the outbox takes the
+// delivery of a row that the pause held for the implementer. That wake opens a resume of the pause
+// for the implementer (store.PodRecords.PauseOfWake). The pause now owes the implementer a launch,
+// so it keeps the pod for the implementer's work (roundPodEnds, podHolds.owes). The last word
+// refuses the replacement and names that launch, and the next sweeps ask for no replacement by
+// issue.
+//
+// Where the last word reads the holds the sweep read, nothing holds the pod, and the replacement
+// by issue deletes the pod that the pause keeps for the implementer's work.
+func TestTheByIssueReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testing.T) {
+	const woken = pauseStoppedRole
+	rig := newPodUpdateRig(t, releasedUnasked(woken), answeredThenSuspended(claim.RoleTester))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	pause := rig.recordPause(store.PausePodHoldResumed)
+
+	rig.takeHeldWakeUnderLaunchTurn(rig.rt.HoldReplaceIssuePod, woken, pause)
+
+	if calls := rig.issueReplacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced by issue %d times, want none: the pause owes the %s a launch", len(calls), woken)
+	}
+	refusals := loggedMessages(t, rig.logs.String(), byIssueNotDueLine)
+	if len(refusals) != 1 {
+		t.Fatalf("the refusal under the pod's launch turn was logged %d times, want once: %+v", len(refusals), refusals)
+	}
+	if reason := fmt.Sprint(refusals[0]["reason"]); !strings.Contains(reason, fmt.Sprintf("owes the %s a launch", woken)) {
+		t.Errorf("the refusal's reason is %q, want it to say that the pause owes the %s a launch", reason, woken)
+	}
+	rig.tick()
+	rig.tick()
+	rig.settleAll()
+	if asked := rig.byIssueAsks(); len(asked) != 1 || asked[0].Method != "ReplaceIssuePodNotDue" {
+		t.Fatalf("the runtime was asked to replace the pod by issue %+v, want only the call the last word refused", asked)
+	}
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("a launch replaced the round's pod %+v, which the pause keeps", replaced)
+	}
+}
+
 // dispatch://INFRA-4109 R1 and R7 with the project pause carried, as its architect set the rule
 // in review round 3: an open resume of the pause whose role has come up keeps nothing. The pause
 // stopped the implementer, suspended released, and held its launch. Its resume ended the hold a
