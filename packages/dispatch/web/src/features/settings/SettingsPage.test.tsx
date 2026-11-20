@@ -555,6 +555,8 @@ test("a mapping's removal is out of the mappings' query in the step of the press
   const page = await renderMappings(server);
 
   try {
+    // The press and the check in one synchronous step: user-event's awaited press has no form
+    // for it.
     fireEvent.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
     expect(page.queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual([]);
 
