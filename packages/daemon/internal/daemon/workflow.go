@@ -28,11 +28,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -172,6 +174,11 @@ type workflowRuntime struct {
 	// the asked-for one as (repositories.serving), so a name recorded before a configured
 	// rename's transfer is read on the installation that holds the repository now.
 	defaultBranches *defaultBranches
+	// startWaits is the start's waits for GitHub's rate limit, one policy and one clock for every
+	// App call and default-branch read of the start (startRateLimits), which openWorkflow makes.
+	// A runtime a test builds as a literal leaves it nil: each wait then has the maximum and no
+	// end (startWaits.readUntil).
+	startWaits *startWaits
 	// repositories is the project's repository mapping as the daemon serves it (loadMapping at
 	// boot, refreshMapping on a mapping change); installs answers each App's installation on a
 	// mapped repository; mappingMu serializes the mapping's re-reads; mappingChanged carries a
@@ -311,7 +318,9 @@ var appMintAttempt = 15 * time.Second
 // attempts. At worst the boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it
 // refuses, naming the last failure. The API listens only after the mint, so /healthz is refused
 // meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on the last
-// attempt inside the 180 s Stage 3 gives a daemon to answer /healthz.
+// attempt inside the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's rate
+// limit is none of these attempts: it lasts until the time GitHub names, within the start's own
+// bound (appAttempt, startRateLimits).
 var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
 
 // appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
@@ -320,40 +329,95 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, bounded by appMintAttempt: passed, refused,
-// transient (appTransient), or pending when a token_command is still running past the bound
-// (appauth.ErrCommandPending, most often a grant that waits on a person's approval). A pending
-// attempt spends no retry: the command goes on, and the next attempt joins it, so the boot waits
-// for the grant with one request and never kills it.
-func appAttempt(attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
+// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: pending when a
+// token_command is still running past the bound (appauth.ErrCommandPending, most often a grant
+// that waits on a person's approval), and otherwise startOutcome's, appTransient its transient. A
+// pending attempt spends no retry: the command goes on, and the next attempt joins it, so the boot
+// waits for the grant with one request and never kills it. A rate limit spends none either: it
+// says nothing about the App, and the start waits until the time GitHub names, within the start's
+// bound on such waits.
+func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
-		switch {
-		case err == nil:
-			return bootprobe.Outcome{Passed: true}
-		case errors.Is(err, appauth.ErrCommandPending):
+		if errors.Is(err, appauth.ErrCommandPending) {
 			return bootprobe.Outcome{Pending: err.Error()}
-		case appTransient(err):
-			return bootprobe.Outcome{Detail: err.Error()}
-		default:
-			return bootprobe.Outcome{Refusal: err}
 		}
+		return startOutcome(err, appTransient, waits, call)
 	}
+}
+
+// boundedAttempt is readinessAttempt for an attempt of the start, call, that mints App tokens on
+// its way: GitHub's rate limit on such a mint is waited out on the start's waits before transient
+// is asked (startOutcome), as appAttempt waits it out. The start's repository reads (nameMapping)
+// are such attempts: each read mints the implement App's token (defaultBranches.fetch), whose
+// failure no reading of the read's own rate limit (defaultBranchLimit) finds, since appauth's
+// errors hide GitHub's answer from it.
+func boundedAttempt(attempt func(context.Context) error, bound time.Duration, transient func(error) bool, waits *startWaits, call string) func(context.Context) bootprobe.Outcome {
+	return func(ctx context.Context) bootprobe.Outcome {
+		bounded, cancel := context.WithTimeout(ctx, bound)
+		defer cancel()
+		return startOutcome(attempt(bounded), transient, waits, call)
+	}
+}
+
+// startOutcome is the outcome of an attempt at the start's call that returned err: passed on nil;
+// a wait for GitHub's rate limit on the start's waits, or the refusal once they have ended
+// (limitOutcome); transient when transient recognizes err; refused otherwise.
+func startOutcome(err error, transient func(error) bool, waits *startWaits, call string) bootprobe.Outcome {
+	if err == nil {
+		return bootprobe.Outcome{Passed: true}
+	}
+	if outcome, limited := limitOutcome(err, waits, call); limited {
+		return outcome
+	}
+	if transient(err) {
+		return bootprobe.Outcome{Detail: err.Error()}
+	}
+	return bootprobe.Outcome{Refusal: err}
+}
+
+// limitOutcome is the outcome of an attempt at the start's call that failed with err, when err is
+// GitHub's rate limit on an App call (bootLimit): a wait until the time the start's waits give
+// (startWaits.wait), with the limit as GitHub's answer gave it (limitSummary), or, once those waits
+// have reached their end, a refusal naming the call, the time the start waited, and GitHub's last
+// answer with its message. limited is false for every other err.
+func limitOutcome(err error, waits *startWaits, call string) (outcome bootprobe.Outcome, limited bool) {
+	answer, githubWait, limited := bootLimit(err)
+	if !limited {
+		return bootprobe.Outcome{}, false
+	}
+	until, waited, ended := waits.wait(call, answer, githubWait)
+	if ended {
+		return bootprobe.Outcome{Refusal: fmt.Errorf("the %s waited %s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: GitHub answered %s %s with %s: %s: %w",
+			call, bootprobe.ShownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
+	}
+	return bootprobe.Outcome{RateLimit: limitSummary(answer), Until: until, Waited: waited, Detail: err.Error()}, true
+}
+
+// limitSummary is what an answer that refused a start's call for GitHub's rate limit says of the
+// limit: its status and the rate-limit headers that decide a wait, as GitHub sent them ("" for
+// each it did not send), as limitAttributes gives them on the default-branch read's lines.
+func limitSummary(answer *githubrest.Answer) string {
+	limit := answer.Limit
+	return fmt.Sprintf("%d (Retry-After %q, X-RateLimit-Remaining %q, X-RateLimit-Reset %q, X-RateLimit-Resource %q)",
+		answer.Status, limit.RetryAfter, limit.Remaining, limit.Reset, limit.Resource)
 }
 
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
-// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine tells the review
-// App's reviews from every other account's by the login that authored them, and the reviewer's own
-// among those by the session their Legion footer names, which must be the one the reviewer's claim
-// records (workflow's byReviewer), so one App configured for both roles would submit every role's
-// review under the one login, and is refused, as is a review App that names no login.
-func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError) and
+// after GitHub's rate limit, waited out on the start's waits (appAttempt); any other failure is
+// refused at once. It returns the review App's login: the engine tells the review App's reviews
+// from every other account's by the login that authored them, and the reviewer's own among those
+// by the session their Legion footer names, which must be the one the reviewer's claim records
+// (workflow's byReviewer), so one App configured for both roles would submit every role's review
+// under the one login, and is refused, as is a review App that names no login.
+func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
+	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			login, err := apps.AppLogin(ctx, role)
 			if err != nil {
@@ -373,15 +437,18 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 }
 
 // mintAtBoot mints the implement and then the review App token on owner's installation, as one
-// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError);
-// any other failure is refused at once. The token manager keeps a lease it minted, so an attempt
-// after the implement token passed asks GitHub only for the review token. A mint asks for what
-// each App's installation is granted of the role's set and says on stderr what it left out
-// (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
-// boot: what does is an App with no installation on the owner, an installation granted none of
-// the set at all, an answer the mint refuses, or GitHub's own trouble lasting past the retries.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
-	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError)
+// and after GitHub's rate limit, waited out on the start's waits (appAttempt); any other failure
+// is refused at once. The token manager keeps a lease it minted, so an attempt after the
+// implement token passed asks GitHub only for the review token. A mint asks for what each App's
+// installation is granted of the role's set and says on stderr what it left out (appauth's
+// exchangeGranted), so a permission an account has not approved no longer stops the boot: what
+// does is an App with no installation on the owner, an installation granted none of the set at
+// all, an answer the mint refuses, GitHub's own trouble lasting past the retries, or its rate
+// limit lasting past the start's end of such waits.
+func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, waits *startWaits, log *slog.Logger) error {
+	const call = "GitHub App tokens mint"
+	return bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, err := tokens.Token(ctx, role, owner); err != nil {
 				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
@@ -456,6 +523,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
+		// One policy and one clock for every wait of the start for GitHub's rate limit: the App
+		// logins read, the mints, and the repository reads (startRateLimits).
+		startWaits: newStartWaits(startRateLimits, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
@@ -464,7 +534,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
 	}
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, log)
+	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, w.startWaits, log)
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +553,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
 	// mint, and minted in their sorted order, so one boot's log reads like the next's.
 	for _, owner := range w.repositories.Owners() {
-		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
+		if err := mintAtBoot(ctx, tokens, owner, w.startWaits, log); err != nil {
 			return nil, err
 		}
 	}
@@ -771,13 +841,16 @@ func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervis
 
 // agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
 // "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
-// what the record leaves out without the log carrying text of any length.
+// what the record leaves out without the log carrying text of any length. The text comes from the
+// agent's frames, so redact.Bytes reads it whole through the URL rule before the cut: a cut made
+// first could end inside a URL's userinfo, before its "@", where the log's rule no longer finds it.
 func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
 	if text == "" || steprecord.AgentTextHolds(text) {
 		return text
 	}
+	quoted, _ := redact.Bytes(text, 256)
 	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
-		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+		"bytes", len(text), "text", strconv.Quote(quoted))
 	return ""
 }
 
@@ -1111,7 +1184,8 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
 // boot's whole listing (keep nil, boot set, which also holds the roots the boot's catch-up reads
-// out of admission's decision), or a recovery's (recoverRepositories), scoped to the summaries
+// out of admission's decision and refills the project's rows of the copy of Dispatch's issues
+// where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record, while every summary of the listing is still the walk
 // each chain is read up.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
@@ -1182,10 +1256,47 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
 		}
+		// The boot's whole listing refills the project's rows of the copy of Dispatch's issues
+		// where the project's mark asks for it (record.Store.TakeDispatchRefill): the first boot
+		// of a project on the release of 20261120055717_dispatch_issue_value_sequences empties
+		// the project's rows here, and the mirror below fills them from this listing, so the
+		// empty, the fill and the mark's stamp commit together, under the fact lock and before
+		// admission's pass, the boot's first decision. A transaction that fails leaves the mark,
+		// and the next attempt refills. A recovery's listing is a part of the project, and it
+		// never refills. Dispatch deletes no issue and moves none to another project, and the
+		// listing is unpaged, so a key the refill removes that the listing does not hold is an
+		// anomaly the line below names.
+		if boot {
+			removed, refilled, err := w.records.TakeDispatchRefill(scoped, tx, w.dispatchProject)
+			if err != nil {
+				return err
+			}
+			if refilled {
+				inListing := make(map[string]bool, len(scope))
+				for _, summary := range scope {
+					inListing[summary.Key] = true
+				}
+				unlisted := make([]string, 0, len(removed))
+				for _, key := range removed {
+					if !inListing[key] {
+						unlisted = append(unlisted, key)
+					}
+				}
+				intake.OnCommit(scoped, func() {
+					w.log.Info("workflow: the first boot on this release refilled the copy of Dispatch's issues from the listing",
+						"project", w.dispatchProject, "removed", len(removed), "written", len(scope), "removedUnlisted", unlisted)
+				})
+			}
+		}
 		// The mirror takes every summary, before admission decides anything from it — including a
 		// summary admission defers to the Dispatch consumer: a deferred key's listed status is
-		// still the freshest thing the daemon holds about it, and the sequence fence keeps an
-		// event already applied from being written back over.
+		// still the freshest thing the daemon holds about it. Each value a summary carries
+		// replaces the copy's only where an older reading wrote it or none did
+		// (record.Store.PutDispatchIssue), so a listing no newer than an event already applied
+		// changes nothing that event wrote. At the boot that refills, no reading of this boot has
+		// reached the copy before this listing: the durable consumers start only in serve, after
+		// the catch-up that follows this listing, and the API serves only from serve too (run), so
+		// the rows the refill emptied are filled from this listing alone.
 		if err := blockers.Reconcile(scoped, tx, w.records, w.dispatchProject, scope); err != nil {
 			return err
 		}
@@ -2101,13 +2212,21 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	}()
 }
 
-// sessionLost applies the fact that a claim's recorded session is in no session store any more
-// and a fresh agent is running in its place (supervise's Deps.SessionLost): the workflow tells
-// the issue, its architect and the controller. The event id carries the claim's launch, so the
-// one launch that lost the session reports once however often the fact is applied.
-func (w *workflowRuntime) sessionLost(c supervise.Claim, detail string) {
-	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%d", c.Token, c.Generation),
-		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a claim's lost session")
+// sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's
+// Deps.SessionLost): the workflow tells the issue, its architect and the controller. The machine
+// tells it at the forget, before it spawns the fresh agent that takes the session's place, with
+// the claim as the forget left it, so c.Abandoned.Session is the session forgotten, which the fact
+// carries. The event id names that session, so one forget of a session is one fact, however many
+// launches forget it: the forget is in memory alone until the fresh agent's launch writes the
+// claim, and a daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the
+// claim recording the session, which the next boot's launch forgets again at a generation of its
+// own. That second fact is marked applied already (intake.ApplyFact), so nobody is told twice.
+// Telling only after the claim is written would not do: the fact commits on a goroutine of its
+// own (applySessionFact), so a stop between the write and the tell would tell nobody at all.
+func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
+	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%s", c.Token, c.Abandoned.Session),
+		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
+		"apply a claim's lost session")
 }
 
 // sessionStoreFault applies the fact that a start could not reach the session store at all

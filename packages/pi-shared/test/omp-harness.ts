@@ -118,12 +118,15 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
+ * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
+ * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
+ * sends both. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -902,6 +905,15 @@ export interface LegionPaneOptions {
   readonly quietMs?: number;
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a settled Legion pane left behind. */
@@ -1033,10 +1045,15 @@ export async function runLegionPane(
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A session takes its messages from its own consumer, relayed on its own deliver subject: a
-    // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A case that needs another route, Dispatch's among them,
+    // serves it from `answer`. A session takes its messages from its own consumer, relayed on its
+    // own deliver subject: a registration answered without one leaves the session deaf, which the
+    // plugin refuses rather than accept, and with it every claim the pane makes (INFRA-771).
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,
@@ -1056,7 +1073,11 @@ export async function runLegionPane(
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly string[],
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
@@ -1091,6 +1112,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1127,10 +1149,11 @@ export async function runLegionPane(
         ]);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   const turns = (): Request[] =>
     requests.filter(

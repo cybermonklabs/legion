@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // recordInvocations names the `legion` of the release before this table's change: with it, the
@@ -270,9 +272,13 @@ func splitWords(line string) ([]string, error) {
 }
 
 // runInvocation runs legion with args in a directory and a HOME of the test's own, with PATH and
-// nothing else of the test process's environment, standard input empty, and answers its exit
-// status, the sha256 of its standard output and its standard error. A run still going after twenty
-// seconds is an error: a call that waits on something is no call the table can compare.
+// nothing else of the test process's environment but the deployment checker a role of a
+// configured deployment is told (leakguard.CheckerVar), standard input empty, and answers its
+// exit status, the sha256 of its standard output and its standard error. The checker keeps the
+// image hook's row comparable with the release before: under it the guard refuses a push for
+// want of a check, as every release did, where with no checker it would run its rules alone. A
+// run still going after twenty seconds is an error: a call that waits on something is no call the
+// table can compare.
 func runInvocation(t *testing.T, legion string, args []string) (code int, digest, stderr string, err error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -280,7 +286,8 @@ func runInvocation(t *testing.T, legion string, args []string) (code int, digest
 	cmd := exec.CommandContext(ctx, legion, args...)
 	home := t.TempDir()
 	cmd.Dir = t.TempDir()
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_STATE_HOME=" + home + "/state", "XDG_CONFIG_HOME=" + home + "/config"}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_STATE_HOME=" + home + "/state", "XDG_CONFIG_HOME=" + home + "/config",
+		leakguard.CheckerVar + "=" + strings.Repeat("5e", 32)}
 	var stdout, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &errb
 	err = cmd.Run()
