@@ -293,7 +293,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
-// over the same ends (BacklinkCounts).
+// over the same ends (BacklinkCounts). The node read is held to who by the same registry
+// (queriedNodeSeen), so the read holds on its own: a node who may not see has no edge here,
+// whatever the caller's own read of the node answered before.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
 // the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
@@ -392,7 +394,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	}
 	var sql strings.Builder
 	sql.WriteString(`select kind, other_kind, other_id, created_at, source_seq, at_block from (` + arms + `)
-		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where true`)
+		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where ` + queriedNodeSeen(query, seen))
 	if len(query.Kinds) > 0 {
 		args = append(args, query.Kinds)
 		sql.WriteString(" and kind = any($" + strconv.Itoa(len(args)) + ")")
@@ -441,6 +443,19 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		return nil, fmt.Errorf("iterate graph edges: %w", err)
 	}
 	return edges, nil
+}
+
+// queriedNodeSeen is the registry's predicate over the node a read of edges is of, bound at $1 in
+// the spelling its direction keys it by: the store's own id for an inbound read, and for an
+// outbound read the from side's, which the kind's rewrite translates (an artifact's uuid to its
+// ref_key), as VisibleEnd translates it. It names only parameters, so Postgres tests it once for
+// the whole statement.
+func queriedNodeSeen(query Query, seen string) string {
+	address := "$1"
+	if rewrite := nodeRegistry[query.Kind].visibility.fromAddress; query.Direction == "out" && rewrite != nil {
+		address = rewrite(address)
+	}
+	return VisibleKind(query.Kind, address, seen)
 }
 
 func foldsAnswers(query Query) bool {
