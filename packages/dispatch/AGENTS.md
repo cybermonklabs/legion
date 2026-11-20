@@ -23,11 +23,13 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
-- Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string.
+- Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.
 
 - Editor: never write a class into editor DOM (ProseMirror reads it as an edit); use `ProofEditorHandle` decorations.
   Fix editor gaps in `packages/proof-editor`.
 
 - Bumping a package that a file in the root `patches/` patches means redoing its patch: Bun skips a stale patch silently.
 
-- Each route of `app.tsx` is in `e2e/review-routes.ts`, reviewed or excluded with a reason.
+- Each route of `app.tsx` is in `packages/dispatch/e2e/review-routes.ts`, reviewed or excluded with a reason.
+
+- In a unit test, silence `console.error` only with `quietConsoleError()` (`__tests__/act-warnings.ts` says why): a row's own spy or replacement turns the act rule off.

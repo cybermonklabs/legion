@@ -22,13 +22,13 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 - Build every tool schema field through the injected `pi.zod`:
   Oh My Pi's converter reads internals only its own Zod produces, and one field from another Zod fails the whole extension load.
 
-- Session state changes only in the one serialized `reconcile` pass, and after each await a pass, and any branch that spends a person's delivery attempt, reads `sessionOpen` again: the session can change at any await.
+- Registration and role state change only through the two serial queues of `src/registration-state.ts`, the reconcile pass (`passes`) and role moves (`roleMoves`), and after each await a pass, and any branch that spends a person's delivery attempt, reads `sessionOpen` again: the session can change at any await.
 
 - Read role lookups and role records through `roleHeldBy` and `mayActOnRoleRecord` (`@legion/envoy-client/transport`), shared with claude-envoy.
 
 - Render inbound messages only through `renderInbound` (`@legion/envoy-client/delivery`).
 
-- Deliver every card as an aside with `triggerTurn`, never a steer: a steer waits in the queue that holds a person's Send.
+- Deliver a card as an aside with `triggerTurn`, never a steer, except an inert card and a startup-phase card (`src/unwritten-frames.ts`, `src/card-wake.ts`): a steer waits in the queue that holds a person's Send.
 
 - A person's Send or Aside becomes the user's own turn only through `acceptUserTurn` (`@legion/pi-shared/accept-user-turn`), which claude-envoy runs too.
 

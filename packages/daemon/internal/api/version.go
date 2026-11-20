@@ -24,8 +24,8 @@ package api
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and a change to the entries below that declares no number above
-// its base's, naming a free one.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.

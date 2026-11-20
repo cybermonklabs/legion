@@ -277,10 +277,11 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 }
 
 // fakeOmp is an `omp` that answers the load probe by a plan, one step per attempt (the last step
-// repeats), and records each attempt's argv, environment, and the probe file it was handed. Its
-// steps print interface version 1 for both plugins whatever the release's own number is, on
-// purpose: the gate compares the number pi-legion speaks with the one pi-envoy publishes, never
-// either with a release.
+// repeats), and records each attempt's argv, environment, and the probe file it was handed. Every
+// yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
+// missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
+// compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
+// release.
 type fakeOmp struct {
 	dir, path, prefix string
 }
