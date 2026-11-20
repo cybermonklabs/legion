@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,12 +67,13 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		setupFailure(t, err)
 	})
 	t.Run("a read whose check runs past its bound", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		const theBound = 2 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), theBound)
 		defer cancel()
 		started := time.Now()
 		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
 		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "the shared public leak check", "ran 2 s", "bound of 2 s")
+		stoppedByItsBound(t, setupFailure(t, err), theBound)
 		if len(asked) != 0 {
 			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
 		}
@@ -93,6 +96,37 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 				t.Fatalf("visibility asked of %q and checked only %v, want %q asked once and the whole guard", asked, answer.CheckedOnly, repo)
 			}
 		})
+	}
+}
+
+// theStop is the sentence a setup failure says of a shared check its bound stopped
+// (stoppedError.said): the whole seconds the check ran, then the bound it was given.
+var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by its bound of (\d+) s$`)
+
+// stoppedByItsBound fails t unless failed is the shared check stopped by its bound, said with the
+// seconds the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
+// than that bound, since the check is stopped at its deadline and never before. The bound is what
+// was left of the caller's deadline when the check started (Guard.run), so on a loaded machine,
+// where the guard's own work before the check takes longer, it is less than the caller's whole
+// bound: it is read against the ceiling, as stopBound reads a child's, and never for its exact
+// seconds.
+func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration) {
+	t.Helper()
+	said := theStop.FindStringSubmatch(failed.Why)
+	if said == nil {
+		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound", failed.Error())
+	}
+	ran, err := strconv.ParseInt(said[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := strconv.ParseInt(said[2], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound > wholeSeconds(ceiling) || ran < bound {
+		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
+			failed.Error(), bound, ran, wholeSeconds(ceiling))
 	}
 }
 
