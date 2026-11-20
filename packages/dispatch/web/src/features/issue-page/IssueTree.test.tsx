@@ -9829,6 +9829,86 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   }
 });
 
+// The tester's finding at #4205's 46dab3c7, on the class of review 5989897443's names-line
+// finding: the names line stays while the failed asks read runs again, but once that read
+// answers, its answer cites an address the tree did not hold, so the names are read under a new
+// set of addresses, and while that read is out the names stand failed no more: the line left the
+// page with the focus its Retry held, which went to a row, and came back saying its failure again
+// once the new read failed. Measured on a preview of the redesign issue at 1440 by 900: the line
+// gone from 1.7 s to 2.8 s after the asks' Retry, the focus on a row. The names have not answered
+// at any point, so the line stays drawn, with the focus on its Retry and the same alert.
+test("a failed names read's line stays drawn, with the focus on its Retry, while the names are read under the addresses a recovered read brought", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockRejectedValue(serverDown());
+  const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
+  const asksOut = Promise.withResolvers<never>();
+  const namesOut = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    const { container } = body.view;
+    await failedLines(container, 2, "asks and names");
+    await waitFor(
+      () =>
+        expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
+          onRetryOf(STATE_LINES.asks_unreadable)
+        ),
+      OWN_WORDS
+    );
+    await framesPass();
+    const line = failedLineSaying(container, STATE_LINES.names_unreadable);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error("the names' line drew no Retry");
+    const alert = line.querySelector('[role="alert"]');
+    await act(async () => retry.focus());
+
+    // The asks read runs again and answers with a question whose words cite an address the tree
+    // did not hold; the names read under the new set of addresses is then out.
+    asks.mockReturnValueOnce(asksOut.promise as never);
+    await act(async () => {
+      void body.client.invalidateQueries({ queryKey: ["asks", KEY] });
+    });
+    await waitFor(
+      () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),
+      OWN_WORDS
+    );
+    const namesBefore = names.mock.calls.length;
+    names.mockReturnValue(namesOut.promise as never);
+    const citing = {
+      ...WAITING_QUESTION,
+      question: "Which flag does dispatch://CORE-9 set?",
+      waiting_on_person: "bob",
+    };
+    await act(async () => asksOut.resolve([citing] as never));
+    await waitFor(
+      () =>
+        expect(
+          names.mock.calls.length,
+          "the names were not read again under the addresses the asks brought"
+        ).toBeGreaterThan(namesBefore),
+      OWN_WORDS
+    );
+    await framesPass();
+    expect(
+      line.isConnected,
+      "the names' line left the page while the names were read under the new addresses"
+    ).toBe(true);
+    expect(
+      focusPlace(container),
+      "the focus left the names' Retry while the names were read under the new addresses"
+    ).toBe(onRetryOf(STATE_LINES.names_unreadable));
+    expect(
+      line.querySelector('[role="alert"]'),
+      "the names' alert was drawn again, which says a failure again that came only once"
+    ).toBe(alert);
+  } finally {
+    await act(async () => namesOut.resolve({ targets: [] } as never));
+    asks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 /** Every preset that draws a view in the outline's place, read from the stage's own slots
  *  (`VIEW_SLOTS`), so a view added there is a view these cases cover. */
 const VIEW_PRESETS: readonly Preset[] = PRESET_ORDER.filter(
