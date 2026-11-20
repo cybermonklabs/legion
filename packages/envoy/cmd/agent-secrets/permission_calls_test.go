@@ -14,39 +14,34 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// callPermission is one call a form makes and one permission it needs: store is "aws" for a
-// Secrets Manager call, "sts" for an STS call (the sign-in's), or "gcp" for a Secret Manager call.
-type callPermission struct{ store, call, permission string }
+// permissionRow is one permission some call the forms make needs, with one such call: store is
+// "aws" for an AWS call, Secrets Manager's or STS's, which one chain words (awsWords), and "gcp" for
+// a Secret Manager call. The refusal check reads every permission any call needs, so one row per
+// permission tests it.
+type permissionRow struct{ store, call, permission string }
 
-// callPermissions are every call the forms make and every permission each needs. A GCP call that
-// needs none, TestIamPermissions, has no row.
-var callPermissions = []callPermission{
+// permissionRows are every permission the forms' calls need, once each, with a call that needs it.
+var permissionRows = []permissionRow{
 	{"aws", "ListSecrets", "secretsmanager:ListSecrets"},
 	{"aws", "DescribeSecret", "secretsmanager:DescribeSecret"},
 	{"aws", "GetSecretValue", "secretsmanager:GetSecretValue"},
 	{"aws", "GetSecretValue", "kms:Decrypt"},
 	{"aws", "CreateSecret", "secretsmanager:CreateSecret"},
-	{"aws", "CreateSecret", "secretsmanager:TagResource"},
 	{"aws", "CreateSecret", "kms:GenerateDataKey"},
-	{"aws", "CreateSecret", "kms:Decrypt"},
 	{"aws", "PutSecretValue", "secretsmanager:PutSecretValue"},
-	{"aws", "PutSecretValue", "kms:GenerateDataKey"},
-	{"aws", "PutSecretValue", "kms:Decrypt"},
 	{"aws", "TagResource", "secretsmanager:TagResource"},
 	{"aws", "UntagResource", "secretsmanager:UntagResource"},
 	{"aws", "DeleteSecret", "secretsmanager:DeleteSecret"},
 	{"aws", "RestoreSecret", "secretsmanager:RestoreSecret"},
-	{"sts", "GetCallerIdentity", "sts:GetCallerIdentity"},
-	{"sts", "AssumeRole", "sts:AssumeRole"},
-	{"sts", "AssumeRoleWithWebIdentity", "sts:AssumeRoleWithWebIdentity"},
+	{"aws", "GetCallerIdentity", "sts:GetCallerIdentity"},
+	{"aws", "AssumeRole", "sts:AssumeRole"},
+	{"aws", "AssumeRoleWithWebIdentity", "sts:AssumeRoleWithWebIdentity"},
 	{"gcp", "ListSecrets", "secretmanager.secrets.list"},
 	{"gcp", "GetSecret", "secretmanager.secrets.get"},
 	{"gcp", "CreateSecret", "secretmanager.secrets.create"},
@@ -60,24 +55,19 @@ var callPermissions = []callPermission{
 	{"gcp", "ListSecretVersions", "secretmanager.versions.list"},
 }
 
-// refusedWords is what a form prints of a refusal of call that names permission, as AWS or
-// Google writes it, beside a made-up secret: AWS's AccessDenied for a Secrets Manager or STS call
-// (STS's own "Not authorized to perform" for a web identity), and Secret Manager's PermissionDenied
+// refusedWords is what a form prints of a refusal of the row's call that names its permission,
+// as AWS or Google writes it, beside a made-up secret: AWS's AccessDenied, in AWS's words (STS's
+// own "Not authorized to perform" for a web identity), and Secret Manager's PermissionDenied
 // through the interceptor every call goes through.
-func refusedWords(t *testing.T, row callPermission, planted string) string {
+func refusedWords(t *testing.T, row permissionRow, planted string) string {
 	t.Helper()
-	switch row.store {
-	case "aws":
-		message := "User: arn:aws:iam::111122223333:user/x is not authorized to perform: " + row.permission + " on resource: arn:aws:secretsmanager:us-east-1:111122223333:secret:x; echo: " + planted
-		return awsStoreFailure(row.call, &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: row.call,
-			Err: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: message}}).Error()
-	case "sts":
-		message := "User: arn:aws:iam::111122223333:user/x is not authorized to perform: " + row.permission + " on resource: arn:aws:iam::111122223333:role/agent; echo: " + planted
+	if row.store == "aws" {
+		message := "User: arn:aws:iam::111122223333:user/x is not authorized to perform: " + row.permission + " on resource: x; echo: " + planted
 		if row.call == "AssumeRoleWithWebIdentity" {
 			message = "Not authorized to perform " + row.permission + "; echo: " + planted
 		}
-		return awsSignInFailure("read your AWS sign-in", &smithy.OperationError{ServiceID: sts.ServiceID, OperationName: row.call,
-			Err: &smithy.GenericAPIError{Code: "AccessDenied", Message: message}}).Error()
+		return awsWords(&smithy.OperationError{ServiceID: "AWS", OperationName: row.call,
+			Err: &smithy.GenericAPIError{Code: "AccessDenied", Message: message}}, "the call failed")
 	}
 	refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
 		return status.Error(codes.PermissionDenied, "Permission '"+row.permission+"' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)
@@ -89,19 +79,19 @@ func refusedWords(t *testing.T, row callPermission, planted string) string {
 	return err.Error()
 }
 
-// TestEachCallsRefusalNamesItsPermission: a refusal of each call the forms make that names a
-// permission the call needs prints that permission, and nothing else of the store's message.
-// Control: a permission no call needs, in the same shape, prints as not named.
+// TestEachCallsRefusalNamesItsPermission: a refusal that names a permission some call the forms
+// make needs prints that permission, and nothing else of the store's message. Control: a
+// permission no call needs, in the same shape, prints as not named.
 func TestEachCallsRefusalNamesItsPermission(t *testing.T) {
 	planted := "hunter2pw-" + "permcall-" + "3a9e"
-	for _, row := range callPermissions {
-		t.Run(row.store+" "+row.call+" needs "+row.permission, func(t *testing.T) {
+	for _, row := range permissionRows {
+		t.Run(row.store+" "+row.permission, func(t *testing.T) {
 			wantNamedNotPrinted(t, "the refusal", refusedWords(t, row, planted), []string{"missing permission: " + row.permission + ";"}, planted)
 		})
 	}
-	for _, row := range []callPermission{
+	for _, row := range []permissionRow{
 		{"aws", "ListSecrets", "secretsmanager:PutResourcePolicy"},
-		{"sts", "GetCallerIdentity", "sts:TagSession"},
+		{"aws", "GetCallerIdentity", "sts:TagSession"},
 		{"gcp", "ListSecrets", "secretmanager.secrets.setIamPolicy"},
 	} {
 		t.Run("control: "+row.store+" "+row.permission+", which no call needs", func(t *testing.T) {
@@ -116,8 +106,9 @@ func TestEachCallsRefusalNamesItsPermission(t *testing.T) {
 // TestEveryCallTheFormsMakeHasItsPermissions ties each call the forms make to the permissions it
 // needs: every method of secretsAPI and stsAPI, and every method the package's code calls on the
 // Secret Manager client (a `.client.<Method>(` in a non-test file), is an entry of
-// awsCallPermissions or gcpCallPermissions, and those entries are exactly callPermissions'
-// rows, which TestEachCallsRefusalNamesItsPermission checks a refusal of. So a call a later
+// awsCallPermissions or gcpCallPermissions, and the permissions those entries need are exactly
+// permissionRows' permissions, one row each, which TestEachCallsRefusalNamesItsPermission checks a
+// refusal of. So a call a later
 // change adds fails here until its permissions are listed and a row checks them. Control: the
 // walks found the calls they read (a count of zero is a walk that read nothing, and fails).
 func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
@@ -156,33 +147,29 @@ func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
 	if awsCalls == 0 || gcpCalls == 0 {
 		t.Fatalf("control: the walks found %d AWS and %d Secret Manager calls, so a walk read nothing", awsCalls, gcpCalls)
 	}
-	listed := map[callPermission]bool{}
-	for _, row := range callPermissions {
-		listed[row] = true
+	type stored struct{ store, permission string }
+	listed := map[stored]bool{}
+	for _, row := range permissionRows {
+		if listed[stored{row.store, row.permission}] {
+			t.Errorf("%s %s has two rows; one row per permission tests it", row.store, row.permission)
+		}
+		listed[stored{row.store, row.permission}] = true
 	}
-	inCode := map[callPermission]bool{}
-	for call, needs := range awsCallPermissions {
-		store := "aws"
-		if strings.HasPrefix(needs[0], "sts:") {
-			store = "sts"
-		}
-		for _, permission := range needs {
-			inCode[callPermission{store, call, permission}] = true
-		}
+	inCode := map[stored]bool{}
+	for permission := range awsPermissions {
+		inCode[stored{"aws", permission}] = true
 	}
-	for call, needs := range gcpCallPermissions {
-		for _, permission := range needs {
-			inCode[callPermission{"gcp", call, permission}] = true
-		}
+	for permission := range gcpPermissions {
+		inCode[stored{"gcp", permission}] = true
 	}
 	for row := range inCode {
 		if !listed[row] {
-			t.Errorf("%v is in the code's lists, but no row of callPermissions checks it", row)
+			t.Errorf("%v is a permission some call needs, but no row of permissionRows checks it", row)
 		}
 	}
 	for row := range listed {
 		if !inCode[row] {
-			t.Errorf("%v is a row of callPermissions, but the code's lists do not hold it", row)
+			t.Errorf("%v is a row of permissionRows, but no call the code lists needs it", row)
 		}
 	}
 }
