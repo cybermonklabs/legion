@@ -1072,15 +1072,15 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 // broker mounts where every role of the pod reads them (podTokenMounts in
 // internal/runtime/sandbox), and each projected service_account_token of the operator's
 // pod.volumes, mounted or not: every pod carries the operator's pod volumes, and a volume_mounts
-// entry shows one to every role of the pod. All these tokens and the writer token have one
-// subject, the pod's ServiceAccount. So with a shared audience a role's process could read such a
-// token, or could once a volume_mounts entry shows it to every role, exchange it as the writer
-// token and sign in as the session database's service account, past the socket's peer check, and
-// the writer token must be the launcher's alone. A token of the writer audience's https: form is
-// refused too: a provider whose allowed audiences are left empty takes a token whose audience is
-// its full resource name "with or without the HTTPS prefix" (gcloud iam workload-identity-pools
-// providers create-oidc, --allowed-audiences). The broker's tokens are checked first, then the
-// volumes in order, and each refusal names both keys and the audience.
+// entry shows one to every role of the pod. All these tokens and the writer token have one subject,
+// the pod's ServiceAccount. So with a shared audience, a role's process that reads such a token (a
+// broker's token at once, a pod volume's once a volume_mounts entry shows it to every role) could
+// exchange it as the writer token and sign in as the session database's service account, past the
+// socket's peer check, and the writer token must be the launcher's alone. A token of the writer
+// audience's https: form is refused too: a provider whose allowed audiences are left empty takes a
+// token whose audience is its full resource name "with or without the HTTPS prefix" (gcloud iam
+// workload-identity-pools providers create-oidc, --allowed-audiences). The broker's tokens are
+// checked first, then the volumes in order, and each refusal names both keys and the audience.
 func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	writer := block.SessionStore.Database.WriterAudience
 	if writer == "" {

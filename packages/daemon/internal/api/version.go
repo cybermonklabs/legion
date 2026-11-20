@@ -2479,18 +2479,20 @@ package api
 // `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
 // launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
-// newSessionPeer). An older daemon also reads no fifth flag, and every relaunch of a claim
-// recorded at 182 installs its plugin pair and so keeps the pod whatever its image: each start is
-// refused and charged as a launch failure, the controller's claim fails and its retries install
-// into the same pod until its Sandbox is deleted, and each issue claim fails and needs a retry
-// once its pod is replaced. So the member is turned off on this release first: restore the
-// account's grant to the pod's own principal, remove writer_audience and restart the daemon,
-// which reads the fifth flag as a moved session store and replaces each pod that carries it (an
-// issue pod by its update round, the controller's pod at its next launch); only once no launcher
-// command carries the flag is the daemon rolled back below 182 (docs/kubernetes.md, "Selecting
-// the store"). A deployment that sets
-// no writer audience renders no fifth flag, and its launcher reads no `agentExecutable`, so its
-// pods carry the command they carried before. (The
+// newSessionPeer). An older daemon also reads no fifth flag, and where it knows a plugin pair
+// every relaunch of an Oh My Pi claim recorded at 182 installs that pair and so keeps the pod
+// whatever its image: each Oh My Pi start is refused and charged as a launch failure (a Claude
+// Code start is admitted), the controller's claim fails and its retries install into the same pod
+// until its Sandbox is deleted, and each issue claim on Oh My Pi fails and needs a retry once its
+// pod is replaced. So the member is turned off on this release first: restore the account's grant
+// to the pod's own principal, remove writer_audience and restart the daemon, which reads the fifth
+// flag as a moved session store and replaces each pod that carries it (an issue pod by its update
+// round, the controller's pod at its next launch). The writer pool, its provider and the
+// account's grant to the pool's principal stay until then, since a pod that carries the flag
+// exchanges the writer token until it is replaced. Only once no launcher command carries the flag
+// is the daemon rolled back below 182 (docs/kubernetes.md, "Selecting the store"). A deployment
+// that sets no writer audience renders no fifth flag, and its launcher reads no
+// `agentExecutable`, so its pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
 // #3519's INFRA-2009) that no open pull request of cybermonklabs/legion declared, with the `take`
 // of .github/scripts/check-daemon-api-contract.sh, while this branch's base, 4eec2cc2, still

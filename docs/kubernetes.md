@@ -1117,9 +1117,10 @@ A deployment that sets the member makes these four things true:
   Left empty, the list also admits that form, which the loader refuses on every token a role reads, but not on a token the loader does not know of.
   Its attribute condition admits the Kubernetes ServiceAccounts that the pods run as.
 
-- The account grants `roles/iam.workloadIdentityUser` to the principal of the pods' ServiceAccount in that pool:
+- The account grants `roles/iam.workloadIdentityUser` to the principal, in that pool, of each Kubernetes ServiceAccount the project's pods run as, the controller's pod included:
   `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/system:serviceaccount:<namespace>:<service account>`.
-  `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
+  `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is each such ServiceAccount.
+  At this release every pod, the controller's included, runs as the one that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), so that is one principal.
   This grant takes the place of the account's grant to the pod's own principal, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
 
 - The Security Token Service API (`sts.googleapis.com`) and the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) are enabled.
@@ -1146,23 +1147,26 @@ So turn `writer_audience` off on this release first, and roll back below it only
 
 1. On the release that carries the member, restore the account's grant to the pod's own principal, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
    The grant comes first, because a pod created without the member impersonates the account with the pod's own credentials, and Google refuses them without the grant.
+   Keep the writer pool, its provider and the account's grant to the pool's principal until step 2 is done: until its replacement, a pod that carries the fifth flag still exchanges the writer token, and each new generation in it proves a dial with that token.
    This release reads the fifth flag of every pod (`sessionProxyFlagsIn`, `internal/runtime/sandbox/addresses.go`), so each pod that carries it holds a moved session store.
    An issue pod is replaced by its update round, whose workers can still answer it, since this release names `agentExecutable` in every Oh My Pi start.
-   The controller's pod is replaced at the next launch into it, whatever that launch installs (`movedInPod` in `addresses.go`, `relaunch.go`).
+   The controller's pod is replaced at the next launch into it, whatever that launch installs (`movedInPod` in `addresses.go`, and `replace` in `internal/runtime/sandbox/relaunch.go`).
 
 2. When no pod's launcher command carries `--session-writer-audience`, roll back the daemon and the worker image together, with the file that no longer names the member.
    This prints nothing then:
-   `kubectl -n legion get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[*].command}{"\n"}{end}' | grep -- --session-writer-audience`.
+   `kubectl -n <namespace> get pods -l legion.dev/project=<project> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[*].command}{"\n"}{end}' | grep -- --session-writer-audience`.
+   `<namespace>` is `runtime.kubernetes.namespace`, and `<project>` is the project's key, the value of the label every pod of the project carries.
 
 A rollback that skips step 1 stops the controller and holds the issues whose pods carry the member.
 A daemon before this release reads no fifth flag, so it sees no moved session store.
-Every relaunch of a claim recorded at this release's contract installs that daemon's plugin pair (`stalePluginInstall`), and a launch that installs keeps its pod, whatever its image.
-Each start into such a pod is refused, and each refusal is charged as a launch failure, so the claim fails after `launch_failure_limit` refusals (3 by default), seconds apart.
+Where that daemon knows a plugin pair, every relaunch of an Oh My Pi claim recorded at this release's contract installs that pair (`stalePluginInstall`, `internal/daemon/specs.go`), and a launch that installs keeps its pod, whatever its image.
+Each Oh My Pi start into such a pod is refused, and each refusal is charged as a launch failure, so the claim fails after `launch_failure_limit` refusals (3 by default), seconds apart.
+A Claude Code start into such a pod is admitted: the launcher matches no agent's executable for a Claude Code generation, which its start environment names (`newSessionPeer`).
 
 - The controller's claim fails, and the daemon's retry of it is again a launch that installs into the same pod.
-  The controller stays down until its Sandbox is deleted (`kubectl -n legion delete sandbox <name>`), and the next launch then makes a new one.
+  The controller stays down until its Sandbox is deleted (`kubectl -n <namespace> delete sandbox <name>`), and the next launch then makes a new one.
 
-- An issue role's claim fails the same way, and a failed claim of the role that works the issue's phase holds the issue.
+- An issue role's claim on Oh My Pi fails the same way, and a failed claim of the role that works the issue's phase holds the issue.
   The pod's update round asks no failed claim, and the replacement of the pod restarts none.
   So each such claim needs a retry once its pod is replaced: `legion claims retry --operator-token-file <file> --claim <token>`, or `--failed` in place of `--claim` for every failed claim.
 
