@@ -2464,7 +2464,7 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 193: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
 // can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
 // up to, and not including, `legion-v20.5.0` cleared the file and kept the id
 // (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
@@ -2497,11 +2497,12 @@ package api
 // own kind. The way back of this change's migration
 // (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
 // before a rollback. No shape of `GET /legion/v1/state` moves.
-// (This entry takes 193, the lowest number above main's 188 that no open pull request declared
-// when the merge of 2026-11-20 brought main in at 1c7c8253678f, after #4543 took 188: a reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T11:02:05Z and
-// 11:04:38Z, for each of the 110 open pull requests, of 266, whose file list names this file or is
-// longer than one read lists, found 189 declared by #3831 and #4596, 190 by #4578, 191 by #4493,
-// #4495, #4573 and #4592, 192 by #4175 and #4611, and nothing above 192. Read the base's own
-// number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 193
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 189
