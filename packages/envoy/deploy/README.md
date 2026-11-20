@@ -255,6 +255,22 @@ A process is given a NATS nkey seed only after its NATS server has nkey users (t
 which keeps a `no_auth_user` fallback): a server with no users sends no nonce, and the Go client
 refuses the nkey (`nats: nkeys not supported by the server`) instead of connecting without it.
 
+## Recreating a listener's durable
+
+The listener refuses to bind its durable consumer `listener-<machine id>` when the durable carries
+an idle heartbeat or an ack policy other than explicit, which the listener's consumer policy forbids
+and NATS cannot change in place. Deleting the durable lets the listener recreate it from the start
+of the stream, which replays all 72 hours the stream retains. To keep its cursor, recreate it at one
+past its ack floor while no listener runs for that machine:
+
+```bash
+d=listener-<machine id>
+nats consumer info ENVOY_NOTIFICATIONS "$d" --json > "$d.json"
+jq '(.ack_floor.stream_seq + 1) as $next | .config | del(.idle_heartbeat, .flow_control) | .ack_policy = "explicit" | .deliver_policy = "by_start_sequence" | .opt_start_seq = $next' "$d.json" > "$d.recreate.json"
+nats consumer rm ENVOY_NOTIFICATIONS "$d" -f
+nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
+```
+
 ## Dispatch configuration
 
 Generate the agent token once and record it, with the external database URL, in

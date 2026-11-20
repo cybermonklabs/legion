@@ -118,10 +118,12 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to push its work and answer (api's
-	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
-	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted.
+	// non-empty answer: the round asks each role of that place to do the steps of its update
+	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
+	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
+	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -240,13 +242,15 @@ type WorkspaceBundler interface {
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
+// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
+// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
+// the new workspace before any role of that pod starts.
 //
 // WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
 // whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
+// had its one attempt already, one the daemon's project does not record, whose bundle another
+// project's daemon saved, and the pod the work was taken off asking for its own workspace's
 // work back. The runtime calls this at every start of every role, and a release stops the roles
 // of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
 // one of those calls; the store knows that pod by the uid the save recorded

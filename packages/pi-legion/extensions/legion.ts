@@ -621,7 +621,8 @@ export default function legionExtension(pi: PiApi): void {
     // Every Legion session watches its own tool calls; a subagent's instance returned above.
     armStallWatch(session);
     // The controller registers through the controller session and gets the `legion` tool's
-    // controller operations (`read_state`, `set_status`), each minting its own controller grant.
+    // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
+    // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no
@@ -819,10 +820,12 @@ export default function legionExtension(pi: PiApi): void {
   // message for a `/skill:`), but it is an inbound event, as its Envoy card was: the record
   // envoy.ts keeps of the turns it sent in says which message that is, whichever of the two
   // extensions asks first. A turn that record misses falls through to `inboundKind` and counts as
-  // an assignment; the phase-stall section of `packages/pi-legion/AGENTS.md` says which turns it
-  // misses. The `legion` tool's successful `handoff_complete`, and a successful backward move,
-  // close the phase (`onPhaseCompleted`, below). Every message, classified or not, says a turn is
-  // running and leaves every armed reminder timer stale.
+  // an assignment, which opens even a closed phase: a typed turn the host starts under a new
+  // session id, and, on a host without `sendUserInput`, a turn sent in after the run's last queue
+  // poll and before its `agent_end`, which the dashboard then shows twice. The `legion` tool's
+  // successful `handoff_complete`, and a successful backward move, close the phase
+  // (`onPhaseCompleted`, below). Every message, classified or not, says a turn is running and
+  // leaves every armed reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();

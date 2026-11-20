@@ -268,8 +268,9 @@ which enrolls the pods it launches next, while a pod already running stays witho
 is replaced. To stop a daemon logging in, remove its entry and redeploy the broker: its credential
 stops authenticating at its next call, and its next login is refused.
 
-An account on that list may also call `POST /v1/oauth/exchange/pod-sessions`, the route that
-registers which pod may write under which session name. It is how a deployment's daemon tells the
+An account on that list that `BROKER_POD_OPERATORS` does not map (below) may also call
+`POST /v1/oauth/exchange/pod-sessions`, the route that registers which pod may write under which
+session name. It is how a deployment's daemon tells the
 broker that a pod it has just started owns an issue's session. The login lets an account call the
 route and does not let it register a pod: `BROKER_POD_REGISTRARS`, not `BROKER_SERVICE_LOGINS`, is
 the registration's authority. A session pod logs in as a service too, and with the login alone it
@@ -286,14 +287,15 @@ every other one `403 POD_REGISTRAR_NOT_LISTED`, naming both accounts. A registra
 pod accounts, a pod account may have several registrars, and an entry may pair an account with
 itself, for a daemon that registers the sibling pods of its own account.
 
-The broker refuses to start, naming the setting and the entry, on an entry without exactly one
-`=`, an account of any other form (a `google:` one included), a namespace's `default` account, and
-a pair given twice. It also refuses the list set without `BROKER_K8S_OIDC_ISSUER`. It does not
-refuse a registrar that `BROKER_SERVICE_LOGINS` does not list, since the list may come from another
-source than the logins: such a registrar cannot call the route, so it registers nothing, and the
-boot logs `pod-session registrar cannot log in` at WARN, naming it. The boot also logs one
-`pod-session registrars` line, with the number of `entries` and whether a `registration_audience`
-is set.
+The broker refuses to start, naming the setting and the entry, on an entry without exactly one `=`,
+an account of any other form (a `google:` one included), a namespace's `default` account, and a pair
+given twice. It also refuses the list set without `BROKER_K8S_OIDC_ISSUER`, and a registrar that
+`BROKER_POD_OPERATORS` maps to a person (below). It does not refuse a registrar that
+`BROKER_SERVICE_LOGINS` does not list, since the list may come from another source than the logins:
+such a registrar cannot call the route, so it registers nothing, and the boot logs
+`pod-session registrar cannot log in` at WARN, naming it. The boot also logs one
+`pod-session registrars` line, with the number of `entries` and whether a `registration_audience` is
+set.
 
 Unset, the broker starts and the route admits no registration: it refuses every one
 `403 POD_REGISTRAR_NOT_LISTED`, the one `403` of this route that the Legion daemon retries. So
@@ -428,16 +430,19 @@ registrations lapse or are released too. No route moves a binding to another acc
 Legion daemon reads that `409` as permanent: it logs it and does not write that registration again
 for that role's process.
 
-A daemon releases the session names it registered at
-`POST /v1/oauth/exchange/pod-sessions/release`, with the same login as the registration route,
-which answers `401` for a token that does not verify, `403 ACCOUNT_NOT_LISTED` for an account
-`BROKER_SERVICE_LOGINS` does not list, and `429` with `Retry-After`. `BROKER_POD_REGISTRARS` does
-not gate a release, since a release touches only the registrations of the account the caller logs
-in as. A registrar whose entry was taken out therefore still releases what it registered. A
-release is that account's, not the caller's pod's. So every pod of an account paired with itself
-can release every registration that account wrote, by session name alone (above). Today's Legion
-daemon does not call this route yet, so the exchange honours each of its registrations until it
-lapses, unless another caller that logs in as the daemon's account releases it.
+A daemon releases the session names it registered at `POST /v1/oauth/exchange/pod-sessions/release`,
+with the same login as the registration route, which answers `401` for a token that does not verify,
+`403 ACCOUNT_NOT_LISTED` for an account `BROKER_SERVICE_LOGINS` does not list, `403 PERSON_ACCOUNT`
+for an account `BROKER_POD_OPERATORS` maps to a person, and `429` with `Retry-After`.
+`BROKER_POD_REGISTRARS` does not gate a release, since a release touches only the registrations of
+the account the caller logs in as. A registrar whose entry was taken out therefore still releases
+what it registered, unless `BROKER_POD_OPERATORS` then maps its account to a person: the route
+refuses that account `403 PERSON_ACCOUNT`, so a registrar that is to be mapped releases its
+registrations before it is mapped. A release is that account's, not the caller's pod's. So every pod
+of an account paired with itself can release every registration that account wrote, by session name
+alone (above). Today's Legion daemon does not call this route yet, so the exchange honours each of
+its registrations until it lapses, unless another caller that logs in as the daemon's account
+releases it.
 
 The body is `{"sessions": ["<name>", ...]}`. A list that is missing, `null` or empty, or that holds
 more than 4096 entries counted as sent, is `400 SESSIONS_INVALID`, and a body over 1 MiB is
@@ -537,6 +542,137 @@ bucket drained for the rest of the credential's life stops it logging in.
 A service login a person approved through a device code before this broker keeps working until
 it expires, at most `BROKER_LAUNCHER_CREDENTIAL_SECONDS` (30 days by default) after its approval:
 nothing refreshes it.
+
+`BROKER_POD_OPERATORS` maps a Kubernetes ServiceAccount to a person, so that a pod running as that
+account acts as the person on the terms of the person's dev box
+([Concepts](/legion/broker/concepts/#a-persons-pod)). It takes whitespace-separated
+`<email>=<service account>` entries, for example
+`BROKER_POD_OPERATORS=ada@example.com=system:serviceaccount:example-ns:ada`. The email is the
+person as they sign in, in lower case. A person may have several accounts, and each account maps
+to one person. Unset, the setting maps no account. Each mapped account logs in with its own token
+under a login service of its own, so it needs a `BROKER_SERVICE_LOGINS` entry, such as
+`person-ada=system:serviceaccount:example-ns:ada`. No `BROKER_SERVICES` or `BROKER_VM_SERVICES`
+entry may name that login service, and no `BROKER_SERVICES` entry may bind the account. The
+broker refuses to start, naming the entry or the account, on:
+
+- an entry that is not `<email>=system:serviceaccount:<namespace>:<name>`, or whose person is not a
+  lower-case email;
+- a namespace's `default` account, which every pod there that names no account runs as;
+- an account given twice;
+- a mapped account that `BROKER_SERVICE_LOGINS` does not name;
+- a mapped account whose login service a `BROKER_SERVICES` entry names, since a secret could then
+  name that service as its owner;
+- a mapped account that a `BROKER_SERVICES` entry binds, since a launcher logged in as that service
+  could then enrol the person's pods as its own workers;
+- a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
+  registers those services as owners a secret may name too;
+- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
+- a mapped account that a `BROKER_POD_REGISTRARS` entry names as its registrar, since the person's
+  pod would then choose the session names other pods exchange under (a mapped account on the pod
+  side of an entry is not refused);
+- a mapped account that a `BROKER_EXCHANGE_READ_ACCOUNTS` entry names, since the exchange would
+  then mint the person's pod a read-only token that names a service and no person;
+- a mapped account that a `BROKER_API_ACCOUNTS` entry names, since that caller's routes relay
+  approvals in the name the caller gives;
+- a mapped account that a `BROKER_NATS_SERVICES` entry names, since the NATS auth service would
+  then answer a connection of the person's pod with that service's NATS grant;
+- a mapped account that either side of a `BROKER_SESSION_ACCOUNT_PAIRS` pair names, since a pair
+  lets each account take the session names the other holds.
+
+A mapped account on the pod side of a `BROKER_POD_REGISTRARS` entry is not refused, so a daemon may
+register a person's pod under a session name. The registration's body carries that pod's token, and
+unless `BROKER_POD_REGISTRATION_AUDIENCE` is set it is a token of the broker's own audience, the one
+the person's pod logs in with, so the daemon then holds a token that acts as the person. For such an
+entry, set `BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's token of that audience,
+which no other route accepts.
+
+The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
+no session. Its login, made with its own projected token, carries the person, and so does its
+enrollment: the person's agent-tier secrets go to it at once, the person's human-tier secrets wait
+for the person's approval, and another person's secret waits for its owner's. A token of the
+account that is bound to no pod, such as one `kubectl create token` mints, logs in for no person
+and enrols nothing. The login enrols its own pod alone: another pod of the account and a pod of any
+other account are each refused `403 POD_SELF_ENROLL_ONLY`, and a session name is refused
+`403 POD_SELF_ENROLL_NO_SESSION`. The pod lists and revokes none of the person's machine logins
+and grants: `GET /v1/operator/machines`, `POST /v1/operator/machines/{id}/revoke`,
+`GET /v1/operator/grants` and `POST /v1/operator/grants/{id}/revoke` refuse its login
+`403 PERSON_POD_LOGIN`. The person lists and revokes those from a box or from Dispatch. The routes
+a service calls as itself refuse the mapped account `403 PERSON_ACCOUNT`, whether or not its token
+is bound to a pod, so it registers no pod's session. Whoever can run a pod as a mapped account, or
+get a token bound to such a pod, acts as its person: Kubernetes access control on that account's
+namespace is the boundary, as it is for a service's account above.
+
+Dispatch's machine-login page lists that login to its person alone, and only that person may
+revoke it, whichever of the account's pods or tokens made it. A revoke ends every enrollment the
+login made, with their grants, and does not last: the pod logs in again with its token, under a
+new credential, the next time it enrols. To stop the pod logging in, take the account out of both
+`BROKER_POD_OPERATORS` and `BROKER_SERVICE_LOGINS` and redeploy the broker. Taking it out of
+`BROKER_SERVICE_LOGINS` alone refuses the start. The enrollment the pod already holds keeps
+renewing until its login is revoked or the pod stops renewing it, as the list below says.
+
+The broker reads the setting when it starts, so a change is an edit and a redeploy of the broker.
+Every decision of what a pod may do reads the setting as it is then, while the stored records keep
+the person each enrollment was made for. After the deployment removes an entry, or moves it to
+another person:
+
+- the enrollment the pod holds keeps renewing, and the broker answers each of its calls as its
+  account's own, for no person, also after a move: the first person's agent-tier secrets wait for
+  that person's approval, and a shared agent-tier secret is still granted;
+- the pod's requests are its own enrollment's alone. The pod no longer reads or cancels a request
+  of the person's box or of another session of the person, and those sessions no longer read or
+  cancel the pod's requests: each is refused `403 NOT_YOURS`, and the request stays pending. The
+  pod still reads and cancels its own requests. Putting the entry back gives the pod the person's
+  requests again;
+- a request for a shared secret keeps the Inbox it was listed in when it was made, since the broker
+  records the person responsible for a request once, as it makes the request. So a request the pod
+  made before the change still waits in the first person's Inbox alone, also after a move, until
+  someone decides it, the pod cancels it or it expires. Anyone signed in may still decide it from
+  its page. A request the pod makes after the change waits in every person's Inbox;
+- an automatic grant of the person's own agent-tier secret, which the pod got because it acted as
+  the person, stops releasing (`GRANT_NOT_LIVE`) and is not given back to a new request, so the
+  pod's next request for that secret waits for the person. It is not revoked, and putting the entry
+  back makes it release again;
+- a grant a person approved stands on that approval. It keeps releasing, whoever approved it, until
+  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends;
+- a grant of a secret whose `requesters` tag names the person ends for good
+  (`requester-not-listed`), and putting the entry back does not revive it;
+- the pod's login keeps the first person until the pod logs in again, and lives at most an hour.
+  Meanwhile it enrols nothing and revokes nothing (`403 OPERATOR_MISMATCH`), and the operator
+  routes still refuse it `403 PERSON_POD_LOGIN`. The pod's next login carries no person after a
+  removal, and the second person after a move;
+- the pod's own login cannot end the enrollment it holds. That enrollment ends at a revoke of the
+  pod's login: after a removal anyone signed in may revoke it, since the login is a service's
+  again, and after a move only the second person may. It also ends once the pod stops renewing it,
+  when its lease lapses, as `BROKER_LEASE_SECONDS` and `BROKER_SWEEP_SECONDS` say in the
+  [configuration reference](/legion/broker/reference/config/)
+  ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving));
+- after a move, the pod enrolling again in the same slot with the same key gets that old
+  enrollment back, and another key in that slot is refused `409 ALREADY_ENROLLED`. So in that slot
+  the second person's access starts only once the old enrollment ends, and a new slot is a new
+  enrollment, the second person's. `agent-secrets whoami` reads the enrollment's record, so for the
+  old enrollment it still names the first person;
+- the grant log (`GET /v1/grant-log`), the first person's **Live grants** (`GET /v1/grants`) and
+  the record of each request's approval keep naming the first person, since they read the
+  enrollment's record. That person still sees the pod's grants and may revoke them. Each new
+  request's `request.created` row records, in its own detail, the person the broker decided for:
+  none.
+
+After a move, have the second person revoke the pod's login on Dispatch's machine-login page, which
+ends the old enrollment, or replace the pod.
+
+A broker of an earlier release reads a person's pod login as that person's own machine login, since
+it holds an operator. Such a broker lets the login enrol a session under the name of one of the
+person's box sessions and take that session's grants, end the person's box sessions, and call the
+four operator routes above. It also answers the pod's enrollment as the person whatever this
+setting says. A roll serves the previous release beside this one against one database
+([running more than one pod](#running-more-than-one-pod)), so:
+
+- set `BROKER_POD_OPERATORS` only in a deploy after every broker replica runs this release;
+- before you roll the broker back to an earlier release, remove every entry and redeploy, then
+  revoke on Dispatch's machine-login page each login that a mapped account made, which anyone
+  signed in may do once its entry is gone and which ends the enrollments that login made. Roll
+  back only after that. The pods log in again with no person, so no login or enrollment that
+  carries a person is left for the earlier release to read.
 
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
@@ -791,8 +927,13 @@ application type **Web application**), with one authorized redirect URI:
 `<BROKER_PUBLIC_URL>/signin/callback`, for example `https://secrets.internal.example/signin/callback`.
 Its client id is `BROKER_SIGNIN_CLIENT_ID`, and its secret goes in the file
 `BROKER_SIGNIN_CLIENT_SECRET_FILE` names. The broker asks for `openid email profile` with PKCE,
-asks for no offline access and keeps no refresh token, and sends the request's approver as
-`login_hint`, so a person already signed in to Google is asked nothing.
+and asks for no offline access and keeps no refresh token. A browser with no session is sent to
+sign in with no `login_hint`: the page reads no record before a person signs in, so the redirect
+is the same for every record id and says nothing of whether the record exists or whose it is. A
+person signed in to one Google account is asked nothing; one signed in to several is shown
+Google's account chooser. The page's **Sign in as someone else** link, which a person already
+signed in follows, opens that account chooser (`prompt=select_account`) with the record's
+approver named in it as `login_hint`.
 
 Deploy the broker with these settings before the Dispatch release whose Inbox links the page. In
 between, an open Dispatch tab's **Approve** on a secret request gets the broker's
@@ -1063,7 +1204,11 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.
-- The settings and reread routes take no credential. `GET /v1/settings` answers the store, the
+- The settings route takes no credential, and the reread route needs none. `GET /v1/settings`
+  stays open because two of its callers hold no credential of the broker's when they read it: a
+  machine's `agent-secrets` reads `google_exchange_audience` there to mint the identity token it
+  trades for its first credential, and the secret forms read the store, the prefix and the key
+  under a cloud credential alone. It answers the store, the
   namespace prefix and, per store, the agent-secrets key's ARN with its AWS account and region, or
   the Cloud KMS key's name with the project number; and, on either store,
   `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, absent unless `BROKER_VM_SERVICES`
@@ -1079,19 +1224,43 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   for a secret and what the judge looks for. An administrator's secret is listed there when the
   rules give it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
-  the judge may take and on what guidance, as the reread already tells any caller which names
-  exist. Guidance is no secret: write nothing in it that a caller of the broker may not read.
-  `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
-  and answers whether it now serves it, as which type (`type`: `github-app`, `google-login`,
-  `azure-login` or `google-service-account`, absent for a stored secret) and, if not, why.
-  Neither releases a value. What a reread
-  does tell any caller who can reach the broker is whether a name under the namespace exists, the
-  type it is served as, and, when the broker leaves it out, which of its reasons applies — `absent`,
-  or a refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`. That is more than
-  `UNKNOWN_SECRET`, which says
-  only that no agent secret has the name, says it only to an enrolled session, and never separates a
-  secret that does not exist from one the broker refuses; it is what anyone allowed to list the
-  namespace reads from the secrets' own names and tags (or annotations).
+  the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
+  caller of the broker may not read.
+  `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store, on this pod
+  and then on every other. Whether it says what the broker serves depends on the caller, never on
+  the name:
+  - A call with no `Proof` header is answered `202`
+    `{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}`
+    at once, the same for a name the store holds as for one it does not, and the reread runs after
+    that answer: 45 seconds at most, and 5 more for its notice to the other pods. The notice goes
+    out once the metadata merge has run, including when the value read after it is cut; a timeout
+    before that merge sends none. So neither the answer nor how long it takes tells a caller which
+    names exist, though the store takes one call to say it holds no secret by a name and more to
+    describe one it holds. The `reason` is the same for every name; it is there for an
+    `agent-secrets` of an earlier release, which reads this answer as a refusal and prints its
+    reason. A pod that stops waits for such rereads after its shutdown, out of the shutdown's own
+    budget, before it ends its reread listener and closes its database pools, so a reread it
+    answered `202` for still reaches the other pods. The reread run after a `202` writes these
+    lines:
+    - `broker: reread secret failed`, at ERROR, when the store or the writer lock fails it: the
+      line an alert on a failing store counts;
+    - `broker: reread panicked` and `broker: peer notice panicked`, at ERROR with the panic and
+      its stack, when the reread or its notice to the other pods panics, which the broker
+      recovers;
+    - `broker: reread after its answer was not run because the pod is stopping`, at WARN, for a
+      reread answered after the pod began to wait for them, which it neither counts nor runs;
+    - `broker: a reread run after its answer was still running when the shutdown's budget ran out`,
+      at WARN, from the stop sequence.
+  - A call an enrolled session signs is answered once the reread is done: whether the broker now
+    serves the secret, as which type (`type`: `github-app`, `google-login`, `azure-login` or
+    `google-service-account`, absent for a stored secret) and, if not, why (`absent`, or a
+    refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`). That is more than a
+    request for the secret tells a session, whose `UNKNOWN_SECRET` never separates a secret that
+    does not exist from one the broker refuses; it is what anyone allowed to list the namespace
+    reads from the secrets' own names and tags (or annotations). A proof the broker does not
+    accept is `401` `PROOF_INVALID`, whatever the name.
+  A name no secret can carry is `400` `SECRET_NAME_INVALID` to every caller, a check of its shape
+  alone. Neither route releases a value.
   Rereads are limited twice, by limits each pod derives rather than by settings
   (`RereadOverallFor` and `RereadLimitFor` in
   `packages/envoy/internal/broker/api/limits.go`): the broker as a whole takes one reread every
@@ -1184,8 +1353,30 @@ legion-envoy-v16.0.0 on, would serve a secret that carries `type` alone as a sto
 `secret create --type`, `secret set` on a type secret and a `secret retag` that leaves the secret
 a type each exit 1 before they read a value or write anything, naming the release the CLI is
 from; a write that leaves no type goes ahead. After the write, `create`, `set` and `retag` each
-exit 1 when the reread names another type than the secret holds, and say the retag that asks the
-broker to read it again.
+read the secret's type tag back from the store, under the sign-in they wrote with, and exit 1
+when it is not the type they wrote, when it is gone, or when the read back fails, naming the
+secret and both types; they ask the broker to reread the secret in every case, even one whose
+reread the broker refused. The CLI signs that reread only with a broker identity the process
+already holds: a key directory holding its key and enrollment, a person's sign-in, a helper that
+answers, or the machine's cached session. It waits on no launcher still enrolling and on no
+machine registration in progress, and trades no machine identity. A person's sign-in is the one
+that registers again: nothing renews its lease, so after `BROKER_LEASE_SECONDS` (900 by default)
+the broker answers its proof `401` "not live", and the CLI registers the sign-in's session again
+once, under the same box key — one trade of that person's sign-in, with the machine's identity as
+its actor, and one enrollment — and sends the reread again, signed, at a second token of both
+reread limits. Signed, the reread is answered with the type the broker serves, and a form exits 1
+when it names another type than the secret holds, saying the retag that asks the broker to read
+it again. Where the proof itself fails — no identity, an identity that cannot sign, a sign-in that
+cannot register again, or a broker that does not accept the proof or cannot check it (`503
+DATABASE_UNAVAILABLE`) — the CLI sends the reread again with no proof, which the broker answers
+`202` and says no more of. The form then prints one line saying the broker's view was not checked
+and why, and exits on the type tag alone: 0 when the store holds the type. That exit 0 says only
+that the store holds the tag, not that the broker serves the secret as that type, so store no App
+key or login in the secret until a retag run where the CLI has a broker identity exits 0 with
+`broker: serving NAME from … (type …)`. A signed reread that ran and failed (`500`, `503
+REQUEST_ENDED`), a spent reread limit (`429`) and a name no secret can carry (`400`) are not sent
+again: the form exits 1 saying the broker could not be asked to reread, and the broker serves the
+write from its next reload.
 
 The CLI and the broker ship in one legion-envoy release, so move the broker's pin to that release
 before people use its CLI. An `agent-secrets` from an earlier release still writes `kind`, which
@@ -1193,7 +1384,12 @@ this broker reads where `type` is absent, but it reads the reread's old `kind` f
 broker does not answer: every `secret retag` it makes that leaves a kind exits 1 saying the broker
 still sees the old tags and to store no value until a retag exits 0, whatever the broker serves;
 and its `--kind none` removes only `kind` and the guard and exits 0, so a secret that also carries
-`type` keeps minting as that type. Use the CLI of the broker's own release.
+`type` keeps minting as that type. An `agent-secrets` from before the release whose broker
+answers a reread with no proof `202` sends every reread with no proof and reads that answer as a
+refusal: its `create`, `set`, `retag` and `restore` print
+`broker: refusing NAME from … (reason=the reread was taken; … upgrade agent-secrets to the broker's release (the write stands))`
+and exit 1, and its `delete` prints the same line and exits 0. Every one of those writes stands.
+Use the CLI of the broker's own release.
 
 One type is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the
@@ -1364,7 +1560,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: a Postgres listener has no connection; redialing channels=… error=… attempt=… wait_ms=…` | At WARN, from `pglisten`: this pod has lost its `LISTEN` connection and is redialing with a backoff that reaches thirty seconds. **A pod logging this is outside the fan-out for every name** — losing the `LISTEN` does not by itself fail readiness, so the pod can go on passing `/healthz` and serving the whole time while a retag another pod rereads does not reach it until its own five-minute reload. It often does fail readiness at the same time, since `/healthz` pings Postgres and a database the pod cannot reach is the commonest reason the `LISTEN` went: a 200 beside this line is the case to worry about, not the normal one. It is not the only way a pod falls outside: the three rows below leave one behind for at least one name, and of the four only `the other pods were not told to reread a secret` and `a notification's reread of a secret did not run` can be matched to a secret. Repeating lines mean the database is not carrying `LISTEN` sessions for this pod; one or two around a failover are expected. |
 | `broker: binding before the reread listener has had an answer waited=5s` | At WARN: the boot's five-second wait for that `LISTEN` ran out, so this pod began serving before it could hear its peers. It serves normally and the listener keeps redialing; what it loses is the notifications sent in the gap, with its own five-minute reload as the backstop. A pod that logs this takes no catch-up load either, there being no subscription to order a read after. |
 | `broker: serving without the boot's catch-up policy load, so a retag another pod served while this one was starting may not be in force here until its five-minute reload error=…` | At WARN: once its `LISTEN` is in place a booting pod reads the namespace a second time, so that a retag a peer served while it was still loading is in force before it binds. That read failed. The pod serves what its first load gave it and catches up at its five-minute reload; the first load succeeded, so this is never a pod with no policy at all. |
-| `broker: the other pods were not told to reread a secret secret=… error=…` | At WARN, **not a failed request**: the reread this pod was asked for read the secret's tags and answered 200, or `503 REQUEST_ENDED` when its request ended during the value read alone, and only the Postgres `NOTIFY` that tells the other pods failed. The retag is in force here and reaches the others at their own next reload. |
+| `broker: the other pods were not told to reread a secret secret=… error=…` | At WARN, **not a failed request**: the reread this pod was asked for read the secret's tags and answered a session 200, or `503 REQUEST_ENDED` when its request ended during the value read alone, or ran after the `202` a call with no proof is answered, and only the Postgres `NOTIFY` that tells the other pods failed. The retag is in force here and reaches the others at their own next reload. |
 | `broker: a notification's reread of a secret did not run secret=… sender=… error=…` | At WARN, on no request at all: another pod told this one to reread a secret and the reread failed. This pod goes on serving the tags it last read until its own five-minute reload. |
 | `broker: a second signal arrived while the broker was still starting up, so it is stopping without a drain: it had not begun serving when that signal was read` | At ERROR: two signals reached a process that had not finished booting, so it exited non-zero without draining. The line says what was true when the second signal was read, which is what the process can observe; a boot that bound its socket in the two statements after that read logs it too. The lines above it say how far the boot got. Expected only when someone or something stopped a pod twice during startup. |
 | `broker: signalled while starting up, before it had bound anything stage=…` | One signal reached the process before it bound its socket, so it finished the stage it was in and stopped cleanly, serving nothing and running no drain. `stage` is `the first policy load` or `the catch-up policy load`. |
@@ -1417,8 +1613,7 @@ Its fields:
     on the OAuth token route, where it is the OAuth client the token request named.
   - `unauthenticated`: a route that takes a credential, refused before the broker knew who sent
     the request: a missing or bad credential, a listed caller on a route its name does not
-    carry, a refusal that the two routes that decide a credential request answer before they
-    read the credential, such as `DECIDE_ON_BROKER_PAGE`, and a refusal of the approval page or
+    carry, a reread whose proof the broker did not accept, and a refusal of the approval page or
     its sign-in to a browser with no live sign-in. `caller` is empty.
   - `launcher`: a machine's launcher, by the id of its launcher credential.
   - `session`: an agent session or a pod, by its enrollment id.
@@ -1755,8 +1950,9 @@ boots and still serves; its listener redials for as long as it runs.
 
 **A reread that reaches every pod, draining ones included.** `POST /v1/secrets/{name}/reread`
 rereads the secret on the pod the load balancer picked and then, once that pod has put the tags it
-read in force (its `200` answer, or a `503 REQUEST_ENDED` whose request ended during the value
-read alone), tells every other pod serving the same database to reread the same name, over
+read in force (a session's `200` answer, a `503 REQUEST_ENDED` whose request ended during the value
+read alone, or the reread that runs after the `202` a call with no proof is answered), tells every
+other pod serving the same database to reread the same name, over
 Postgres `LISTEN`/`NOTIFY` on a channel of its own. So one call puts a retag in force across the
 fleet within seconds rather than at each pod's own next five-minute reload, and it needs no
 infrastructure beyond the database the broker already has. A pod that is draining is still one of

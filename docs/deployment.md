@@ -70,13 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
-alone where the App's installation has not been granted Actions.
+`contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`, `checks: read` and
+`statuses: read`, less each of the last three the App's installation has not been granted.
 A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
 `pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
-(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
-run, a commit status or an attestation through a key-minted read-only token and not through the
-broker's.
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue or an
+attestation through a key-minted read-only token and not through the broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
@@ -273,7 +272,14 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
-names it — and nothing else.
+names it — and nothing else, but for a repository of an owner the bundle holds no directory
+for. The helper reads such a repository from GitHub once, with the token of the directory
+`GH_CONFIG_DIR` names where that is a directory of the bundle. Where GitHub answers that it is a
+fork, the helper answers the token it would answer for the fork's `parent`, or else for its
+`source`, where the bundle holds that owner's directory. That repository is usually the base of
+the fork's pull requests, whose token GitHub takes for a maintainer's commit to the branch of such
+a pull request from a fork in a personal account, and GitHub decides which branch of the fork
+that token may update. Every other repository of such an owner gets nothing.
 Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
 default-repository marker, into the clone's own configuration where that configuration holds no
 `gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
@@ -556,11 +562,13 @@ provider_keys:
 - **`pane_env`** refuses `PATH` (the runtime composes it), every name the runtime sets on a pane
   (its own `LEGION_*` names, the XDG directories, the gh variables, `PI_CONFIG_FILES`,
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
-  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
+  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
+  resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
+  session it resumes), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
   gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
-  `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
+  `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
   `…_PASSWORD`, `…_PAT`, `…_GRANT`, `…_CREDENTIALS`, `PRIVATE_KEY`), and any value holding a URL
   with a password in it (`scheme://user:password@…`). A value on tmux's command line is readable by
@@ -733,6 +741,12 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
+  `_FILE` pointer every pane carries, and, with the reason `pane_env` gives, a key named for a
+  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
+  resumed Oh My Pi pane after the operator's variables, or a launch secret's pointer.
+  The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
+  `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs

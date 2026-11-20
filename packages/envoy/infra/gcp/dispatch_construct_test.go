@@ -310,8 +310,8 @@ func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 // consumer's program declares: it reaches the plugin as that resource's output, the component
 // registers no DatabaseInstance and exports it as databaseInstance, and the app's Deployment,
 // whose proxy connects to it, waits for the resource it came from. In a preview it may be
-// unknown, as a replica made in the same update is, and the component previews (AGENTS.md,
-// "Plain or Input").
+// unknown, as a replica made in the same update is, and the component previews
+// (packages/envoy/infra/AGENTS.md, "Writing a component").
 func TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource(t *testing.T) {
 	inputs := dispatchConstructBaseInputs()
 	inputs["existingDatabaseInstance"] = property.New(replicaConnectionName).WithDependencies([]resource.URN{upstream})

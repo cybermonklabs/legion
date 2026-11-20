@@ -102,11 +102,12 @@ type pageView struct {
 // ServeRecord is GET /approve/{record}: the page for one record. It checks the id's shape, then
 // the session, then the record, in that order: a probe from a machine with no person behind it
 // must get the sign-in redirect rather than a 404 that tells it whether a record id exists. So an
-// id that is not a record id answers 400 whatever the session; with no live session, or with
-// ?switch=1 (a person signing in as someone else), it starts a sign-in that returns here, and a
-// signed-in person's unknown record id is a 404. The sign-in names the record's approver as
-// login_hint when the record exists and names one person, and names none otherwise, an id no
-// record has included, which is the one way the two redirects differ (loginHint). The page
+// id that is not a record id answers 400 whatever the session; with no live session it starts a
+// sign-in that returns here, reading no record and naming no login_hint, so the redirect is the
+// same for an id a record has as for one none has; and a signed-in person's unknown record id is
+// a 404. With a live session, ?switch=1 (a person signing in as someone else) starts a sign-in
+// that names the record's approver as login_hint when it names one person: that person already
+// reads whether the record exists from the page. The page
 // prints the record and every other pending agent_secret record the person may decide, with
 // Approve and Deny for each the person may decide and one "Approve all N shown" when N is two or
 // more, and, after a decision, one outcome line per decided record, read from the broker's own
@@ -122,7 +123,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 	switching := r.URL.Query().Get("switch") == "1"
 	if !sess.live() {
-		p.beginSignIn(w, r, id, p.loginHint(r, id), switching)
+		p.beginSignIn(w, r, id, "", switching)
 		return
 	}
 	detail, err := p.cfg.Machine.ReadRecord(r.Context(), id)
@@ -187,20 +188,6 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		view.ApproveAll = printed
 	}
 	writePage(w, http.StatusOK, "record.html", view)
-}
-
-// loginHint is the login_hint a sign-in started from id's page names: the record's approver, when
-// the broker has that record and it names one person. An id no record has, a shared secret's
-// "anyone", and a read the database could not answer all name none, so the hint is the one part
-// of the redirect that differs between an id a record has and an id none has, and a sign-in is
-// never held up by a database that cannot answer. Nothing follows from that difference: a record
-// id is a SHA-256 hash, so a caller that can name one already has it from the broker.
-func (p *Page) loginHint(r *http.Request, id string) string {
-	detail, err := p.cfg.Machine.ReadRecord(r.Context(), id)
-	if err != nil {
-		return ""
-	}
-	return approverHint(detail.Approver)
 }
 
 // approverHint is approver as a login_hint: the person's own login, and nothing for a shared

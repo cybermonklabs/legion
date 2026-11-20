@@ -1745,7 +1745,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. */
+    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
     get: operations["getApiV1IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -1968,7 +1968,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -1987,7 +1987,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -4907,6 +4907,7 @@ export interface components {
     EditPreconditionCurrent: {
       blocks: components["schemas"]["EditBlockPrecondition"][] | null;
       document: string;
+      version?: number;
     };
     EditPreconditionError: {
       code: string;
@@ -5551,6 +5552,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
       name: string;
+      precondition?: components["schemas"]["EditPrecondition"] | null;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
       summary?: string;
@@ -5567,6 +5569,7 @@ export interface components {
       host: string;
       /** Format: date-time */
       issued_at: string;
+      person: null | string;
       service: null | string;
       subject: null | string;
     };
@@ -6475,6 +6478,15 @@ export interface components {
       method: string;
       path: string;
     };
+    StandingReview: {
+      /** Format: date-time */
+      at: string;
+      by: string;
+      carried_from_version?: number;
+      reason?: string;
+      state: string;
+      version: number;
+    };
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
@@ -6745,6 +6757,7 @@ export interface components {
       legion_managed_status?: boolean;
       moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       session_writes_since_human: number;
+      standing_review?: components["schemas"]["StandingReview"];
       suggestions?: components["schemas"]["Suggestions"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
@@ -6893,6 +6906,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -10296,6 +10311,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -13375,6 +13392,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -15161,6 +15180,7 @@ export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];

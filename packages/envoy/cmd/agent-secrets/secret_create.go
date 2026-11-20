@@ -390,7 +390,7 @@ func (p *pendingCreate) interrupted() {
 		return
 	case p.stored:
 		p.sayStored()
-		reread(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+		rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 		return
 	}
 	if failure := p.abandonLocked(p.failure); failure != nil {
@@ -410,8 +410,8 @@ func (p *pendingCreate) endingAtOnce(sig os.Signal) {
 func (p *pendingCreate) rereadOutcome(outcome discardOutcome) {
 	switch outcome {
 	case deletedEmpty:
-		_, _ = p.s.broker.RereadSecret(context.WithoutCancel(p.s.ctx), p.name)
+		_, _, _ = p.s.askReread(context.WithoutCancel(p.s.ctx), p.name)
 	case keptMayHoldValue:
-		reread(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+		rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 	}
 }

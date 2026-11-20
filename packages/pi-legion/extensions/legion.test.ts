@@ -233,9 +233,9 @@ const environmentKeys = [
 
 /** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
  *  which it puts its own `bin/` first on when it loads, and the two a session's `dispatch`
- *  command reads (packages/pi-envoy/AGENTS.md). They go back with the keys above and are never
- *  deleted with them: the baseline below is "not a Legion pane", and a process with no `PATH`
- *  finds none of the programs these tests run. */
+ *  command reads (packages/pi-envoy/README.md, "The `dispatch` command"). They go back with the
+ *  keys above and are never deleted with them: the baseline below is "not a Legion pane", and a
+ *  process with no `PATH` finds none of the programs these tests run. */
 const entryEnvironmentKeys = ["PATH", "DISPATCH_HOST", "DISPATCH_SESSION_ID"] as const;
 restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 
@@ -448,7 +448,8 @@ afterAll(() => {
 
 beforeEach(async () => {
   // A suite run from inside a Legion pane inherits that pane's LEGION_*/DISPATCH_* launch
-  // environment; every test starts from none and sets only what it declares. The `dispatch`
+  // environment; every test starts from none and sets only what it declares, and a test that
+  // calls out stubs `fetch` itself (`afterEach` puts the real one back). The `dispatch`
   // command's state (the session title file `titleSession` writes) goes to a scratch directory.
   for (const key of environmentKeys) delete process.env[key];
   const dispatchState = await mkdtemp(path.join(os.tmpdir(), "legion-dispatch-state-"));
@@ -506,7 +507,7 @@ type HostTitle = { name?: string; source?: "auto" | "user"; readonly set: string
  * the session runs now; `unresolvable` are the selectors `ctx.models.resolve` answers nothing
  * for; `suppressed` are the ones the host itself holds suppressed; and `changes` are the
  * `model_change` entries each accepted switch appended, as the host appends one with the
- * ordinary role (`session/model-controls.ts:249-252` at the pinned tag). */
+ * ordinary role (`session/model-controls.ts:322-325` at the pinned tag). */
 type HostModels = {
   readonly set: HostModel[];
   answers: boolean;
@@ -746,10 +747,10 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:143-154): the
- * child's transcript sits inside a directory named after the parent's transcript file, minus
- * its `.jsonl` extension, so `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds
- * `parentFile`. */
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:484-504 at the
+ * pinned tag): the child's transcript sits inside a directory named after the parent's
+ * transcript file, minus its `.jsonl` extension, so
+ * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
 async function createSubagentTranscriptPaths(): Promise<{
   readonly parentFile: string;
   readonly childFile: string;
@@ -4344,8 +4345,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
     expect(controller.sentUserMessages).toEqual([]);
-    // The controller's `legion` tool: `read_state` and `set_status`, registered at startup and
-    // answering only once the claim has registered the session.
+    // The controller's `legion` tool (the operations of `OPERATIONS.controller` in
+    // `src/tools.ts`), registered at startup and answering only once the claim has registered
+    // the session.
     expect(controller.tools.map((tool) => tool.name)).toContain("legion");
 
     expect(await runStartCommand(controller, controller.context("ses_controller"))).toEqual([]);

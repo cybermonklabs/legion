@@ -16,13 +16,13 @@ name: Docs (main)
 # waiting in the group below only the newest builds, and the site loses nothing by that: each
 # build covers the whole tree, so the site still ends at the newest docs-selecting commit.
 #
-# The paths below are ci.yaml's docs filter flattened as dorny/paths-filter reads it (each
-# anchor's group in its place and order, the one duplicate kept), so main builds the site on
-# exactly the changes a pull request's docs job builds it on. .github/scripts/check-ci-filters.sh
-# fails when the two lists differ, naming each missing and extra pattern (ci_job_reads.py's
-# PUSH_WORKFLOWS pairs them), so change the filter and this list together. The block at the end
-# is the one part no hand writes: rule 17 of that check computes the `!` patterns that keep the
-# docs job off the Go test files it does not read, and
+# The paths below are the `docs` filter of .github/ci-filters.yaml flattened as
+# dorny/paths-filter reads it (each anchor's group in its place and order, the one duplicate
+# kept), so main builds the site on exactly the changes a pull request's docs job builds it on.
+# .github/scripts/check-ci-filters.sh fails when the two lists differ, naming each missing and
+# extra pattern (ci_job_reads.py's PUSH_WORKFLOWS pairs them), so change the filter and this list
+# together. The block at the end is the one part no hand writes: rule 17 of that check computes
+# the `!` patterns that keep the docs job off the Go test files it does not read, and
 # `.github/scripts/check-ci-filters.sh write` writes them into the filter and into this list at
 # once.
 on:
@@ -30,9 +30,10 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ci.yaml'
+      - '.github/ci-filters.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
-      # ci.yaml's *bun_install:
+      # ci-filters.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'
       - 'patches/**'
@@ -53,7 +54,7 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/ci-tools.yaml'
       - '.github/scripts/ci-tools.sh'
-      # ci.yaml's *go_workspace:
+      # ci-filters.yaml's *go_workspace:
       - 'go.work'
       - 'go.work.sum'
       - 'packages/daemon/go.mod'
@@ -62,7 +63,7 @@ on:
       - 'packages/envoy/go.sum'
       # The docs filter's own:
       - 'docs/site/**'
-      # ci.yaml's *legion_command:
+      # ci-filters.yaml's *legion_command:
       - 'packages/daemon/cmd/legion/*'
       - 'packages/daemon/internal/admit/*'
       - 'packages/daemon/internal/agentsecrets/*'
@@ -97,6 +98,7 @@ on:
       - 'packages/daemon/internal/ompdirs/*'
       - 'packages/daemon/internal/omplaunch/*'
       - 'packages/daemon/internal/ompsessions/*'
+      - 'packages/daemon/internal/pause/*'
       - 'packages/daemon/internal/phase/*'
       - 'packages/daemon/internal/pods/**'
       - 'packages/daemon/internal/podsafety/**'
@@ -144,7 +146,7 @@ on:
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/steprecord/*'
-      # ci.yaml's *dispatch_server:
+      # ci-filters.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
       - 'packages/envoy/internal/bus/*'

@@ -151,8 +151,16 @@ func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
 			env:  func(string, string) map[string]string { return map[string]string{} },
 			want: func(string, string) string { return manifestAt(filepath.Join(passwdHome, ".omp")) },
 		},
-		// Oh My Pi's config root is PI_CONFIG_DIR under HOME when it is set, and its XDG data root
-		// still wins when that exists (getBaseConfigRoot, DirResolver's constructor).
+		// Oh My Pi's config root is OMP_CONFIG_ROOT when it names an absolute directory, else
+		// PI_CONFIG_DIR under HOME when that is set, and its XDG data root still wins when that
+		// exists (getConfigRootOverride, getBaseConfigRoot, DirResolver's constructor).
+		{
+			name: "an absolute OMP_CONFIG_ROOT names the config root, over PI_CONFIG_DIR",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_CONFIG_ROOT": filepath.Join(home, "omp-root"), "PI_CONFIG_DIR": ".omp-alt"}
+			},
+			want: func(home, _ string) string { return manifestAt(filepath.Join(home, "omp-root")) },
+		},
 		{
 			name: "PI_CONFIG_DIR names the config root under HOME",
 			env: func(home, xdg string) map[string]string {
@@ -269,7 +277,11 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 }
 
 // fakeOmp is an `omp` that answers the load probe by a plan, one step per attempt (the last step
-// repeats), and records each attempt's argv, environment, and the probe file it was handed.
+// repeats), and records each attempt's argv, environment, and the probe file it was handed. Every
+// yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
+// missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
+// compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
+// release.
 type fakeOmp struct {
 	dir, path, prefix string
 }
