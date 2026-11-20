@@ -41,7 +41,9 @@ import (
 //     sweep with. It cuts a refusal's body and a next page link alone, each with its own size
 //     (requireCut).
 //   - The client cuts a value of an answer it cannot decode alone too, with the value's size, and
-//     the decode error still names the layout (requireCut, inTimeQuotes).
+//     the decode error still names the layout (requireCut, inTimeQuotes). The reason of a time
+//     parse error quotes the text after a valid time, and the client cuts it alone too, with the
+//     reason's size. The cut reason ends the error (requireBounded).
 //   - A transport error of the client cuts its URL, with the URL's size, and its cause. A line the
 //     cause quotes is cut with the cause's text, with the size of the cause's text
 //     (requireBounded).
@@ -187,16 +189,22 @@ var shownMost = 512*utf8.UTFMax + len(fmt.Sprintf("… (%d bytes)", math.MaxInt)
 // shownEnd is the end githubapp.ShownBody gives a text it cuts.
 var shownEnd = regexp.MustCompile(`… \(\d+ bytes\)$`)
 
-// requireBounded fails the test unless s shows its text in the cause of a transport error, which
-// quotes a line of the answer. The cause holds GitHub's text in no field of its own, so the
-// githubapp client cuts the cause's whole text, as githubapp.ShownErr cuts any such error. The
-// client keeps the shape `<Op> "<URL>": <cause>` and shows the URL as githubapp.ShownBody shows
-// it, so the cut cause ends the transport error's text. Such a sighting holds the start of the
-// text, never the text whole, is no longer than githubapp.ShownBody makes any text (shownMost),
-// and ends with ShownBody's `… (<n> bytes)`, n the size of the cause's text. requireCut does not
-// hold of it, since the cut is of the cause's text, which holds GitHub's among words of its own,
-// and not of GitHub's text alone. The texts here are ASCII, so the words before the cut leave it
-// far inside shownMost.
+// requireBounded fails the test unless s shows its text in a cut that ends an error, of a text
+// that holds GitHub's text among words of its own. Two texts of the githubapp client do so:
+//
+//   - The cause of a transport error, which quotes a line of the answer. The githubapp client
+//     cuts the cause's whole text, as githubapp.ShownErr cuts any such error. The client keeps the
+//     shape `<Op> "<URL>": <cause>` and shows the URL as githubapp.ShownBody shows it, so the cut
+//     cause ends the transport error's text.
+//   - The reason of a time parse error, its Message, which quotes the text after a valid time
+//     (`: extra text: "<text>"`). The client cuts the reason as githubapp.ShownBody shows it, and
+//     the reason ends the parse error's text (`parsing time "<Value>"` and then the Message).
+//
+// Such a sighting holds the start of the text, never the text whole, is no longer than
+// githubapp.ShownBody makes any text (shownMost), and ends with ShownBody's `… (<n> bytes)`, n the
+// size of the cause's text or of the reason. requireCut does not hold of it, since the cut is of
+// a text that holds GitHub's among words of its own, and not of GitHub's text alone. The texts
+// here are ASCII, so the words before the cut leave it far inside shownMost.
 func requireBounded(t *testing.T, s sighting) {
 	t.Helper()
 	start := s.text[:min(len(s.text), 32)]
@@ -707,11 +715,39 @@ func refuseLargely(t *testing.T, w http.ResponseWriter, status int) {
 // (githubapp.ShownErr).
 var undecodableDeliveredAt = strings.Repeat("v", 100_000)
 
-// undecodableListing is a page of the listing, with the fields GitHub writes (githubapptest's
-// Delivery), whose one delivery has undecodableDeliveredAt.
-var undecodableListing = `[{"id":17,"guid":"guid-undecodable","delivered_at":"` + undecodableDeliveredAt +
-	`","redelivery":false,"duration":0.3,"status":"Invalid HTTP Response: 503","status_code":503,` +
-	`"event":"pull_request_review","action":"submitted","installation_id":1,"repository_id":7}]`
+// listingOf is a page of the listing, with the fields GitHub writes (githubapptest's Delivery),
+// whose one delivery has deliveredAt as its delivered_at.
+func listingOf(deliveredAt string) string {
+	return `[{"id":17,"guid":"guid-undecodable","delivered_at":"` + deliveredAt +
+		`","redelivery":false,"duration":0.3,"status":"Invalid HTTP Response: 503","status_code":503,` +
+		`"event":"pull_request_review","action":"submitted","installation_id":1,"repository_id":7}]`
+}
+
+// extraText is 100,000 bytes after a valid time in extraTextDeliveredAt, a delivered_at that a
+// listing GitHub answers 200 can carry. time.Parse reads the time and fails on extraText: the
+// client's decode of the page fails with a time.ParseError whose Value is the whole delivered_at
+// and whose reason, its Message, quotes extraText (`: extra text: "<extraText>"`). The client cuts
+// each alone (githubapp.ShownErr).
+var (
+	extraText            = strings.Repeat("x", 100_000)
+	extraTextDeliveredAt = "2026-11-20T00:00:00Z" + extraText
+)
+
+// answerListing puts a server in front of the fake that answers each request for a page of the
+// listing 200 with listing, and hands every other request to the fake.
+func (h *harness) answerListing(t *testing.T, listing string) {
+	t.Helper()
+	h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
+		if isListing(r) {
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := io.WriteString(w, listing); err != nil {
+				t.Errorf("write GitHub's listing: %v", err)
+			}
+			return
+		}
+		fake.ServeHTTP(w, r)
+	})
+}
 
 // malformedHeaderLine is a line of 64 KiB with no colon in it, which no header block may hold:
 // net/http's client fails a request whose answer holds it with a transport error that quotes the
@@ -790,14 +826,16 @@ func (h *harness) refusedRedelivery(t *testing.T, guid, text string, answer func
 // the error, as githubapp.ShownBody shows GitHub's text. A body, a link and a value it cannot
 // decode are each cut alone, so each shows its own size (requireCut). The decode error is a
 // time.ParseError that still names the layout, and it writes the cut value in the quotes of
-// package time (inTimeQuotes). A transport error cuts its URL, with the URL's size, and its cause.
-// A line the cause quotes is cut with the cause's own text, which holds GitHub's among words of its
-// own, so it shows the size of the cause's text (requireBounded). The sweep shows each such error
-// as it is, so each is held to the bound and never whole: in the error the sweep answers and in
-// the WARN line the running sweep logs it with for each failed listing, and in the request-refused
-// line for each failed redelivery request (refusedRedelivery). Each case is a real sweep through
-// the real client against the fake, with a server in front of the fake that gives the one answer
-// the case is about (inFrontOfGitHub).
+// package time (inTimeQuotes). For a valid time with text after it, the decode error's reason
+// quotes that text, and the client cuts the reason with the reason's size (requireBounded). A
+// transport error cuts its URL, with the URL's size, and its cause. A line the cause quotes is cut
+// with the cause's own text, which holds GitHub's among words of its own, so it shows the size of
+// the cause's text (requireBounded). The sweep shows each such error as it is, so each is held to
+// the bound and never whole: in the error the sweep answers and in the WARN line the running sweep
+// logs it with for each failed listing, and in the request-refused line for each failed
+// redelivery request (refusedRedelivery). Each case is a real sweep through the real client
+// against the fake, with a server in front of the fake that gives the one answer the case is about
+// (inFrontOfGitHub).
 func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -836,21 +874,31 @@ func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 			}), refusalFiller
 		}},
 		{"a listing GitHub answers 200 with a value the client cannot decode", requireCut, func(t *testing.T, h *harness) ([]sighting, string) {
-			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {
-				if isListing(r) {
-					w.Header().Set("Content-Type", "application/json")
-					if _, err := io.WriteString(w, undecodableListing); err != nil {
-						t.Errorf("write GitHub's listing: %v", err)
-					}
-					return
-				}
-				fake.ServeHTTP(w, r)
-			})
+			h.answerListing(t, listingOf(undecodableDeliveredAt))
 			shown := h.failedListing(t, "listing holds a delivered_at the client cannot decode", undecodableDeliveredAt)
 			for i := range shown {
 				shown[i].quote = inTimeQuotes
 			}
 			return shown, undecodableDeliveredAt
+		}},
+		// The delivered_at reaches the error twice. The parse error's Value is the whole
+		// delivered_at, which the client cuts alone, with the value's size, in time's quotes, as in
+		// the row above: so the row's check is requireCut. The parse error's reason quotes
+		// extraText among time's words (`: extra text: "<extraText>"`), and the client cuts the
+		// reason with the reason's size, not with extraText's. requireCut does not hold of that cut.
+		// requireBounded does, since the cut reason ends the error, so each place is held to it
+		// too, with extraText as its text, and must still name the reason.
+		{"a listing GitHub answers 200 with a valid time and extra text past the bound", requireCut, func(t *testing.T, h *harness) ([]sighting, string) {
+			h.answerListing(t, listingOf(extraTextDeliveredAt))
+			shown := h.failedListing(t, "listing holds a delivered_at with extra text after a valid time", extraTextDeliveredAt)
+			for i := range shown {
+				shown[i].quote = inTimeQuotes
+				requireBounded(t, sighting{where: shown[i].where + ", in its reason", shown: shown[i].shown, text: extraText})
+				if reason := `": extra text: "` + extraText[:256]; !strings.Contains(shown[i].shown, reason) {
+					t.Errorf("%s is %.200q…; want it to name the reason and the start of the text after the time, %.40q…", shown[i].where, shown[i].shown, reason)
+				}
+			}
+			return shown, extraText
 		}},
 		{"a listing whose answer fails at the transport on a header line past the bound", requireBounded, func(t *testing.T, h *harness) ([]sighting, string) {
 			h.inFrontOfGitHub(func(w http.ResponseWriter, r *http.Request, fake http.Handler) {

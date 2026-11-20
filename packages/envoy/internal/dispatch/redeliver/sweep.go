@@ -51,8 +51,12 @@
 //   - A refusal's body is cut alone, with the body's size.
 //   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
 //     alone, with the value's size. The error still names the layout, or the field and the type.
+//     The reason of a time parse error quotes the text after a valid time, and it is cut alone
+//     too, with the reason's size.
 //   - A transport error cuts its URL, with the URL's size, and its cause. A line the cause quotes
 //     is cut with the cause's text, with the size of the cause's text.
+//   - githubapp.ShownErr answers no error longer than 4,414 bytes. An error whose text is still
+//     longer after the cuts above is cut whole, with the size of that text.
 //
 // Dispatch runs the sweep because it holds the App's private key, which the list and redeliver
 // endpoints require (they take only an App JWT).

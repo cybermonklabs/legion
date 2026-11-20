@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,8 +49,11 @@ func decodeErr[E error](t *testing.T, answer string, into any) E {
 // url.Error, whose Timeout and Temporary type-assert the cause and do not read its chain. A
 // time.ParseError and a json.UnmarshalTypeError that json.Unmarshal answers keep their types: each
 // value past the bound is cut alone, with the value's size, and every other field stays, so the
-// error still names the layout and the reason, or the field and the type. Each of them within the
-// bound, and a url.Error within the bound, comes back as itself.
+// error still names the layout and the reason, or the field and the type. A time.ParseError of a
+// valid time with text after it also has its reason cut, which quotes that text, with the
+// reason's size. A time.ParseError still longer than shownErrMost once its fields are cut is cut
+// whole, and its answer still reaches it. Each of them within the bound, and a url.Error within
+// the bound, comes back as itself.
 func TestShownErrCutsOnlyAnErrorPastTheBound(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		if got := ShownErr(nil); got != nil {
@@ -128,6 +132,91 @@ func TestShownErrCutsOnlyAnErrorPastTheBound(t *testing.T) {
 		}
 		if reason := ` as "2006-01-02T15:04:05Z07:00": cannot parse `; !strings.Contains(text, reason) {
 			t.Errorf("the cut parse error %.120q… does not hold %q; want it to name the layout and the reason", text, reason)
+		}
+	})
+
+	// time.Parse reads a valid time and fails on the text after it, with a reason that quotes that
+	// text (Message, `: extra text: "<text>"`). ShownErr cuts the reason as it cuts the value, so
+	// the answer still names the reason (review of cybermonklabs/legion#4373 at a9c02f7a).
+	t.Run("a time parse error of a valid time and extra text past the bound", func(t *testing.T) {
+		extra := strings.Repeat("x", 100_000)
+		value := "2026-11-20T00:00:00Z" + extra
+		parse := decodeErr[*time.ParseError](t, `{"t":"`+value+`"}`, &struct {
+			T time.Time `json:"t"`
+		}{})
+		if reason := `: extra text: "` + extra + `"`; parse.Value != value || parse.Message != reason {
+			t.Fatalf("the parse error's Value is %.60q… (%d bytes) and its Message %.60q… (%d bytes); want the %d-byte value, and the reason that quotes the %d bytes after the time",
+				parse.Value, len(parse.Value), parse.Message, len(parse.Message), len(value), len(extra))
+		}
+		answer := ShownErr(parse)
+		text := answer.Error()
+		switch {
+		case len(text) > shownErrMost:
+			t.Errorf("ShownErr's text is %d bytes; want at most shownErrMost, %d", len(text), shownErrMost)
+		case strings.Contains(text, extra):
+			t.Errorf("ShownErr's text (%d bytes) holds the %d bytes after the time whole", len(text), len(extra))
+		}
+		if reason := `": extra text: "` + extra[:256]; !strings.Contains(text, reason) {
+			t.Errorf("ShownErr's text %.120q… does not hold %.40q…; want it to name the reason and the start of the text after the time", text, reason)
+		}
+		if end := fmt.Sprintf("… (%d bytes)", len(parse.Message)); !strings.HasSuffix(text, end) {
+			t.Errorf("ShownErr's text ends %q; want the reason as ShownBody shows it, ending %q, the reason's size", text[max(0, len(text)-40):], end)
+		}
+		var reached *time.ParseError
+		if !errors.As(answer, &reached) {
+			t.Fatalf("ShownErr's answer, a %T, reaches no *time.ParseError", answer)
+		}
+		shown, ok := answer.(*time.ParseError)
+		if !ok {
+			t.Fatalf("ShownErr of a *time.ParseError answers %T; want a *time.ParseError whose fields it cut", answer)
+		}
+		want := *parse
+		want.Value, want.ValueElem, want.Message = ShownBody(parse.Value), ShownBody(parse.ValueElem), ShownBody(parse.Message)
+		if *shown != want {
+			t.Errorf("ShownErr answers Value %.60q…, ValueElem %.60q…, Message %.60q…, Layout %q, LayoutElem %q; want Value, ValueElem and Message as ShownBody shows them, %.60q…, %.60q… and %.60q…, and Layout %q and LayoutElem %q as the parse error has them",
+				shown.Value, shown.ValueElem, shown.Message, shown.Layout, shown.LayoutElem, want.Value, want.ValueElem, want.Message, parse.Layout, parse.LayoutElem)
+		}
+	})
+
+	// Package time writes each byte past ASCII as \xNN, four bytes in its quotes for each byte, so
+	// a value of runes of four bytes leaves a parse error past shownErrMost once ShownErr cuts its
+	// fields: about 16,500 bytes for a value that is no time, whose text quotes Value and
+	// ValueElem, and about 8,500 for a valid time with such runes after it, whose text quotes
+	// Value and the reason. ShownErr cuts each whole, with the size of its text with the fields cut,
+	// and the answer still reaches the parse error.
+	t.Run("a time parse error still past shownErrMost once its fields are cut", func(t *testing.T) {
+		runes := strings.Repeat("𝒱", 25_000)
+		for _, row := range []struct{ name, value string }{
+			{"a value of four-byte runes that is no time", runes},
+			{"a valid time and four-byte runes after it", "2026-11-20T00:00:00Z" + runes},
+		} {
+			parse := decodeErr[*time.ParseError](t, `{"t":"`+row.value+`"}`, &struct {
+				T time.Time `json:"t"`
+			}{})
+			fields := *parse
+			fields.Value, fields.ValueElem, fields.Message = ShownBody(parse.Value), ShownBody(parse.ValueElem), ShownBody(parse.Message)
+			cutFields := fields.Error()
+			if len(cutFields) <= shownErrMost {
+				t.Fatalf("%s: the parse error with its fields cut is %d bytes, at most shownErrMost (%d); the row needs one past it", row.name, len(cutFields), shownErrMost)
+			}
+			answer := ShownErr(parse)
+			text := answer.Error()
+			if _, ok := answer.(*shownError); !ok {
+				t.Errorf("%s: ShownErr answers a %T of %d bytes; want a *shownError, the parse error cut whole", row.name, answer, len(text))
+			}
+			if want := ShownBody(cutFields); text != want {
+				t.Errorf("%s: ShownErr's text is %.60q… (%d bytes); want the text with the fields cut as ShownBody shows it, %.60q… (%d bytes)", row.name, text, len(text), want, len(want))
+			}
+			if len(text) > shownMost {
+				t.Errorf("%s: ShownErr's text is %d bytes; want at most %d, the longest text ShownBody makes", row.name, len(text), shownMost)
+			}
+			if end := fmt.Sprintf("… (%d bytes)", len(cutFields)); !strings.HasSuffix(text, end) {
+				t.Errorf("%s: ShownErr's text ends %q; want %q, the size of the text with the fields cut", row.name, text[max(0, len(text)-40):], end)
+			}
+			var reached *time.ParseError
+			if !errors.As(answer, &reached) || reached != parse {
+				t.Errorf("%s: ShownErr's answer reaches %p, not the parse error %p; want errors.As to reach the parse error", row.name, reached, parse)
+			}
 		}
 	})
 
@@ -282,6 +371,123 @@ func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
 	for _, reason := range []string{` as "2006-01-02T15:04:05Z07:00"`, "cannot parse"} {
 		if !strings.Contains(text, reason) {
 			t.Errorf("the error %.120q… does not hold %q; want it to name the layout and the reason", text, reason)
+		}
+	}
+}
+
+// A valid time with text after it is GitHub's text too. time.Parse reads the time and fails on
+// the text after it, with a reason that quotes that text (time.ParseError's Message,
+// `: extra text: "<text>"`). The client cuts the reason as it cuts the value (ShownErr), each with
+// its own size. So the error never holds the text after the time whole, is no longer than the
+// client's words and shownErrMost, and still names the reason. It is still a *time.ParseError.
+// The value here is an expires_at of a valid time and 100,000 bytes after it, in the 201 GitHub
+// answers an installation token mint with (review of cybermonklabs/legion#4373 at a9c02f7a).
+func TestADecodeErrorOfAValidTimeAndLongExtraTextIsCutToTheBound(t *testing.T) {
+	extra := strings.Repeat("x", 100_000)
+	value := "2026-11-20T00:00:00Z" + extra
+	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/7/access_tokens" {
+			t.Errorf("GitHub saw %s %s; want the token mint only", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, value)
+	})
+
+	_, err := client.Token(context.Background(), 7)
+	if err == nil {
+		t.Fatal("a token mint whose answer does not decode answered no error")
+	}
+	text := err.Error()
+	const prefix = "decode installation token: "
+	switch {
+	case strings.Contains(text, extra):
+		t.Fatalf("the error (%d bytes) holds the %d bytes after the time whole; want them cut to a bound", len(text), len(extra))
+	case len(text) > len(prefix)+shownErrMost:
+		t.Fatalf("the error is %d bytes; want at most %d, the client's words and shownErrMost", len(text), len(prefix)+shownErrMost)
+	case !strings.HasPrefix(text, prefix):
+		t.Fatalf("the error is %.120q…; want it to start %q", text, prefix)
+	}
+	if reason := `": extra text: "` + extra[:256]; !strings.Contains(text, reason) {
+		t.Errorf("the error %.120q… does not hold %.40q…; want it to name the reason and the start of the text after the time", text, reason)
+	}
+	var decode *time.ParseError
+	if !errors.As(err, &decode) {
+		t.Fatalf("the error %.120q… reaches no *time.ParseError", text)
+	}
+	if want := prefix + decode.Error(); text != want {
+		t.Errorf("the error is %.120q… (%d bytes); want the client's words and the cut parse error, %.120q… (%d bytes)", text, len(text), want, len(want))
+	}
+	reason := `: extra text: "` + extra + `"`
+	if decode.Value != ShownBody(value) || decode.Message != ShownBody(reason) {
+		t.Errorf("the decode error's Value is %.60q… (%d bytes) and its Message %.60q… (%d bytes); want each as ShownBody shows it, with the value's size and the reason's size",
+			decode.Value, len(decode.Value), decode.Message, len(decode.Message))
+	}
+}
+
+// No error ShownErr answers is longer than shownErrMost, whatever field of the three types that it
+// cuts the fields of is long. That holds for a field it cuts, for a field it keeps (a url.Error's
+// Op, a time.ParseError's Layout and LayoutElem, a json.UnmarshalTypeError's Struct, Field and
+// Err), and for a field past ASCII, which package time writes as \xNN for each byte. Each type
+// gets 100,000 bytes in its exported string fields and as the text of its exported error fields:
+// in every such field at once, and then in each alone. The 100,000 bytes are ASCII, then a rune
+// of two bytes, then a rune of four. A json.UnmarshalTypeError's Type stays a real reflect.Type.
+// The answer still reaches an error of the type (errors.As).
+func TestShownErrIsNeverLongerThanShownErrMost(t *testing.T) {
+	errorType := reflect.TypeFor[error]()
+	for _, newErr := range []func() error{
+		func() error {
+			return &url.Error{Op: "Get", URL: "https://api.github.com/app/hook/deliveries", Err: context.DeadlineExceeded}
+		},
+		func() error {
+			_, err := time.Parse(time.RFC3339, "soon")
+			return err
+		},
+		func() error {
+			return &json.UnmarshalTypeError{Value: "number 1e999", Type: reflect.TypeFor[int64](), Offset: 7, Struct: "installationPayload", Field: "id"}
+		},
+	} {
+		typ := reflect.TypeOf(newErr())
+		// long is each field of the type that the test gives 100,000 bytes: every exported string
+		// field and every exported field of type error.
+		var long []reflect.StructField
+		for _, field := range reflect.VisibleFields(typ.Elem()) {
+			if field.IsExported() && (field.Type.Kind() == reflect.String || field.Type == errorType) {
+				long = append(long, field)
+			}
+		}
+		if len(long) == 0 {
+			t.Fatalf("the %s has no exported string or error field; the test needs one", typ)
+		}
+		// sets is each set of fields that one error gets 100,000 bytes in: all of them, then each
+		// alone.
+		sets := [][]reflect.StructField{long}
+		for _, field := range long {
+			sets = append(sets, []reflect.StructField{field})
+		}
+		for _, unit := range []string{"x", "é", "𝒱"} {
+			t.Run(fmt.Sprintf("%s in %s", typ, unit), func(t *testing.T) {
+				text := strings.Repeat(unit, 100_000/len(unit))
+				for _, set := range sets {
+					err := newErr()
+					fields := reflect.ValueOf(err).Elem()
+					var names []string
+					for _, field := range set {
+						if field.Type == errorType {
+							fields.FieldByIndex(field.Index).Set(reflect.ValueOf(errors.New(text)))
+						} else {
+							fields.FieldByIndex(field.Index).SetString(text)
+						}
+						names = append(names, field.Name)
+					}
+					shown := ShownErr(err)
+					if n := len(shown.Error()); n > shownErrMost {
+						t.Errorf("ShownErr of a %s with %d bytes in %s answers %d bytes; want at most shownErrMost, %d", typ, len(text), strings.Join(names, ", "), n, shownErrMost)
+					}
+					if !errors.As(shown, reflect.New(typ).Interface()) {
+						t.Errorf("ShownErr of a %s with %d bytes in %s answers a %T, which reaches no %s", typ, len(text), strings.Join(names, ", "), shown, typ)
+					}
+				}
+			})
 		}
 	}
 }
