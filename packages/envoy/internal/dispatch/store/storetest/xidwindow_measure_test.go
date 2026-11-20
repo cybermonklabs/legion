@@ -28,6 +28,11 @@ import (
 // own under a testing.TB whose Fatalf stops that goroutine as a test's does (stoppingTB), so this
 // test watches the stop without failing.
 func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
+	XidAttempts(t, aStoppedMeasureLeavesTheNextItsOwnTrace)
+}
+
+// aStoppedMeasureLeavesTheNextItsOwnTrace is one attempt of its test (XidAttempts).
+func aStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 	skipWhereNoTraceIsTaken(t)
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.

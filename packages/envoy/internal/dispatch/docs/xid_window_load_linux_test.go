@@ -34,42 +34,52 @@ func TestXidWindowRigReadsTheMachinesLoadAsTheMachines(t *testing.T) {
 		{name: "a crowded CPU and a " + rigInjectedGap.String() + " sleep", sleep: rigInjectedGap},
 	} {
 		t.Run(probe.name, func(t *testing.T) {
-			_, database, tracer := xidService(t)
-			crowded := crowdACPU(t)
-			report := tracer.Measure(t, database.Pool, func() {
-				runRigTransactionDoing(t, database, func() {
-					crowded.run(t, xidCrowdedWork)
-					time.Sleep(probe.sleep)
+			storetest.XidAttempts(t, func(t *testing.T) {
+				_, database, tracer := xidService(t)
+				crowded := crowdACPU(t)
+				report := tracer.Measure(t, database.Pool, func() {
+					defer crowded.hold(t)()
+					runRigTransactionDoing(t, database, func() {
+						crowded.run(t, xidCrowdedWork)
+						time.Sleep(probe.sleep)
+					})
 				})
+				crowded.stop()
+				if len(report.Problems) > 0 || len(report.Windows) != 1 {
+					t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
+				}
+				window := report.Windows[0]
+				if !strings.Contains(window.Statements[0].SQL, "insert into projects") {
+					t.Fatalf("the window starts at %q, want the insert that gave the transaction its xid:\n%s", window.Statements[0].SQL, window.Detail())
+				}
+				if gap := window.Gaps[0]; gap.Clock <= storetest.XidMaxGap || gap.Runnable <= 0 {
+					t.Fatalf("the crowded gap took %s on the clock, %s of it waiting for a CPU: the crowding did not open a gap past %s, so this run read no load\n%s",
+						storetest.XidMillis(gap.Clock), storetest.XidMillis(gap.Runnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
+				}
+				err := report.Err()
+				if probe.sleep == 0 {
+					storetest.XidMeasureAgain(t, err)
+				}
+				switch {
+				case probe.sleep == 0 && err != nil:
+					t.Fatalf("a gap the machine's load opened broke D6: %v", err)
+				case probe.sleep > 0 && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+					!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
+					t.Fatalf("a %s sleep in a crowded gap: verdict %v, want a D6 violation after the insert\n%s", probe.sleep, err, window.Detail())
+				}
+				t.Logf("%s\n%s", window.Summary(), window.Detail())
 			})
-			crowded.stop()
-			if len(report.Problems) > 0 || len(report.Windows) != 1 {
-				t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
-			}
-			window := report.Windows[0]
-			if !strings.Contains(window.Statements[0].SQL, "insert into projects") {
-				t.Fatalf("the window starts at %q, want the insert that gave the transaction its xid:\n%s", window.Statements[0].SQL, window.Detail())
-			}
-			if gap := window.Gaps[0]; gap.Clock <= storetest.XidMaxGap || gap.Runnable <= 0 {
-				t.Fatalf("the crowded gap took %s on the clock, %s of it waiting for a CPU: the crowding did not open a gap past %s, so this run read no load\n%s",
-					storetest.XidMillis(gap.Clock), storetest.XidMillis(gap.Runnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
-			}
-			err := report.Err()
-			switch {
-			case probe.sleep == 0 && err != nil:
-				t.Fatalf("a gap the machine's load opened broke D6: %v", err)
-			case probe.sleep > 0 && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
-				!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
-				t.Fatalf("a %s sleep in a crowded gap: verdict %v, want a D6 violation after the insert\n%s", probe.sleep, err, window.Detail())
-			}
-			t.Logf("%s\n%s", window.Summary(), window.Detail())
 		})
 	}
 }
 
-// xidCrowdedWork is the CPU time the crowded gap runs, a fifth of storetest.XidMaxGap: short
-// enough that the gap the code makes stays under the bound.
-const xidCrowdedWork = storetest.XidMaxGap / 5
+// xidCrowdedWork is the CPU time the crowded gap runs, a twentieth of storetest.XidMaxGap: short
+// enough that the gap the code makes stays under both rules, the bound and the statements' own
+// time. The rig's transaction's four statements can make as little as 1.14 ms between them, and
+// with a fifth of the bound, 1 ms of work in a gap that read 1.15 to 1.77 ms made, the code's own
+// gap broke rule 2 once in 1,200 forced runs (1.176 ms against 1.140 ms, on a 288-CPU machine at a
+// load of about 500, 2026-11-20), with no fault, no long step and no CPU time beyond its own.
+const xidCrowdedWork = storetest.XidMaxGap / 20
 
 // xidCrowdedTurns is how many pieces the crowded gap runs its work in, giving up its turn on the
 // CPU after each: each time it waits runnable while the crowding processes run their slices, so the
@@ -144,6 +154,20 @@ func (crowded *crowdedCPU) pin(t *testing.T) (unpin func()) {
 	}
 }
 
+// hold locks the calling goroutine to its thread and pins the thread to the crowded CPU, and
+// answers what lets it go with its own CPUs. Called before a transaction's BEGIN, it puts the
+// whole transaction on the crowded CPU, so the rig, which pins a held thread to the CPU it is on at
+// BEGIN, counts the softirqs of the CPU the gap's work runs on (storetest.XidGap.Softirqs).
+func (crowded *crowdedCPU) hold(t *testing.T) (release func()) {
+	t.Helper()
+	runtime.LockOSThread()
+	unpin := crowded.pin(t)
+	return func() {
+		unpin()
+		runtime.UnlockOSThread()
+	}
+}
+
 // run runs work of this thread's CPU time pinned to the crowded CPU, in xidCrowdedTurns pieces,
 // yielding its turn after each as a thread the scheduler preempts gives it up, so it waits
 // runnable behind the crowding processes however the scheduler placed it; and gives the thread
@@ -199,28 +223,33 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 		{name: "a channel receive the code waits on", wait: func() { receiveAfter(rigInjectedGap) }, breaks: true},
 	} {
 		t.Run(probe.name, func(t *testing.T) {
-			_, database, tracer := xidService(t)
-			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
-			report := tracer.Measure(t, database.Pool, func() {
-				runRigTransactionDoing(t, database, probe.wait)
+			storetest.XidAttempts(t, func(t *testing.T) {
+				_, database, tracer := xidService(t)
+				defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+				report := tracer.Measure(t, database.Pool, func() {
+					runRigTransactionDoing(t, database, probe.wait)
+				})
+				if len(report.Problems) > 0 || len(report.Windows) != 1 {
+					t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
+				}
+				window := report.Windows[0]
+				if gap := window.Gaps[0]; gap.Clock-gap.Runnable <= storetest.XidMaxGap {
+					t.Fatalf("the gap read %s off its thread's clocks alone, not past %s: the wait did not happen, so this run proves nothing\n%s",
+						storetest.XidMillis(gap.Clock-gap.Runnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
+				}
+				err := report.Err()
+				if !probe.breaks {
+					storetest.XidMeasureAgain(t, err)
+				}
+				switch {
+				case !probe.breaks && err != nil:
+					t.Fatalf("a wait for the runtime to run the goroutine again broke D6: %v", err)
+				case probe.breaks && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+					!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
+					t.Fatalf("a %s wait on a channel: verdict %v, want a D6 violation after the insert\n%s", rigInjectedGap, err, window.Detail())
+				}
+				t.Logf("%s\n%s", window.Summary(), window.Detail())
 			})
-			if len(report.Problems) > 0 || len(report.Windows) != 1 {
-				t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
-			}
-			window := report.Windows[0]
-			if gap := window.Gaps[0]; gap.Clock-gap.Runnable <= storetest.XidMaxGap {
-				t.Fatalf("the gap read %s off its thread's clocks alone, not past %s: the wait did not happen, so this run proves nothing\n%s",
-					storetest.XidMillis(gap.Clock-gap.Runnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
-			}
-			err := report.Err()
-			switch {
-			case !probe.breaks && err != nil:
-				t.Fatalf("a wait for the runtime to run the goroutine again broke D6: %v", err)
-			case probe.breaks && (err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
-				!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
-				t.Fatalf("a %s wait on a channel: verdict %v, want a D6 violation after the insert\n%s", rigInjectedGap, err, window.Detail())
-			}
-			t.Logf("%s\n%s", window.Summary(), window.Detail())
 		})
 	}
 }

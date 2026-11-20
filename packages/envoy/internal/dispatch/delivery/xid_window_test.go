@@ -27,6 +27,11 @@ import (
 // transaction (listUnrecordedShipped), and the issue's owner lock, which the append would
 // otherwise be the first to take and which is advisory (store.LockOwner).
 func TestXidWindowDeployedEventRecorded(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowDeployedEventRecorded)
+}
+
+// xidWindowDeployedEventRecorded is one attempt of its test (storetest.XidAttempts).
+func xidWindowDeployedEventRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	tracer := storetest.NewXidTracer()
 	traced := storetest.Traced(t, pool, tracer, nil)
@@ -61,6 +66,11 @@ func TestXidWindowDeployedEventRecorded(t *testing.T) {
 // order (events.Broker.LockOwners), one batch per issue appending its
 // issue.pull_request_attribution_changed, and the COMMIT ending them.
 func TestXidWindowAttributionMoveRecorded(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowAttributionMoveRecorded)
+}
+
+// xidWindowAttributionMoveRecorded is one attempt of its test (storetest.XidAttempts).
+func xidWindowAttributionMoveRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	tracer := storetest.NewXidTracer()
 	traced := storetest.Traced(t, pool, tracer, nil)

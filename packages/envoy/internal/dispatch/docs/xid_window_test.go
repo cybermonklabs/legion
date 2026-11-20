@@ -54,11 +54,18 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 // keeps D6 even when it spent long in Go before that write, since a transaction holds no xid until
 // a statement gives it one.
 func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowRigPassesBackToBackStatementsAfterTheFirstWrite)
+}
+
+// xidWindowRigPassesBackToBackStatementsAfterTheFirstWrite is one attempt of its test
+// (storetest.XidAttempts).
+func xidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) {
 	_, database, tracer := xidService(t)
 	report := tracer.Measure(t, database.Pool, func() {
 		runRigTransaction(t, database, 0)
 	})
 	if err := report.Err(); err != nil {
+		storetest.XidMeasureAgain(t, err)
 		t.Fatalf("a back-to-back transaction broke D6: %v", err)
 	}
 	if len(report.Windows) != 1 {
@@ -102,6 +109,11 @@ func skipWhereNoGapIsJudged(t *testing.T) {
 // window keeps it. The test first holds that the work did take that long, so a machine that ran it
 // in no time cannot pass for one that kept it out of the gaps.
 func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowRigKeepsItsOwnWorkOutOfTheGaps)
+}
+
+// xidWindowRigKeepsItsOwnWorkOutOfTheGaps is one attempt of its test (storetest.XidAttempts).
+func xidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
 	skipWhereNoGapIsJudged(t)
 	_, database, tracer := xidService(t)
 	long := "SELECT 1 /* " + strings.Repeat("Rig Work ", 1<<19) + "*/"
@@ -135,6 +147,7 @@ func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
 			storetest.XidMillis(ran), storetest.XidMillis(4*storetest.XidMaxGap), window.Detail())
 	}
 	if err := report.Err(); err != nil {
+		storetest.XidMeasureAgain(t, err)
 		t.Fatalf("the rig's own work on a long statement broke D6, so it ran in a gap:\n%v", err)
 	}
 	t.Logf("%s\n%s", window.Summary(), window.Detail())
@@ -194,6 +207,11 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 // first one whose result shows it wrote - and never reported as a rig problem; a sleep after that
 // write is caught there as it is under a poller that saw the xid.
 func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowRigJudgesAWriteThePollerNeverSaw)
+}
+
+// xidWindowRigJudgesAWriteThePollerNeverSaw is one attempt of its test (storetest.XidAttempts).
+func xidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 	for _, probe := range []struct {
 		name string
 		gap  time.Duration
@@ -229,6 +247,9 @@ func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 					window.Statements[0].SQL, window.Detail())
 			}
 			err := report.Err()
+			if probe.gap == 0 {
+				storetest.XidMeasureAgain(t, err)
+			}
 			switch {
 			case probe.gap == 0 && err != nil:
 				t.Fatalf("a back-to-back transaction the poller never saw broke D6: %v", err)
@@ -281,6 +302,11 @@ func runRigTransactionDoing(t *testing.T, database *store.Store, between func())
 // anchor against the new tree and writes the version, its anchors and its events in one
 // transaction (settleRoomWithin).
 func TestXidWindowSettlementVersionWrite(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowSettlementVersionWrite)
+}
+
+// xidWindowSettlementVersionWrite is one attempt of its test (storetest.XidAttempts).
+func xidWindowSettlementVersionWrite(t *testing.T) {
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -303,6 +329,11 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 // heard of yet: the room stays resident, and the settlement reads the close off the issue row
 // under the owner's lock (lockArtifactOwner).
 func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowClosedIssueSettlementVersionWrite)
+}
+
+// xidWindowClosedIssueSettlementVersionWrite is one attempt of its test (storetest.XidAttempts).
+func xidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -372,6 +403,11 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 // The edit-notice sweep claims a due notice, then reads both versions it names, parses them to
 // tell a server-state-only change from a person's edit and diffs them (sendEditNotice).
 func TestXidWindowEditNoticeSweep(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowEditNoticeSweep)
+}
+
+// xidWindowEditNoticeSweep is one attempt of its test (storetest.XidAttempts).
+func xidWindowEditNoticeSweep(t *testing.T) {
 	service, database, tracer := xidService(t)
 	spec, quotes := storetest.XidSpec("DOC", 1)
 	document := createIssueDocument(t, database, 2, spec)
@@ -402,6 +438,11 @@ func TestXidWindowEditNoticeSweep(t *testing.T) {
 // with large specs, as a deploy whose overlap wrote versions through code that records no count
 // leaves them.
 func TestXidWindowReconcileTaskProgress(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowReconcileTaskProgress)
+}
+
+// xidWindowReconcileTaskProgress is one attempt of its test (storetest.XidAttempts).
+func xidWindowReconcileTaskProgress(t *testing.T) {
 	service, database, tracer := xidService(t)
 	spec, _ := storetest.XidSpec("DOC", 1)
 	const issues = 20
@@ -435,6 +476,11 @@ func TestXidWindowReconcileTaskProgress(t *testing.T) {
 // way the whole write is the one statement that writes the windows, so the window is that
 // statement and the commit after it.
 func TestXidWindowBlockIndexWindowArm(t *testing.T) {
+	storetest.XidAttempts(t, xidWindowBlockIndexWindowArm)
+}
+
+// xidWindowBlockIndexWindowArm is one attempt of its test (storetest.XidAttempts).
+func xidWindowBlockIndexWindowArm(t *testing.T) {
 	service, database, tracer := xidService(t)
 	ctx := context.Background()
 	spec, _ := storetest.XidSpec("DOC", 1)

@@ -54,8 +54,8 @@ const xidClockTries = 16
 // a thread the rig does not hold it opens the file for the one reading.
 func readXidThreadClock() xidThreadClock {
 	thread := unix.Gettid()
-	if fd, held := (*xidHeldClocks.Load())[thread]; held {
-		return readXidThreadClockOn(fd, thread)
+	if held, ok := (*xidHeldClocks.Load())[thread]; ok {
+		return readXidThreadClockOn(held.schedstat, thread)
 	}
 	fd, ok := xidOpenThreadClock()
 	if !ok {
@@ -88,15 +88,23 @@ func readXidThreadClockOn(fd uintptr, thread int) xidThreadClock {
 	return xidThreadClock{}
 }
 
-// xidHeldClocks is, for each thread the rig holds, its schedstat open as a descriptor. It is read
-// at every statement's two ends without a lock, as an immutable map an atomic pointer swaps, and
-// changed only when a thread is held or let go (xidWatchThreadClock, xidDropThreadClock).
+// xidHeldClocks is, for each thread the rig holds, its schedstat open as a descriptor and its
+// pinned CPU's softirq counts open beside it (xidHeldClock). It is read at every statement's two
+// ends without a lock, as an immutable map an atomic pointer swaps, and changed only when a thread
+// is held or let go (xidWatchThreadClock, xidDropThreadClock).
 var (
-	xidHeldClocks      atomic.Pointer[map[int]uintptr]
+	xidHeldClocks      atomic.Pointer[map[int]*xidHeldClock]
 	xidHeldClocksWrite sync.Mutex
 )
 
-func init() { xidHeldClocks.Store(&map[int]uintptr{}) }
+// xidHeldClock is what the rig keeps open for a thread it holds: its schedstat, and the reader of
+// the softirq counts of the CPU it is pinned to, nil where the rig could not pin it or count them.
+type xidHeldClock struct {
+	schedstat uintptr
+	softirqs  *xidSoftirqReader
+}
+
+func init() { xidHeldClocks.Store(&map[int]*xidHeldClock{}) }
 
 // xidOpenThreadClock opens the calling thread's schedstat. /proc/thread-self names the thread at
 // the open, so the descriptor stays that thread's for as long as it is open.
@@ -110,39 +118,52 @@ func xidCloseThreadClock(fd uintptr) { unix.Syscall(unix.SYS_CLOSE, fd, 0, 0) }
 
 // xidWatchThreadClock opens the calling thread's schedstat and keeps it open as the thread's own
 // descriptor until the returned stop, which a held thread's COMMIT or ROLLBACK calls
-// (xidDropThreadClock); ok is false when the file cannot be opened.
+// (xidDropThreadClock); ok is false when the file cannot be opened. It pins the thread to the CPU
+// it is on, with that CPU's softirq counts open beside its clock (xidPinForSoftirqs), and stop puts
+// the thread's CPUs back. A thread it cannot pin keeps its clock, and its gaps go uncounted.
 func xidWatchThreadClock() (stop func(), ok bool) {
 	fd, ok := xidOpenThreadClock()
 	if !ok {
 		return func() {}, false
 	}
 	thread := unix.Gettid()
-	xidSwapHeldClocks(func(held map[int]uintptr) { held[thread] = fd })
-	return func() { xidDropThreadClock(thread) }, true
+	softirqs := xidPinForSoftirqs()
+	xidSwapHeldClocks(func(held map[int]*xidHeldClock) { held[thread] = &xidHeldClock{schedstat: fd, softirqs: softirqs} })
+	return func() {
+		if softirqs != nil {
+			softirqs.unpin()
+		}
+		xidDropThreadClock(thread)
+	}, true
 }
 
-// xidDropThreadClock stops reading thread's held clock and closes it, if it is still held. A
-// transaction's COMMIT drops its thread's clock, and so does the end of a capture, for a thread
-// whose transaction never ended - its goroutine stopped by a Fatalf - so that no later thread the
-// kernel gives the same id reads a dead thread's descriptor. Dropping twice closes once.
+// xidDropThreadClock stops reading thread's held clock and closes it and its softirq counts, if
+// it is still held. A transaction's COMMIT drops its thread's clock, and so does the end of a
+// capture, for a thread whose transaction never ended - its goroutine stopped by a Fatalf - so
+// that no later thread the kernel gives the same id reads a dead thread's descriptor. Dropping
+// twice closes once. A thread whose goroutine stopped while locked ends with it, so its CPUs are
+// not put back.
 func xidDropThreadClock(thread int) {
-	var fd uintptr
-	var open bool
-	xidSwapHeldClocks(func(held map[int]uintptr) {
-		fd, open = held[thread]
+	var clock *xidHeldClock
+	xidSwapHeldClocks(func(held map[int]*xidHeldClock) {
+		clock = held[thread]
 		delete(held, thread)
 	})
-	if open {
-		xidCloseThreadClock(fd)
+	if clock == nil {
+		return
+	}
+	xidCloseThreadClock(clock.schedstat)
+	if clock.softirqs != nil {
+		xidCloseThreadClock(clock.softirqs.fd)
 	}
 }
 
-func xidSwapHeldClocks(change func(map[int]uintptr)) {
+func xidSwapHeldClocks(change func(map[int]*xidHeldClock)) {
 	xidHeldClocksWrite.Lock()
 	defer xidHeldClocksWrite.Unlock()
-	held := make(map[int]uintptr, len(*xidHeldClocks.Load())+1)
-	for thread, fd := range *xidHeldClocks.Load() {
-		held[thread] = fd
+	held := make(map[int]*xidHeldClock, len(*xidHeldClocks.Load())+1)
+	for thread, clock := range *xidHeldClocks.Load() {
+		held[thread] = clock
 	}
 	change(held)
 	xidHeldClocks.Store(&held)

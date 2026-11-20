@@ -27,6 +27,12 @@ import (
 // the pass's write phase and nothing else. Against the pass that indexed the blocks at once and
 // then read and planned the references, the window holds those reads too.
 func TestTheGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase(t *testing.T) {
+	storetest.XidAttempts(t, theGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase)
+}
+
+// theGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase is one attempt of its test
+// (storetest.XidAttempts).
+func theGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	ctx := context.Background()

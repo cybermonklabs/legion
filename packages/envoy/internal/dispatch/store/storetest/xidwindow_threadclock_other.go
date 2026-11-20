@@ -23,6 +23,9 @@ func xidWatchThreadClock() (stop func(), ok bool) { return func() {}, false }
 // xidDropThreadClock drops nothing: this build holds no thread's clock.
 func xidDropThreadClock(int) {}
 
+// readXidSoftirqs counts nothing: this build pins no thread and reads no CPU's softirqs.
+func readXidSoftirqs() xidSoftirqReading { return xidSoftirqReading{} }
+
 // xidHoldMemory holds nothing: a build that judges no gap has no window's memory to keep still.
 func xidHoldMemory() bool { return true }
 
