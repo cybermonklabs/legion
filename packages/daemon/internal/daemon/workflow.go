@@ -2282,13 +2282,21 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	}()
 }
 
-// sessionLost applies the fact that a claim's recorded session is in no session store any more
-// and a fresh agent is running in its place (supervise's Deps.SessionLost): the workflow tells
-// the issue, its architect and the controller. The event id carries the claim's launch, so the
-// one launch that lost the session reports once however often the fact is applied.
-func (w *workflowRuntime) sessionLost(c supervise.Claim, detail string) {
-	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%d", c.Token, c.Generation),
-		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a claim's lost session")
+// sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's
+// Deps.SessionLost): the workflow tells the issue, its architect and the controller. The machine
+// tells it at the forget, before it spawns the fresh agent that takes the session's place, with
+// the claim as the forget left it, so c.Abandoned.Session is the session forgotten, which the fact
+// carries. The event id names that session, so one forget of a session is one fact, however many
+// launches forget it: the forget is in memory alone until the fresh agent's launch writes the
+// claim, and a daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the
+// claim recording the session, which the next boot's launch forgets again at a generation of its
+// own. That second fact is marked applied already (intake.ApplyFact), so nobody is told twice.
+// Telling only after the claim is written would not do: the fact commits on a goroutine of its
+// own (applySessionFact), so a stop between the write and the tell would tell nobody at all.
+func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
+	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%s", c.Token, c.Abandoned.Session),
+		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
+		"apply a claim's lost session")
 }
 
 // sessionStoreFault applies the fact that a start could not reach the session store at all

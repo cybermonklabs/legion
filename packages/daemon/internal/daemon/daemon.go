@@ -899,10 +899,10 @@ type plan struct {
 	volumeReports *volumeTrimReports
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
-	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no
-	// session store any more, and that a start could not reach that store at all; nil without a
+	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
+	// and why, and that a start could not reach the session store at all; nil without a
 	// workflow, where neither is reported to anyone.
-	sessionLost       func(c supervise.Claim, detail string)
+	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
