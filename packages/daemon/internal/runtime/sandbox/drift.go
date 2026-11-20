@@ -29,8 +29,11 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
-// what ends the roles already running there. A pod no round covers has no such round to wait for,
-// so its launch replaces it for every kind of drift, as every launch did before the round existed.
+// what ends the roles already running there. The one exception is the round's own: where the
+// round over the pod is over and no role process runs in it (Options.RoundPodEnds), the launch
+// replaces the pod as that round's replacement, under the round's mark, rather than start a role
+// the round would end a moment later. A pod no round covers has no such round to wait for, so its
+// launch replaces it for every kind of drift, as every launch did before the round existed.
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
@@ -39,7 +42,8 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 // ServiceAccount it runs as and, unless the launch is installing a stale-plugin pair, for the
 // shape its template was built from (relaunch, movedInPod, accountDrift, shapeDrift), where a
 // launch into a pod it covers keeps the pod — for the account as for every other kind of drift —
-// and leaves it to its round.
+// and leaves it to its round, unless that round is over with no role process in the pod, when the
+// launch makes the round's own replacement (Options.RoundPodEnds).
 //
 // A round covers every issue pod and nothing else. The project controller's pod is the one kind it
 // excludes: the controller holds no issue workspace and has nothing to push, so there is nobody in
@@ -400,8 +404,9 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 // end — so every role still running there is reported ended by the daemon's own act (Displaced)
 // and resumed uncharged on its session, as it is for a pod a launch replaces. That one patch
 // names the pod under the round's own mark as well (roundDisplacedAnnotation, roundReplacement),
-// which no launch writes: it is what a sweep reading the Sandbox before the pod ends tells this
-// replacement by, where a launch's replacement of the same pod is a pod gone (PodDrift).
+// which no launch writes for a reason of its own: it is what a sweep reading the Sandbox before
+// the pod ends tells this replacement by, where a launch's replacement of the same pod is a pod
+// gone (PodDrift).
 //
 // It creates and provisions nothing: the first of those resumes finds the Sandbox Suspended and
 // provisions a fresh pod from the current configuration, which is the launch path a replacement

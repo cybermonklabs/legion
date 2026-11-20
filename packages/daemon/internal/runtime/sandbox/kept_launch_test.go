@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -332,5 +334,116 @@ func forgetSessionStore(t *testing.T, g *rig, r *Runtime, name string) {
 		}
 		pod := r.storedPod(name)
 		return pod != nil && forgotten(stored.Spec.PodTemplate.Spec) && forgotten(pod.Spec)
+	})
+}
+
+// roundAsk is one question a launch asked the daemon's RoundPodEnds: the claim whose launch asked,
+// and the pod it asked about.
+type roundAsk struct {
+	token claim.Token
+	pod   string
+}
+
+// withRoundPodEnds hands the runtime a RoundPodEnds that answers ends and err, as the daemon's
+// reading of the update round over a pod answers, and records each question in asked.
+func withRoundPodEnds(ends bool, err error, asked *[]roundAsk) rigOption {
+	return withOptions(func(o *Options) {
+		o.RoundPodEnds = func(_ context.Context, token claim.Token, podUID string) (bool, error) {
+			*asked = append(*asked, roundAsk{token: token, pod: podUID})
+			return ends, err
+		}
+	})
+}
+
+// A launch into a live pod a round covers, which it would keep, asks the daemon whether the update
+// round over that pod is over (Options.RoundPodEnds, dispatch://INFRA-4109 R7), and asks nothing of
+// a pod it builds. A no keeps the pod and starts the role in it, as a runtime handed no hook does,
+// which is how every launch into such a pod went before the hook. A yes is the round's own
+// replacement, made by the launch: the Sandbox is suspended naming the pod under the round's mark
+// as well as the displaced-pod mark, never under the displaced-pod mark alone, which is a launch's
+// replacement for a reason of its own and which PodDrift reads as a pod gone rather than as the
+// round's replacement in flight; and the role starts in the new pod. An error of the hook fails the
+// launch as any of its steps does, and the pod is kept.
+func TestARelaunchReplacesACoveredPodWhoseRoundEndsAndKeepsItOtherwise(t *testing.T) {
+	resume := func(t *testing.T, g *rig, loc runtime.Locator) (runtime.Locator, error) {
+		t.Helper()
+		spec := workerSpec(t)
+		spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+		return g.r.Resume(g.ctx, &loc, spec)
+	}
+	t.Run("keep", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			hooked bool
+		}{
+			{name: "the daemon answers no", hooked: true},
+			{name: "the daemon hands no hook"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var asked []roundAsk
+				var options []rigOption
+				if tc.hooked {
+					options = append(options, withRoundPodEnds(false, nil, &asked))
+				}
+				g := newRig(t, nil, options...)
+				loc := g.spawn(workerSpec(t))
+				if len(asked) != 0 {
+					t.Fatalf("the launch that built the pod asked the daemon %+v, want nothing: it kept no pod", asked)
+				}
+				g.clearActions()
+				kept, err := resume(t, g, loc)
+				if err != nil {
+					t.Fatalf("Resume: %v", err)
+				}
+				if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+					t.Fatalf("Resume replaced the pod %s, whose round the daemon says is not over", loc.Sandbox.PodUID)
+				}
+				if want := []roundAsk{{token: workerToken, pod: loc.Sandbox.PodUID}}; tc.hooked && !slices.Equal(asked, want) {
+					t.Errorf("the launch asked the daemon %+v, want %+v", asked, want)
+				}
+				expectSteps(t, steps(t, g.writes(), loc.Sandbox.Name), "record addresses")
+				startSent(t, g, 2)
+			})
+		}
+	})
+	t.Run("replace", func(t *testing.T) {
+		var asked []roundAsk
+		g := newRig(t, nil, withRoundPodEnds(true, nil, &asked))
+		loc := g.spawn(workerSpec(t))
+		name, old := loc.Sandbox.Name, loc.Sandbox.PodUID
+		g.clearActions()
+		fresh, err := resume(t, g, loc)
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if fresh.Sandbox.PodUID == old || fresh.Sandbox.PodUID != string(g.pod(name).UID) {
+			t.Fatalf("Resume returned pod %s, the pod is now %s; want the pod that replaced %s", fresh.Sandbox.PodUID, g.pod(name).UID, old)
+		}
+		if want := []roundAsk{{token: workerToken, pod: old}}; !slices.Equal(asked, want) {
+			t.Errorf("the launch asked the daemon %+v, want %+v", asked, want)
+		}
+		expectSteps(t, steps(t, g.writes(), name), "suspend", "update secret", "run", "record addresses")
+		if s := g.sandbox(name); s.Annotations[roundDisplacedAnnotation] != old || s.Annotations[displacedAnnotation] != old {
+			t.Errorf("the Sandbox names %q replaced by its round and %q displaced, want %s for both: the replacement is the round's own",
+				s.Annotations[roundDisplacedAnnotation], s.Annotations[displacedAnnotation], old)
+		}
+		startSent(t, g, 2)
+	})
+	t.Run("an error fails the launch", func(t *testing.T) {
+		refused := errors.New("the claims of the issue cannot be read")
+		var asked []roundAsk
+		g := newRig(t, nil, withRoundPodEnds(true, refused, &asked))
+		loc := g.spawn(workerSpec(t))
+		g.clearActions()
+		_, err := resume(t, g, loc)
+		if !errors.Is(err, refused) || !strings.Contains(err.Error(), "read the update round over its pod") {
+			t.Fatalf("Resume = %v, want the launch failed reading the update round over its pod: %v", err, refused)
+		}
+		if wrote := steps(t, g.writes(), loc.Sandbox.Name); len(wrote) != 0 {
+			t.Errorf("the failed launch wrote %v, want nothing", wrote)
+		}
+		if p := g.pod(loc.Sandbox.Name); p == nil || string(p.UID) != loc.Sandbox.PodUID {
+			t.Errorf("the pod after the failed launch is %+v, want %s kept", p, loc.Sandbox.PodUID)
+		}
 	})
 }

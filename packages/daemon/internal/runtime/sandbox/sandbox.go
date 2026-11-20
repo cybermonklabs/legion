@@ -130,6 +130,10 @@ type Runtime struct {
 	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
 	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
 	volumeTrim *shimwire.LauncherVolumeTrim
+	// roundPodEnds is Options.RoundPodEnds: the daemon's reading of whether the update round over
+	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
+	// pod.
+	roundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -408,7 +412,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim,
+		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim, roundPodEnds: opts.RoundPodEnds,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,

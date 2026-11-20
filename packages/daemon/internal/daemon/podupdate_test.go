@@ -162,6 +162,16 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // nothing, which is newPodUpdateRig.
 func newPodUpdateRigFeeding(t *testing.T, before func(claim.Token, supervise.Event), roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
+	return newPodUpdateRigPacing(t, before, supervise.WakePace{}, roles...)
+}
+
+// newPodUpdateRigPacing is newPodUpdateRigFeeding with the wake pacing every machine is built with
+// (supervise.Deps.WakePace), as openSupervision hands the daemon's one limiter to its machines. A
+// machine takes its deps when the boot restores it, so the pacing is set before that, as before
+// is. The zero pace is the pacing off: every launch runs where it is raised, which is
+// newPodUpdateRigFeeding.
+func newPodUpdateRigPacing(t *testing.T, before func(claim.Token, supervise.Event), pace supervise.WakePace, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	dsn := pool.Config().ConnString()
@@ -237,6 +247,10 @@ func newPodUpdateRigFeeding(t *testing.T, before func(claim.Token, supervise.Eve
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
+	// The runtime's launches read the update round over a pod they would keep through the
+	// supervision, bound once it exists and before any machine is restored, as the daemon's boot
+	// binds the Sandbox runtime's (plan.launchRounds).
+	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
@@ -252,6 +266,7 @@ func newPodUpdateRigFeeding(t *testing.T, before func(claim.Token, supervise.Eve
 		PluginRelaunchable: true,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
+		WakePace:           pace,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,
@@ -1311,8 +1326,11 @@ func TestPodUpdateEndsAGonePodsRoundWithNoMessageWhenEveryWorkerAnswered(t *test
 // a drifted pod nothing has replaced, the task it was holding would go out, and the next tick
 // would open the same round over the same pod again.
 //
-// The claim records the pod again when its operator resumes it, and the sweep that reads it
-// there replaces the pod and ends the round, which is the only end the round had left.
+// Its operator then resumes it, and its launch reads the round as it runs (roundPodEndsAtLaunch):
+// the worker answered, no process runs in the round's pod and nothing holds it, so the launch
+// replaces the pod as the round's own replacement and starts the worker in the pod in its place
+// (dispatch://INFRA-4109 R7). The sweep that reads the worker there ends the round as that
+// replacement, which is the only end the round had left, and nothing replaces a pod through it.
 func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T) {
 	const replaced = podUpdateReplacedLine
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
@@ -1347,11 +1365,29 @@ func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T
 			c.UpdateRound, c.UpdateSignalledAt != nil)
 	}
 
-	rig.resumeInPod(claim.RoleImplementer)
+	token := rig.tokens[claim.RoleImplementer]
+	conn := fake.NewConn()
+	rig.conns.Register(token, conn)
+	rig.workers[claim.RoleImplementer] = conn
+	rig.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
+	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token})
+	pod := podOf(rig.claimOf(claim.RoleImplementer).Locator)
+	if pod == "" || pod == podUpdatePod {
+		t.Fatalf("the operator's resume launched the worker into pod %q, want the pod in place of the round's %s, which nothing holds", pod, podUpdatePod)
+	}
+	rig.registerInto(claim.RoleImplementer, pod)
 
-	rig.awaitReplacement(1, "at the sweep that read the round's own pod recorded again")
-	rig.awaitClaim(claim.RoleImplementer, "its round to end with the replacement",
+	rig.awaitSwept(claim.RoleImplementer, "its round to end as the launch's replacement",
 		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if at := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(at) != 1 || at[0].PodUID != podUpdatePod {
+		t.Fatalf("the launch replaced %+v, want the round's pod %s once", at, podUpdatePod)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %+v, want none: the launch made the round's replacement", calls)
+	}
+	if lines := loggedLines(t, rig.logs.String(), replaced); len(lines) != 1 || lines[0]["atLaunch"] != true {
+		t.Fatalf("the sweep logged the round's replacement %+v, want once, as made at the launch", lines)
+	}
 }
 
 // suspendByOperator is the operator suspending a claim, settled: the process goes with the
@@ -1591,6 +1627,14 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	sup.deps = r.sup.deps
 	sup.deps.Runtime, sup.deps.Conns, sup.deps.Store = rt, conns, st
 	r.t.Cleanup(sup.stop)
+	s := &supervision{
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		applySweepFacts: r.s.applySweepFacts,
+		refreshGate:     supervise.NewRefreshGate(0),
+	}
+	// The second daemon binds its own reading of the round over a pod to its runtime before it
+	// restores a machine, as the first did (newPodUpdateRigPacing).
+	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	stored, err := sup.Claims(r.ctx)
 	if err != nil {
 		r.t.Fatalf("read the stored claims: %v", err)
@@ -1611,11 +1655,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
 		listener: r.listener, asked: r.asked}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
-	next.s = &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
-		applySweepFacts: r.s.applySweepFacts,
-		refreshGate:     supervise.NewRefreshGate(0),
-	}
+	next.s = s
 	return next
 }
 

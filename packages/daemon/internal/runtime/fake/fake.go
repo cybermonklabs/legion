@@ -48,7 +48,8 @@ type Call struct {
 	Tree string
 	// Issue is IssuePod's, WorkspaceWork's and ReplaceIssuePod's issue.
 	Issue string
-	// PodUID is ReplaceIssuePod's pod.
+	// PodUID is ReplaceIssuePod's pod, and the pod a launch replaced as its round's own
+	// replacement (ReplaceRoundPodAtLaunch, whose Spec is the launch's).
 	PodUID string
 	// Role is WorkspaceWork's role.
 	Role claim.Role
@@ -89,6 +90,14 @@ type Runtime struct {
 	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
+	// RoundPodEnds, when set, is what Spawn and Resume ask of the live pod a scripted Sandbox
+	// locator puts the launch in, as the Sandbox runtime's relaunch asks the daemon's reading of
+	// the update round over a live pod it would keep (sandbox.Options.RoundPodEnds). A yes is the
+	// round's own replacement, made by the launch: the call is recorded as
+	// ReplaceRoundPodAtLaunch, the pod is replaced, and the launch answers a locator in a new pod
+	// (launchInto). An error is the launch's. A test binds it to the daemon's own reading, as the
+	// daemon binds the Sandbox runtime's. nil keeps every pod.
+	RoundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
 
 	mu           sync.Mutex
 	pending      *sync.Cond
@@ -105,9 +114,19 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
-	// replaced is every pod ReplaceIssuePod replaced, by uid: the issue's Sandbox no longer holds
-	// it, as IssuePod then answers.
-	replaced   map[string]bool
+	// replaced is every pod a replacement by issue (ReplaceIssuePod) or a launch (RoundPodEnds)
+	// replaced, by uid, with the uid of the pod a launch built in its place, "" while none has:
+	// the issue's Sandbox no longer holds it, as IssuePod then answers, and a launch scripted into
+	// it comes up in the pod in its place, as the Sandbox runtime starts a launch into a suspended
+	// Sandbox in a new pod (podNow, launchInto).
+	replaced map[string]string
+	// built counts the pods launches built in the place of replaced ones (buildIn).
+	built int
+	// turn is the pods' launch turn, which the Sandbox runtime takes per pod (lockPod): a launch
+	// reads and replaces the pod it goes into under it (launchInto), and a replacement by issue
+	// asks its last word and replaces under it (ReplaceIssuePod), so no two of them interleave.
+	// The fake takes one turn for every pod, and never while it holds mu.
+	turn       sync.Mutex
 	holdResume func()
 	queue      []runtime.Observation
 	minted     int
@@ -123,7 +142,7 @@ func NewRuntime() *Runtime {
 		issuePods: map[string]string{},
 		sessions:  map[claim.Token]string{},
 		work:      map[string]runtime.WorkspaceWork{},
-		replaced:  map[string]bool{},
+		replaced:  map[string]string{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -222,8 +241,9 @@ func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
 // Sandbox at all. An issue no call named is one the fake cannot read, which is the uninteresting
 // case for every round whose claims record a pod and the conservative one for a round whose
 // claims record none: such a round waits, as it does where a runtime cannot say. A pod the fake
-// replaced (ReplaceIssuePod) is answered as no pod whatever this scripted, as the Sandbox holds no
-// pod once that replacement is made, until a launch builds a new one.
+// replaced (ReplaceIssuePod, RoundPodEnds) is answered as no pod whatever this scripted, as the
+// Sandbox holds no pod once that replacement is made, until a launch builds a new one, which is
+// answered from then on (podNow).
 func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -371,20 +391,24 @@ func (r *Runtime) Methods() []string {
 	return methods
 }
 
-func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+// Spawn records its call and answers its script, a Sandbox locator in the pod the launch comes up
+// in (launchInto), or a locator of its own once the script runs out.
+func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
+	next := SpawnResult{}
 	if len(r.spawns) > 0 {
-		next := r.spawns[0]
+		next = r.spawns[0]
 		r.spawns = r.spawns[1:]
-		return next.Locator, next.Err
+	} else {
+		next.Locator = r.mint(spec.Claim)
 	}
-	return r.mint(spec.Claim), nil
+	r.mu.Unlock()
+	return r.launched(ctx, spec, next)
 }
 
 // Resume records its call, then runs OnResume when a test set one, then refuses a previous
-// incarnation of another claim, as every runtime does.
+// incarnation of another claim, as every runtime does, and answers as Spawn does.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.mu.Lock()
 	hold := r.holdResume
@@ -407,16 +431,100 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 		}
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
+		r.mu.Unlock()
 		return runtime.Locator{}, err
 	}
+	next := SpawnResult{}
 	if len(r.resumes) > 0 {
-		next := r.resumes[0]
+		next = r.resumes[0]
 		r.resumes = r.resumes[1:]
+	} else {
+		next.Locator = r.mint(spec.Claim)
+	}
+	r.mu.Unlock()
+	return r.launched(ctx, spec, next)
+}
+
+// launched is what a launch the script answered with next comes to: next's error as scripted, a
+// locator of no pod as it stands, and a Sandbox locator moved to the pod the launch comes up in
+// (launchInto).
+func (r *Runtime) launched(ctx context.Context, spec runtime.SpawnSpec, next SpawnResult) (runtime.Locator, error) {
+	if next.Err != nil || next.Locator.Sandbox == nil {
 		return next.Locator, next.Err
 	}
-	return r.mint(spec.Claim), nil
+	return r.launchInto(ctx, spec, next.Locator)
+}
+
+// launchInto is loc moved to the pod a launch into loc's pod comes up in, as the Sandbox runtime's
+// relaunch decides it under the pod's launch turn (turn). A pod that was replaced with nothing
+// built in its place is a suspended Sandbox, and the launch builds a new pod without asking
+// anything. A live pod — the one scripted, or the one a launch built in its place — is asked of
+// RoundPodEnds, as the Sandbox runtime asks of a live pod it would keep: a yes records a
+// ReplaceRoundPodAtLaunch call and replaces the pod with a new one, and an error is the launch's.
+// A launch that comes up in another pod than the scripted one forgets its claim's drift, as
+// ReplacePod does: every pod the fake builds is built from the configuration the runtime has now.
+// RoundPodEnds runs with mu free, so it may drive the fake again.
+func (r *Runtime) launchInto(ctx context.Context, spec runtime.SpawnSpec, loc runtime.Locator) (runtime.Locator, error) {
+	r.turn.Lock()
+	defer r.turn.Unlock()
+	r.mu.Lock()
+	pod, live := r.podNow(loc.Sandbox.PodUID)
+	if !live {
+		pod = r.buildIn(pod)
+	}
+	ends := r.RoundPodEnds
+	r.mu.Unlock()
+	if live && ends != nil {
+		over, err := ends(ctx, spec.Claim, pod)
+		if err != nil {
+			return runtime.Locator{}, err
+		}
+		if over {
+			r.mu.Lock()
+			r.calls = append(r.calls, Call{Method: "ReplaceRoundPodAtLaunch", Spec: spec, PodUID: pod})
+			r.replaced[pod] = ""
+			pod = r.buildIn(pod)
+			r.mu.Unlock()
+		}
+	}
+	if pod == loc.Sandbox.PodUID {
+		return loc, nil
+	}
+	r.mu.Lock()
+	delete(r.drift, spec.Claim)
+	r.mu.Unlock()
+	in := *loc.Sandbox
+	in.PodUID = pod
+	loc.Sandbox, loc.Incarnation = &in, runtime.SandboxIncarnation(pod, in.Generation)
+	return loc, nil
+}
+
+// podNow follows pod through the replacements the fake made to the pod the issue's Sandbox holds
+// in its place: pod itself where nothing replaced it, else the pod a launch built in its place,
+// and so on. live is false where the last pod of that walk was replaced with nothing built in its
+// place yet, which is a Sandbox that holds no pod; that last pod is answered then. Called with mu
+// held.
+func (r *Runtime) podNow(pod string) (string, bool) {
+	for {
+		next, gone := r.replaced[pod]
+		switch {
+		case !gone:
+			return pod, true
+		case next == "":
+			return pod, false
+		}
+		pod = next
+	}
+}
+
+// buildIn is a new pod a launch builds in the place of replaced, a pod the fake replaced: its uid,
+// which podNow answers for replaced from then on. Called with mu held.
+func (r *Runtime) buildIn(replaced string) string {
+	r.built++
+	pod := fmt.Sprintf("fake-pod-%d", r.built)
+	r.replaced[replaced] = pod
+	return pod
 }
 
 func (r *Runtime) Suspend(_ context.Context, loc runtime.Locator) error {
@@ -575,17 +683,19 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	return append([]string(nil), r.drift[k.Claim]...), nil
 }
 
-// IssuePod records its call and answers what ScriptIssuePod set for the issue, no pod where that
-// is a pod ReplaceIssuePod replaced, and read false for an issue no call named.
+// IssuePod records its call and answers what ScriptIssuePod set for the issue, followed to the pod
+// a launch built in its place where the fake replaced it (podNow), no pod where the last pod so
+// followed was replaced with nothing built in its place, and read false for an issue no call
+// named.
 func (r *Runtime) IssuePod(issue string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "IssuePod", Issue: issue})
 	pod, read := r.issuePods[issue]
-	if r.replaced[pod] {
-		return "", read
+	if now, live := r.podNow(pod); live {
+		return now, read
 	}
-	return pod, read
+	return "", read
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
@@ -627,15 +737,16 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that
-// runtime waits for the pod's launch turn (HoldReplaceIssuePod), answers nil there for a pod the
-// issue's Sandbox does not hold, asks due whether the replacement is still due, and only then
-// replaces anything. The issue's Sandbox does not hold podUID where IssuePod answers another pod
-// or none for the issue, and an issue no ScriptIssuePod named is taken to hold it: such a call is
-// recorded as ReplaceIssuePodNoPod and asks nothing. A due that refuses records a
-// ReplaceIssuePodNotDue call and changes nothing, and its error is returned as the runtime hands
-// it back. Otherwise the call is recorded and what FailReplaceIssuePod set is answered. A
-// replacement that is not refused is remembered (replaced): IssuePod answers no pod for it from
-// then on.
+// runtime waits for the pod's launch turn (HoldReplaceIssuePod), then takes that turn (turn),
+// answers nil for a pod the issue's Sandbox does not hold, asks due whether the replacement is
+// still due, and only then replaces anything. The issue's Sandbox does not hold podUID where the
+// fake already replaced podUID, or where IssuePod answers another pod or none for the issue, and
+// an issue no ScriptIssuePod named is taken to hold it: such a call is recorded as
+// ReplaceIssuePodNoPod and asks nothing. A due that refuses records a ReplaceIssuePodNotDue call
+// and changes nothing, and its error is returned as the runtime hands it back. Otherwise the call
+// is recorded and what FailReplaceIssuePod set is answered. A replacement that is not refused is
+// remembered (replaced): IssuePod answers no pod for it from then on, and a launch scripted into
+// it comes up in a new pod (launchInto).
 func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdIssue
@@ -643,9 +754,16 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	if hold != nil {
 		hold()
 	}
+	r.turn.Lock()
+	defer r.turn.Unlock()
 	call := Call{Issue: issue, PodUID: podUID}
 	r.mu.Lock()
-	if pod, read := r.issuePods[issue]; (read && pod != podUID) || r.replaced[podUID] {
+	_, gone := r.replaced[podUID]
+	if pod, read := r.issuePods[issue]; read {
+		now, live := r.podNow(pod)
+		gone = gone || !live || now != podUID
+	}
+	if gone {
 		call.Method = "ReplaceIssuePodNoPod"
 		r.calls = append(r.calls, call)
 		r.mu.Unlock()
@@ -666,7 +784,7 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	if err := r.failures["ReplaceIssuePod"]; err != nil {
 		return err
 	}
-	r.replaced[podUID] = true
+	r.replaced[podUID] = ""
 	return nil
 }
 
