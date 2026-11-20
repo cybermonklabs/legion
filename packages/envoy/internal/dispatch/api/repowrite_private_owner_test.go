@@ -15,19 +15,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// repositoryPrivateRefusal is the whole answer to a write that makes a repository a private project
-// the writer does not see owns an issue's own or a project's default (refuseRepoHeld).
-const repositoryPrivateRefusal = `{"code":"REPOSITORY_PRIVATE","error":"a private project the caller does not see owns this repository; only a person who sees that project may make it an issue's repo or a project's default repository"}`
+// repositoryNotAvailableRefusal is the whole answer to a write that makes a repository the GitHub
+// proxy hides from the writer an issue's own or a project's default (refuseRepoHidden).
+const repositoryNotAvailableRefusal = `{"code":"REPOSITORY_NOT_AVAILABLE","error":"this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch"}`
+
+// repoWriteSeed is the private seed seedRepoWrite writes, with the keys of the two issues that
+// share acme/both, one of PUB and one of PRIV.
+type repoWriteSeed struct {
+	privateSeed
+	sharedPublic, sharedPrivate string
+}
 
 // seedRepoWrite is the private seed with a repository PRIV owns for each way an issue makes one its
-// project's, each written by carol, who sees PRIV, through the routes: PRIV-1 names acme/priv;
-// PRIV-2 names acme/privdone and is done; PRIV-3 names none and resolves to PRIV's default,
-// acme/privdefault. The server settles no document while a test runs, so no write but the test's
-// own adds a row the test counts.
-func seedRepoWrite(t *testing.T, options testServerOptions) privateSeed {
+// project's, and one PRIV shares with PUB, each written by carol, who sees both, through the
+// routes: PRIV-1 names acme/priv; PRIV-2 names acme/privdone and is done; PRIV-3 names none and
+// resolves to PRIV's default, acme/privdefault; PUB-2 and PRIV-4 both name acme/both. The server
+// settles no document while a test runs, so no write but the test's own adds a row the test counts.
+func seedRepoWrite(t *testing.T, options testServerOptions) repoWriteSeed {
 	t.Helper()
 	options.settle = time.Hour
-	seed := seedPrivateProjectWith(t, options)
+	seed := repoWriteSeed{privateSeed: seedPrivateProjectWith(t, options)}
 	private := "/api/v1/issues/" + seed.issue[seedPrivate]
 	seed.mustRequest(t, callerCarol, http.MethodPatch, private, map[string]any{"repo": "acme/priv"}, http.StatusOK)
 	done := decodeBody[model.Issue](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
@@ -39,6 +46,14 @@ func seedRepoWrite(t *testing.T, options testServerOptions) privateSeed {
 		map[string]any{"project": seedPrivate, "title": "Works in its project's default", "force": true}, http.StatusCreated))
 	if repoOf(inherits.ResolvedRepo) != "acme/privdefault" {
 		t.Fatalf("%s resolves to %s, want PRIV's default acme/privdefault", inherits.Key, repoOf(inherits.ResolvedRepo))
+	}
+	for _, shared := range []struct {
+		project string
+		key     *string
+	}{{seedPublic, &seed.sharedPublic}, {seedPrivate, &seed.sharedPrivate}} {
+		*shared.key = decodeBody[model.Issue](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
+			map[string]any{"project": shared.project, "title": "Works in the shared repository of " + shared.project, "repo": "acme/both", "force": true},
+			http.StatusCreated)).Key
 	}
 	return seed
 }
@@ -68,40 +83,63 @@ func repoWriteSnapshot(t *testing.T, database *store.Store) string {
 	return issueWritesSnapshot(t, database) + " | " + mappings
 }
 
-// TestAWriterCannotNameARepositoryAPrivateProjectTheyDoNotSeeOwns: alice, a full member who sees
-// PUB and not private PRIV, and carol's token that lists no project, which sees PUB alone, cannot
-// make a repository PRIV owns PUB's: a create of a PUB issue naming it, a patch of PUB-1 naming
-// it and a PUT that maps it as PUB's default are each 403 REPOSITORY_PRIVATE, the same bytes for
-// every spelling and every way PRIV owns it (an issue's own repository, a done issue's, PRIV's
-// default), naming no project and no issue, and nothing is written: no issue, no repository, no
-// event, no mapping. The GitHub proxy still hides each one from alice. carol, who sees PRIV, makes
-// the same three writes; alice names acme/pub, which no private project owns, and clears PUB-1's
-// repository.
-func TestAWriterCannotNameARepositoryAPrivateProjectTheyDoNotSeeOwns(t *testing.T) {
-	seed := seedRepoWrite(t, testServerOptions{})
-	public := "/api/v1/issues/" + seed.issue[seedPublic]
-	for _, named := range []string{seedPublic, seedPrivate, seed.issue[seedPublic], seed.issue[seedPrivate]} {
-		if regexp.MustCompile(`\b` + regexp.QuoteMeta(named) + `\b`).MatchString(repositoryPrivateRefusal) {
-			t.Fatalf("the refusal names %s", named)
+// namedIn answers the first of names an answer's body holds as a whole word, "" for none.
+func namedIn(body string, names ...string) string {
+	for _, name := range names {
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(body) {
+			return name
 		}
 	}
+	return ""
+}
+
+// repoWrite is one write that names a repository as an issue's own or a project's default.
+type repoWrite struct {
+	name, method, target string
+	body                 map[string]any
+}
+
+// repoWritesOf are the three writes that give PUB repository: a create of a PUB issue naming it, a
+// patch of PUB's first issue naming it, and a PUT that maps it as PUB's default.
+func (s repoWriteSeed) repoWritesOf(repository string) []repoWrite {
+	return []repoWrite{
+		{"create a PUB issue", http.MethodPost, "/api/v1/issues",
+			map[string]any{"project": seedPublic, "title": "Works in " + repository, "repo": repository, "force": true}},
+		{"patch " + s.issue[seedPublic], http.MethodPatch, "/api/v1/issues/" + s.issue[seedPublic], map[string]any{"repo": repository}},
+		{"map it as PUB's default", http.MethodPut, "/api/v1/settings/repo-projects/" + repository,
+			map[string]any{"project": seedPublic, "default": true}},
+	}
+}
+
+// TestAnIssueWriteCannotTakeAHiddenPrivateRepository: alice, a full member who sees PUB and not
+// private PRIV, and carol's token that lists no project, which sees PUB alone, cannot make a
+// repository the GitHub proxy hides from them PUB's: a create of a PUB issue naming it, a patch of
+// PUB-1 naming it and a PUT that maps it as PUB's default are each 403 REPOSITORY_NOT_AVAILABLE, the
+// same bytes for every spelling and every way PRIV alone owns it (an issue's own repository, a done
+// issue's, PRIV's default), naming no project and no issue, and nothing is written: no issue, no
+// repository, no event, no mapping. The proxy still hides each one from alice.
+//
+// The proxy's gate with the writer as its viewer is the one test, so a repository a PUB issue
+// already resolves to is open to the write though PRIV owns it too: alice's three writes naming
+// acme/both, which PUB-2 and PRIV-4 both name, are each taken. So are hers naming acme/pub, which
+// no project owns, and clearing PUB-1's repository; and carol, who sees PRIV, makes the three
+// writes naming PRIV's repositories.
+func TestAnIssueWriteCannotTakeAHiddenPrivateRepository(t *testing.T) {
+	seed := seedRepoWrite(t, testServerOptions{})
+	public := "/api/v1/issues/" + seed.issue[seedPublic]
+	keys := []string{seedPublic, seedPrivate, seed.issue[seedPublic], seed.issue[seedPrivate], seed.sharedPublic, seed.sharedPrivate}
 	held := []string{"acme/priv", "ACME/Priv", "acme/privdone", "acme/privdefault"}
 	for _, caller := range []privateCaller{callerAlice, callerCarolToken} {
 		for _, repository := range held {
-			for _, write := range []struct {
-				name, method, target string
-				body                 map[string]any
-			}{
-				{"create a PUB issue", http.MethodPost, "/api/v1/issues",
-					map[string]any{"project": seedPublic, "title": "Works in " + repository, "repo": repository, "force": true}},
-				{"patch PUB-1", http.MethodPatch, public, map[string]any{"repo": repository}},
-				{"map it as PUB's default", http.MethodPut, "/api/v1/settings/repo-projects/" + repository,
-					map[string]any{"project": seedPublic, "default": true}},
-			} {
+			for _, write := range seed.repoWritesOf(repository) {
 				before := repoWriteSnapshot(t, seed.database)
 				response := seed.sendAs(t, caller, write.method, write.target, write.body)
-				if got := strings.TrimSpace(response.Body.String()); response.Code != http.StatusForbidden || got != repositoryPrivateRefusal {
-					t.Errorf("%s: %s naming %s = %d %s, want 403 %s", caller, write.name, repository, response.Code, got, repositoryPrivateRefusal)
+				got := strings.TrimSpace(response.Body.String())
+				if response.Code != http.StatusForbidden || got != repositoryNotAvailableRefusal {
+					t.Errorf("%s: %s naming %s = %d %s, want 403 %s", caller, write.name, repository, response.Code, got, repositoryNotAvailableRefusal)
+				}
+				if named := namedIn(got, keys...); named != "" {
+					t.Errorf("%s: the answer to %s naming %s names %s: %s", caller, write.name, repository, named, got)
 				}
 				if after := repoWriteSnapshot(t, seed.database); after != before {
 					t.Errorf("%s: the refused %s naming %s wrote:\nbefore %s\nafter  %s", caller, write.name, repository, before, after)
@@ -120,26 +158,33 @@ func TestAWriterCannotNameARepositoryAPrivateProjectTheyDoNotSeeOwns(t *testing.
 		t.Fatalf("the GitHub proxy hides acme/priv from carol, who sees PRIV")
 	}
 
-	// A repository no private project owns is alice's to name, and clearing one is never refused.
-	for _, write := range []struct {
-		name, method, target string
-		body                 map[string]any
-		status               int
-		repo                 string
-	}{
-		{"patch PUB-1 to acme/pub", http.MethodPatch, public, map[string]any{"repo": "acme/pub"}, http.StatusOK, "acme/pub"},
-		{"clear PUB-1's repo", http.MethodPatch, public, map[string]any{"repo": nil}, http.StatusOK, "<none>"},
-		{"create a PUB issue naming acme/pub", http.MethodPost, "/api/v1/issues",
-			map[string]any{"project": seedPublic, "title": "Works in the public repository", "repo": "acme/pub", "force": true}, http.StatusCreated, "acme/pub"},
-	} {
-		response := seed.request(t, callerAlice, write.method, write.target, write.body)
-		if response.Code != write.status || repoOf(decodeBody[model.Issue](t, response).Repo) != write.repo {
-			t.Errorf("alice: %s = %d %s, want %d with repo %s", write.name, response.Code, response.Body.String(), write.status, write.repo)
+	// A repository an issue alice sees already resolves to is hers to name, though PRIV owns it
+	// too; so is one no project owns, and clearing one is never refused.
+	for _, repository := range []string{"acme/both", "acme/pub"} {
+		for _, write := range seed.repoWritesOf(repository) {
+			response := seed.request(t, callerAlice, write.method, write.target, write.body)
+			wrote := ""
+			switch write.method {
+			case http.MethodPut:
+				if response.Code == http.StatusOK {
+					mapping := decodeBody[model.RepoProject](t, response)
+					if mapping.Project == seedPublic && mapping.Default {
+						wrote = mapping.Repo
+					}
+				}
+			default:
+				if response.Code == http.StatusOK || response.Code == http.StatusCreated {
+					wrote = repoOf(decodeBody[model.Issue](t, response).Repo)
+				}
+			}
+			if wrote != repository {
+				t.Errorf("alice: %s naming %s = %d %s, want it written", write.name, repository, response.Code, response.Body.String())
+			}
 		}
 	}
-	if mapped := seed.request(t, callerAlice, http.MethodPut, "/api/v1/settings/repo-projects/acme/pub",
-		map[string]any{"project": seedPublic, "default": true}); mapped.Code != http.StatusOK {
-		t.Errorf("alice maps acme/pub as PUB's default = %d %s, want 200", mapped.Code, mapped.Body.String())
+	if cleared := seed.request(t, callerAlice, http.MethodPatch, public, map[string]any{"repo": nil}); cleared.Code != http.StatusOK ||
+		repoOf(decodeBody[model.Issue](t, cleared).Repo) != "<none>" {
+		t.Errorf("alice clears %s's repo = %d %s, want 200 with none", seed.issue[seedPublic], cleared.Code, cleared.Body.String())
 	}
 
 	// carol sees PRIV, so a repository it owns is hers to give PUB too.
@@ -150,11 +195,47 @@ func TestAWriterCannotNameARepositoryAPrivateProjectTheyDoNotSeeOwns(t *testing.
 	}
 	patched := seed.request(t, callerCarol, http.MethodPatch, public, map[string]any{"repo": "acme/privdone"})
 	if patched.Code != http.StatusOK || repoOf(decodeBody[model.Issue](t, patched).Repo) != "acme/privdone" {
-		t.Errorf("carol patches PUB-1 to acme/privdone = %d %s, want 200 with acme/privdone", patched.Code, patched.Body.String())
+		t.Errorf("carol patches %s to acme/privdone = %d %s, want 200 with acme/privdone", seed.issue[seedPublic], patched.Code, patched.Body.String())
 	}
-	if mapped := seed.request(t, callerCarol, http.MethodPut, "/api/v1/settings/repo-projects/acme/priv",
+	if mapped := seed.request(t, callerCarol, http.MethodPut, "/api/v1/settings/repo-projects/acme/privdefault",
 		map[string]any{"project": seedPublic, "default": true}); mapped.Code != http.StatusOK {
-		t.Errorf("carol maps acme/priv as PUB's default = %d %s, want 200", mapped.Code, mapped.Body.String())
+		t.Errorf("carol maps acme/privdefault as PUB's default = %d %s, want 200", mapped.Code, mapped.Body.String())
+	}
+}
+
+// TestAListingCredentialNamesOnlyARepositoryItReads: the gate is the proxy's, and the proxy shows
+// a viewer that is not open only a repository an issue of a project it sees resolves to. So while
+// PRIV is private, carol's token that lists PRIV names in PRIV a repository a PRIV issue resolves
+// to, acme/privdone and acme/both, and is refused 403 REPOSITORY_NOT_AVAILABLE for acme/fresh,
+// which no issue names, and for acme/pubonly, which only a PUB issue names; carol at her browser,
+// an open viewer, names acme/fresh in PRIV.
+func TestAListingCredentialNamesOnlyARepositoryItReads(t *testing.T) {
+	seed := seedRepoWrite(t, testServerOptions{})
+	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": seedPublic, "title": "Works in a repository of PUB alone", "repo": "acme/pubonly", "force": true}, http.StatusCreated)
+	for _, write := range []struct {
+		caller     privateCaller
+		repository string
+		status     int
+	}{
+		{callerCarolPrivToken, "acme/privdone", http.StatusCreated},
+		{callerCarolPrivToken, "acme/both", http.StatusCreated},
+		{callerCarolPrivToken, "acme/fresh", http.StatusForbidden},
+		{callerCarolPrivToken, "acme/pubonly", http.StatusForbidden},
+		{callerCarol, "acme/fresh", http.StatusCreated},
+	} {
+		before := repoWriteSnapshot(t, seed.database)
+		response := seed.sendAs(t, write.caller, http.MethodPost, "/api/v1/issues",
+			map[string]any{"project": seedPrivate, "title": "Works in " + write.repository, "repo": write.repository, "force": true})
+		got := strings.TrimSpace(response.Body.String())
+		switch {
+		case response.Code != write.status:
+			t.Errorf("%s creates a PRIV issue naming %s = %d %s, want %d", write.caller, write.repository, response.Code, got, write.status)
+		case write.status == http.StatusForbidden && got != repositoryNotAvailableRefusal:
+			t.Errorf("%s creates a PRIV issue naming %s = %s, want %s", write.caller, write.repository, got, repositoryNotAvailableRefusal)
+		case write.status == http.StatusForbidden && repoWriteSnapshot(t, seed.database) != before:
+			t.Errorf("%s's refused create naming %s wrote", write.caller, write.repository)
+		}
 	}
 }
 
@@ -194,9 +275,11 @@ func TestARepositoryWriteAtAHiddenObjectAnswersAsAtAMissingOne(t *testing.T) {
 // TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject (R9): once PRIV is public again, the
 // deployment holds no private project, and alice's create and patch naming acme/priv, her PUT that
 // maps it as PUB's default, and her token that lists PRIV, which is not open, creating and
-// patching PRIV's issues with a repository, are each taken and make no statement of the
-// repository check (no statement names access.HiddenPrivateProjectClause). Each answer is logged
-// masked (maskedAnswer), so two builds' runs compare byte for byte.
+// patching PRIV's issues with a repository, acme/fresh among them, which no issue names, are each
+// taken and make no statement of the repository check (no statement names
+// access.HiddenPrivateProjectClause). The proxy's clause would hide acme/fresh from that token, so
+// the check reads nothing here rather than ask it. Each answer is logged masked (maskedAnswer), so
+// two builds' runs compare byte for byte.
 func TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject(t *testing.T) {
 	recorder := &statementRecorder{}
 	seed := seedRepoWrite(t, testServerOptions{tracer: recorder})
@@ -218,6 +301,8 @@ func TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject(t *testing.T) {
 			map[string]any{"project": seedPrivate, "title": "Filed through a listing token", "repo": "acme/privdone", "force": true}, http.StatusCreated},
 		{"alice's token that lists PRIV patches PRIV-1 to acme/privdefault", callerAlicePrivToken, http.MethodPatch, "/api/v1/issues/" + seed.issue[seedPrivate],
 			map[string]any{"repo": "acme/privdefault"}, http.StatusOK},
+		{"alice's token that lists PRIV creates a PRIV issue naming acme/fresh", callerAlicePrivToken, http.MethodPost, "/api/v1/issues",
+			map[string]any{"project": seedPrivate, "title": "Filed in a repository no issue names", "repo": "acme/fresh", "force": true}, http.StatusCreated},
 	} {
 		var response *httptest.ResponseRecorder
 		statements := recorder.record(func() {

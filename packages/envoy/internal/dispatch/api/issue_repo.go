@@ -98,40 +98,43 @@ func refuseRepoOfRestrictedMember(w http.ResponseWriter, who model.Actor, raw js
 	return true
 }
 
-// codeRepositoryPrivate is the code refuseRepoHeld refuses a write with.
-const codeRepositoryPrivate = "REPOSITORY_PRIVATE"
+// codeRepositoryNotAvailable is the code refuseRepoHidden refuses a write with.
+const codeRepositoryNotAvailable = "REPOSITORY_NOT_AVAILABLE"
 
-// repositoryHeldQuery is refs.RepositoryHeldClause over the repository bound at $1 for the viewer
-// bound at $2. No placeholder differs between writes, so the text is built once.
-var repositoryHeldQuery = `select ` + refs.RepositoryHeldClause("$1::text", "$2")
+// repositoryShownToWriterQuery is refs.RepositoryClause over the repository bound at $1 for the
+// viewer bound at $2, the GitHub proxy's own read (routes' repositoryVisibleQuery). No placeholder
+// differs between writes, so the text is built once.
+var repositoryShownToWriterQuery = `select ` + refs.RepositoryClause("$1::text", "$2")
 
-// refuseRepoHeld refuses a write by who that makes repo, canonical, an issue's own repository or a
-// project's default, when a private project who does not see owns it (refs.RepositoryHeldClause):
-// an issue of that project resolves to it. Every repository an issue resolves to is one its
-// project owns, and refs.RepositoryClause shows a repository to everyone who sees an issue that
-// resolves to it, so a writer who gave an issue of a project they see such a repository would read
-// it through the GitHub proxy and Delivery. The write and that read share one clause, so they
-// cannot come to different answers. Clearing a repository (repo nil) is refused nothing, and so is
-// a repository no private project hidden from the writer owns, so a person who sees the private
-// project may still give its repository to another project.
+// refuseRepoHidden refuses a write by who that makes repo, canonical, an issue's own repository or
+// a project's default, when the GitHub proxy hides that repository from who: it fails
+// refs.RepositoryClause with who as the viewer. Every repository an issue resolves to is one its
+// project owns, and the proxy shows a repository to everyone who sees an issue that resolves to
+// it, so a write that gave an issue of a project who sees a repository the proxy hides from who
+// would give who that repository to read, through the proxy and Delivery. The proxy's gate is the
+// one test, so the write and the read cannot come to different answers: a repository that only
+// issues of private projects who does not see resolve to is refused, and a repository an issue who
+// sees already resolves to, a shared one, is not. Clearing a repository (repo nil) is refused
+// nothing.
 //
-// It is 403 REPOSITORY_PRIVATE in words that name no project and no issue, the same for every
-// spelling of the name: it tells the writer only that some private project they do not see owns
-// it. It reads through q, the write's transaction, after the write has read its issue or its
-// project as the writer reads them, so an object the writer does not see still answers as one
-// nobody holds, and before anything is written. A deployment with no private project, and the
-// server's own viewer, read nothing for it (R9).
-func refuseRepoHeld(ctx context.Context, q queryer, who model.Actor, repo *string) error {
+// It is 403 REPOSITORY_NOT_AVAILABLE in words that name no project and no issue, and do not say
+// why the repository is hidden, the same for every spelling of the name. It reads through q, the
+// write's transaction, after the write has read its issue or its project as who reads them, so an
+// object who does not see still answers as one nobody holds, and before anything is written. The
+// server's own viewer and every viewer of a deployment with no private project read nothing for
+// it and are refused nothing, as before (R9): there the clause would hide from a credential that
+// lists projects a repository no issue of its projects resolves to yet, which it has always named.
+func refuseRepoHidden(ctx context.Context, q queryer, who model.Actor, repo *string) error {
 	if repo == nil || (who.Viewer != nil && (who.Viewer.All || !who.Viewer.AnyPrivate)) {
 		return nil
 	}
-	var held bool
-	if err := q.QueryRow(ctx, repositoryHeldQuery, *repo, refs.VisibilityArg(who)).Scan(&held); err != nil {
-		return fmt.Errorf("read whether a private project the writer does not see owns %s: %w", *repo, err)
+	var visible bool
+	if err := q.QueryRow(ctx, repositoryShownToWriterQuery, *repo, refs.VisibilityArg(who)).Scan(&visible); err != nil {
+		return fmt.Errorf("read whether the writer may read %s: %w", *repo, err)
 	}
-	if held {
-		return errorf(http.StatusForbidden, codeRepositoryPrivate,
-			"a private project the caller does not see owns this repository; only a person who sees that project may make it an issue's repo or a project's default repository")
+	if !visible {
+		return errorf(http.StatusForbidden, codeRepositoryNotAvailable,
+			"this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch")
 	}
 	return nil
 }

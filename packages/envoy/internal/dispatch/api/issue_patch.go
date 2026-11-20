@@ -283,10 +283,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A repository a private project the writer does not see owns is not theirs to name
-	// (refuseRepoHeld): read once the issue is read as the writer reads it, under its owner lock,
+	// A repository the GitHub proxy hides from the writer is not theirs to name
+	// (refuseRepoHidden): read once the issue is read as the writer reads it, under its owner lock,
 	// and before the first row is written.
-	if err := refuseRepoHeld(r.Context(), tx, who, repo); err != nil {
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

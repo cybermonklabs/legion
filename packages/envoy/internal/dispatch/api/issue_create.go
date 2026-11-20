@@ -380,10 +380,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, pgx.ErrNoRows)
 		return
 	}
-	// A repository a private project the creator does not see owns is not theirs to name
-	// (refuseRepoHeld): read once the project and the parent are read as the creator reads them,
+	// A repository the GitHub proxy hides from the creator is not theirs to name
+	// (refuseRepoHidden): read once the project and the parent are read as the creator reads them,
 	// before the project's owner lock and before anything is written.
-	if err := refuseRepoHeld(r.Context(), tx, who, repo); err != nil {
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

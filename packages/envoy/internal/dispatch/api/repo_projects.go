@@ -75,8 +75,8 @@ type putRepoProjectInput struct {
 // changes emits settings.repo_project.updated on its project, and a moved mapping emits one on
 // the project it left too, deleted:true there. lockRepoProjectWrite orders the write against
 // every other one. A write that leaves the mapping its project's default is 403
-// REPOSITORY_PRIVATE when a private project the caller does not see owns the repository
-// (refuseRepoHeld), as an issue's own repository is.
+// REPOSITORY_NOT_AVAILABLE when the GitHub proxy hides the repository from the caller
+// (refuseRepoHidden), as an issue's own repository is.
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
 // route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
@@ -144,9 +144,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	}
 	// A project's default is the repository each of its issues that names none resolves to, so a
 	// mapping this write leaves as a default is held to the rule an issue's own repository is
-	// (refuseRepoHeld), under the mapping's locks and before anything is written.
+	// (refuseRepoHidden), under the mapping's locks and before anything is written.
 	if isDefault {
-		if err := refuseRepoHeld(r.Context(), tx, who, &repo); err != nil {
+		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
