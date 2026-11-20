@@ -5728,7 +5728,7 @@ func TestMemoryGuardMeasuresGrowthSinceAKillAllocatingNothingForAProcessReadBefo
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
 		table.byPID[cs[i].PID] = cs[i].Process
 	}
-	h.g.keepKillSizes(cs, nil)
+	h.g.keepKillSizes()
 	allocs := testing.AllocsPerRun(100, func() {
 		if h.g.grownSinceKill(cs, table) {
 			t.Fatal("a process whose size has not changed since the kill counts as grown")
