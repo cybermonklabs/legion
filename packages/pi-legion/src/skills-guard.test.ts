@@ -662,9 +662,7 @@ test("the code precedence sentence is once in each prompt part and agent definit
 // plugins' partitions, and the files that still hold one are listed by path.
 test("no skill holds a code precedence sentence; the role prompts and agent definitions carry it", () => {
   const holding = files(repoSkillsRoot)
-    .filter(
-      (file) => file.endsWith(".md") && /disagrees? with the code/i.test(readFileSync(file, "utf8"))
-    )
+    .filter((file) => file.endsWith(".md") && /disagrees? with the code/i.test(collapsed(file)))
     .map((file) => path.relative(REPO_ROOT, file))
     .sort();
   expect(holding).toEqual([]);

@@ -2,7 +2,7 @@ kind: Changed
 custom:
   Issue: pr4622
 body: |-
-  The Dispatch skills answer the ten failure types of what agents write to a person: plain-words
+  The Dispatch skills add rules for what agents write to a person: plain-words
   is a required read before such a text, a claim carries its source or `[INFERENCE]`, the writer
   reads the code that already does the nearest thing, the answer comes in the shape asked for,
   each `doc-edit` is guarded by the latest `doc-read` token, and an upload is linked from a

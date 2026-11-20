@@ -29,7 +29,7 @@ that section of `skill://legion-architect`.
   when it is `todo`, and in any other status as a parked child at `done`, which a `todo` runs
   again. `admission.held` reads `tree_closed` for more issues than a release takes: a member whose
   tree's linger still runs, and a member past `admitted`, read that word too and stay refused (the
-  `tree_closed` row of the controller skill's admission reference). When the tree the
+  `tree_closed` row of the controller skill's `references/admission-held.md`). When the tree the
   refusal names is a root held under an unreleased child of yours (a root that queued and never
   ran, so no architect has started on it), release that root, or the unreleased child it sits
   under, instead: its children come with it. Otherwise re-parent the child back in Dispatch, or

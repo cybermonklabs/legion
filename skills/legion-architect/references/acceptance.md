@@ -1,6 +1,6 @@
-# Acceptance, the merge and the close
+# Acceptance
 
-Read the section for your step of `skill://legion-architect`, sections 4 to 7. Where it says to
+Read the section for your step of `skill://legion-architect`, sections 4 to 6. Where it says to
 ask a person, a child's own architect sends the question to the architect above it. After your
 sign-off (the merger's reports, the close, a root's linger), read
 `skill://legion-architect/references/acceptance-close.md`.

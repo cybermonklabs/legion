@@ -23,3 +23,6 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 - A task agent runs as a background job, so a prompt that dispatches one also names `wait`, the tool that reads its result.
 
 - `packages/pi-shared/test/skills-guard.ts` holds the checks each plugin's tests run over its staged skills.
+
+- The rule to follow the code, a command's output or its `--help` over a skill is in no skill.
+  The worker, architect and both controller parts in `packages/daemon/internal/prompts/go/` and the two thermonuclear agent definitions in `packages/pi-legion/agents/` carry it, and `packages/daemon/internal/prompts/code_precedence_test.go` and `packages/pi-legion/src/skills-guard.test.ts` hold it there.
