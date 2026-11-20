@@ -223,9 +223,9 @@ type Options struct {
 	Account Account
 	// Origins are the mounting program's own public origins, the canonical one first
 	// (DISPATCH_SERVER_URL, then DISPATCH_OUTSIDE_ORIGIN where it is set; ENVOY_PUBLIC_URL alone):
-	// each an absolute http(s) URL with no path, and no two on one host. A proof's 'htu' is
-	// checked against one of them plus the request's path, never against a forwarded header — see
-	// atOrigin.
+	// each an absolute http(s) URL with no path, and no two with one Host (host and port). A
+	// proof's 'htu' is checked against one of them plus the request's path, never against a
+	// forwarded header — see atOrigin.
 	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).
@@ -292,8 +292,8 @@ type origin struct {
 
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
 // failing one request at a time: a missing dependency, no origin, an origin that is not an
-// absolute http(s) origin, and two origins on one host, which no request's Host could tell apart
-// (atOrigin), are all deployment errors.
+// absolute http(s) origin, and two origins with one Host (host and port), which no request's Host
+// could tell apart (atOrigin), are all deployment errors.
 func New(options Options) (*Verifier, error) {
 	if options.BrokerURL == "" {
 		return nil, errors.New("brokertoken: the broker URL is required")
@@ -357,7 +357,7 @@ func originsOf(raw []string) ([]origin, error) {
 		}
 		for _, earlier := range origins {
 			if strings.EqualFold(earlier.host, parsed.Host) {
-				return nil, fmt.Errorf("brokertoken: the origin %q is on the host of %s://%s, and no request's Host could tell the two apart", value, earlier.scheme, earlier.host)
+				return nil, fmt.Errorf("brokertoken: the origin %q has the Host of %s://%s, and no request's Host could tell the two apart", value, earlier.scheme, earlier.host)
 			}
 		}
 		next := origin{scheme: parsed.Scheme, host: parsed.Host}
