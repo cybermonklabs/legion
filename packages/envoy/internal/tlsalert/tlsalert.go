@@ -2,12 +2,12 @@
 // any point of the connection: proof that a peer took the connection and answered, as against a
 // dial that reached nothing.
 //
-// The daemon module gets the same reading as packages/daemon/internal/tlsalert with pull request
-// #4574, which is open as this is written; until it merges, main's daemon reads an alert in
-// internal/agentsecrets' daemonSideFault by a rule of its own, the "remote error" Op alone. Once
-// both are on main they are copies, not one package imported twice, for the reason
-// packages/envoy/internal/testtmp gives: Go's internal rule keeps each module from importing the
-// other's. A change to one is then a change to the other.
+// The daemon module keeps the same reading in packages/daemon/internal/tlsalert once #4574
+// merges; until then its internal/agentsecrets' daemonSideFault reads an alert by a rule of its
+// own, the "remote error" Op alone. The two packages are copies, not one package imported twice,
+// for the reason packages/envoy/internal/testtmp gives: Go's internal rule keeps each module from
+// importing the other's. Whichever lands first, a change to the reading here is a change to the
+// daemon's, wherever the daemon reads it.
 package tlsalert
 
 import (
