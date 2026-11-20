@@ -1,4 +1,4 @@
-import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -7,6 +7,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -14,7 +15,9 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
   ArtifactReview,
@@ -28,6 +31,7 @@ import { subsetRanges } from "../../fonts/inter/subset-script";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
@@ -583,6 +587,73 @@ test("the header marks the issue pin when it is pinned", async () => {
     expect(pin).toHaveAttribute("aria-pressed", "true");
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// A header write the reader stopped at the shell's indicator may have been saved: the header says
+// so in today's header's words (`stoppedNote`, `stoppedWriteNote`), not that it failed. Without
+// them it read "Could not update this issue." or "Could not save pin status.", a refusal
+// Dispatch never gave.
+test("a title save the reader stopped says it may have been saved, not that it failed", async () => {
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await editTitle(userEvent.setup(), "Review the plan");
+    jest.useFakeTimers();
+    await userOnFakeClock().keyboard("{Enter}");
+    await stopTheLateWrite(queryClient);
+    expect(
+      within(view.container).getByText(/^Dispatch has not confirmed this change/).textContent
+    ).toBe(
+      stoppedWriteNote("this change to the issue", "saved", {
+        anew: "Retry sends what the field holds now as a new write.",
+      })
+    );
+    expect(within(view.container).queryByText("Could not update this issue.")).toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a pin the reader stopped says it may have been saved, not that it failed", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const putIssueState = spyOn(api, "putIssueState").mockRejectedValue(
+    new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await within(view.container).findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = within(view.container).getByRole("button", { name: "Pin issue" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(pin);
+    await stopTheLateWrite(queryClient);
+    expect(
+      within(view.container).getByText(/^Dispatch has not confirmed the pin status/).textContent
+    ).toBe(
+      stoppedWriteNote("the pin status", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+    expect(within(view.container).queryByText("Could not save pin status.")).toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+    putIssueState.mockRestore();
+    state.mockRestore();
     restore();
   }
 });
