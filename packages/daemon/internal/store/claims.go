@@ -224,10 +224,12 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 		stepAt, turnStarted    *time.Time
 		stepStarted, stepEnded *time.Time
 	)
-	err := s.pool.QueryRow(ctx, `select step_at, turn_started_at, step_tool, step_call_id,
-		step_args_bytes, step_args_hash, step_started_at, step_ended_at from claims where token = $1`,
-		string(token)).Scan(&stepAt, &turnStarted, &step.Tool, &step.CallID,
-		&step.ArgsBytes, &step.ArgsHash, &stepStarted, &stepEnded)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select step_at, turn_started_at, step_tool, step_call_id,
+			step_args_bytes, step_args_hash, step_started_at, step_ended_at from claims where token = $1`,
+			string(token)).Scan(&stepAt, &turnStarted, &step.Tool, &step.CallID,
+			&step.ArgsBytes, &step.ArgsHash, &stepStarted, &stepEnded)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.StepRecord{}, nil
 	}
