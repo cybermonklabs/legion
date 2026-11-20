@@ -5,14 +5,18 @@
 #
 # Who runs it, and what it takes:
 #
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion>
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion> \
+#     <selection conclusion>
 #
 # <download conclusion> is what the step "Download every leg's blob report" concluded, the merge
-# job's `${{ steps.download-blobs.conclusion }}`: the missing-blob message below reads it,
-# a refused download being why no blob arrived for any leg. GH_TOKEN is the run's own
-# `${{ github.token }}`, which the step's `env:` gives this script for the read of this run's
-# jobs. It is never an argument: an argument is on the process's command line, which every
-# process of the runner can read in /proc while the step runs.
+# job's `${{ steps.download-blobs.conclusion }}`. <selection conclusion> is what the step "Take
+# the newest attempt of each leg's blob report" concluded, `${{ steps.select-blobs.conclusion }}`.
+# That second step writes the directory this reading reads. The missing-blob message below reads
+# both: a refused download, a download that never ran or a selection that never completed is why
+# no blob reached this reading for any leg.
+# GH_TOKEN is the run's own `${{ github.token }}`, which the step's `env:` gives this script for
+# the read of this run's jobs. It is never an argument: an argument is on the process's command
+# line, which every process of the runner can read in /proc while the step runs.
 #
 # The conclusion is an argument rather than a key of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
@@ -35,29 +39,56 @@
 # dispatch-browser-run-reads.sh reads for this run's jobs.
 #
 # Run from the repository root, with those five set:
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success success
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion, with" \
-    "the run's token in GH_TOKEN: GH_TOKEN=<token>" \
-    ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>. It was given: $*"
+  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion and the" \
+    "blob selection's conclusion, with the run's token in GH_TOKEN: GH_TOKEN=<token>" \
+    ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>" \
+    "<selection conclusion>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 1 ] || usage "$@"
+[ "$#" -eq 2 ] || usage "$@"
 
 blobs="$RUNNER_TEMP/selected-blobs/blob-report"
 counts="$RUNNER_TEMP/selected-blobs/rows"
 report="$RUNNER_TEMP/report.json"
 jobs="$RUNNER_TEMP/jobs.json"
-# What the step "Download every leg's blob report" concluded. It is read here, in the
-# body, rather than in a step `env:` block, for the reason
+# What the steps "Download every leg's blob report" and "Take the newest attempt of each leg's
+# blob report" concluded. They are read here, in the body, rather than in a step `env:` block,
+# for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives
-# and which the step's `GH_TOKEN` need not follow, that key being in ENV_ALLOWED. The missing-blob
-# message reads it: a download that was refused is why no blob arrived for any leg.
+# and which the step's `GH_TOKEN` need not follow, that key being in ENV_ALLOWED.
+#
+# This reading reads only what the selection wrote, and the selection runs only after a
+# download that succeeded. So only `success` for both says that every blob this job holds is
+# in front of it. A download that failed is the refused read below. A download that a failed
+# step before it, or the job's cancellation, left `skipped` or `cancelled`, and a selection that
+# did not complete after a download that did, each leave this reading nothing to read. That
+# says nothing of the legs, so the message names the step and how it ended, and not the legs.
 downloaded=$1
+selected=$2
+if [ "$downloaded" = success ] && [ "$selected" = success ]; then
+  input="read"
+elif [ "$downloaded" = failure ]; then
+  input=refused
+elif [ "$downloaded" != success ]; then
+  input=download
+else
+  input=selection
+fi
+# how_ended <conclusion>: the words for a step that did not succeed.
+how_ended() {
+  case "$1" in
+    skipped) echo "did not run (it concluded skipped)" ;;
+    cancelled) echo "was cancelled before it completed (it concluded cancelled)" ;;
+    failure) echo "failed" ;;
+    *) echo "did not run to its end (it concluded '$1')" ;;
+  esac
+}
 # The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
@@ -116,6 +147,13 @@ if [ -z "$legs" ]; then
 fi
 missing=""
 printed_total=0
+# Legs whose row count this job holds, and legs whose count it does not hold. A leg with no
+# count file, or a count file that holds no whole number (a log that printed no count), is not
+# read, and the table and the notice say so instead of counting it as 0: such a leg printed its
+# rows in its own log all the same.
+counted=0
+unread=0
+unread_legs=""
 line=""
 {
   echo "### The rows"
@@ -129,17 +167,36 @@ line=""
 # pipe would run it in a subshell and throw both away.
 while IFS= read -r leg; do
   [ -n "$leg" ] || continue
-  printed=$(cat "$counts/$leg.txt" 2>/dev/null || true)
-  case "$printed" in '' | *[!0-9]*) printed=0 ;; esac
+  printed=""
+  if [ -f "$counts/$leg.txt" ]; then
+    printed=$(cat "$counts/$leg.txt")
+  fi
+  case "$printed" in
+    '' | *[!0-9]*)
+      unread=$((unread + 1))
+      unread_legs="$unread_legs $leg"
+      cell="not read"
+      ;;
+    *)
+      printed_total=$((printed_total + printed))
+      counted=$((counted + 1))
+      cell=$printed
+      ;;
+  esac
+  # MISSING only where the download and the selection both ran and found no blob for the leg.
+  # Otherwise this job never read the leg's blob, and a downloaded blob the selection did not
+  # reach is still on the runner, so the table says what this reading knows: not read.
   if [ -f "$blobs/report-$leg.zip" ]; then
     held=yes
-  else
+  elif [ "$input" = read ]; then
     held=MISSING
     missing="$missing $leg"
+  else
+    held="not read"
+    missing="$missing $leg"
   fi
-  printed_total=$((printed_total + printed))
-  line="$line$leg $printed, "
-  echo "| $leg | $printed | $held |" >> "$GITHUB_STEP_SUMMARY"
+  line="$line$leg $cell, "
+  echo "| $leg | $cell | $held |" >> "$GITHUB_STEP_SUMMARY"
 done <<< "$legs"
 # `unknown` where the merge step failed: this reading still names the legs that owed a
 # blob, which is what says why.
@@ -147,12 +204,19 @@ merged=unknown
 if [ -f "$report" ]; then
   merged=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
 fi
+if [ "$unread" -eq 0 ]; then
+  printed_words="$printed_total printed by the legs"
+elif [ "$counted" -eq 0 ]; then
+  printed_words="no count of the legs', since this job read none of them"
+else
+  printed_words="$printed_total printed by the $counted legs whose count this job read"
+fi
 {
   echo
-  echo "The merged report holds $merged rows; the legs' logs printed $printed_total."
+  echo "The merged report holds $merged rows, against $printed_words."
 } >> "$GITHUB_STEP_SUMMARY"
 echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
-  "against $printed_total printed by the legs (${line%, })"
+  "against $printed_words (${line%, })"
 if [ -n "$missing" ]; then
   # Where the download was refused, this step runs anyway - its `if:` is `always()` -
   # and finds no blob for any leg, so the step "Report a refused blob download as a
@@ -165,24 +229,69 @@ if [ -n "$missing" ]; then
   # claimed of them: a leg that died before its upload - shards 3 and 4 of run
   # 42328655988, on a `bun install` failure - wrote no blob at all, so this line says
   # the download failed rather than that each leg's blob is waiting on the run.
-  if [ "$downloaded" = failure ]; then
-    echo "::error::the download of the legs' blob reports failed, so no leg's blob" \
-      "could be read and the merged report is short of the rows of:$missing; the" \
-      "step \"Download every leg's blob report\" carries that download's own error" \
-      "line. This is a failed read of the run's artifacts and not a failed browser" \
-      "row: no row of the suite failed here."
-  else
-    echo "::error::no blob report arrived from:$missing;" \
-      "the merged report is short of those legs' rows"
-  fi
+  #
+  # A download that never ran is the third case, and the run that showed it is 44754426131,
+  # attempt 1: the merge job's `bun install` had printed nothing for 3 min 58 s when the job's
+  # time limit cancelled it, so the download step was skipped, and this line named all four
+  # shards as having sent no blob, though each had uploaded its blob before the job started.
+  # A selection that did not complete after a download that did is the fourth, for the same
+  # reason: this reading reads only what the selection wrote. In both, the legs are named and
+  # nothing more is claimed of them.
+  case "$input" in
+    refused)
+      echo "::error::the download of the legs' blob reports failed, so no leg's blob" \
+        "could be read and the merged report is short of the rows of:$missing; the" \
+        "step \"Download every leg's blob report\" carries that download's own error" \
+        "line. This is a failed read of the run's artifacts and not a failed browser" \
+        "row: no row of the suite failed here."
+      ;;
+    read)
+      echo "::error::no blob report arrived from:$missing;" \
+        "the merged report is short of those legs' rows"
+      ;;
+    download)
+      echo "::error::the step \"Download every leg's blob report\" $(how_ended "$downloaded")," \
+        "so this job read no blob report and no row count of:$missing, and the merged report" \
+        "is short of those legs' rows. This does not say that those legs sent no blob: this" \
+        "job's log shows what stopped it, a step that failed before the download or the job's" \
+        "cancellation. Whether a row of the suite failed is for the verdict step below, which" \
+        "reads each leg's own result."
+      ;;
+    selection)
+      echo "::error::the step \"Take the newest attempt of each leg's blob report\"" \
+        "$(how_ended "$selected") after the download succeeded, so this job read no blob" \
+        "report and no row count of:$missing, and the merged report is short of those legs'" \
+        "rows. This does not say that those legs sent no blob: this job's log shows what" \
+        "stopped that step."
+      ;;
+  esac
   exit 1
 fi
-# Every owed blob arrived, so the two counts are of the same rows and must be equal:
-# both count every row the legs ran, skipped rows included. They differ when the merge
-# dropped rows the legs ran, and nothing else here would catch that - reading two and
-# the verdict step both read the merged report alone, so a dropped failure would leave
-# the run green. A leg whose log printed no count lands here too, and the table above
-# says which leg it was.
+# Every owed blob arrived. A merged report whose stats do not sum to a whole number cannot be
+# held against the legs' counts, and a test on it would fail inside the `if` below, where
+# `set -e` does not reach, and let the step pass having compared nothing.
+if [ "$merged" != unknown ]; then
+  case "$merged" in
+    '' | *[!0-9]*)
+      echo "::error::the merged report's stats sum to '$merged', not a whole number of rows," \
+        "so this reading cannot hold it against the legs' counts"
+      exit 1
+      ;;
+  esac
+fi
+# A leg whose count was not read leaves nothing to compare its rows with, so the comparison
+# below would read a short total as rows the merge dropped. It is named for what it is.
+if [ "$unread" -gt 0 ]; then
+  echo "::error::every leg's blob report is present, but this job read no row count of:" \
+    "${unread_legs# }, so the merged report's $merged rows cannot be held against the legs'" \
+    "counts; each leg's own log prints its count"
+  exit 1
+fi
+# Every owed blob arrived and every count was read, so the two counts are of the same rows and
+# must be equal: both count every row the legs ran, skipped rows included. They differ when the
+# merge dropped rows the legs ran, and nothing else here would catch that - reading two and the
+# verdict step both read the merged report alone, so a dropped failure would leave the run
+# green.
 if [ "$merged" != unknown ] && [ "$merged" -ne "$printed_total" ]; then
   echo "::error::the merged report holds $merged rows and the legs printed" \
     "$printed_total, with every leg's blob report present:" \

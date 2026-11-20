@@ -532,6 +532,7 @@ jobs:
         run: .github/scripts/dispatch-browser-run-reads.sh blobs-refused
       # why: .github/ci-notes/dispatch-browser.md#why-only-the-newest-attempt-of-each-leg-is-merged
       - name: Take the newest attempt of each leg's blob report
+        id: select-blobs
         run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs"
       - name: Merge the legs' blob reports into one report
         # why: .github/ci-notes/dispatch-browser.md#what-the-merged-reports-three-outputs-are-for
@@ -554,7 +555,7 @@ jobs:
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
+        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ steps.select-blobs.conclusion }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
       - name: Reading two, the flake rate
