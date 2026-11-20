@@ -37,6 +37,7 @@ type scriptRig struct {
 	bin     string // first on PATH
 	pgbin   string // PGBIN
 	realBin string // the real server programs
+	script  string // the script this rig runs; testPGScript when empty
 	port    int
 }
 
@@ -163,7 +164,11 @@ func (r *scriptRig) dsn() string {
 // zero time, and answers its output and its error.
 func (r *scriptRig) run(command string, deadline time.Time) (string, error) {
 	r.t.Helper()
-	cmd := exec.Command("sh", testPGScript, command)
+	script := r.script
+	if script == "" {
+		script = testPGScript
+	}
+	cmd := exec.Command("sh", script, command)
 	env := withoutEnv(os.Environ(), testPGDeadlineVariable, "PATH", TestPGVariable, testPGDirVariable, testPGLogVariable)
 	env = append(env, "PATH="+r.bin+string(os.PathListSeparator)+os.Getenv("PATH"), "PGBIN="+r.pgbin,
 		TestPGVariable+"="+r.dsn(), testPGDirVariable+"="+r.dir)
@@ -173,6 +178,54 @@ func (r *scriptRig) run(command string, deadline time.Time) (string, error) {
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// ensure runs ensure again after another process wins the race between freeScriptPort and pg_ctl.
+// It keeps trying until the test's own deadline, never behind a new fixed retry bound.
+func (r *scriptRig) ensure(deadline time.Time) (string, error) {
+	r.t.Helper()
+	var output strings.Builder
+	for {
+		out, err := r.run("ensure", deadline)
+		output.WriteString(out)
+		if err == nil || !strings.Contains(r.serverLog(), `could not bind IPv4 address "127.0.0.1": Address already in use`) {
+			return output.String(), err
+		}
+		if testDeadline, ok := r.t.Deadline(); ok && !time.Now().Before(testDeadline) {
+			return output.String(), err
+		}
+		r.port = freeScriptPort(r.t)
+	}
+}
+
+func TestScriptRigEnsureRetriesAPortAnotherProcessTook(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "port-conflict.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+set -eu
+mkdir -p "$LEGION_TESTPG_DIR"
+attempt="$LEGION_TESTPG_DIR/attempt"
+if [ ! -e "$attempt" ]; then
+	: > "$attempt"
+	printf '%s\n' 'could not bind IPv4 address "127.0.0.1": Address already in use' > "$LEGION_TESTPG_DIR/server.log"
+	exit 1
+fi
+printf 'second ensure reached\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &scriptRig{t: t, dir: filepath.Join(root, "testpg"), script: script, port: freeScriptPort(t)}
+	port := r.port
+	out, err := r.ensure(time.Time{})
+	if err != nil {
+		t.Fatalf("ensure after a port conflict = %v: %s", err, out)
+	}
+	if r.port == port {
+		t.Fatal("ensure kept the port another process took")
+	}
+	if !strings.Contains(out, "second ensure reached") {
+		t.Fatalf("ensure output %q does not show its retry", out)
+	}
 }
 
 // serverLog answers the last lines of the server's log, for a failure's message.
@@ -281,7 +334,7 @@ func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *tes
 	if err := os.WriteFile(r.partial, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := r.run("ensure", time.Now().Add(10*time.Minute))
+	out, err := r.ensure(time.Now().Add(10 * time.Minute))
 	if err == nil || !strings.Contains(out, "initdb failed") {
 		t.Fatalf("legion-testpg ensure over an initdb killed part way = %v: %s; want initdb's failure named", err, out)
 	}
@@ -294,7 +347,7 @@ func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *tes
 	// is given what the deadline leaves when it starts.
 	began := time.Now()
 	deadline := began.Add(10 * time.Minute)
-	out, err = r.run("ensure", deadline)
+	out, err = r.ensure(deadline)
 	if err != nil {
 		t.Fatalf("legion-testpg ensure after a part initdb = %v: %s; want the cluster made again and served; the server's log ends:\n%s", err, out, r.serverLog())
 	}
@@ -336,7 +389,7 @@ func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *tes
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err = r.run("ensure", time.Time{})
+	out, err = r.ensure(time.Time{})
 	if err != nil {
 		t.Fatalf("legion-testpg ensure over a whole cluster = %v: %s", err, out)
 	}
