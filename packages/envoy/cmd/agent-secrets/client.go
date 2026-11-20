@@ -607,10 +607,22 @@ func (c *client) postRequest(ctx context.Context, signer Signer, build func(rere
 		return RequestResult{}, nil, err
 	}
 	var result RequestResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return RequestResult{}, nil, fmt.Errorf("decode create request response: %w", err)
+	if err := c.decode(raw, &result, "decode create request response"); err != nil {
+		return RequestResult{}, nil, err
 	}
 	return result, raw, nil
+}
+
+// decode reads raw, a broker answer, into v, and refuses one it cannot read with call and the
+// decoder's words as the address lets the answer's own words print (brokeraddr.Address.Words):
+// encoding/json's error can quote the answer (a time field's value whole, through time.Parse),
+// and whoever answers at an address that is not clean can repeat its credential in any text of
+// its answer. Every answer decoder of this client reads through it, enroll --pod's among them.
+func (c *client) decode(raw []byte, v any, call string) error {
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("%s: %s", call, c.baseURL.Words(err.Error()))
+	}
+	return nil
 }
 
 type requestDecision struct {
@@ -668,8 +680,8 @@ func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitS
 		return RequestStatus{}, nil, withoutTypedID(err, "/v1/requests/(the request id, not printed)")
 	}
 	var status RequestStatus
-	if err := json.Unmarshal(raw, &status); err != nil {
-		return RequestStatus{}, nil, fmt.Errorf("decode request status: %w", err)
+	if err := c.decode(raw, &status, "decode request status"); err != nil {
+		return RequestStatus{}, nil, err
 	}
 	return status, raw, nil
 }
@@ -770,8 +782,8 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 		return GrantValues{}, err
 	}
 	var values GrantValues
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
+	if err := c.decode(raw, &values, "decode grant values"); err != nil {
+		return GrantValues{}, err
 	}
 	return values, nil
 }
@@ -836,8 +848,8 @@ func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, []byte, e
 		return SelfResult{}, nil, err
 	}
 	var self SelfResult
-	if err := json.Unmarshal(raw, &self); err != nil {
-		return SelfResult{}, nil, fmt.Errorf("decode self: %w", err)
+	if err := c.decode(raw, &self, "decode self"); err != nil {
+		return SelfResult{}, nil, err
 	}
 	return self, raw, nil
 }
@@ -864,8 +876,8 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 	var result struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return time.Time{}, fmt.Errorf("decode renew response: %w", err)
+	if err := c.decode(raw, &result, "decode renew response"); err != nil {
+		return time.Time{}, err
 	}
 	return result.LeaseExpiresAt, nil
 }
@@ -910,8 +922,8 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 		return Settings{}, err
 	}
 	var settings Settings
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return Settings{}, fmt.Errorf("decode settings: %w", err)
+	if err := c.decode(raw, &settings, "decode settings"); err != nil {
+		return Settings{}, err
 	}
 	return settings, nil
 }
@@ -935,8 +947,8 @@ func (c *client) RereadSecret(ctx context.Context, name string) (Reread, error) 
 		return Reread{}, err
 	}
 	var reread Reread
-	if err := json.Unmarshal(raw, &reread); err != nil {
-		return Reread{}, fmt.Errorf("decode reread: %w", err)
+	if err := c.decode(raw, &reread, "decode reread"); err != nil {
+		return Reread{}, err
 	}
 	return reread, nil
 }
@@ -970,8 +982,8 @@ func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (Oper
 		return OperatorMachines{}, nil, err
 	}
 	var out OperatorMachines
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return OperatorMachines{}, nil, fmt.Errorf("decode machine logins: %w", err)
+	if err := c.decode(raw, &out, "decode machine logins"); err != nil {
+		return OperatorMachines{}, nil, err
 	}
 	return out, raw, nil
 }
@@ -1026,8 +1038,8 @@ func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (Operat
 		return OperatorGrants{}, nil, err
 	}
 	var out OperatorGrants
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return OperatorGrants{}, nil, fmt.Errorf("decode grants: %w", err)
+	if err := c.decode(raw, &out, "decode grants"); err != nil {
+		return OperatorGrants{}, nil, err
 	}
 	return out, raw, nil
 }

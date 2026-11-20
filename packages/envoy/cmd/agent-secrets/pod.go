@@ -140,10 +140,8 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	var result struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// The decoder's words quote the answer, so they print as the address lets the broker's
-		// own words print (brokeraddr.Address.Words).
-		return "", false, fmt.Errorf("decode enrollment response: %s", c.baseURL.Words(err.Error()))
+	if err := c.decode(raw, &result, "decode enrollment response"); err != nil {
+		return "", false, err
 	}
 	if result.EnrollmentID == "" {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
@@ -342,9 +340,8 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	var result struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// As CreatePodEnrollment's decoder error: the answer's words, through Words.
-		return "", fmt.Errorf("decode token login response: %s", c.baseURL.Words(err.Error()))
+	if err := c.decode(raw, &result, "decode token login response"); err != nil {
+		return "", err
 	}
 	if result.CredentialID == "" {
 		return "", errors.New("the broker's token login answered no credential_id")
