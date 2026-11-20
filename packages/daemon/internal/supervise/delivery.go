@@ -131,10 +131,9 @@ type Delivery struct {
 	// late refusal of its own (lateRefused), which charges the budget, so it bounds itself and
 	// is read there rather than in this record of the silent ones. All three are written
 	// together on every send that fails in refused, and cleared together where the budgets are
-	// cleared (confirm), so a task that got through carries zeroes. LastSendError is never the
-	// far side's text as it arrived: the write that records it scrubs and bounds it first
-	// (scrubSendError), because the text is the far side's own and the store takes only some of
-	// what the far side can say.
+	// cleared (confirm), so a task that got through carries zeroes. LastSendError is the far
+	// side's text as the daemon keeps any far side's error text (storetext.FarSideError), set so in
+	// memory as well as in the store, and the whole text is in the log (table.go's refused).
 	SendFailures      int
 	LastSendFailureAt time.Time
 	LastSendError     string
@@ -168,45 +167,6 @@ type Delivery struct {
 	// delivery the release before stored can be, is sent with the daemon's sentences naming no
 	// commit and no entry at its end.
 	RoundNamed bool
-}
-
-// maxSendErrorRunes bounds the text of a failed send kept on a delivery (scrubSendError). What a
-// reader of that record needs is why the send failed: the first line of the far side's answer and
-// enough of what follows to name the failure — the shim's words name the stale lock's path and
-// its age within the first two hundred characters — so this is more room than the diagnosis asks
-// for and far less than the text can be. What it cuts is the rest of a relayed command's output:
-// a refused adoption carries the wedged command's whole stderr, measured at about a megabyte
-// (INFRA-1480), which would otherwise be stored on every failed send of the task and served
-// again in every operator listing of the claim.
-const maxSendErrorRunes = 2048
-
-// scrubSendError is the text of a failed send as a delivery may hold it. The text is the far
-// side's own and is not this daemon's to trust: a refused adoption carries the wedged command's
-// whole stderr, relayed by the shim, and a refused prompt carries the `error` Oh My Pi decoded
-// from JSON, where a `\u0000` in it becomes a NUL byte.
-//
-// The rule the store holds is that the text is valid UTF-8. Postgres refuses any byte its server
-// encoding cannot read — on the UTF8 encoding production runs, `select E'wedged\000lock'` is
-// "invalid byte sequence for encoding \"UTF8\": 0x00" and a lone 0xff is the same refusal — so
-// the NUL is one instance of that rule rather than the rule itself, and an SQL_ASCII server,
-// which takes the 0xff and refuses the NUL, draws the line in another place. So the text is made
-// valid UTF-8, with each run of bytes that reads as no character replaced by the replacement
-// character rather than dropped, so the record still shows where the far side's words were
-// unreadable; the NUL — valid UTF-8 and still refused by every encoding — goes; and what is left
-// is cut to maxSendErrorRunes. The start is what is kept, because that is where the far side
-// names the failure: the shim's own words give the stale lock's path and its age there. The cut
-// counts runes rather than bytes, so it can never make the text invalid again by ending inside a
-// character.
-//
-// Nothing of the far side's answer is lost this way, only moved: the whole unscrubbed text goes
-// to the log line this record stands beside (table.go's refused), which has no store to refuse
-// it, so the operator who needs the megabyte still reads it in the pod's log.
-func scrubSendError(text string) string {
-	text = strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "")
-	if runes := []rune(text); len(runes) > maxSendErrorRunes {
-		return string(runes[:maxSendErrorRunes]) + "…"
-	}
-	return text
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -495,11 +455,18 @@ func pendingID(p *Delivery) string {
 // launch where it arrives, and retires the replaced delivery itself before it does — the launch
 // takes the ladder's wait with the claim's timers and every prompt's wait for a result with the
 // process (letGo), so the claim reaching here then holds no delivery at all.
+//
+// The task is as the store keeps it: a deliver's request comes through Handle, which gives every
+// event's text through the store's rule, and the daemon's own delivery of a relaunch's record
+// (queueRelaunch) is written from the claim's record, which holds only text the store keeps. An
+// operator's task can hold a NUL, which the request holds as the stored delivery does and a
+// restart reads back. So the comparison with the pending task, the delivery written and the
+// prompt the agent is sent all read the stored text, before a restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
-	id, task := request.ID, request.Task
+	id := request.ID
 	queued := m.given(request)
 	if pending := m.claim.Pending; pending != nil {
-		if (id != "" && pending.ID == id && pending.Task == task) || queued {
+		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
 		switch {
@@ -545,7 +512,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
+	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
@@ -715,7 +682,15 @@ func (c Claim) openRoundHoldsTask() bool {
 // gives that delivery only to a claim that holds nothing then (finishReady, queueRelaunch), so a
 // held task dropped at the ready's own send would otherwise leave the sentence waiting for
 // whatever task comes next.
+//
+// Before all of it, a claim the project's pause holds is handed nothing at all (decision 8 of
+// dispatch://INFRA-3759's plan): while the project is paused, no task leaves for any role but the
+// controller (pauseHolds). The task stays pending, decided nothing about and dropped for nothing,
+// and the resume's event sends it once the pause is over (ResumePause).
 func (m *Machine) sendPending(ctx context.Context) error {
+	if _, holds := m.pauseHolds(); holds {
+		return nil
+	}
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).
 	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
@@ -796,6 +771,25 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 		return m.relaunchAfterDrop(ctx)
+	}
+	// Nothing is sent to a process under a session its claim does not hold (holdRecorded, plan E's
+	// t-e-54): a claim the boot could not suspend, its stop refused, keeps its live process, and a
+	// task sent to it would put that process to work under another claim's session, or one no claim
+	// holds (review round 12 of #4220). The task waits, unsent and charged nothing, and the next
+	// decision asks again, so an operator's settle of the name sends it. A store that does not
+	// answer sends nothing either. For a claim holding its session this asks the store once per
+	// session (Machine.heldNames).
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		switch {
+		case !errors.As(err, &refusal):
+			m.log.Warn("supervise: the store did not answer whether this claim holds its session; the task waits", "delivery", p.ID, "error", err)
+		case m.unheldDelivery != p.ID:
+			m.unheldDelivery = p.ID
+			m.log.Error("supervise: this claim records a session it does not hold, so no task is sent to its process; the task waits until the claim holds it: an operator gives the claim a new session, or records it as the rightful holder of a name held for none",
+				"delivery", p.ID, "session", m.claim.Session, "error", err)
+		}
+		return nil
 	}
 	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
 	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
@@ -1003,7 +997,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	if streaming, _ := m.streaming(ctx, conn); !streaming {
 		return nil
 	}
-	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
+	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
 	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
 	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
 	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
@@ -1143,7 +1137,19 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 //
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
 // the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
+//
+// A project pause's stop the machine owes is written first, through its own transaction, with the
+// claim and this delivery as memory holds them now — the repair's own write (putClaimAndPending,
+// putStops) — and the retirement after it, as it would have run: the pause's records land with the
+// first claim write that lands, and the retirement keeps the store's fenced answers
+// (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
+// with nothing retired, for the next decision's repair and settle to make in that same order.
 func (m *Machine) retirePending(ctx context.Context) error {
+	if len(m.owedStops()) > 0 {
+		if err := m.putClaimAndPending(ctx); err != nil {
+			return m.owes("PauseStopped", err)
+		}
+	}
 	p := m.claim.Pending
 	// The ladder's wait is this task's, so it ends with it (providererror.go).
 	m.disarm(TimerPromptRetry)

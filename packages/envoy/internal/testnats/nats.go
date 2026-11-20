@@ -672,6 +672,17 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 		opts.LameDuckDuration = rigLameDuck
 		opts.LameDuckGracePeriod = rigLameDuckGrace
 	}
+	// A server with an auth callout holds a client it sends to the service until the service
+	// answers or its authorization timeout passes (nats-server v2.15.1 server/auth_callout.go:457-464),
+	// and it starts that client's first PING timer before it asks (client.go:2352-2353): two seconds
+	// plus up to a fifth of that (client.go:7136-7142), against the callout's two. So a client the
+	// service never answers is now and then sent a PING before its refusal, and nats.go fails the
+	// connect with "expected 'PONG', got 'PING'" rather than nats.ErrAuthorization, which a test
+	// that waits out the hub's timeout for the refusal reads as a failure. The rig turns the short
+	// first PING off on such a server, so its first PING waits for the ping interval, two minutes.
+	if opts.AuthCallout != nil {
+		opts.DisableShortFirstPing = true
+	}
 	return opts, nil
 }
 

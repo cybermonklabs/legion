@@ -11,7 +11,8 @@ package wire
 
 import "time"
 
-// PendingEntry is one undecided record in GET /v1/pending's answer.
+// PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
+// settle, or one whose deadline passed before anybody decided it.
 type PendingEntry struct {
 	// The credential-request record's id, which the approval page and the machine login's approve
 	// and deny routes take.
@@ -27,14 +28,42 @@ type PendingEntry struct {
 	Session RecordSessionResp `json:"session"`
 	// A secret request's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>, where a person
 	// signed in to the broker decides it; absent for a machine login, which is decided with its
-	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page. An expired row
+	// carries it too, and that page shows the request expired, with nothing left to decide; the
+	// Inbox and `dispatch inbox` link no expired row to it.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// "pending" for a record a decision may still settle, and "expired" for one whose deadline
+	// passed before anybody decided it, which every decision refuses and which a list asking for
+	// ?state=expired holds until somebody dismisses it (POST
+	// /v1/credential-requests/{record}/dismiss). A broker from before records had a state sends
+	// none, and a reader takes a row with no state as pending.
+	State string `json:"state,omitempty" enum:"pending,expired"`
+	// The record's deadline: a secret request's own expiry, the moment its decision compares
+	// with, and a machine login's. A broker from before records had a state sends none.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // PendingResponse is GET /v1/pending's answer.
 type PendingResponse struct {
-	// The undecided records the named person decides, newest first.
+	// The undecided records the named person decides. With no ?state=, every record still
+	// pending by what is stored, newest first, an overdue one included until the expiry sweep
+	// ends it; with ?state=, the records of the states asked for, the pending ones first and the
+	// expired ones nobody has dismissed after them, each newest first.
 	Pending []PendingEntry `json:"pending"`
+}
+
+// DismissResponse is what POST /v1/credential-requests/{record}/dismiss answers: the record's one
+// dismissal, the one this call made or, for a record dismissed already, the earlier one, whose
+// values a second dismissal answers unchanged.
+type DismissResponse struct {
+	// The dismissed record's id.
+	RecordID string `json:"record_id"`
+	// Who dismissed it: the canonical login of the person whose dismissal took it off every list,
+	// or "broker" for a record that had already left the lists, expired, when the broker began
+	// keeping dismissals (store migration 0033).
+	DismissedBy string `json:"dismissed_by"`
+	// When it was dismissed.
+	DismissedAt time.Time `json:"dismissed_at"`
 }
 
 // ApproverGrantResp is one grant in GET /v1/grants?approver=<login>: a grant on a session the login
@@ -83,15 +112,22 @@ type LauncherCredentialResp struct {
 	// The machine's host name, as a person's machine login named it; for a token login, its
 	// ServiceAccount's <namespace>/<name>, or a machine's <project>/<zone>/<instance name>.
 	Host string `json:"host"`
-	// The service a service's login is for (legion-daemon), whose sessions are its pods, or the
-	// fleet a machine belongs to; null for a person's own machine.
+	// The service a service's login is for (legion-daemon), whose sessions are its pods, the
+	// login service of a person's pod login, or the fleet a machine belongs to; null for a
+	// person's own machine.
 	Service *string `json:"service"`
 	// What a token login proved: its ServiceAccount
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); null for every login a person approved.
 	Subject *string `json:"subject"`
+	// For a person's pod login, the person it acts for. A person's pod login is the token login
+	// of a Kubernetes ServiceAccount that BROKER_POD_OPERATORS maps to a person, and this is that
+	// person as the setting maps the account now. Only that person lists and revokes the login.
+	// Null for every other login, a service's and a person's own machine's among them.
+	Person *string `json:"person"`
 	// The login of the person who approved the login (anyone signed in may have approved a service's
-	// login before token logins); "" for a service's token login, which no person approves.
+	// login before token logins); "" for every token login, a service's and a person's pod login
+	// among them, which no person approves.
 	ApprovedBy string `json:"approved_by"`
 	// When the login was approved, or a token login's first login.
 	IssuedAt time.Time `json:"issued_at"`
@@ -108,8 +144,9 @@ type LauncherCredentialResp struct {
 // answer.
 type LauncherCredentialsResponse struct {
 	// The machine logins that are not revoked and are either unexpired or expired with a session
-	// still running, newest first: every service's and the named person's own machines' on
-	// Dispatch's page, the calling operator's own machines' alone on the operator route.
+	// still running, newest first: every service's, the named person's own machines' and that
+	// person's pod logins on Dispatch's page; the calling operator's own machines' and pod logins
+	// alone on the operator route. A person's pod login is on its person's list alone.
 	Credentials []LauncherCredentialResp `json:"credentials"`
 }
 
@@ -174,7 +211,9 @@ type RecordEnrollmentResp struct {
 	// The session's runtime: whatever names the session on its machine (the helper's
 	// host:pid:start time, a container's id), or a pod's UID.
 	RuntimeID string `json:"runtime_id"`
-	// The person the session runs for; empty for a pod.
+	// The person the session runs for, as its enrollment row held it when the request was made.
+	// For a pod it is the person that a person's pod login (enroll.PersonPodLogin) carried when it
+	// enrolled the pod, and empty for any other pod.
 	Operator string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`
@@ -225,7 +264,8 @@ type RecordResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	// When it was asked.
 	RequestedAt time.Time `json:"requested_at"`
-	// How it was decided; null while pending.
+	// How it was decided; null while nobody has decided it: while it is pending, and while it is
+	// expired before the expiry sweep records its expiry.
 	Decided *RecordDecisionResp `json:"decided"`
 }
 

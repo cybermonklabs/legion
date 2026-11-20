@@ -1,11 +1,11 @@
 // account_powers_test.go drives the REAL compiled broker with three accounts in
 // BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review — over
 // HTTP, on a real Postgres, against a local OpenID issuer standing in for the cluster's. Being
-// listed is not being allowed: the caller's name says which of the broker's thirteen
+// listed is not being allowed: the caller's name says which of the broker's fourteen
 // named-caller routes that account reaches, so the introspection-only caller is refused every
 // route Dispatch's server relays a person's decisions through, the review caller reads the
-// grant log and is refused the other twelve, and the dispatch caller reaches all twelve of its
-// own and is refused the review's. Nothing here is a unit test — the binary is the one
+// grant log and is refused the other thirteen, and the dispatch caller reaches all thirteen of
+// its own and is refused the review's. Nothing here is a unit test — the binary is the one
 // cmd/broker builds and every request crosses a socket.
 package main
 
@@ -47,9 +47,9 @@ const (
 	powersApprover = "ada@example.com"
 	unknownID      = "00000000-0000-4000-8000-000000000000"
 	// unknownRecord is that same id nothing has, in a record id's own shape: a lowercase-hex
-	// sha256 hash. The two decide routes authenticate their own caller after they have read the
-	// record's kind, so an id of any other shape is refused 400 before the authority this test
-	// reads is reached; every other route refuses the caller first and takes either shape.
+	// sha256 hash, so the record routes the caller reaches answer for the record (404) rather than
+	// refusing the id's shape (400); every route refuses a caller without its power first, and
+	// takes either shape for that.
 	unknownRecord = "0000000000000000000000000000000000000000000000000000000000000000"
 	// lacksPower is the refusal a listed caller gets on a route its name does not carry, as
 	// against ACCOUNT_NOT_LISTED for an account the broker does not list at all.
@@ -58,13 +58,13 @@ const (
 
 // TestAListedAccountReachesOnlyItsOwnRoutes lists three callers and drives every route
 // accountAuth authenticates from each of them. The listener caller, listed for introspection
-// alone, is refused each of the eleven relay routes — approve, deny, both revoke-by-approver,
-// the RFC 7009 token revocation and both person sign-in routes among them — and the grant log
-// too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and still reads a token back. The
-// access-review caller reads the grant log and is refused the other twelve the same way. The
-// dispatch caller reaches all twelve of its own, the introspection route included, and is
-// refused the grant log: the broker's audit trail is not another of the powers the name that
-// decides already holds.
+// alone, is refused each of the twelve relay routes — approve, deny, dismiss, both
+// revoke-by-approver, the RFC 7009 token revocation and both person sign-in routes among them —
+// and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and still reads a
+// token back. The access-review caller reads the grant log and is refused the other thirteen the
+// same way. The dispatch caller reaches all thirteen of its own, the introspection route
+// included, and is refused the grant log: the broker's audit trail is not another of the powers
+// the name that decides already holds.
 func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -110,6 +110,8 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/approve", path: "/v1/credential-requests/" + unknownRecord + "/approve",
 			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
 		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/deny", path: "/v1/credential-requests/" + unknownRecord + "/deny",
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
+		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/dismiss", path: "/v1/credential-requests/" + unknownRecord + "/dismiss",
 			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
 		{method: http.MethodPost, pattern: "/v1/machine-logins/lookup", path: "/v1/machine-logins/lookup",
 			contentType: "application/json", body: `{"code":"EXAM-PLE1"}`, caller: dispatchCaller},

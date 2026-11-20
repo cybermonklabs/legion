@@ -2436,9 +2436,9 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 	assertInterestMissing(t, reg, newSession)
 }
 
-// A hard claim's role write is unconditional (store.Registry.SetRoleWithPrevious), so a genuine
-// failure of it is still a failure: the claim is refused, the old holder keeps the role, and the
-// claimant's role topic is rolled back.
+// A hard claim writes with the revision of the record it read (store.Registry.SetRoleWithPrevious)
+// and retries only a conflict, so a genuine failure of that write is still a failure: the claim is
+// refused, the old holder keeps the role, and the claimant's role topic is rolled back.
 func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -2460,9 +2460,9 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	}
 
 	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
-		KeyValue:  reg.roleKV.Legacy(),
-		failPutAt: 1,
-		err:       errors.New("injected role write failure"),
+		KeyValue:     reg.roleKV.Legacy(),
+		failUpdateAt: 1,
+		err:          errors.New("injected role write failure"),
 	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
 		t.Fatal("SetRole must return the failed role update")

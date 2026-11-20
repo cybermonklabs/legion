@@ -29,11 +29,17 @@ import (
 // pushing its own commits; pull_requests:write is the pull request, its comments and its reviews;
 // actions:write is `gh run rerun`, a re-run being a write even though the role only reads what it
 // produces; metadata:read is every read of the repository itself, which GitHub requires of any
-// token. checks and statuses are the check runs and commit statuses a tester posts, and differ by
-// App: the review App's set asks for checks:write, its reviewer creating the check runs, and
-// names no statuses permission at all, where the implement App's asks for checks:read, what its
-// roles read of those check runs, and statuses:write, the commit status its own tester posts
-// (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
+// token. checks and statuses are the check runs and commit statuses of a head, and differ by App:
+// the review App's set asks for checks:write, its reviewer creating the check runs, and
+// statuses:read, because its roles read the commit statuses of a head, where the implement App's
+// asks for checks:read, what its roles read of those check runs, and statuses:write, which is what
+// the implement App declares. No role of either App posts a commit status: a tester's verdict is a
+// check run and a comment (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
+//
+// attestations:read is in both sets, because a role reads the attestations of an artifact, such
+// as to check that an image was built from the default branch, and no role makes one: a release
+// workflow does. Neither set asks for more than read of it (readPermissions says where a token
+// without it was refused).
 //
 // The set says what the App's roles use, never what an installation holds: what an account has
 // approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
@@ -69,8 +75,83 @@ import (
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
+	Implement: {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+}
+
+// readPermissions is the read set: what a read lease asks GitHub for, each permission at read. It
+// is what a controller needs of every repository its App is installed on, which it works none of
+// (ControllerCredential), and what the provisioning token takes of the issue's own repository,
+// which a clone, a fetch and a repository cache only read (implementTokens,
+// internal/daemon). A mint asks for what the installation is granted of this set, at read
+// (exchangeGranted), and GitHub mints a token with the permissions the request names, so an
+// installation granted less gets a lease that holds less. This package alone declares the set.
+// The secrets broker's read-only release, which a daemon on token_command gets in its place
+// (tokencommand.go), holds the broker's own set, contents, metadata, pull requests, Actions,
+// checks and statuses, which differs from this one.
+//
+// The set is the most a read lease holds, and the only thing that holds it: the lease reaches
+// every repository its installation holds, as every token this package mints does, so what
+// keeps a reading lease from writing is that each permission of the set is a read, and that the
+// set names nothing beside them. A permission the installation is granted none of is left out
+// of the request rather than minted. Each permission is here for a reason of its own:
+//
+// contents:read is a clone, a fetch and a read of a file: a pod's repository is cloned and
+// fetched with it, and a controller reads the code of each repository of its project through it.
+// It stays a read: contents:read cannot push a commit, a branch or a tag.
+//
+// metadata:read is every read of the repository itself, such as its name, its default branch
+// and its collaborators, and GitHub requires it of every token. It stays a read: metadata:read
+// changes nothing of the repository.
+//
+// pull_requests:read is a pull request, its reviews and its comments: a controller reads the work
+// of each repository of its project there. It stays a read: pull_requests:read cannot open,
+// review, comment on or merge a pull request.
+//
+// issues:read is here because an issue is where a work's context is often written, and a
+// controller reads the issues of every repository its project serves. Measured on 2026-11-10,
+// and again on 2026-11-15, from roles of both Apps on a private repository: with no issues
+// permission in the request, reading an issue answered 403 "Resource not accessible by
+// integration" while the same token read that repository's contents and pull requests. It stays
+// a read: issues:read cannot open, edit, close or comment on an issue.
+//
+// actions:read is here because reading a repository includes reading what its merges did: a
+// deployment check of a merge reads the push run that carries it, that run's jobs and a job's
+// log, and a controller that cannot read them cannot tell a deploy that applied from one that was
+// skipped. Measured on 2026-11-04 against a private repository whose installation holds
+// actions:write: unnarrowed, actions/runs and actions/runs/{id}/jobs answered 200 and
+// actions/jobs/{id}/logs answered 302 to a signed URL that answered 200; narrowed to contents,
+// pull requests and metadata, all three answered 403 "Resource not accessible by integration".
+// The narrowing was the whole refusal, and no App or installation setting was missing. It stays a
+// read: actions:read cannot cancel, re-run or dispatch a workflow, and reaches no Actions secret
+// or variable, which are permissions of their own.
+//
+// checks:read is here because a controller reads what CI said of a head: the check runs
+// of a commit, and the check runs in a pull request's check rollup. Measured on 2026-11-16 on a
+// private repository: through a read lease, commits/<sha>/check-runs answered 403 and the pull
+// request's statusCheckRollup answered FORBIDDEN, while the implement App's token without the
+// narrowing read the same commit. It stays a read: checks:read cannot create or change a check
+// run.
+//
+// statuses:read is here because a commit status is the other half of what CI says of a head: the
+// commit statuses of a commit, and the statuses in a pull request's check rollup. A base branch
+// can require a commit status before a merge. Measured on 2026-11-16: through a read lease on a
+// private repository, commits/<sha>/status answered 403. It stays a read: statuses:read cannot
+// create a commit status.
+//
+// attestations:read is here because a controller reads the attestations of an artifact, to check
+// that an image was built from the default branch. Measured on 2026-11-17: through a read lease on
+// a private repository, a read of its attestations answered 403 "Resource not accessible by
+// integration". It stays a read: attestations:read cannot create or delete an attestation.
+var readPermissions = map[string]string{
+	"contents":      "read",
+	"metadata":      "read",
+	"pull_requests": "read",
+	"issues":        "read",
+	"actions":       "read",
+	"checks":        "read",
+	"statuses":      "read",
+	"attestations":  "read",
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission

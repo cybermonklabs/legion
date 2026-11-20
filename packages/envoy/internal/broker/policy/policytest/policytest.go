@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -86,7 +87,7 @@ func TypeValue(secretType string) string {
 	case policy.TypeGoogleLogin:
 		fields["type"], fields["client_id"], fields["client_secret"], fields["refresh_token"] = "authorized_user", "client", "secret", "refresh"
 	case policy.TypeGoogleServiceAccount:
-		fields["service_account"] = "robot-1@acme-agent-infra.iam.gserviceaccount.com"
+		fields["service_account"] = "robot-1@acme-deployment.iam.gserviceaccount.com"
 	case policy.TypeAzureLogin:
 		fields["tenant_id"], fields["client_id"] = "tenant", "client"
 	default:
@@ -182,6 +183,24 @@ type CountingDescriber struct {
 func (c *CountingDescriber) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
 	c.Calls.Add(1)
 	return c.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
+}
+
+// HeldDescriber holds each DescribeSecret until Release closes, reporting the secret name on
+// Entered before it waits. It lets a test control exactly when a reread's metadata read returns.
+type HeldDescriber struct {
+	secrets.SecretsManagerAPI
+	Entered chan<- string
+	Release <-chan struct{}
+}
+
+func (d HeldDescriber) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	d.Entered <- aws.ToString(in.SecretId)
+	select {
+	case <-d.Release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return d.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
 }
 
 // Loader is the policy.Loader over store, with services registered.

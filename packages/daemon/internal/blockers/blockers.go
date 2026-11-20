@@ -3,9 +3,11 @@
 //
 // Admission decides whether to admit a root, and the workflow whether to start a child's first
 // phase, inside a transaction that performs no I/O: neither can ask Dispatch what an issue is
-// blocked by at the moment it decides. So the daemon keeps its own table of Dispatch's answer
-// (record.DispatchIssueRow), written by Mirror as each issue event arrives and by Reconcile from
-// the boot listing, and read back for the issues a judgement names, with what they wait on.
+// blocked by at the moment it decides. So the daemon keeps its own copy of what Dispatch said
+// (record.DispatchIssueRow), which only a reading of Dispatch writes — Mirror, from each issue
+// event or view of one issue, the release's read of the children it adopts and the periodic
+// turn's re-read, and Reconcile, from a listing — each value at the sequence of the reading that
+// wrote it, and reads it back for the issues a judgement names, with what they wait on.
 package blockers
 
 import (

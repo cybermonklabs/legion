@@ -12,12 +12,14 @@
 import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { newDpopKey } from "../dpop";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
 import type { SubjectToken, TokenSource } from "../source";
-import { BrokerRefusedError, type BrokerToken, BrokerTokenClient } from "../token-client";
+import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError } from "../token-errors";
 import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED, TOKEN_PATH } from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-client");
@@ -36,6 +38,7 @@ const CORPUS_PATH = new URL(
  * test failure, which is how "the corpus is the whole of what a client reads" stays true.
  */
 const TOKEN_FIELD_NAMES = {
+  // fixture-secret-next-line: a field's name in the corpus, which no client holds
   accessToken: "access_token",
   tokenType: "token_type",
   expiresAt: "expires_in",
@@ -173,7 +176,7 @@ async function corpusSource(spec: CorpusToken): Promise<TokenSource> {
     case "kubernetes-projected-file": {
       const path = join(makeDirectory(), "token");
       await writeFile(path, `${spec.token}\n`, { mode: 0o600 });
-      return projectedToken(path);
+      return projectedToken(path, "AGENT_SECRETS_MACHINE_TOKEN_FILE");
     }
     case "google-metadata":
       return metadataSource(spec.token);
@@ -316,6 +319,12 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
 
 test("the wire corpus holds this client", async () => {
   for (const exchange of corpus.exchanges) {
+    // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
+    // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
+    // (`broker-access-token-with-no-credential`) shares a run of ten characters with a later
+    // entry's refusal text, which the scrub would then withhold. A process of its own holds
+    // nothing another one traded.
+    forgetHeldSecrets();
     const broker = stubBroker(exchange.answer.status, exchange.answer.body);
     // The caller stops waiting at the first wait the client asks for, and that wait passes only
     // when the client is closed: a refusal the client trades again on (an unregistered pod

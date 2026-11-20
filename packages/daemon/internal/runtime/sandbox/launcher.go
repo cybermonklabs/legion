@@ -47,14 +47,21 @@ type launchers struct {
 	leakCheckHop time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
-	// A launchers built without the pair restores nothing.
+	// A launchers built without the pair restores nothing. held drops a bundle that a pod's own
+	// kept volume holds already (Options.HeldWorkspaceBundle). A launchers built without it takes
+	// the bundle for every pod.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
+	held     runtime.HeldWorkspaceBundleDrop
 	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
 	// no receiver took it, and drops it (memoryKilled).
 	guardKilled runtime.MemoryGuardKilled
-	log         *slog.Logger
+	// volume takes a cache trimmer's sweep report into the daemon's fact path
+	// (Options.VolumeReported). A launchers built without it reads the frame, logs that no
+	// receiver took it, and drops it (volumeReported).
+	volume runtime.VolumeReported
+	log    *slog.Logger
 }
 
 type launcherSession struct {
@@ -73,8 +80,13 @@ type launcherSession struct {
 	// apart by its uid and not by this, so a role relaunched in the pod being released spends
 	// nothing.
 	podCreated time.Time
-	id         string
-	podUID     string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. A Sandbox created before a release's save holds the volume the work was taken off, so
+	// its pod takes no saved work, and the store drops the bundle (restoreWorkspace).
+	keptSince time.Time
+	id        string
+	podUID    string
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -92,16 +104,17 @@ type launcherSession struct {
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
+	held runtime.HeldWorkspaceBundleDrop, guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
+		saved: saved, restored: restored, held: held, guardKilled: guardKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, created at podCreated. The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, created at podCreated, whose
+// Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
+// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
+// its pending requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
@@ -161,6 +174,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.owner.restoreReported(s, value)
 		case shimwire.LauncherMemoryKill:
 			s.owner.memoryKilled(s, value)
+		case shimwire.LauncherVolumeReport:
+			s.owner.volumeReported(s, value)
 		default:
 			return
 		}
@@ -480,13 +495,26 @@ const bundleRestoreBound = 2 * time.Minute
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
+//
+// A pod whose own kept volume holds the work takes none of it, and the store drops the bundle
+// first. That pod's Sandbox owns the issue's kept volume and was created before the save
+// (launcherSession.keptSince): the release kept that Sandbox, so the volume is the one the work
+// was taken off. Its launcher would refuse the bundle, because the workspace is older than the
+// save, and log a notice that the work was lost, while the bundle held the issue's pod. The drop
+// sends no slice and keeps the take's rules (store.DropHeldWorkspaceBundle). A drop that finds no
+// such bundle leaves the take to run as for any pod. A drop that fails is logged and the pod is
+// sent nothing, as a take that fails: the row is as it was, and the next start asks again. The
+// drop runs at a role's start, after the pod's launcher connected, and that launcher runs after
+// both init containers of the pod. So a kept volume whose init failed never drops the bundle its
+// reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the work.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
-	// did, and when that pod was created, as the API server stamped it. A launcher that never
-	// arrives is the start's own error to report, not this hop's.
+	// did, and when that pod was created, as the API server stamped it. For a pod of a Sandbox
+	// that owns the issue's kept volume, it names when that Sandbox was created too. A launcher
+	// that never arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
 		return
@@ -494,6 +522,19 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
+	if !session.keptSince.IsZero() && d.held != nil {
+		held, dropped, err := d.held(restoring, issue, podUID, session.keptSince)
+		if err != nil {
+			d.log.Warn("launcher bundle: the saved workspace bundle that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and the bundle stays for the next start",
+				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
+			return
+		}
+		if dropped {
+			d.log.Info("launcher bundle: this pod's kept volume holds the workspace the release's saved work came off, so the saved workspace bundle is dropped and the pod is sent nothing",
+				"issue", issue, "launcher", token, "pod", podUID, "release", held.Release, "volume_created", session.keptSince, "saved", held.At)
+			return
+		}
+	}
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",
@@ -638,6 +679,68 @@ func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMem
 	if err := d.guardKilled(ctx, s.issue, s.token, s.podUID, report); err != nil {
 		d.log.Warn("launcher memory guard: the pod's launcher reported a kill the daemon could not record, which is dropped",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+	}
+}
+
+// volumeReported hands the daemon one sweep of the pod's volume as that pod's cache trimmer
+// reported it (shimwire.LauncherVolumeReport). The launcher sends one unasked per sweep that
+// ended with the volume still above its low mark, unless the settings stopped that sweep, and
+// one when the trimmer has switched itself off; a sweep that reached the low mark sends none, so
+// every frame that arrives here is one the issue's architect may need to hear about, and the
+// daemon's own bounds decide which of them it is told (workflow's volumeNearFull).
+//
+// The pod a report is of is the one this connection authenticated for, so the uid is the
+// session's and never the report's: a launcher cannot name another pod's volume. The trimmer's
+// own identifier is inside the report, which is what counts a restarted roles container apart
+// from the first episode.
+//
+// A store that does not answer is logged and the report is dropped here. The launcher cannot
+// hold it again once the daemon has read it — nothing acknowledges this frame — and it is not
+// asked to: the trimmer goes on sweeping, and its next sweep that ends above the low mark reports
+// the volume again under the same trimmer, and under the same episode unless a recovery or a rise
+// raised it in between, so what a dropped sweep's report would have said reaches the architect
+// from a later one, within the notice bounds. A dropped report of a trimmer that switched itself
+// off is not sent again: that trimmer sends nothing more. That is the same bargain
+// restoreReported makes with its delete, for the same reason.
+//
+// A report the frame's own rule refuses (LauncherVolumeReport.Validate) — one naming no trimmer,
+// which is the identity the notice bounds count a restarted roles container apart by, one whose
+// episode is below the 1 the trimmer counts from, and one holding more entries in a list than
+// that list's cap, every entry of which the notice would carry — is logged with the reason and
+// dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
+// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second of
+// the one role's connection that carries the pod's reports (ServeLauncher's `default: return`),
+// and it would not have the report sent again: nothing acknowledges this frame, and a launcher
+// holds a report only where its send failed (internal/launcher's deliver).
+//
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
+// restoreReported does and under the same bounded context: two reports of one launcher then
+// reach the fact path in the order the trimmer made them, which is what the notice bounds count
+// episodes by, and the cost is the one the precedent already accepts — the launcher's other
+// frames wait behind one row's write.
+func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
+	if err := report.Validate(); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer sent a report the daemon refuses, which is dropped; the connection stays open",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
+		return
+	}
+	if d.volume == nil {
+		// A runtime built with no receiver drops every report of every pod, and nothing else shows
+		// it: no architect is told and the trimmer goes on sweeping. So the drop is logged naming
+		// the line that sets the receiver.
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep and this runtime has no receiver for it, which is dropped; "+
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.VolumeReported = reports.report)",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode)
+		return
+	}
+	if s.issue == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	if err := d.volume(ctx, s.issue, s.podUID, report); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep the daemon could not record, which is dropped",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 	}
 }
 
@@ -802,11 +905,13 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // (shim.ReadAgentSecretsFlags), and a live pod a launch keeps may have been built before the
 // runtime enrolled, so it carries neither. Such a role is started without them and runs without
 // the broker until the update round replaces its pod (INFRA-484, keptPod) — once every worker of
-// the pod has pushed its work and answered, or at the round's bound — and a process that refused
-// to start would push nothing and answer nothing. The environment that start carries says the
-// same thing: the AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a
-// broker are set from this one decision too (mainEnvironment, enrollsIn), so such a role reports
-// a resource it cannot reach rather than a secrets problem it does not have.
+// the pod has done the steps of its update message (supervise.UpdateTask) and answered, no turn
+// runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or at the
+// round's bound — and a process that refused to start would push nothing and answer nothing.
+// The environment that start carries says the same thing: the AGENT_SECRETS_URL and
+// AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a broker are set from this one decision
+// too (mainEnvironment, enrollsIn), so such a role reports a resource it cannot reach rather than
+// a secrets problem it does not have.
 func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	dir := generationDir(l.spec.Generation)
 	shim := []string{r.tools.Legion, "worker-shim", connectFlag, r.streamURL, "--boot-token-file", dir + "/" + bootTokenKey, "--pod-safety", "--stop-grace", r.terminationGrace.String()}

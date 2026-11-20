@@ -17,6 +17,10 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionProjectPauseRequest,
+  LegionProjectPauseResponse,
+  LegionProjectResumeRequest,
+  LegionProjectResumeResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -34,6 +38,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 import type { z } from "zod";
 
 /**
@@ -150,6 +155,19 @@ export interface LegionDaemonClient {
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
+  /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
+   * `legion project pause` runs for an operator. Every role but the controller stops, one in a
+   * turn when that turn ends, and every start waits for the resume. The answer is the pause it
+   * began. */
+  readonly projectPause: (
+    input: z.input<typeof LegionProjectPauseRequest>
+  ) => Promise<z.output<typeof LegionProjectPauseResponse>>;
+  /** The controller's `resume`: the daemon ends its project's pause, whoever made it, the effect
+   * `legion project resume` runs for an operator. The answer is the pause it ended and how many
+   * held rows it let out to run. */
+  readonly projectResume: (
+    input: z.input<typeof LegionProjectResumeRequest>
+  ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -386,8 +404,9 @@ function parseBody<T>(
   let json: unknown;
   try {
     json = JSON.parse(body);
-  } catch (error) {
-    return { problem: `not JSON (${messageFor(error)})` };
+  } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
+    return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
   if (parsed.success) return { value: parsed.data };
@@ -433,12 +452,15 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named in one redacted line (`bodyForText`), never whole. The
+    // daemon's own calls carry no bearer, so only an `Authorization` or `Bearer` value is redacted.
     throw new LegionDaemonApiError(
       method,
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      bodyForText(text, "", "the daemon's refusal shape")
     );
   };
 
@@ -523,6 +545,20 @@ export function createLegionDaemonClient(
       ),
     compact: (input) =>
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
+    projectPause: (input) =>
+      post(
+        "/legion/v1/project/pause",
+        LegionProjectPauseRequest,
+        LegionProjectPauseResponse,
+        input
+      ),
+    projectResume: (input) =>
+      post(
+        "/legion/v1/project/resume",
+        LegionProjectResumeRequest,
+        LegionProjectResumeResponse,
+        input
+      ),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>

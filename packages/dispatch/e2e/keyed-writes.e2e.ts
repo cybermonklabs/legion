@@ -21,6 +21,7 @@ import {
   cutFirstAnswerBody,
   dropFirstAnswer,
   keptWrites,
+  pendingWrites,
   recordUploadAttempts,
   replayed,
   runClockUntil,
@@ -29,7 +30,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -45,12 +46,6 @@ const agent = {
   actor: { kind: "session" as const, id: "e2e-keyed-writes" },
   as: "agent" as const,
 };
-
-/** The shell's one account of the writes Dispatch has not confirmed yet that no composer shows
- *  (`PendingWritesIndicator`); gone while none is pending. */
-function pendingWrites(page: Page): Locator {
-  return page.getByRole("region", { name: "Pending changes" });
-}
 
 /** How much of an upload's body the shell says has gone up (`Uploading… N%`,
  *  `PendingWritesIndicator`), 0 while it names no upload: the page's own account of the progress
@@ -755,7 +750,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // whose success it actually held back - an open it matched by name but whose handler it
     // never caught counts for nothing - and the row asserts that count at its end, where no
     // wait of its own can close a window: a selector that cannot fail is no guard
-    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    // (`packages/dispatch/README.md`, "End-to-end tests").
     await page.addInitScript(() => {
       let held = 0;
       Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });

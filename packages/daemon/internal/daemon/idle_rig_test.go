@@ -439,7 +439,8 @@ func (r *idleWakeRig) boot() {
 	transport := &http.Transport{}
 	r.t.Cleanup(transport.CloseIdleConnections)
 	r.api = &daemon{t: r.t, cfg: r.cfg, transport: transport, client: &http.Client{Transport: transport, Timeout: 150 * time.Second},
-		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port), stopped: true}
+		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port)}
+	r.api.stopped.Store(true)
 }
 
 // logFile keeps a copy of the daemon's log beside the test, under the test's own temporary
@@ -576,7 +577,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// releases save none one indexed read per role start, which answers no row: the save of a
 	// workspace with nothing unpushed stores nothing and deletes what the issue had
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))

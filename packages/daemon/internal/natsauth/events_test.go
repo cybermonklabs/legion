@@ -145,13 +145,13 @@ func fakeServer(t *testing.T, then string) string {
 	return "nats://" + ln.Addr().String()
 }
 
-// A server's fatal -ERR closes the connection and hands its cause to no handler (the disconnect
-// handler gets nil), so the close is logged once at error with it, and an error that ends the
-// daemon's consumers names it from the connection.
+// A server's fatal -ERR closes the connection and, in nats.go v1.55.0, passes its cause to the
+// async error handler before the close, so the close is logged once at error with it, and an
+// error that ends the daemon's consumers names it from the connection.
 func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Unknown Protocol Operation'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Maximum Control Line Exceeded'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
@@ -161,10 +161,10 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 	wait(t, closed, "the close", &out)
 	stopped := errors.New("consume: the connection closed")
 	got := natsauth.WithLastError(stopped, conn)
-	if !errors.Is(got, stopped) || !strings.Contains(got.Error(), "Unknown Protocol Operation") {
+	if !errors.Is(got, stopped) || !strings.Contains(got.Error(), "Maximum Control Line Exceeded") {
 		t.Errorf("WithLastError = %q, want it to wrap %q and name the server's -ERR", got, stopped)
 	}
-	want := `level=ERROR msg="NATS connection closed" error="nats: Unknown Protocol Operation"`
+	want := `level=ERROR msg="NATS connection closed" error="nats: Maximum Control Line Exceeded"`
 	if logged := out.String(); strings.Count(logged, "NATS connection closed") != 1 || !strings.Contains(logged, want) {
 		t.Errorf("log = %s\nwant exactly one line containing %s", logged, want)
 	}

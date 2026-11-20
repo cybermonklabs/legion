@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 type fakeStreamInfo struct {
@@ -2237,7 +2238,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -2468,7 +2469,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 // each body and written whole, so nothing carries the stale pane forward onto the layout.
 func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
 	_, sessions := setupSessionsTest(t, nil, nil)
-	var placed subscribeBody
+	var placed listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
 		"session_id":"ses_moved",
 		"tmux_place":{
@@ -2483,7 +2484,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
-	var left subscribeBody
+	var left listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
@@ -3085,7 +3086,7 @@ func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var response apiError
+	var response listenerwire.APIError
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode 400 body: %v", err)
 	}
@@ -3123,7 +3124,7 @@ func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 			}
-			var response apiError
+			var response listenerwire.APIError
 			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 				t.Fatalf("decode 400 body: %v", err)
 			}
@@ -3164,7 +3165,7 @@ func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) 
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 			}
-			var response apiError
+			var response listenerwire.APIError
 			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 				t.Fatalf("decode 400 body: %v", err)
 			}
@@ -3207,7 +3208,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 	if refused.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", refused.Code, refused.Body.String())
 	}
-	var response apiError
+	var response listenerwire.APIError
 	if err := json.NewDecoder(refused.Body).Decode(&response); err != nil {
 		t.Fatalf("decode 400 body: %v", err)
 	}
@@ -3310,14 +3311,14 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
-	send := func(t *testing.T, body string) sendResponse {
+	send := func(t *testing.T, body string) listenerwire.SendResponse {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 		}
-		var response sendResponse
+		var response listenerwire.SendResponse
 		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 			t.Fatalf("decode send response: %v", err)
 		}
@@ -3381,7 +3382,7 @@ func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
 			} else {
 				publishHandler(deps, logging.New("test")).ServeHTTP(rr, req)
 			}
-			var response apiError
+			var response listenerwire.APIError
 			_ = json.NewDecoder(rr.Body).Decode(&response)
 			if rr.Code != http.StatusBadRequest || len(response.Expected) != 1 || response.Expected[0] != tc.field {
 				t.Fatalf("status=%d response=%+v, want expected %q", rr.Code, response, tc.field)
@@ -3721,8 +3722,8 @@ type interestSubscribeAnswer struct {
 // a 200, and returns the answer.
 func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) interestSubscribeAnswer {
 	t.Helper()
-	body, err := json.Marshal(subscribeBody{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "e"}})
+	body, err := json.Marshal(listenerwire.SubscribeRequest{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"}})
 	if err != nil {
 		t.Fatalf("marshal subscribe: %v", err)
 	}
@@ -4042,9 +4043,9 @@ func sessionEntryRoute(t *testing.T, d *listenerDeps, sessionID string) *httptes
 }
 
 // decodeSessionInfo reads the route's or the list's view of one session.
-func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) sessionInfo {
+func decodeSessionInfo(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.SessionInfo {
 	t.Helper()
-	var info sessionInfo
+	var info listenerwire.SessionInfo
 	if err := json.NewDecoder(recorder.Body).Decode(&info); err != nil {
 		t.Fatalf("decode the session entry answer: %v", err)
 	}
@@ -4135,7 +4136,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 	if retryAfter := answer.Header().Get("Retry-After"); retryAfter != "1" {
 		t.Fatalf("Retry-After = %q, want \"1\"", retryAfter)
 	}
-	var body apiError
+	var body listenerwire.APIError
 	if err := json.NewDecoder(answer.Body).Decode(&body); err != nil {
 		t.Fatalf("decode the unavailable answer: %v", err)
 	}
@@ -4161,11 +4162,11 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.NewDecoder(list.Body).Decode(&rows); err != nil {
 		t.Fatalf("decode the session list: %v", err)
 	}
-	var row sessionInfo
+	var row listenerwire.SessionInfo
 	for _, candidate := range rows {
 		if candidate.SessionID == "ses_listed" {
 			row = candidate
@@ -4249,10 +4250,10 @@ func registrationViewRoute(t *testing.T, d *listenerDeps, sessionID string) *htt
 }
 
 // decodeRegistrationView reads the answer the registration view writes, which is a shape of its
-// own (sessionRegistration) and not the full answer's row.
-func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) sessionRegistration {
+// own (listenerwire.SessionRegistration) and not the full answer's row.
+func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.SessionRegistration {
 	t.Helper()
-	var answer sessionRegistration
+	var answer listenerwire.SessionRegistration
 	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the registration view's answer: %v", err)
 	}
@@ -4443,7 +4444,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 		t.Fatalf("GET /v1/registry/ses_never_registered?view=registration: status %d %s, want 404",
 			missing.Code, missing.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(missing.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", missing.Body.String(), err)
 	}
@@ -4463,7 +4464,7 @@ func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("GET /v1/registry/ses_live?view=rows: status %d %s, want 400", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -4508,7 +4509,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 	if published.Code != http.StatusOK {
 		t.Fatalf("publish to %s: status %d %s, want 200", role, published.Code, published.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(published.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the publish answer %s: %v", published.Body.String(), err)
 	}
@@ -4552,7 +4553,7 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 	}
 
 	stored := send(d)
-	var answer sendResponse
+	var answer listenerwire.SendResponse
 	if err := json.Unmarshal(stored.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", stored.Body.String(), err)
 	}
@@ -4710,9 +4711,9 @@ func compactNoInterestRecordJSON(t *testing.T, value json.RawMessage) string {
 
 // A session that registered and subscribed to nothing has no interest record, and its row in GET
 // /v1/sessions carries topics as the empty list, never null: a client that reads the row's topics
-// as a list iterates it without a null check. The row is read key by key, never into a sessionInfo,
-// which would drop a key sessionInfo does not name, so the row could not be held to the fixture's
-// keys.
+// as a list iterates it without a null check. The row is read key by key, never into a
+// listenerwire.SessionInfo, which would drop a key listenerwire.SessionInfo does not name, so the
+// row could not be held to the fixture's keys.
 func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -4758,19 +4759,20 @@ func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *te
 	compareNoInterestRecordRow(t, "GET /v1/registry/"+sessionID, row, fixture.AfterThisChange)
 }
 
-// The fixture states a whole row, so it can only stay whole while it names every key sessionInfo
-// always writes, and while the keys a fixture row may lack are the ones sessionInfo leaves out
-// when they are empty. The fixture's session sits in no tmux pane, and its registration named no
-// plugin, no plugin build and no client instance, so its row lacks exactly those keys. The keys
-// are read from sessionInfo's own fields and json tags, never from a value of it: a field added
-// to sessionInfo later fails this test, omitempty or not, as does a field that gains or loses
-// omitempty, so neither the fixture nor the list of keys a fixture row may lack can fall behind
-// the struct unnoticed. A value with every field set cannot hold that, since a field added after
-// the value was written is left empty in it, and an omitempty one is then absent from its keys.
+// The fixture states a whole row, so it can only stay whole while it names every key
+// listenerwire.SessionInfo always writes, and while the keys a fixture row may lack are the ones
+// listenerwire.SessionInfo leaves out when they are empty. The fixture's session sits in no tmux
+// pane, and its registration named no plugin, no plugin build and no client instance, so its row
+// lacks exactly those keys. The keys are read from listenerwire.SessionInfo's own fields and json
+// tags, never from a value of it: a field added to listenerwire.SessionInfo later fails this test,
+// omitempty or not, as does a field that gains or loses omitempty, so neither the fixture nor the
+// list of keys a fixture row may lack can fall behind the struct unnoticed. A value with every
+// field set cannot hold that, since a field added after the value was written is left empty in it,
+// and an omitempty one is then absent from its keys.
 func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
-	infoType := reflect.TypeOf(sessionInfo{})
+	infoType := reflect.TypeOf(listenerwire.SessionInfo{})
 	for i := range infoType.NumField() {
 		field := infoType.Field(i)
 		tag := field.Tag.Get("json")
@@ -4791,23 +4793,23 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 	}
 	for key := range alwaysWritten {
 		if _, ok := fixture.AfterThisChange[key]; !ok {
-			t.Errorf("sessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
+			t.Errorf("listenerwire.SessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
 		}
 	}
 	for key := range fixture.AfterThisChange {
 		if !alwaysWritten[key] {
-			t.Errorf("the fixture row states %q, which sessionInfo does not always write", key)
+			t.Errorf("the fixture row states %q, which listenerwire.SessionInfo does not always write", key)
 		}
 	}
 	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
 	for key := range leftOutWhenEmpty {
 		if !mayLack[key] {
-			t.Errorf("sessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
+			t.Errorf("listenerwire.SessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
 		}
 	}
 	for key := range mayLack {
 		if !leftOutWhenEmpty[key] {
-			t.Errorf("a fixture row may lack %q, which sessionInfo does not leave out when it is empty", key)
+			t.Errorf("a fixture row may lack %q, which listenerwire.SessionInfo does not leave out when it is empty", key)
 		}
 	}
 }

@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // TestTheBinaryRecordsARefusalAndCountsEveryAnswer drives the REAL compiled binary, whose API port
@@ -16,10 +19,11 @@ import (
 // answers 400 SECRET_NAME_INVALID carrying one answer id in its X-Broker-Answer-Id header and
 // as its body's answer_id, writes exactly one record under answer.RefusalMessage at WARNING
 // naming that id, the code, the name the request named and the caller's class, and is counted on
-// the metrics port. A reread of a well-formed name the store does not hold is no refusal: it
-// answers 200 absent, writes no record and is counted served.
+// the metrics port. A reread of a well-formed name the store does not hold, sent with no proof,
+// is no refusal: it answers 202 with accepted and the fixed reason, the answer every such reread
+// gets whatever it names, writes no record and is counted served.
 func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
-	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
 	metricsAddr := broker.MetricsAddr(t)
 
 	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/bad%20name/reread")
@@ -49,12 +53,12 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 		t.Errorf("broker_answers_total{%s} = %v after one such refusal; want 1", refused, got)
 	}
 
-	served := `outcome="served",code="HTTP_200",caller_class="public"`
+	served := `outcome="served",code="HTTP_202",caller_class="public"`
 	before := scrapeMetric(t, metricsAddr, "broker_answers_total")[served]
 	status, header, body = post(t, "http://"+broker.Addr+"/v1/secrets/NO_SUCH_SECRET/reread")
 	absent := header.Get(answer.Header)
-	if status != http.StatusOK || body["served"] != false || body["reason"] != "absent" || len(absent) != 32 {
-		t.Fatalf("POST /v1/secrets/NO_SUCH_SECRET/reread = %d %v with answer id %q; want 200, served false, absent, and an id", status, body, absent)
+	if status != http.StatusAccepted || body["accepted"] != true || body["reason"] != api.RereadAcceptedReason || len(body) != 2 || len(absent) != 32 {
+		t.Fatalf("POST /v1/secrets/NO_SUCH_SECRET/reread = %d %v with answer id %q; want 202, accepted and the fixed reason and nothing else, and an id", status, body, absent)
 	}
 	// A refusal sent after it is recorded after it, so once that record is in the log a record
 	// of the absent reread would be too.
@@ -68,6 +72,32 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 	}
 	if got := scrapeMetric(t, metricsAddr, "broker_answers_total")[served]; got != before+1 {
 		t.Errorf("broker_answers_total{%s} went from %v to %v over the absent reread; want one more", served, before, got)
+	}
+}
+
+// TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes drives the REAL compiled binary with an
+// unauthenticated reread of "%1Agent-secrets-placeholder-": a name that is the control byte 0x1A
+// and "gent-secrets-placeholder-", which is no placeholder. The broker's handler writes the name
+// as "\u001agent-secrets-placeholder-", and a mask that read that escaped text, not the name it
+// spells, would see a placeholder from the escape's last digit on and break the escape, and
+// slog, or a reader of the line, would then lose the whole value. The refusal's record names the
+// one secret its request named, as it named it, and every line of the broker's log is one JSON
+// object.
+func TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes(t *testing.T) {
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
+	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/%1Agent-secrets-placeholder-/reread")
+	id := header.Get(answer.Header)
+	if status != http.StatusBadRequest || body["code"] != "SECRET_NAME_INVALID" || len(id) != 32 {
+		t.Fatalf("POST /v1/secrets/%%1Agent-secrets-placeholder-/reread = %d %v with answer id %q; want 400 SECRET_NAME_INVALID and an id", status, body, id)
+	}
+	record := broker.AwaitRecord(t, answer.RefusalMessage, map[string]any{"answer_id": id})
+	if want := []any{"\x1agent-secrets-placeholder-"}; !reflect.DeepEqual(record["secrets"], want) {
+		t.Errorf("the refusal's record names the secrets %#v; want %#v, the name its request named: %v", record["secrets"], want, record)
+	}
+	for line := range strings.Lines(broker.Log()) {
+		if !json.Valid([]byte(strings.TrimSuffix(line, "\n"))) {
+			t.Errorf("a line of the broker's log is no JSON object: %q", line)
+		}
 	}
 }
 

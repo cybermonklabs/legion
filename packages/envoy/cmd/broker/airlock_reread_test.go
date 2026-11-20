@@ -16,7 +16,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -130,7 +128,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 
 	api := podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: podAudience}
 	launcher := api.logIn(service, loginAccount)
-	p := api.enroll(launcher, "airlock-pod", podAccount)
+	p := api.enroll(launcher, "airlock-pod", podAccount, "")
 	granted := api.ask(p, secretName)
 	if granted.GrantID == nil {
 		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
@@ -182,11 +180,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 	// Every read the proxy makes writes one grant.used row marked airlock; a session's own
 	// release writes one without that mark, which is why the mark is in the predicate.
 	proxyReads := func() int {
@@ -208,17 +202,8 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		t.Fatalf("the proxy read the grant's values %d times for two requests; want once: the answer is held", reads)
 	}
 
-	answer, err := http.Post("http://"+broker.Addr+"/v1/secrets/"+secretName+"/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/%s/reread: %v", secretName, err)
-	}
-	defer answer.Body.Close()
-	var reread struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(answer.Body).Decode(&reread); err != nil || answer.StatusCode != http.StatusOK || !reread.Served {
-		t.Fatalf("reread %s = status %d, %+v, %v; want 200 and served", secretName, answer.StatusCode, reread, err)
+	if status, _, reread := broker.sessionReread(t, databaseURL, secretName); status != http.StatusOK || reread["served"] != true {
+		t.Fatalf("a session's reread of %s = status %d, %v; want 200 and served", secretName, status, reread)
 	}
 
 	call("/v1/third")

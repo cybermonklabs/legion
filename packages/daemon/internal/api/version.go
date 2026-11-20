@@ -14,17 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -912,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -923,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2109,6 +2109,7 @@ package api
 // #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
+//
 // 152: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
@@ -2213,4 +2214,253 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 152
+//
+// 160: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// the launcher wire and one member of `GET /legion/v1/state`. The daemon's answer to a
+// launcher's hello carries the settings the trimmer runs by, as one optional member of
+// `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks, the minimum age and the interval,
+// from `runtime.kubernetes.volume_trim`), filled beside `memoryGuard` for an issue pod's launcher
+// alone (sandbox's Runtime.launcherHelloAck) and written whole by `internal/stream`'s
+// Listener.hello. The launcher sends the daemon at most one
+// `launcher_volume_report` frame per sweep that ends with the volume still above its low mark,
+// none for a sweep the settings stopped, and one that no sweep makes when the trimmer has
+// switched itself off after three panics in a row in one of the two rows it counts its faults in
+// (`switchedOff`, carrying the newest three faults of both rows, which end with the panic that
+// switched it off, and its last reading of the volume, if it made one). `ServeLauncher` reads each
+// into at most one `volume-near-full` notice to the issue's architect, since the daemon's own
+// bounds decide which sweep reports are told, and the switched-off report passes every one of
+// them. That frame carries, beside the sweep's own numbers, how many
+// entries the launcher's own bound left out of each of its lists (`sizesOmitted` and its three
+// siblings), so a reader never takes a cut list for the whole of what the trimmer measured, and
+// two optional members of each size, `refused` and `refusals`: the first read under that target
+// the walk did not make — one the kernel refused, or a directory more than 64 levels below the
+// target, which the walk does not open — named by the target, the name and its depth, and how
+// many such reads there were, so a size the walk could read only in part is told as a lower
+// bound and never as the target's whole. Each size measures a directory two levels under the
+// volume root, a regular file beside such directories in an immediate child of the root, or an
+// immediate child that holds no directory of its own. The frame's `sizesPartial` is a walk its
+// budget or the container's stop cut, and nothing else, and its own rule
+// (`shimwire.LauncherVolumeReport.Validate`) refuses a report holding more entries in any list
+// than that list's cap (`shimwire.VolumeReportSizes` and the three beside it), since the daemon
+// renders every entry it is given into a notice and the launcher's own cut runs only where the
+// sender is that launcher. The state body's `settings.runtime.kubernetes` gains
+// `volume_trim` (`enabled`, `high_percent`, `low_percent`, `min_age_minutes` and
+// `interval_seconds`, api.VolumeTrimSettings): the settled block, `enabled` false where the
+// deployment switched the trimmer off, which the contracts' state fixture
+// (`packages/contracts/fixtures/daemon-api/state.json`) carries. A plugin's schema reads
+// `settings` as a loose object (`legionSettings` in `packages/contracts/src/legion-api.ts`), so
+// a reader of an earlier contract takes the state body with the member in it.
+//
+// The skew is safe in both directions, and this entry records why, because that is what a
+// reader of it needs. A new worker image under an older daemon reads the member absent, which
+// is the one thing that means "no settings", so its trimmer never starts and its send side
+// refuses a report on a connection whose acknowledgement carried none (`internal/launcher`'s
+// manager.sendVolumeReport), which is what keeps it off that daemon's switch on an unmodelled
+// frame type. An older worker image under a new daemon ignores the extra member of the ack,
+// because the frame decoder is tolerant of members it does not model, and it sends no report
+// either. Both rest on one constraint, which holds now and later: the settings must never become
+// a daemon-to-launcher frame of their own, because `ServeLauncher` and the launcher's own
+// command loop each close the connection on a frame type they do not name, and a launcher that
+// redials once a second for every role of the pod is the failure this shape exists to avoid.
+//
+// What the wire survives is not what the store survives, and a reader of this entry about to
+// change this number needs the second as well. The same change adds the architect notice kind
+// `volume-near-full` and the `volume` member of the notice payload, and an outbox payload is
+// decoded strictly, so a daemon of any release without this entry can decode no such row: every
+// release of main before this change lands, the one just before it included. The bound is named
+// by the entry and not by a number because a forward merge can move the number, as the history
+// below records, and a number written into prose stays where it was. That row does not fail
+// alone: `WaitingNotices` reads every waiting notice row of the project, `pacedCatchUps`
+// returns on the first it cannot decode, and its one caller is the state read, so one row fails
+// `GET /legion/v1/state` for the whole project until somebody deletes it — the chain
+// `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this
+// repository's own incident — and `releaseWaiting`, the other reader of that set, fails on it the
+// same way. No migration of an earlier release deletes these rows, so the rollback is an
+// operator's: one statement with the daemon stopped, and a `runtime.kubernetes.volume_trim`
+// block taken out of `legion.yaml`, since an earlier loader refuses that key by name, both
+// written down where an operator reads them (docs/kubernetes.md, "Rolling back below the release
+// that trims an issue pod's volume").
+// (The base carried 64 at the read that first chose a number for this change, 2026-11-11, and
+// 65 was declared by three open pull requests then and 66 by a fourth, so it took 67 and held
+// that through two forward merges. main reached 68, then 73, then 75, then 85, and now 86 with
+// the two entries right above, which is the one thing the hold rule moves for, so this change
+// takes 91, above main's own number and above every number an open pull request declares: a
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 142 open pull
+// requests on 2026-11-12, never of a file list, gives main 86 and, above it, 86 (#2404, #2558,
+// #2918, #3000, #3534, #3573, #3677, #3708, #3715 and #3785), 87 (#3939), 88 (#3730), 89
+// (#3659, and this change's own head before this merge) and 90 (#3575, #3830 and #3937), so 91
+// is the lowest free number above the base. The 89 this change held is given up because #3659
+// declares it as well, and a number two heads share is a refusal for whichever merges second.
+// It is held from here: a later forward merge keeps both sides' entries and leaves this number
+// alone, as it keeps both sides of validNoticeKinds, and it moves again only when main's own
+// DaemonAPIVersion reaches or passes it, or when another open head is found declaring it,
+// because renumbering changes this branch's own diff, and a renumber made after a result stands
+// against this head costs the tester a round rather than a commit. So do not re-derive a number
+// from this line at the next merge: read main's own DaemonAPIVersion and the open heads' own,
+// and move this one only when one of them reaches 91.
+// At the forward merge of 2026-11-13 main had 87, below 91, but #3712 was found declaring 91 as
+// well, so the number moved: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each
+// of the 140 open pull requests gives, above main's 87, 87 (#2544, #2813, #2945, #3178, #3769,
+// #3785, #3786, #3831 and #3971), 88 (#3730), 89 (#3659), 90 (#3830), 91 (#3712, and this
+// change's own head before this merge), 92 (#3715), 93 (#3937), 94 (#3677), 96 (#2731 and
+// #3573), 97 (#3575) and 98 (#3708), so 95 is the lowest free number above main's. It is held
+// from here under the same rule: move it only when main's own number or another open head's
+// reaches 95.
+// At the second forward merge of 2026-11-13 main had 94, below 95, but #3712 had moved to 95,
+// so the number moved again: above main's 94 the open heads declare 95 (#3712), 96 (#2731 and
+// #3573), 98 (#3708) and 99 (#3575), so 97 is the lowest free number above main's. It is held
+// under the same rule: move it only when main's own number or another open head's reaches 97.
+// Read again immediately before the push of 2026-11-13 that followed review round 12, with
+// main still at 94: the open heads declare 95 (#3659), 96 (#2731), 97 (#3937), 98 (#3708), 99
+// (#3575), 100 (#3573 and #3715), 101 (#3712) and 102 (#3730), so 97 is given up because #3937
+// declares it as well and 103 is the lowest number above main's that no open head declares. It
+// is held under the same rule: move it only when main's own number or another open head's
+// reaches 103.
+// Read during the round that followed review round 13, with main at 98, the open heads declared
+// 105 (#3659), 106 (#3730 and #3793) and 107 (#3712), and a hold on this file asks every change
+// to it for a number above #3659's 105, so the number moved to 108. Read again immediately
+// before that round's push, after main's second forward merge: #3715 had moved to 108, and the
+// open heads declare 99 (#3575), 100 (#3573), 104 (#3830 and #3937), 105 (#3659), 106 (#2731,
+// #3730 and #3793), 107 (#3712) and 108 (#3715), so 109 is the lowest number above both main's
+// and 105 that no open head declares, and the change was pushed at 109. Main then moved to 104
+// (#3830), and the third forward merge of that round read the open heads again: #3793 had moved
+// to 109 and #3715 to 110, so the open heads declare 105 (#3659), 106 (#2731 and #3730), 107
+// (#3712), 109 (#3793) and 110 (#3715 and #3937), and 108 is the lowest number above both
+// main's 104 and 105 that no open head declares. It is held under the same rule: move it only
+// when main's own number or another open head's reaches 108.
+// At the forward merge that followed review round 15, main had moved to 111, above 108, so the
+// number moved again: above main's 111 the open heads then declared 112 (#2731), 113 (#3575)
+// and 114 (#3730), so 115 was the lowest number above main's that no open head declared.
+// At the forward merge of round 17 main was still at 111, but #3937 had moved to 115, and a hold
+// on this file asked every change to it for a number above #3659's 118. Read at
+// refs/pull/<n>/head for every open pull request, the open heads declare 112 (#2731), 113
+// (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118 (#3659), 119 (#3712) and 120
+// (#3793 and #3993), so 121 is the lowest number above both main's 111 and 118 that no open
+// head declares. It is held under the same rule: move it only when main's own number or another
+// open head's reaches 121.
+// At the forward merge of round 20 main had moved to 123 (#3793), above 121, so the number moved
+// again. Read at refs/pull/<n>/head for every open pull request, the open heads above main's
+// declare 124 (#4021), 125 (#4030) and 126 (#2230 and #4017), so 127 is the lowest number above
+// main's 123 that no open head declares. It is held under the same rule: move it only when
+// main's own number or another open head's reaches 127.
+// At the forward merge of round 22 main had moved to 133, above 127, and #3659 and #3711 had
+// also declared 127. Read at refs/pull/<n>/head for every open pull request, the open heads
+// above main's declare 134 (#4017 and #4021), 135 (#3659), 136 (#3575 and #3730), 137 (#4046)
+// and 138 (#3712 and #3993), so 139 was the lowest number above main's 133 that no open head
+// declared. Read again immediately before the push, #4017 had moved to 138 and #3993 to 139,
+// so 140 was the lowest number above main's 133 that no open head declared. At the forward merge
+// of 2026-11-15 that brought in c69be928, main had moved to 137 (INFRA-3621's entry), and the
+// open heads above it declared 138 (#4017 and #4049), 139 (#2731 and #3993), 141 (#3575), 142
+// (#3712), 143 (#3730), 144 (#4021), 145 (#3659) and 146 (#3711), so 140 was still the lowest
+// number above main's 137 that no open head declared. At the forward merge of round 25, which
+// brought in 7ed02373, main had moved to 141 (#3575, INFRA-2566's entry above), above 140, and
+// the open heads above main's declared 142 (#3712), 143 (#3730), 144 (#4021), 145 (#3659), 146
+// (#3711) and 147 (#4017), so 148 was the lowest number above main's 141 that no open head
+// declared. At the forward merge of round 26, which brought in c6d12afd, main had moved to 144
+// (#4021, INFRA-3557's entry above), and #4049 had declared 148 too. Read again immediately
+// before the push, the open heads above main's declared 145 (#3659), 146 (#3711), 147 (#4017),
+// 149 (#2731), 150 (#4049, which had moved off 148), 151 (#4106) and 152 (#3730), so 148 is the
+// lowest number above main's 144 that no open head declares. It is held under the same rule:
+// move it only when main's own number or another open head's reaches 148.
+// At the forward merge of round 32, which brought in 47a901c1, main had moved to 146 (#3711,
+// INFRA-2614's entry above), still below 148. Read at refs/pull/<n>/head for every open pull
+// request, a reading that ended at 2026-11-16T19:39:55Z, the open heads above main's declared 147
+// (#4017), 149 (#2230), 150 (#4049 and #4065), 151 (#4106), 152 (#3730) and 153 (#4115), so 148 is
+// still the lowest number above main's 146 that no open head declares. It is held under the same
+// rule. At the forward merge of 2026-11-17, which brought in d9299f7a, main had moved to 151
+// (#4106, INFRA-3729's entry above), above 148, and read at refs/pull/<n>/head for every open pull
+// request, a reading that ended at 2026-11-17T11:46:59Z, the open heads above main's declared 152
+// (#3730), 153 (#4115), 154 (#3659), 155 (#4273) and 156 (#3993 and #4065), so 157 is the lowest
+// number above main's 151 that no open head declares. Read again immediately before the push of
+// round 36, main still at 151, #2230 and #3993 had moved to 157, and the open heads above main's
+// declared 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230 and #3993),
+// 158 (#4017 and #4173) and 159 (#4049), a reading that ended at 2026-11-17T16:53:49Z, so 157 is
+// given up and 160 is the lowest number above main's 151 that no open head declares. It is held
+// under the same rule. At the forward merge of 2026-11-18, which brought in 0b2769e5, main had
+// moved to 152 (#3730, INFRA-2543's entry above), and read at refs/pull/<n>/head for every open
+// pull request, a reading that ended at 2026-11-18T06:01:03Z, the open heads above main's declared
+// 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230 and #3993), 158 (#4017, #4173,
+// #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
+// that no open head declares.)
+//
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+const DaemonAPIVersion = 188

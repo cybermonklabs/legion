@@ -201,6 +201,15 @@ func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, er
 func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *postingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -267,8 +276,13 @@ func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
 	return nil, nil
 }
-func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
+func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -342,6 +356,17 @@ func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
 		t.Fatalf("count the outbox rows of %s: %v", issue, err)
+	}
+	return rows
+}
+
+// outboxRowsOfKind is how many rows of kind issue has left. A finished row is deleted
+// (record.Postgres.FinishOutbox).
+func outboxRowsOfKind(t *testing.T, pool *store.Pool, issue string, kind record.OutboxKind) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = $2", issue, string(kind)).Scan(&rows); err != nil {
+		t.Fatalf("count the %s rows of %s: %v", kind, issue, err)
 	}
 	return rows
 }
@@ -716,7 +741,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger()}
 	runLanes(t, runner, clock)
 
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the older row failed and its lane armed its backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -754,7 +779,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -947,9 +972,9 @@ func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.
 	released.Do(func() { close(release) })
 	<-done
 	retried := rowStateOf(t, pool, id)
-	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(retryBackoff(0))) {
+	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(record.RetryBackoff(0))) {
 		t.Fatalf("after Run returned the row is leased %q with %d attempts, due %v; want it retried unleased on its first backoff, due %v",
-			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(retryBackoff(0)))
+			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(record.RetryBackoff(0)))
 	}
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one the stop interrupted", got)
@@ -981,46 +1006,62 @@ func heldWarnings(t *testing.T, logged string) [][2]int64 {
 
 // A lifecycle row that runs long is what an operator looks at when the issue's next start or stop
 // does not happen: its lease renewal logs each lifecycle row held behind it, once, when that row
-// has waited heldWarnAfter, naming the held row and the running one — and nothing before then.
+// has waited heldWarnAfter behind it, naming the held row and the running one — and nothing before
+// then. The wait is counted from the later of the held row's due time and the moment the running
+// row began its run: a row a project's pause held keeps the due time it had, which can be hours
+// before the row ahead of it began.
 func TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong(t *testing.T) {
-	var logged syncBuffer
-	tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
-	tree.holdArchitectStart(t)
-	tree.commit(t, "own-implementer", tree.start(t, claim.RoleImplementer))
-	ids := outboxIDs(t, tree.pool)
-	if len(ids) != 2 {
-		t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
-	}
-	running, held := ids[0], ids[1]
+	for _, tc := range []struct {
+		name string
+		// due is how long before the running row began its run the held row fell due.
+		due time.Duration
+	}{
+		{name: "a row due as the running row began"},
+		{name: "a row a pause held, due an hour before the running row began", due: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged syncBuffer
+			tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
+			tree.holdArchitectStart(t)
+			implementer := tree.start(t, claim.RoleImplementer)
+			implementer.NextAt = implementer.NextAt.Add(-tc.due)
+			tree.commit(t, "own-implementer", implementer)
+			ids := outboxIDs(t, tree.pool)
+			if len(ids) != 2 {
+				t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
+			}
+			running, held := ids[0], ids[1]
 
-	renewEvery := outboxLease / 3
-	tick := func() {
-		t.Helper()
-		tree.clock.advance(renewEvery)
-		if fired := tree.clock.fire(renewEvery); fired != 1 {
-			t.Fatalf("renewal timers fired = %d, want the running row's", fired)
-		}
-	}
-	ticks := int(heldWarnAfter / renewEvery)
-	for range ticks - 1 {
-		tick()
-	}
-	if got := heldWarnings(t, logged.String()); len(got) != 0 {
-		t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
-		t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 {
-		t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
-	}
-	if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
-		t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
-	}
-	tree.blocked(t, "after the held row was logged")
+			renewEvery := outboxLease / 3
+			tick := func() {
+				t.Helper()
+				tree.clock.advance(renewEvery)
+				if fired := tree.clock.fire(renewEvery); fired != 1 {
+					t.Fatalf("renewal timers fired = %d, want the running row's", fired)
+				}
+			}
+			ticks := int(heldWarnAfter / renewEvery)
+			for range ticks - 1 {
+				tick()
+			}
+			if got := heldWarnings(t, logged.String()); len(got) != 0 {
+				t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
+				t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 {
+				t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
+			}
+			if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
+				t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
+			}
+			tree.blocked(t, "after the held row was logged")
 
-	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+			tree.spawn.gate.open()
+			testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+		})
+	}
 }

@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, type JWK } from "jose";
 import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
@@ -50,8 +51,8 @@ import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = "example-device-client-not-a-secret";
-const MACHINE_TOKEN = "machine.identity.token";
+const CLIENT_SECRET = fixtureSecret("client");
+const MACHINE_TOKEN = fixtureSecret("machine");
 /** The name the machine trades under for a caller that acts as no session of its own. */
 const MACHINE_SESSION = "legion-demo-controller";
 

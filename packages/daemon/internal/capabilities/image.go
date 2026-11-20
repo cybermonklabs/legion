@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // Image is what the image-site checks read.
@@ -477,7 +478,7 @@ func envMap(env []string) map[string]string {
 }
 
 // ran is one command's run: its exit code, what it printed, and the error when it could not run
-// to an exit of its own — it never started, or its budget killed it.
+// to an exit of its own — it never started, its budget killed it, or a signal ended it.
 type ran struct {
 	exit           int
 	stdout, stderr string
@@ -528,7 +529,7 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	case ctx.Err() == nil && killed():
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
-		r.err = procgroup.Err(err)
+		r.err = procgroup.Said(procgroup.Err(err), r.output())
 	default:
 		r.exit = cmd.ProcessState.ExitCode()
 	}
@@ -536,11 +537,14 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 }
 
 // oneLine is text as one printed line: its whitespace runs collapsed, and cut at maxDetail on a
-// rune boundary with an ellipsis after the cut.
+// rune boundary with an ellipsis after the cut. The text is a command's output, which can quote a
+// URL with a token in its userinfo or its query, so redact.Bytes reads the whole line through the
+// URL rule before the cut: a cut made first could end inside that userinfo, before its "@", and
+// leave the start of the token where the rule no longer finds it.
 func oneLine(text string) string {
-	line := strings.Join(strings.Fields(text), " ")
-	if len(line) > maxDetail {
-		line = truncate(line, maxDetail) + "…"
+	line, cut := redact.Bytes(strings.Join(strings.Fields(text), " "), maxDetail)
+	if cut {
+		line += "…"
 	}
 	return line
 }

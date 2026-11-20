@@ -64,7 +64,8 @@ type routeShape struct {
 	Params any
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
-	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
+	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
+	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
@@ -112,6 +113,16 @@ type relatedQuery struct {
 	ExcludeIssues []string `query:"exclude_issues"`
 	// KeywordsOnly, `true`, skips meaning search; any value but true or false is 400.
 	KeywordsOnly bool `query:"keywords_only"`
+}
+
+// projectPlansQuery is GET /api/v1/projects/{key}/plans's query: the window on the finished
+// issues' close.
+type projectPlansQuery struct {
+	// Since lists only an issue closed at or after it, RFC 3339.
+	Since string `query:"since"`
+	// Until lists only an issue closed before it, RFC 3339; a since not before it is 400
+	// INVALID_QUERY.
+	Until string `query:"until"`
 }
 
 // deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
@@ -522,7 +533,7 @@ type liveWritePauseQuery struct {
 // there; the routes it does not list rest on this rule alone. Two things that look like the same
 // fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews, POST
 // .../versions/{number}/reviews and POST .../plan-reviews name model.ArtifactReview while the
-// GET beside them names []artifactReviewRead - the handlers write what docs.WriteReview
+// GET beside them names []artifactReviewRead - the handlers write what docs.QueueReview
 // returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
 // invalidates and refetches); and a model that carries its own tree field needs no shaped read
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
@@ -722,6 +733,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
 	},
+	"POST /api/v1/issues/{key}/results/dry-run": {
+		Status: http.StatusOK, Response: checkResultDryRun{}, Request: checkResultInput{},
+	},
 	"POST /api/v1/results/{id}/retract": {
 		Status: http.StatusCreated, Response: model.CheckResultRetraction{},
 		Request: checkResultRetractionInput{},
@@ -744,9 +758,22 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
-	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/steps/{id}": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
+	},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"PUT /api/v1/issues/{key}/plans/{id}": {
+		Status: http.StatusOK, Response: model.PlanRecord{}, Request: planRecordInput{},
+	},
+	"GET /api/v1/projects/{key}/plans": {
+		Status: http.StatusOK, Response: model.ProjectPlans{}, Params: projectPlansQuery{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -1001,6 +1028,11 @@ var routeShapes = map[string]routeShape{
 		// POST /v1/credential-requests/{record}/deny (agentsecrets.Client.Deny), which answers
 		// the terminal state rather than a credential.
 		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
+	},
+	"POST /api/v1/credential-requests/{id}/dismiss": {
+		// POST /v1/credential-requests/{record}/dismiss (agentsecrets.Client.Dismiss). Dispatch
+		// reads no body: the one field the broker takes, the approver, is the caller.
+		Status: http.StatusOK, Response: wire.DismissResponse{},
 	},
 	"POST /api/v1/credential-requests/machine-lookup": {
 		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards

@@ -10,12 +10,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// operatorSpendAttributes is the live deployment's own OTEL_RESOURCE_ATTRIBUTES, the attributes
-// every pod of it is billed under before any launch adds its own: the project, the lane, the
-// credential the gateway bills and the person who owns the spend. Every test of the composition
-// starts from this value, so what the tests read is the shape an operator writes rather than one
-// invented here.
-const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+// operatorSpendAttributes is the live deployment's OTEL_RESOURCE_ATTRIBUTES, with a placeholder
+// person, the attributes every pod of it is billed under before any launch adds its own: the
+// project, the lane, the credential the gateway bills and the person who owns the spend. Every
+// test of the composition starts from this value, so what the tests read is the shape an operator
+// writes rather than one invented here.
+const operatorSpendAttributes = "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"
 
 // Every launch carries the operator's own spend attributes with its own issue and role written
 // after them (runtime.SpendResourceAttributes, roleOperatorEnv), whatever the launch runs: an Oh

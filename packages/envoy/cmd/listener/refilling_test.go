@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // staleBound is the kvwatch stale bound the listener's session and interest copies run with: their
@@ -240,7 +241,7 @@ func (rig *listRig) get(path string) *http.Response {
 func (rig *listRig) sessionIDs(t *testing.T) []string {
 	t.Helper()
 	response := rig.get("/v1/sessions")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&rows) != nil {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("GET /v1/sessions: status %d %s, want a 200 list", response.StatusCode, body)
@@ -495,7 +496,7 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	defer thaw()
 	started := time.Now()
 	response := rig.get("/v1/sessions")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&rows) != nil {
 		t.Fatalf("GET /v1/sessions while NATS stalls: status %d, want a 200 list", response.StatusCode)
 	}

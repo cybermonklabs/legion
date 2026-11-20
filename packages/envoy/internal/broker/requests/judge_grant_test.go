@@ -22,7 +22,7 @@ import (
 func judgedGrant(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, lifetime int, names ...string) string {
 	t.Helper()
 	req := pendingJudgeable(t, m, enrollmentID, key, "INFRA-1353 wants it", lifetime, names...)
-	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "INFRA-1353"})
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "issue": "ACME-1353"})
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyJudgeDecision(%v) = %+v, %v; want a grant", names, dec, err)
 	}
@@ -100,6 +100,7 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 			// approved themselves, which every assertion below answers for too.
 			own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 			pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+			handOver(t, m, *pending.RecordID)
 			byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 			if err != nil || byOwner.GrantID == "" {
 				t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
@@ -164,6 +165,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		// approved themselves, which every assertion below answers for too.
 		own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 		pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+		handOver(t, m, *pending.RecordID)
 		byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 		if err != nil || byOwner.GrantID == "" {
 			t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
@@ -220,11 +222,12 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 
 // TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd: the judge approves a shared
 // human-tier secret in anyone's stead, so the grant names anyone as its approver and no person at
-// all, and it sits on a pod, which acts for no person either. Without this nobody could see what
-// the judge had handed a pod, which is the reason every signed-in person already sees a grant a
-// pod took without asking. Each of them lists both pods' grants, and either of them ends one; the
-// sentinel is no signed-in person and lists nothing. Neither revoke is the session's operator's —
-// a pod has none — so neither withholds anything from the pod it ended a grant on.
+// all, and it sits on a service's pod, which acts for no person either. Without this nobody could
+// see what the judge had handed a pod, which is the reason every signed-in person already sees a
+// grant a service's pod took without asking. Each of them lists both pods' grants, and either of
+// them ends one; the sentinel is no signed-in person and lists nothing. Neither revoke is the
+// session's operator's — a service's pod has none — so neither withholds anything from the pod it
+// ended a grant on.
 func TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd(t *testing.T) {
 	m, _, _ := newJudgeFixture(t)
 	first, firstKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-one-"+t.Name())

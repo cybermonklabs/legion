@@ -26,6 +26,7 @@ import {
   deliveryRaw,
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   observedClient,
   recordingClient,
@@ -136,6 +137,122 @@ test("follows the session id its Claude process hands off: new subject first, th
     // The handoff file outlives this server: a restart inside the same Claude process reads it.
     expect(await readdir(join(stateDirectory, "sessions"))).toEqual(["777"])
   } finally {
+    await session.shutdown()
+  }
+})
+
+test("natsCredential follows a /clear: the connection is moved to the new id's token before the new relay subject opens", async () => {
+  // With a broker token the auth service grants a session's token that session's subjects alone,
+  // so a handoff closes the old id's relay, moves the connection to the new id's token and waits
+  // for it to come back, and only then subscribes the new id's relay subject.
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  const handoff = sessionHandoffFile(stateDirectory, 779)
+  await writeSessionHandoff(handoff, "ses_old")
+  const following = Promise.withResolvers<void>()
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: nats,
+      client: recordingClient(calls),
+      heartbeatMs: 25,
+      handoffPid: 779,
+      followSession: async () => {
+        calls.push(`follow ${identity.id}`)
+        await following.promise
+      },
+    }),
+  )
+  try {
+    calls.length = 0
+    await writeSessionHandoff(handoff, "ses_new")
+    await waitFor(async () => calls.includes("follow ses_new"), "the credential move to begin")
+    await settled()
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_old")).toBe(false)
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_new")).toBe(false)
+    following.resolve()
+    await waitFor(
+      async () => calls.includes("nats.subscribe notifications.envoy.deliver.ses_new"),
+      "the new id's relay subscription",
+    )
+    const moved = calls.filter((call) => call.startsWith("nats.") || call.startsWith("follow "))
+    expect(moved.slice(0, 3)).toEqual([
+      "nats.unsubscribe notifications.envoy.deliver.ses_old",
+      "follow ses_new",
+      "nats.subscribe notifications.envoy.deliver.ses_new",
+    ])
+  } finally {
+    following.resolve()
+    await session.shutdown()
+  }
+})
+
+test("a /clear retries a failed credential move before opening the new relay", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const notifier = new FakeNotifier()
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  const handoff = sessionHandoffFile(stateDirectory, 780)
+  await writeSessionHandoff(handoff, "ses_old")
+  const refused: string[] = []
+  let brokerAvailable = false
+  let admitted = "ses_old"
+  let attempts = 0
+  const subscribe = nats.subscribe.bind(nats)
+  // nats.js closes a subscription the server refuses; a later reconnect does not restore it.
+  const subscribing = spyOn(nats, "subscribe").mockImplementation((subject) => {
+    const subscription = subscribe(subject)
+    if (subject !== `notifications.envoy.deliver.${admitted}`) {
+      refused.push(subject)
+      subscription.unsubscribe()
+    }
+    return subscription
+  })
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: nats,
+      notifier,
+      client: recordingClient(calls),
+      heartbeatMs: 25,
+      handoffPid: 780,
+      followSession: async () => {
+        attempts += 1
+        if (!brokerAvailable) throw new Error("broker unavailable")
+        admitted = identity.id
+      },
+    }),
+  )
+  try {
+    await writeSessionHandoff(handoff, "ses_new")
+    await waitFor(
+      async () => attempts >= 2 || refused.length > 0,
+      "a failed credential move to retry without subscribing as the old user",
+    )
+    expect(refused).toEqual([])
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_new")).toBe(false)
+
+    brokerAvailable = true
+    await waitFor(
+      async () => nats.subscriptions.has("notifications.envoy.deliver.ses_new"),
+      "the new relay to open once its credential is admitted",
+    )
+    nats.emitRelay("ses_new", {
+      subject: "notifications.agent.ses_new",
+      seq: 1,
+      raw: deliveryRaw.replace(directSubject, "notifications.agent.ses_new"),
+      reply: "_INBOX.handoff-recovered",
+    })
+    await waitFor(
+      async () => nats.repliesOn("_INBOX.handoff-recovered").includes("done"),
+      "the handed-off session to receive and acknowledge its message",
+    )
+    expect(notifier.notifications).toHaveLength(1)
+    expect(calls.filter((call) => call === "unregister ses_old")).toHaveLength(1)
+    expect(refused).toEqual([])
+  } finally {
+    subscribing.mockRestore()
     await session.shutdown()
   }
 })
@@ -699,6 +816,59 @@ test("a heartbeat that confirms this session as holder refreshes the role record
       client_instance_id: options.clientInstanceID,
     })
   } finally {
+    await session.shutdown()
+  }
+})
+
+test("a heartbeat the chain holds while shutdown begins writes no role once it is let go", async () => {
+  const stateDirectory = scratchState()
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const roleFile = roleStateFile(stateDirectory, "ses_claude")
+  await mkdir(dirname(roleFile), { recursive: true })
+  await writeFile(roleFile, JSON.stringify({ session_id: "ses_claude", role: "reviewer" }))
+  const release = Promise.withResolvers<void>()
+  let holdRegistration = false
+  let registrationHeld = false
+  let shutdownBegun = false
+  const roleCallsAfterShutdown: string[] = []
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          if (holdRegistration) {
+            registrationHeld = true
+            await release.promise
+          }
+          return noInterest(input.sessionID)
+        },
+        getRole: async (role) => {
+          if (shutdownBegun) roleCallsAfterShutdown.push(`getRole ${role}`)
+          return { role, holder: identity.id, last_seen: 1, state: "live" }
+        },
+        setRole: async (input) => {
+          if (shutdownBegun) roleCallsAfterShutdown.push(`setRole ${input.role}`)
+          return { claimed: true, interest: noInterest() }
+        },
+      }),
+      heartbeatMs: 20,
+    }),
+  )
+
+  try {
+    holdRegistration = true
+    await waitFor(async () => registrationHeld, "a heartbeat held inside its registration")
+    holdRegistration = false
+    // Shutdown begins while the body is held in `register()`, and the body is let go only once
+    // the forwarder has closed: what it does after `register()` is what this row reads.
+    shutdownBegun = true
+    const shuttingDown = session.shutdown()
+    await waitFor(async () => session.topics().length === 0, "the forwarder to close")
+    release.resolve()
+    await shuttingDown
+    await settled()
+    expect(roleCallsAfterShutdown).toEqual([])
+  } finally {
+    release.resolve()
     await session.shutdown()
   }
 })

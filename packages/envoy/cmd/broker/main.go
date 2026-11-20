@@ -11,6 +11,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -32,9 +33,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
@@ -50,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -58,12 +60,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/reread"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/fold"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -124,11 +125,8 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
-	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
-	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
-	// first thing main does, so a subcommand that opens the store logs the same shape, and the
-	// log package, which slog.SetDefault points at the same handler, writes no line of another.
-	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
+	// The broker's logging (setUpLogging): every line of slog and the log package, masked.
+	setUpLogging(os.Stderr)
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -358,6 +356,10 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
+	// The NATS auth service's list of services and the verifiers of their platform tokens, read
+	// at boot so an entry it could never admit refuses the start rather than every connection.
+	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	fatal(err)
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -452,15 +454,19 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
-		Store: st, Lease: lease, Pod: pod, ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount,
+		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
+		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
+		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
+	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
+	// machine and the model judge share it, its token cache and its client.
+	dispatch := judgeDispatch(cfg)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine)
+	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -468,7 +474,9 @@ func main() {
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
 	// writes its Dispatch tokens under and the name its grant follows have one holder, and a
-	// name another principal holds is refused either way.
+	// name another principal holds is refused either way, unless that principal is an account
+	// BROKER_SESSION_ACCOUNT_PAIRS pairs with the claimant's, which takes it either way but for a
+	// name the configuration fixes (below).
 	enr.Sessions = oauthStore
 	// On serving, not ctx, for the same reason the policy's own loads are: this runs after the
 	// bind above, so a SIGTERM arriving here finds a pod the load balancer may already be sending
@@ -532,6 +540,28 @@ func main() {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
+	logPodRegistrars(cfg)
+	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
+	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
+	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
+	// fix, which no pair takes, set by oauth.New below from the policy it is composed with. Both
+	// are set before srv.Serve below hands the store its first request, and nothing writes them
+	// after, so the handlers read them with no lock.
+	paired := make([][2]string, len(cfg.SessionAccountPairs))
+	for i, pair := range cfg.SessionAccountPairs {
+		paired[i] = [2]string{exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])}
+	}
+	oauthStore.SetSessionPairs(paired)
+	if len(cfg.SessionAccountPairs) == 0 {
+		slog.Info("session account pairs", "state", "off",
+			"detail", "BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds")
+	} else {
+		written := make([]string, len(cfg.SessionAccountPairs))
+		for i, pair := range cfg.SessionAccountPairs {
+			written[i] = pair[0] + "=" + pair[1]
+		}
+		slog.Info("session account pairs", "state", "on", "pairs", strings.Join(written, " "))
+	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
 	// the broker mounts no device authorization route and its metadata document names no device
@@ -572,7 +602,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Token: cfg.EnvoyToken, HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: brokertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -585,7 +615,7 @@ func main() {
 	}
 	sweeper := &requests.Sweeper{
 		Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthStore,
-		Interval: sweep, SessionCarry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Wake: waker,
+		Interval: sweep, Wake: waker,
 	}
 	go sweeper.Run(ctx)
 	// The client check, beside the sweeper and on the same context: at boot and every hour
@@ -628,8 +658,12 @@ func main() {
 	if discovered.GoogleIdentities != nil {
 		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
 	}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate,
+	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
+	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
+	detached := &api.Detached{}
+	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
+		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -697,10 +731,11 @@ func main() {
 		airlockProxy.Store(proxy)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
-	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
-	// API's, since a scraper is a caller like any other to the server.
+	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
+	// timeouts are the API's, since a scraper is a caller like any other to the server.
+	var callout atomic.Pointer[natscallout.Service]
 	metricsServer := &http.Server{
-		Handler:           metricsHandler(registry),
+		Handler:           metricsHandler(registry, &callout),
 		ReadHeaderTimeout: srv.ReadHeaderTimeout,
 		ReadTimeout:       srv.ReadTimeout,
 		WriteTimeout:      srv.WriteTimeout,
@@ -741,8 +776,32 @@ func main() {
 			stopNotify()
 		}
 	}()
+	// The NATS auth service starts once the broker serves, so a connection it admits can trade
+	// and introspect against a broker that answers; it answers in the replicas' queue group until
+	// the drain begins.
+	if cfg.NATS.Enabled() {
+		service, err := natscallout.Start(ctx, natscallout.Settings{
+			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+		}, natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		})
+		fatal(err)
+		callout.Store(service)
+		go func() {
+			if err := service.Ready(ctx); err == nil {
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+			}
+		}()
+	}
 
 	<-ctx.Done()
+	// The auth service leaves the queue group first, so the hub sends the next authorization to
+	// a replica that is not draining.
+	if service := callout.Load(); service != nil {
+		service.Close()
+	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
 	// proxy port to drain".
 	var airlockShutdown func(ctx context.Context) error
@@ -751,7 +810,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -853,13 +912,13 @@ func fatal(err error) {
 // minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
 // it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
 // with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions subcommand must not. Both of them open the store here, so the
-// subcommand reaches the same database and signs in to it the same way as the server.
+// this, and the end-sessions and versions subcommands must not. All three open the store here, so
+// each subcommand reaches the same database and signs in to it the same way as the server.
 func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
 	var awsCfg aws.Config
 	var err error
 	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = awsconfig.LoadDefaultConfig(ctx); err != nil {
+		if awsCfg, err = loadAWSConfig(ctx); err != nil {
 			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 		}
 	}
@@ -988,17 +1047,18 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host the proxy
-// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
-// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
-// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
-// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
-// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
-// file with two faults reports its first bad host ahead of any other fault Validate finds (a
-// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
-// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
-// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
-// as an IPv4 address, and a wildcard over one.
+// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
+// refuses, then airlock.Validate's answer, which is the Lean model's, then the two refusals that
+// are this program's own and not that model's — an entry whose name is not a name a session can
+// ask for, and guidance longer than the judge is shown (maxGuidanceRunes). The hosts come first
+// because rulehost.Refusal names each host's reason and repeats no text of the file but the form
+// to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
+// written; and because that grammar serves a host only where HostShapeOK accepts it, Validate then
+// refuses no host. So a file with two faults reports its first bad host, by entry and then by
+// position, ahead of any other fault Validate finds (a repeated name, a judge above 900 seconds,
+// another kind). An entry with no hosts has no host to refuse, and Validate accepts it: it says
+// who decides its key and binds the value nowhere. The host refusals rulehost.Refusal adds to
+// HostShapeOK are this program's own and not the Lean model's.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1009,7 +1069,7 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 func validateRulesFile(rules airlock.Rules) error {
 	for i, s := range rules.Secrets {
 		for j, h := range s.Hosts {
-			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+			if why := rulehost.Refusal(h); why != "" {
 				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
 			}
 		}
@@ -1021,100 +1081,18 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
 }
 
-// ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
-// it, or "" for a host it serves.
-//
-// An IP address binds no secret in any spelling. In its canonical form the proxy decrypts a
-// CONNECT to it, but a TLS client sends no server name for an address (RFC 6066 section 3; Go's
-// crypto/tls and curl send none), so airlock.Decide refuses every such request "sni mismatch";
-// airlock.HostShapeOK refuses every address for that reason, in the Lean model's validation. In
-// any other spelling it matches no request at all, because the proxy takes a CONNECT host's port
-// and brackets off (net.SplitHostPort) and writes an address as netaddr.Host writes it before
-// airlock.HostBound compares (airlockproxy's serveConnect and servePlain): not netaddr.Host's
-// form (2001:db8:7:0::1, 2001:0db8:7::1, ::ffff:192.0.2.10, an embedded IPv4 part, a zone),
-// in brackets, after a trailing dot, or with a port. Each is refused with one reason, which
-// repeats nothing of the host as written, whose zone is any text, and names the service's host
-// name as what to write.
-//
-// A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
-// matches only a request that writes the dot, so for the requests clients make it binds nothing:
-// it is refused naming the name without the dot when that name is one airlock.HostShapeOK
-// accepts (its letters, digits, hyphens and dots are all a refusal may repeat, since h arrives
-// folded by fold.ASCII), and naming no form otherwise. An empty host names nothing a request can
-// reach.
-//
-// The rest are hosts no request names, each refused naming no form, since all they hold is the
-// file's own text: a host with a scheme; a host with a port; a bracket or a % around no address;
-// a colon in no address, which no host name holds; a last label that is a number, which no host
-// name has and which is an IPv4 address netip does not read (a leading zero, fewer than four
-// parts, a hex part), that one client reads as one address and the next as another or as a name;
-// and a wildcard over such a label, which HostBound would match against addresses by their text.
-// Last, a host airlock.HostShapeOK refuses for any other reason (an empty label, a label opening
-// or closing with "-", a character no label holds, "*" anywhere but a leading "*.") is refused as
-// no DNS name, naming nothing of it, so no host this function accepts is one HostShapeOK refuses:
-// Validate, which runs after it, then refuses no host of a file this function passed.
-func ruleHostRefusal(h string) string {
-	if strings.Contains(h, "://") {
-		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
-	}
-	if _, err := netip.ParseAddr(h); err == nil {
-		return ipAddressHost
-	}
-	bare, port := h, false
-	if host, _, err := net.SplitHostPort(h); err == nil {
-		bare, port = host, true
-	}
-	bare = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(bare, "["), "]"), ".")
-	if _, err := netip.ParseAddr(bare); err == nil {
-		return ipAddressHost
-	}
-	numeric := numericLabel(bare[strings.LastIndexByte(bare, '.')+1:])
-	switch {
-	case port:
-		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host name alone"
-	case strings.ContainsAny(h, "[]%"):
-		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write the service's host name"
-	case strings.Contains(bare, ":"):
-		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write the service's host name"
-	case numeric && strings.HasPrefix(bare, "*."):
-		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name the service by its host name"
-	case numeric:
-		return "ends in a number, which no host name does, and is no IP address netip reads: clients read a leading zero, fewer than four parts or a hex part as different addresses, and an address binds no secret in any form, so the host binds nothing; write the service's host name"
-	case h == "":
-		return "is empty, so it names no host a request can reach and binds nothing; write the service's host name"
-	case strings.HasSuffix(h, ".") && airlock.HostShapeOK(bare):
-		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
-	case !airlock.HostShapeOK(h):
-		return "is no DNS name: a host is labels of letters, digits and hyphens between single dots, none empty and none opening or closing with a hyphen, after an optional leading wildcard label, so the airlock binds it nowhere; write the service's host name"
-	}
-	return ""
-}
-
-// ipAddressHost is ruleHostRefusal's refusal of a host that is an IP address in any spelling.
-const ipAddressHost = "is an IP address, and an address binds no secret in any spelling: a client sends no TLS server name for one, so the proxy refuses every request to its canonical form \"sni mismatch\", and compares no other form at all; write the service's host name"
-
-// numericLabel reports whether one label of a host is a number as inet_aton reads one, decimal or
-// 0x and hex digits: never the last label of a host name, and always part of an IPv4 address.
-func numericLabel(label string) bool {
-	digits, hex := label, false
-	if rest, ok := strings.CutPrefix(label, "0x"); ok {
-		digits, hex = rest, true
-	}
-	if digits == "" {
-		return false
-	}
-	for i := range len(digits) {
-		c := digits[i]
-		if !('0' <= c && c <= '9' || hex && 'a' <= c && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
 // empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
@@ -1168,12 +1146,16 @@ func peerReread(current *policy.Current, dropAirlockName func(string)) func(cont
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
 // Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
-// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
-// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
-// (the API's mux registers no /metrics).
-func metricsHandler(registry *metrics.Registry) http.Handler {
+// and GET /livez, the NATS auth service's liveness, and nothing else - every other path is 404 and
+// every method there but GET and HEAD is 405 - so a scraper or a probe reaches no route of the API
+// through it, and no caller of the API reaches either (the API's mux registers neither).
+//
+// GET /livez is natscallout.Livez on the auth service this broker started, which answers the whole
+// of it, the broker that runs no auth service included.
+func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscallout.Service]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
+	mux.Handle("GET /livez", natscallout.Livez(callout.Load))
 	return mux
 }
 
@@ -1197,22 +1179,28 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
-// service account, the one a machine of that fleet proves, and, for each google-service-account
-// secret, the one account the deployment binds it to and so the only one its release mints a
-// token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
-// caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate. retry is the
-// one retry policy and process-wide retry budget of the three minters that call an upstream over
-// HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
-// counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which typeMinters' copies keep.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+// service account, the one a machine of that fleet proves and the person its exchange entry
+// names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
+// login acts for, and, for each google-service-account secret, the one account the deployment
+// binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
+// request signed, or until its session ends. rules and caCertificate are the airlock's, read at
+// boot: a name the rules name is released as placeholders, and every such release carries the
+// proxy's URL and this certificate. retry is the one retry policy and process-wide retry budget
+// of the three minters that call an upstream over HTTP (main's is secrets.NewRetry on the
+// process's registry, which broker_mint_attempts_total is counted on), so a GitHub brownout that
+// spends the budget leaves a Google mint's failure unretried too: each holds the one pointer,
+// which typeMinters' copies keep. dispatch is the broker's one read of Dispatch (judgeDispatch),
+// nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also names a Legion pod's
+// issue's assignee, whose Inbox lists that pod's request for a shared secret.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
+		PodOperators:        cfg.PodOperators,
+		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
 		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
@@ -1241,7 +1229,38 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		SignInOff: cfg.SignInOff,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	if dispatch != nil {
+		m.Assignees = dispatch
+	}
 	return m
+}
+
+// vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
+// account, an entry that names none left out: whose Inbox lists a request one of that fleet's
+// machines makes for a shared human-tier secret. The entry's person reaches no secret.
+func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
+	persons := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.Person != "" {
+			persons[e.Account] = e.Person
+		}
+	}
+	return persons
+}
+
+// judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
+// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds, and nil where that URL is unset: the model judge reads a
+// request's issue with it, and the request machine a Legion pod's issue's assignee. main builds it
+// once and hands both the same one, so they share its token cache and its client.
+func judgeDispatch(cfg config.Config) *judge.Dispatch {
+	if cfg.JudgeDispatchURL == "" {
+		return nil
+	}
+	return &judge.Dispatch{
+		BaseURL: cfg.JudgeDispatchURL,
+		Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+	}
 }
 
 // The request machine answers every question the model judge asks of the broker. The assertion
@@ -1250,16 +1269,23 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 // fails this build rather than a deployment's first judged request.
 var _ judge.Requests = (*requests.Machine)(nil)
 
-// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// judgeDispatchTimeout bounds each of the judge's Dispatch GETs (the issue, its spec document and
+// the ask the reason cites). A run's own 30-second
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
-// GET against a service inside the cluster.
+// GET against a service inside the cluster. The request machine's assignee read holds itself to
+// a shorter bound of its own (requests' assigneeBound).
 const judgeDispatchTimeout = 10 * time.Second
 
 // wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
-// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge,
+// and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
+// The line of a broker with a judge names the identity whose token it presents to its model:
+// metadata for the metadata server's identity token, or the service account
+// BROKER_JUDGE_MODEL_ACCOUNT names, whose token is minted at generateIdToken. It is read off the
+// reader the model holds, so the line shows what was wired rather than what was configured.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1267,7 +1293,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // request pending for the person who decides it today. That is the right way round for a judge
 // where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
 // drain, while a half-finished run would approve a credential as the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
 		// and its line says what such a broker does with a request a person would decide.
@@ -1278,14 +1304,12 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
+	account := brokertoken.NewGoogleAccount(cfg.JudgeModelAudience)
+	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
-		Rules: rules,
-		Dispatch: judge.Dispatch{
-			BaseURL: cfg.JudgeDispatchURL,
-			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
-			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
-		},
-		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Rules:      rules,
+		Dispatch:   *dispatch,
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
 	})
@@ -1293,8 +1317,26 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	// machine's own type, so this is the method and nothing else. Consider returns at once, so
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
+	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
+}
+
+// logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how
+// many registrar and pod account pairs BROKER_POD_REGISTRARS holds, none being a route that admits
+// no registration, and whether BROKER_POD_REGISTRATION_AUDIENCE gives the route a second audience.
+// A registrar BROKER_SERVICE_LOGINS does not list cannot call the route, so it registers nothing.
+// The boot is not refused over one, since the list may be derived from another source than the
+// logins and a refusal would turn a mismatch into an outage; each such registrar gets a WARN line
+// naming it instead.
+func logPodRegistrars(cfg config.Config) {
+	slog.Info("pod-session registrars", "entries", len(cfg.PodRegistrars), "registration_audience", cfg.PodRegistrationAudience != "")
+	for _, registrar := range cfg.PodRegistrars.Registrars() {
+		if _, login := cfg.ServiceLogins[registrar]; !login {
+			slog.Warn("pod-session registrar cannot log in", "registrar", registrar,
+				"detail", "BROKER_POD_REGISTRARS names this account and BROKER_SERVICE_LOGINS does not list it, so it registers no pod")
+		}
+	}
 }
 
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
@@ -1330,6 +1372,10 @@ type verifiers struct {
 	Pod enroll.PodVerifier
 	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
 	K8sKeys *oidc.Keys
+	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
+	// the cluster's key set Pod verifies with, nil on a broker with no such audience. Only the
+	// registration route reads it (api.Deps.PodRegistrationTokens).
+	PodRegistration enroll.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type.
 	GoogleKeys *oidc.Keys
@@ -1344,12 +1390,13 @@ type verifiers struct {
 // in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
 // BROKER_K8S_OIDC_AUDIENCE), one verifier for both a pod's enrollment token and a service's login
 // token, which are the same cluster's projected tokens for the same audience, whose key set it
-// also answers for the RFC 8693 exchange; and Google's (BROKER_GOOGLE_OIDC_ISSUER), for a
-// machine's identity token, only when BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the
-// exchange resolves a machine's subject token against, logging one line that names the issuer,
-// the audience, the machine services and how many machine entries the exchange holds. With no
-// Google audience it reads and logs nothing about Google, and answers no Google keys, so the
-// broker registers no Google subject token type.
+// also answers for the RFC 8693 exchange, and on that key set a second where
+// BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod token of that audience; and
+// Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token, only when
+// BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's subject
+// token against, logging one line that names the issuer, the audience, the machine services and
+// how many machine entries the exchange holds. With no Google audience it reads and logs nothing
+// about Google, and answers no Google keys, so the broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
 	if cfg.K8sOIDCIssuer != "" {
@@ -1359,6 +1406,9 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		}
 		found.K8sKeys = keys
 		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience, keys)}
+		if cfg.PodRegistrationAudience != "" {
+			found.PodRegistration = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.PodRegistrationAudience, keys)}
+		}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil
@@ -1554,14 +1604,17 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand is one of the two arguments the broker takes in place of serving; the other
-// is airlockCheckCommand (airlockcheck.go).
-const endSessionsCommand = "end-sessions"
+// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
+// of serving; the third is airlockCheckCommand (airlockcheck.go).
+const (
+	endSessionsCommand = "end-sessions"
+	versionsCommand    = "versions"
+)
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are two names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its nine).
+// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
+// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:
@@ -1570,18 +1623,57 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return endSessions(ctx, strings.TrimSpace(args[1]), stdout, stderr)
+	case versionsCommand:
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "broker: usage: broker %s, with no argument\n", versionsCommand)
+			return 2
+		}
+		return versions(ctx, stdout, stderr)
 	case airlockCheckCommand:
 		return airlockCheck(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login> and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
 	return 2
+}
+
+// versions prints what broker_schema_migrations records of each version against the migrations
+// this image embeds, and what this image's next boot would do with each row (store.CheckVersions):
+// the check to take, read-only, before an image with a different set rolls out. It reads the same
+// configuration the server does and signs in to the database the same way, the RDS IAM token
+// minter included (openStore), binds no listener and migrates nothing. It exits 0 when every
+// recorded version has a file of this image and the next boot refuses none, 1 when one has no file,
+// a row would be refused or the table records nothing, and 2 when the check could not be taken.
+func versions(ctx context.Context, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	st, _, err := openStore(ctx, cfg, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	defer st.Close()
+	check, err := st.CheckVersions(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	check.Write(stdout)
+	if !check.OK() {
+		return 1
+	}
+	return 0
 }
 
 // endSessions deletes every session login is signed in to the approval page with, wherever and
 // whenever it was made, and prints how many it deleted: the operator's way to end one person's
-// sign-ins everywhere at once, run in a broker pod by whoever holds pods/exec in the broker's
-// namespace.
+// sign-ins everywhere at once. It runs in any one-off process of the image that has the serving
+// broker's settings and a way to its database: an exec into a broker pod where the deployment
+// admits one, or a one-off pod, job or container of the image, with BROKER_SIGNIN=off in place of
+// the sign-in settings (docs/site/src/content/docs/broker/operate.md, "Running a subcommand").
 //
 // It reads the same configuration the server does and opens the database the same way, the RDS
 // IAM token minter included (openStore), and it binds no listener. It does not migrate: an image

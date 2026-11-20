@@ -1,6 +1,6 @@
 import type { RelayHeaders } from "@legion/envoy-client/consumer-delivery"
 import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
-import { messageFor } from "@legion/envoy-client/errors"
+import { natsFailureReason } from "@legion/envoy-client/errors"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
 
@@ -41,10 +41,13 @@ export interface ChannelConnection {
   close(): Promise<void>
   /** The connection's status events (nats.js `status()`), which end when it closes. */
   status(): AsyncIterable<ChannelConnectionStatus>
+  /** Settles once the connection is closed for good, with the error that closed it, if any
+   *  (nats.js `closed()`); already settled for one closed before the call. */
+  closed(): Promise<unknown>
 }
 
 /**
- * The topics this session follows, and the one broker connection it holds. Nothing is subscribed
+ * The topics this session follows, and the broker connection it holds now. Nothing is subscribed
  * for a topic: the listener relays every followed subject from the session's own durable consumer
  * (`ConsumerDelivery`), so a topic is followed by registering it, and the only subscription that
  * carries Envoy traffic is that consumer's relay subject.
@@ -56,9 +59,9 @@ export interface ChannelTopics {
   unfollow(topics: readonly string[]): void
   /** Topics currently followed, in follow order. */
   topics(): readonly string[]
-  /** True once the connection is closed for good. */
+  /** True once the connection held now is closed for good. */
   isClosed(): boolean
-  /** Drain the NATS connection; never rejects. */
+  /** Drain the connection held now; never rejects. */
   close(): Promise<void>
 }
 
@@ -92,18 +95,21 @@ export function deliveryIdentity(raw: string): z.infer<typeof DeliveryIdentity> 
   return identity.success ? identity.data : undefined
 }
 
+/** A failed drain or close of the NATS connection, as a log may print it (`natsFailureReason`). */
 function report(what: string, error: unknown): void {
-  process.stderr.write(`envoy-channel: ${what} — ${messageFor(error)}\n`)
+  process.stderr.write(`envoy-channel: ${what} — ${natsFailureReason(error)}\n`)
 }
 
 /**
  * One channel process follows its direct Envoy route and every topic a human or a tool added to
  * it. Each is a concrete subject the registration carries (`expandSubscriptionTopics`), and the
  * listener relays all of them from the session's own consumer, so nothing here subscribes: the
- * set is what a registration advertises and what the relay is filtered on.
+ * set is what a registration advertises and what the relay is filtered on. `connection` answers
+ * the connection the session holds now: a server opens a new one when its connection closes for
+ * good (`ChannelSessionOptions.reopen`).
  */
 export function createChannelTopics(
-  connection: ChannelConnection,
+  connection: () => ChannelConnection,
   options: ChannelTopicsOptions = {},
 ): ChannelTopics {
   const following = new Set<string>()
@@ -124,22 +130,24 @@ export function createChannelTopics(
       return [...following]
     },
     isClosed() {
-      return connection.isClosed()
+      return connection().isClosed()
     },
     async close() {
       following.clear()
-      if (connection.isClosed()) return
+      // The connection held as the close begins: the session swaps none in once it is stopping.
+      const held = connection()
+      if (held.isClosed()) return
       const timeout = Promise.withResolvers<void>()
       const timer = setTimeout(timeout.resolve, drainTimeoutMs)
       try {
-        await Promise.race([connection.drain(), timeout.promise])
+        await Promise.race([held.drain(), timeout.promise])
       } catch (error) {
         report("draining the broker connection failed", error)
       }
       clearTimeout(timer)
-      if (connection.isClosed()) return
+      if (held.isClosed()) return
       try {
-        await connection.close()
+        await held.close()
       } catch (error) {
         report("closing the broker connection failed", error)
       }

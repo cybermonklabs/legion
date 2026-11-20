@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
@@ -30,8 +31,14 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOperatorProjectPauseRequest,
+  LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionProjectPauseRequest,
+  LegionProjectPauseResponse,
+  LegionProjectResumeRequest,
+  LegionProjectResumeResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -46,8 +53,12 @@ import {
   LegionWaveReleaseResponse,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
+
+/** A claim's secret, as the requests below carry it. */
+const CLAIM_SECRET = fixtureSecret("claim");
 
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
@@ -58,6 +69,10 @@ const schemas: Record<string, z.ZodType> = {
   // Written by internal/projection's own golden test: what the state route projects while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
+  // Written by internal/api's TestStateLastPauseGolden: the state of a project that runs after a
+  // pause has ended, which carries `lastPause` and no `paused` (contract 178). state.json is the
+  // state of a paused project and carries the other key.
+  "state-last-pause.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -91,6 +106,20 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
+  // The project pause (contract 178), each written from what the route itself answers
+  // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
+  // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
+  // the others name something beside the sentence: the setting that turns the pause off (none
+  // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
+  // refused while the project is paused, and the last pause for a resume of a project that runs.
+  "project-pause.json": LegionProjectPauseResponse,
+  "project-resume.json": LegionProjectResumeResponse,
+  "project-pause-reason-required.json": LegionErrorResponse,
+  "project-pause-unavailable.json": LegionPauseFailureResponse,
+  "project-pause-no-workflow.json": LegionPauseFailureResponse,
+  "project-pause-refused.json": LegionPauseFailureResponse,
+  "project-paused.json": LegionPauseFailureResponse,
+  "project-resume-refused.json": LegionPauseFailureResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -127,6 +156,17 @@ const schemas: Record<string, z.ZodType> = {
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
   }),
+  // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
+  // request of the route a plugin at contract 168 must send, written by `internal/api`'s
+  // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
+  // a name of the rating Go writes and the contract does not read fails the gate above, and the
+  // case "the rated completion the daemon reads parses under the contract's names" below.
+  "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
+  // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
+  // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
+  // down as the route answered it, so that the case "the request schema takes exactly the ratings
+  // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
+  "plan-rating-cases.json": PlanRatingCases,
 };
 
 function fixture(name: string): unknown {
@@ -895,6 +935,71 @@ test("a phase completion names its handoff record", () => {
   }
 });
 
+// The completion that ends the retro rates the plan the issue ran: `planRating`, a whole number from
+// 1 to 5, and `planReason`, why, in one to 2,000 characters counted as the daemon counts them
+// (Unicode code points) and not all blank, the two together. A completion that carries neither
+// stays what it was.
+test("the retro's completion rates the plan from 1 to 5 with a reason", () => {
+  const completion = { grantId: "g", summary: "s", verdict: "" };
+  const retro = { ...completion, planRating: 4, planReason: "r" };
+  expect(LegionHandoffCompleteRequest.parse(retro)).toEqual(retro);
+  expect(LegionHandoffCompleteRequest.safeParse(completion).success).toBeTrue();
+  for (const planRating of [1, 5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeTrue();
+  }
+  for (const planRating of [0, 6, -1, 4.5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeFalse();
+  }
+  for (const planReason of ["", " \t\n", "a".repeat(2001)]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planReason }).success).toBeFalse();
+  }
+  // 2,000 code points of two UTF-16 units each is 2,000 characters, as the daemon counts them.
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...retro, planReason: "😀".repeat(2000) }).success
+  ).toBeTrue();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planRating: 4 }).success
+  ).toBeFalse();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planReason: "r" }).success
+  ).toBeFalse();
+});
+
+// Go writes the rated completion from its own struct, so this is the one place its JSON names of
+// the rating meet the contract's: every other test of either side writes its own side's names.
+// The request schema is strict, so a name one side renames alone fails the parse, and the parse
+// keeps the rating and its reason under the contract's names, values no default and no other
+// field of the request holds.
+test("the rated completion the daemon reads parses under the contract's names", () => {
+  const request = LegionHandoffCompleteRequest.parse(
+    fixture("handoff-complete-request-rated.json")
+  );
+  expect(request.planRating).toBe(3);
+  expect(request.planReason).toBe("The tester found the bug the plan had left out.");
+});
+
+// A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
+// blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
+// it by goBlankPattern rather than by JavaScript's trim, and `./go-blank.ts`'s doc comment names
+// the two characters on which the two differ. Every case the daemon's golden test answered is run
+// through the schema, and the schema must take exactly the ones the daemon accepted.
+test("the request schema takes exactly the ratings the daemon takes", () => {
+  const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
+  const parted = cases
+    .filter((c) => {
+      const { name: _name, verdict, ...rating } = c;
+      const taken = LegionHandoffCompleteRequest.safeParse({
+        grantId: "g",
+        summary: "s",
+        verdict: "",
+        ...rating,
+      }).success;
+      return taken !== (verdict === "accepted");
+    })
+    .map((c) => `${c.name}: the daemon answers ${c.verdict}`);
+  expect(parted).toEqual([]);
+});
+
 // The state shows the record a worker's completion of its current file-backed phase named, its id
 // and positive version; a worker that named none shows no field.
 test("the state golden carries a worker's handoff record", () => {
@@ -1170,7 +1275,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
@@ -1286,7 +1391,7 @@ test("every request the plugin sends parses and names its required fields", () =
   const activityRequest = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     activity,
   };
   // A route and a body it must accept, whose first key is a field the schema requires.
@@ -1294,7 +1399,7 @@ test("every request the plugin sends parses and names its required fields", () =
     [
       "grant",
       LegionGrantRequest,
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-209" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-209" },
     ],
     [
       "controller grant",
@@ -1317,6 +1422,19 @@ test("every request the plugin sends parses and names its required fields", () =
       "issue status",
       LegionIssueStatusRequest,
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
+    ],
+    [
+      "project pause",
+      LegionProjectPauseRequest,
+      { grantId: "controller-grant-1", reason: "the model provider is refusing every turn" },
+    ],
+    ["project resume", LegionProjectResumeRequest, { grantId: "controller-grant-1" }],
+    // The operator's pause is the CLI's body, not the plugin's; it is held here as the mirror of
+    // the Go shape, as the escalation below is.
+    [
+      "operator project pause",
+      LegionOperatorProjectPauseRequest,
+      { reason: "the model provider is refusing every turn" },
     ],
     [
       "claim recovery",
@@ -1369,7 +1487,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionReleaseRecordsRequest,
       {
         claimToken: "legion-legion-legion-208-implementer",
-        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T12:00:00Z",
       },
     ],
@@ -1756,7 +1874,7 @@ test("a session's activity report carries its reading, its work and its wake", (
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     activity: {
       at: "2026-11-01T12:00:00.000Z",
       backgroundWork: { running: true, kinds: ["async-job", "subagent"] },
@@ -1855,6 +1973,29 @@ test("the release records carry a release, a resume and a hold", () => {
   expect(LegionReleaseRecordsResponse.safeParse(nulled).success).toBeFalse();
 });
 
+// A wake a project pause held (contract 178): the golden's third resume carries the pause that
+// held it and pairs with no release, so a reader of these records counts it apart from the wakes
+// of released pods. A wake no pause held carries no `pause` at all, and a `pause` that is no
+// pause's id is refused.
+test("the release records golden marks the wake a pause held", () => {
+  const records = LegionReleaseRecordsResponse.parse(fixture("release-records.json"));
+  expect(records.resumes.map((resume) => [resume.id, resume.release, resume.pause])).toEqual([
+    [201, 101, undefined],
+    [202, 0, undefined],
+    [203, 0, 7],
+  ]);
+
+  const body = fixture("release-records.json") as { resumes: Record<string, unknown>[] };
+  const held = body.resumes[2];
+  if (held === undefined) {
+    throw new Error("release-records fixture lacks its held resume");
+  }
+  for (const refused of [0, -7, 1.5, "7", null]) {
+    held.pause = refused;
+    expect(LegionReleaseRecordsResponse.safeParse(body).success, `${refused}`).toBeFalse();
+  }
+});
+
 // The request a pod sends to read them: its claim, that claim's secret and the window's start,
 // in the body. The secret is a credential, so the route is a POST — a query string reaches every
 // proxy and access log between the pod and the daemon — and the window is required, since the
@@ -1862,7 +2003,7 @@ test("the release records carry a release, a resume and a hold", () => {
 test("the release records are read with the claim credential in the body", () => {
   const request = {
     claimToken: "legion-legion-legion-208-implementer",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     since: "2026-11-01T12:00:00Z",
   };
   expect(LegionReleaseRecordsRequest.safeParse(request).error?.issues ?? []).toEqual([]);
@@ -2176,6 +2317,156 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
       LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
     ).toBeFalse();
   }
+});
+
+// The project's pause (contract 178). state.json is the state of a paused project: it names the
+// pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
+// it holds, one for a claim and one that names none. state-last-pause.json is the state of a
+// project that runs after a pause has ended: it names that pause with when and by whom it was
+// ended. A state carries one of the two at most, and neither key is required: the daemon writes
+// none before the project's first pause, and the route strips both for a caller in a pod whose
+// plugin is older than 178 (`api.stateFor`, `withoutPause`). What is refused is a pause by
+// nobody the daemon records, a controller's with no session, a pause with no reason or without
+// one of its lists, and a last pause with no end.
+test("the state goldens carry the pause that stands and the last pause, and both keys may be absent", () => {
+  const paused = LegionStateResponse.parse(fixture("state.json"));
+  expect(paused.paused).toEqual({
+    id: 7,
+    since: "2026-09-22T09:09:00Z",
+    by: { kind: "controller", session: "ses_controller" },
+    reason: "the model provider is refusing every turn",
+    waitsOn: [
+      {
+        claim: "legion-legion-legion-208-implementer",
+        issue: "LEGION-208",
+        role: "implementer",
+        askedAt: "2026-09-22T09:09:00Z",
+      },
+    ],
+    held: [
+      {
+        id: 811,
+        kind: "supervise",
+        issue: "LEGION-211",
+        claim: "legion-legion-legion-211-implementer",
+        waitedSeconds: 412,
+      },
+      { id: 814, kind: "notice", issue: "LEGION-209", waitedSeconds: 95 },
+    ],
+  });
+  expect(paused.lastPause).toBeUndefined();
+
+  const running = LegionStateResponse.parse(fixture("state-last-pause.json"));
+  expect(running.paused).toBeUndefined();
+  expect(running.lastPause).toEqual({
+    id: 7,
+    since: "2026-11-15T09:00:00Z",
+    by: { kind: "operator" },
+    reason: "the model provider is refusing every turn",
+    endedAt: "2026-11-15T09:41:30Z",
+    endedBy: { kind: "controller", session: "ses_controller" },
+  });
+
+  // A project never paused, and the body the route serves a caller below the contract.
+  const { paused: standing, ...neither } = fixtureBody("state.json");
+  const served = LegionStateResponse.safeParse(neither);
+  expect(served.error?.issues ?? []).toEqual([]);
+
+  if (!isJsonObject(standing)) {
+    throw new Error("state fixture lacks its pause");
+  }
+  // The operator acts from no session, so the parse carries none even where a body names one.
+  const byOperator = { ...standing, by: { kind: "operator", session: "ses_operator" } };
+  expect(LegionStateResponse.parse({ ...neither, paused: byOperator }).paused?.by).toEqual({
+    kind: "operator",
+  });
+  const { waitsOn: _waitsOn, ...withoutWaitsOn } = standing;
+  const { held: _held, ...withoutHeld } = standing;
+  const refusedPauses = [
+    { ...standing, by: { kind: "controller" } },
+    { ...standing, by: { kind: "controller", session: "" } },
+    { ...standing, by: { kind: "architect", session: "ses_architect" } },
+    { ...standing, reason: "" },
+    withoutWaitsOn,
+    withoutHeld,
+  ];
+  for (const refused of refusedPauses) {
+    expect(
+      LegionStateResponse.safeParse({ ...neither, paused: refused }).success,
+      JSON.stringify(refused)
+    ).toBeFalse();
+  }
+
+  const { lastPause: last, ...runningWithout } = fixtureBody("state-last-pause.json");
+  if (!isJsonObject(last)) {
+    throw new Error("state-last-pause fixture lacks its last pause");
+  }
+  const { endedAt: _endedAt, ...withoutEndedAt } = last;
+  const { endedBy: _endedBy, ...withoutEndedBy } = last;
+  for (const refused of [withoutEndedAt, withoutEndedBy]) {
+    expect(
+      LegionStateResponse.safeParse({ ...runningWithout, lastPause: refused }).success,
+      JSON.stringify(refused)
+    ).toBeFalse();
+  }
+});
+
+// What the pause routes answer (contract 178). A pause answers the pause it began, which names
+// no end. A resume answers the pause it ended, with who ended it, and how many held rows it let
+// out; a body that names no end is no resume's answer. Each refusal names what its code names
+// beside its sentence, and nothing else: the setting that turns the pause off, the pause that
+// stands, or the last pause. The daemon client reads a refusal through the plain refusal shape,
+// which keeps the code and the sentence of every one of them.
+test("the pause goldens answer the pause begun and the pause ended, and each refusal names what its code names", () => {
+  const pause = {
+    id: 7,
+    since: "2026-11-15T09:00:00Z",
+    by: { kind: "operator" },
+    reason: "the model provider is refusing every turn",
+  };
+  const ended = {
+    ...pause,
+    endedAt: "2026-11-15T09:41:30Z",
+    endedBy: { kind: "controller", session: "ses_controller" },
+  };
+  expect<unknown>(LegionProjectPauseResponse.parse(fixture("project-pause.json"))).toEqual({
+    pause,
+  });
+  expect<unknown>(LegionProjectResumeResponse.parse(fixture("project-resume.json"))).toEqual({
+    pause: ended,
+    released: 3,
+  });
+  expect(
+    LegionProjectResumeResponse.safeParse({ ...fixtureBody("project-pause.json"), released: 0 })
+      .success
+  ).toBeFalse();
+
+  const refusals: ReadonlyArray<readonly [string, string, Record<string, unknown>]> = [
+    ["project-pause-unavailable.json", "PAUSE_UNAVAILABLE", { setting: "runtime: tmux" }],
+    ["project-pause-no-workflow.json", "PAUSE_UNAVAILABLE", {}],
+    ["project-pause-refused.json", "PROJECT_ALREADY_PAUSED", { pause }],
+    ["project-paused.json", "PROJECT_PAUSED", { pause }],
+    ["project-resume-refused.json", "PROJECT_NOT_PAUSED", { lastPause: ended }],
+  ];
+  for (const [name, code, named] of refusals) {
+    const { code: refusedWith, error, ...rest } = LegionPauseFailureResponse.parse(fixture(name));
+    expect(refusedWith, name).toBe(code);
+    expect<unknown>(rest, name).toEqual(named);
+    expect(Object.keys(rest), name).toEqual(Object.keys(named));
+    expect(LegionErrorResponse.parse(fixture(name)), name).toEqual({ code, error });
+  }
+  expect(LegionErrorResponse.parse(fixture("project-pause-reason-required.json")).code).toBe(
+    "PAUSE_REASON_REQUIRED"
+  );
+});
+
+// A pause says why: the daemon refuses a blank reason (`PAUSE_REASON_REQUIRED`), and neither the
+// controller's request nor the operator's carries an empty one that far.
+test("a pause rejects an empty reason", () => {
+  expect(
+    LegionProjectPauseRequest.safeParse({ grantId: "controller-grant-1", reason: "" }).success
+  ).toBeFalse();
+  expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's

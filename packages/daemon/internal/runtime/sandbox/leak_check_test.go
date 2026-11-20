@@ -61,7 +61,7 @@ func servedLeakCheck() *fakeLeakCheck {
 // not spend.
 func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
@@ -74,7 +74,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	})
 }
 
@@ -199,8 +199,8 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			want: leakguard.Cause("the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra", nil),
 		},
 		"the daemon's read is refused": {
-			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
-			want:   leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
+			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
+			want:   leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
 		},
 		"the pod's launcher refuses the install": {
 			source:  servedLeakCheck(),
@@ -246,7 +246,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			bundle, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testTree, string(pod.UID), pod.CreationTimestamp.Time)
+			bundle, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testProject, testTree, string(pod.UID), pod.CreationTimestamp.Time)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -28,6 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -118,10 +120,6 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// The pid guard comes before the managers: the pod's put-back of a released workspace starts
-	// its jj and git through it, the leak-check install its run of the check, and each manager's
-	// drain of an exited generation reaps through it (newManagers), as the test database's script
-	// starts through it below.
 	pids := &pidGuard{}
 	managers, err := newManagers(cfg, pids)
 	if err != nil {
@@ -174,6 +172,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.TestPostgres {
 		testPG = serveTestPG(ctx, cfg, managers[0].log, pids)
 	}
+	// The pod's one cache trimmer, bound to the first role of the --role list: that role is the
+	// issue's architect, whose connection exists for the life of the pod, and one connection
+	// deciding both the settings the trimmer runs by and where its reports go is what keeps a
+	// report from meeting a daemon that did not send the settings that produced it
+	// (serveVolumeTrim). It is built before any role starts, as the test database is, and its
+	// loop is waited on with the roles below, so Run returns with nothing of the launcher's
+	// still running. Only a launcher that is the container's first process builds one, as only
+	// that one runs the memory guard, or in a microVM pod the guest watch in its place, and the
+	// lock sweep above, and any other logs a line instead.
+	trim := serveVolumeTrim(ctx, managers[0], pids)
 	var running sync.WaitGroup
 	for _, m := range managers {
 		running.Add(1)
@@ -190,35 +198,111 @@ func Run(ctx context.Context, cfg Config) error {
 		<-metadata
 	}
 	<-memory
+	// The trimmer watches the same context as the roles and is stopped beside them rather than
+	// after them: worker_stop_timeout_seconds is the pod's termination grace as well as each
+	// role's own --stop-grace, and the roles are given it whole.
+	<-trim
 	<-locks
 	return ctx.Err()
 }
 
+// serveVolumeTrim runs the pod's cache trimmer until ctx ends or the trimmer switches itself off
+// (trimmer.run), and answers a channel closed once its loop has returned, so Run can wait for it
+// as it waits for the test database's ticker (serveTestPG). The controller's pod gets none:
+// Run's single-role branch returns before this is reached, since that launcher runs one role, its
+// volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
+//
+// The trimmer runs only where the launcher is PID 1 of its PID namespace (containerInit), which in
+// an issue pod is the container's first process, as the memory guard and the git lock sweep do
+// (serveMemoryGuard, serveGitLockSweep). A sweep deletes no entry a process of the pod is using,
+// and it reads what each process uses from /proc (readUsedPaths): PID 1 of the container sees every
+// process of the container, each role's namespaces' included, where a launcher started anywhere
+// else (by hand inside a role) can see that role's processes alone and would then delete a cache
+// entry a process of another role is using. Any other launcher logs one line, builds no trimmer,
+// and answers a channel already closed, so Run waits on nothing. Every acknowledgement still writes
+// the settings it carries into its role's manager (applyAck), where nothing then reads them: the
+// trimmer is their one reader and the one caller of sendVolumeReport, so no report is ever sent.
+//
+// The trimmer is constructed here, once per launcher process and never again: its identifier is
+// minted at construction (trimmer.id) and kept across every reconnection, where an identifier
+// per connection would multiply the daemon's three-notice bound over a rolling daemon restart.
+//
+// Nothing of it runs until that connection's first acknowledgement has been applied, because
+// the settings and the writer become readable in the same moment and under the same lock
+// (applyAck): a trimmer that asked before that would wait out its first settings poll for
+// nothing. A connection that merely drops afterwards leaves the settings in force (volumeTrim)
+// and the trimmer sweeping, holding any report it cannot write until that connection is up
+// again (sendVolumeReport); an acknowledgement that carries none, or carries settings the
+// trimmer refuses, stops the sweeping and leaves the trimmer waiting for settings it can run
+// (trimmer.run).
+//
+// It is given the cover each sweep's deleter builds its own mount namespace over before it
+// removes anything, the one role-init is given (roleCoverFor): this launcher's roles directory,
+// under which every role's private, state and agent-secrets directories and launcher token live,
+// and the home, the home mounts directory and the fixed root, which hold the home every role
+// starts from, the pod's shared config home and the mount points a role's own directories are
+// bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
+// the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
+// volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
+// names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
+// through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
+func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
+	done := make(chan struct{})
+	if !containerInit() {
+		m.log.linef("launcher: volume trim: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may be using the volume",
+			os.Getpid())
+		close(done)
+		return done
+	}
+	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir), guard)
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.acknowledged:
+		}
+		podTrimmer(ctx, trim)
+	}()
+	return done
+}
+
+// podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
+// (volumeusage_linux.go): a test drives the trimmer the launcher built — its tree, its /proc,
+// its clock and its ticker — and watches the very loop Run waits on return.
+var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
+
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard). Every line the
+// launcher writes passes the URL rule (redact.Writer): the controller pod's manager writes its own
+// lines through it, and an issue pod's role log writes every line through it, the launcher's and
+// each role child's alike, since the role log writes each line whole. The controller pod's shim
+// is handed cfg.Stdout and cfg.Stderr themselves (command), so its descriptors stay the
+// container's files rather than a pipe through the launcher.
 func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
 	// connection it reaches, and the first role to start applies it for the pod, with every other
 	// role's start waiting on that one restore. Its jj and git start through the guard: they are
 	// this process's children, and the reaper would otherwise take an exit before the restore's
 	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
-	// `waitid: no such process`) and puts nothing back.
+	// `wait: no child processes` or `waitid: no such process`) and puts nothing back.
 	restore := newBundleRestore(guard.starter())
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through
 	// the guard for the same reason as the restore's jj and git: a run the reaper took first fails
-	// the install with `the served check could not be run: waitid: no child processes` (or `no such
-	// process`), and the role's launch with it.
+	// the install with `the served check could not be run: waitid: no child processes` (or, under
+	// gVisor, `wait: no child processes` or `waitid: no such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			acknowledged: make(chan struct{}),
 		}}, nil
 	}
-	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
+	log := &roleLog{stdout: redact.Writer(cfg.Stdout), stderr: redact.Writer(cfg.Stderr)}
 	managers := make([]*manager, 0, len(cfg.Roles))
 	for _, role := range cfg.Roles {
 		file := filepath.Join(cfg.RolesDir, role, RoleLauncherDir, LauncherTokenFile)
@@ -237,6 +321,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
 			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			acknowledged: make(chan struct{}),
 		})
 	}
 	return managers, nil
@@ -273,9 +358,10 @@ func (m *manager) logf(format string, args ...any) {
 // state, then start, stop, bundle and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing; the memory guard
+// line, so a launcher the daemon accepted reads apart from one still dialing. The memory guard
 // settings it carries, or their absence, go to the pod's guard, and what it carries decides
-// whether the kill reports of this role's processes go on this connection (openMemoryReports).
+// whether the kill reports of this role's processes go on this connection (openMemoryReports);
+// what it carries for the pod's cache trimmer is put in force with the writer (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -311,9 +397,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	if m.memoryGuard != nil {
 		m.memoryGuard.Apply(ack.MemoryGuard)
 	}
-	m.mu.Lock()
-	m.writer = writer
-	m.mu.Unlock()
+	m.applyAck(writer, ack)
+	// The end of this connection takes its writers out of force and leaves everything else: the
+	// trimmer settings the acknowledgement carried stay in force, so the trimmer goes on sweeping
+	// while the daemon restarts, and only an acknowledgement carrying none, or carrying settings
+	// the trimmer refuses, stops its sweeping (applyAck).
 	defer func() {
 		m.mu.Lock()
 		if m.writer == writer {
@@ -529,9 +617,10 @@ type child struct {
 
 // manager serves one role: its own daemon connection, its own launcher id, its own token and
 // private directory, its own child, and, in an issue pod's container, its own prefix in the log
-// and a namespace of its own for every generation it starts. stdout and stderr are where the
-// controller's one role writes; in an issue pod's container stderr is the launcher's own lines
-// for the role, and log gives each generation writers of its own.
+// and a namespace of its own for every generation it starts. stderr is where the launcher's own
+// lines for the role go, through the URL rule (newManagers): in the controller's pod the
+// container's stderr, in an issue pod's container the role's own writer of log, which gives each
+// generation writers of its own too.
 type manager struct {
 	cfg        Config
 	role       string
@@ -539,7 +628,6 @@ type manager struct {
 	private    string
 	namespaced bool
 	launcherID string
-	stdout     io.Writer
 	stderr     io.Writer
 	log        *roleLog
 	writer     *shimwire.Writer
@@ -590,6 +678,105 @@ type manager struct {
 	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
 	memoryWake chan struct{}
 	memorySend sync.Mutex
+	// volumeTrimSettings is what the latest acknowledgement of this role handed the pod's cache
+	// trimmer, and nil when it handed none (shimwire.LauncherHelloAck.VolumeTrim): on nil the
+	// trimmer reads and deletes nothing, as on settings it refuses (volumeTrimRuns), and a report
+	// it holds is discarded (trimmer.settingsInForce). Only the manager the trimmer is bound to
+	// is read for it (serveVolumeTrim), and it lives under mu with the writer because the two
+	// must become readable in the same moment: one connection decides both the settings and
+	// where the reports go.
+	volumeTrimSettings *shimwire.LauncherVolumeTrim
+	// volumeTrimRuns is whether volumeTrimSettings are settings the trimmer can run, which is
+	// decided once per acknowledgement (applyAck) rather than at each of the tens of thousands of
+	// entry boundaries of a sweep that ask it (volumeTrimming).
+	volumeTrimRuns bool
+	// acknowledged is closed once this role's first acknowledgement has been applied, which is
+	// when this connection counts as usable at all, and applied says it has been so that a
+	// second connection's acknowledgement does not close it twice.
+	acknowledged chan struct{}
+	applied      bool
+}
+
+// applyAck puts one acknowledgement in force: this connection's writer and the trimmer settings
+// it carried are written under the one mutex, so a report can never meet a daemon that did not
+// send the settings that produced it. Settings present replace whatever the last
+// acknowledgement left in force, which the next sweep runs by and never one in flight (the
+// trimmer reads them at the top of each interval); settings absent make them nil, which stops
+// the trimmer's sweeping until an acknowledgement carries settings again — that is a daemon
+// rolled back to a release that does not know this work, and turning every pod's trimmer off is
+// cheaper than meeting a frame it would close the connection on, while the roll-forward after
+// it puts every pod's trimmer back without replacing a pod (trimmer.awaitSettings). Settings
+// outside the trimmer's own ranges stop its sweeping the same way (refusedTrimSettings,
+// trimmer.awaitSettings).
+func (m *manager) applyAck(writer *shimwire.Writer, ack shimwire.LauncherHelloAck) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writer = writer
+	m.volumeTrimSettings = ack.VolumeTrim
+	m.volumeTrimRuns = ack.VolumeTrim != nil && len(refusedTrimSettings(*ack.VolumeTrim)) == 0
+	if !m.applied {
+		m.applied = true
+		close(m.acknowledged)
+	}
+}
+
+// volumeTrim is the trimmer settings in force, the latest acknowledgement's: a connection that
+// merely drops leaves them standing, since a daemon restart is not an operator turning the
+// trimmer off. The trimmer is given a copy of its own, so nothing it read at the start of a
+// sweep can change under it while that sweep runs.
+func (m *manager) volumeTrim() *shimwire.LauncherVolumeTrim {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.volumeTrimSettings == nil {
+		return nil
+	}
+	set := *m.volumeTrimSettings
+	return &set
+}
+
+// volumeTrimming is whether settings the trimmer can run are in force, which is the whole of
+// what a sweep asks of them at every entry boundary (trimmer.halted): decided under the same
+// lock as volumeTrim reads, by the acknowledgement that wrote both, and answered as a bool so a
+// sweep of tens of thousands of entries neither takes a copy of the struct nor allocates one.
+func (m *manager) volumeTrimming() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.volumeTrimRuns
+}
+
+// sendVolumeReport writes one report of the pod's cache trimmer on this role's connection and no
+// other: it is the connection the settings came from, so the daemon that hears of a sweep is the
+// one that asked for it. The writer and the settings are read together under the one mutex
+// applyAck writes them under, and a connection whose acknowledgement carried no settings carries
+// no report: a daemon rolled back below this contract has no case for a launcher_volume_report
+// and ServeLauncher's switch ends by closing the connection on it. The sweep itself is guarded
+// at every entry boundary (trimmer.halted), but the window between its last boundary and this
+// write is a fresh size walk of up to a minute (trimmer.report), and a rollback in that window
+// would otherwise be met by a write.
+//
+// A manager with no connection up, and one whose answer carries no settings, each answer an
+// error, which is what the trimmer reads as "not now": it holds the report until an
+// acknowledgement puts both back, as reportRestore holds its own confirmation, rather than
+// dropping a volume nobody was told about, and an answer with no settings has the held report
+// discarded the next time the trimmer waits for settings or tries its last report
+// (trimmer.settingsInForce). They are two errors rather than one so that the line the pod's log
+// carries says which of them it was. The writer is taken under the same mutex as state and
+// reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside the
+// command loop is safe.
+func (m *manager) sendVolumeReport(report shimwire.LauncherVolumeReport) error {
+	m.mu.Lock()
+	writer, settings := m.writer, m.volumeTrimSettings
+	m.mu.Unlock()
+	switch {
+	case writer == nil:
+		return errors.New("no daemon connection is up to carry it")
+	case settings == nil:
+		return errors.New("this connection's acknowledgement carries no trimmer settings, so the daemon behind it has no case for a report")
+	}
+	if err := writer.WriteFrame(report); err != nil {
+		return fmt.Errorf("launcher volume report: %w", err)
+	}
+	return nil
 }
 
 // state reports the actual child to the current daemon connection, if one is up. A state change
@@ -774,13 +961,14 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // command is one generation's process: in an issue pod's container, role-init as the init of
 // this role's new user, mount, PID and IPC namespaces, with the pipe it reports the shim's own
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
-// itself in the container's own namespaces.
+// itself in the container's own namespaces, writing to the container's stdout and stderr
+// themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
+// the shim's descriptors are the container's files and no pipe through the launcher.
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
 		process, err := newRoleProcess(RoleInitConfig{
-			RolesDir: m.cfg.RolesDir, Role: m.role, Generation: start.Generation, Home: roleHome,
-			HomeMounts: roleHomeMounts, FixedRoot: roleFixedRoot, Argv: start.Argv,
+			RoleCover: roleCoverFor(m.cfg.RolesDir), Role: m.role, Generation: start.Generation, Argv: start.Argv,
 		}, env, stdout, stderr)
 		if err != nil {
 			return nil, err
@@ -790,7 +978,7 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 	}
 	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = m.stdout, m.stderr
+	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
 }
@@ -861,8 +1049,9 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 		m.child = nil
 		m.lastExit = &exit
 	}
-	// The generation's credentials end with it.
-	_ = os.RemoveAll(active.dir)
+	// The generation's credentials end with it. Its agent wrote under the directory, so nothing
+	// there is followed (rolefile.RemoveTree).
+	_ = rolefile.RemoveTree(active.dir)
 	close(active.done)
 	m.mu.Unlock()
 	_ = m.state()
@@ -931,16 +1120,19 @@ func generationDir(private string, generation uint64) string {
 // runs when it is called, so everything already in the private directory — an earlier
 // generation's credentials a crashed launcher never removed, or a directory, file or symlink the
 // previous generation's agent planted toward the shared workspace — is removed without being
-// followed; the directory is made owner-only and each file is written as writeCredential writes
-// one, so no credential is written anywhere but that directory. An error names the file, never its
-// bytes.
+// followed (rolefile.RemoveTree): a link anywhere under the directory is unlinked, never opened,
+// so what it names is never touched. An entry the launcher cannot unlink, such as a link the agent
+// left under a directory it made 0555, which the launcher, holding no capability, cannot pass, is
+// left as it is, and the start is refused naming the entry. The directory is made owner-only and
+// each file is written as writeCredential writes one, so no credential is written anywhere but
+// that directory. An error names the file, never its bytes.
 func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 	entries, err := os.ReadDir(m.private)
 	if err != nil {
 		return "", fmt.Errorf("read the private directory: %v", err)
 	}
 	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(m.private, entry.Name())); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(m.private, entry.Name())); err != nil {
 			return "", fmt.Errorf("clear %s from the private directory: %v", entry.Name(), err)
 		}
 	}
@@ -950,7 +1142,7 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 	}
 	for name, content := range command.Files {
 		if err := writeCredential(filepath.Join(dir, name), content); err != nil {
-			_ = os.RemoveAll(dir)
+			_ = rolefile.RemoveTree(dir)
 			return "", fmt.Errorf("write credential %s for generation %d: %v", name, command.Generation, err)
 		}
 	}
@@ -962,7 +1154,10 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // roles where one container per role showed six. Whole lines are written under one lock, so two
 // roles never interleave inside a line. Each writer holds its own unfinished line, so the
 // launcher's lines for a role and each generation of its child are written through writers of
-// their own, and none is ever joined to another's unfinished line.
+// their own, and none is ever joined to another's unfinished line. stdout and stderr are the
+// container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
+// reads it whole, a child's lines among them however its pipe was read, but for a line longer than
+// maxLogLine, which reaches them where logLineCut cuts it.
 type roleLog struct {
 	mu             sync.Mutex
 	stdout, stderr io.Writer
@@ -992,7 +1187,8 @@ func (l *roleLog) linef(format string, args ...any) {
 }
 
 // maxLogLine bounds how much of one unfinished line a role can make PID 1 hold: a longer line is
-// written out as a line of its own at that length, and the rest follows behind the prefix again.
+// written out as lines of their own, each at most that length and cut where logLineCut says, and
+// the rest follows behind the prefix again.
 const maxLogLine = 64 * 1024
 
 // prefixWriter holds back a partial line until its newline arrives, so a prefix only ever
@@ -1011,18 +1207,22 @@ type prefixWriter struct {
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.log.mu.Lock()
 	defer w.log.mu.Unlock()
+	// What partial holds from earlier writes holds no newline, so the search starts after it.
+	start, scanned := 0, len(w.partial)
 	w.partial = append(w.partial, p...)
-	start := 0
 	for {
 		rest := w.partial[start:]
-		end := bytes.IndexByte(rest, '\n')
+		end := bytes.IndexByte(rest[scanned:], '\n')
 		switch {
 		case end >= 0:
+			end += scanned
 			w.emit(rest[:end+1], false)
-			start += end + 1
+			start, scanned = start+end+1, 0
 		case len(rest) >= maxLogLine:
-			w.emit(rest[:maxLogLine], true)
-			start += maxLogLine
+			cut := logLineCut(rest[:maxLogLine])
+			w.emit(rest[:cut], true)
+			// rest holds no newline, so neither does what follows the cut.
+			start, scanned = start+cut, len(rest)-cut
 		default:
 			w.partial = w.partial[:copy(w.partial, rest)]
 			return len(p), nil
@@ -1030,13 +1230,33 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 }
 
-// emit writes one line behind the role's prefix, ending a line cut at maxLogLine itself.
+// emit writes one line behind the role's prefix. It ends itself a line that holds no newline of
+// its own: a run Write cut at logLineCut, or the unfinished line flush writes out.
 func (w *prefixWriter) emit(line []byte, cut bool) {
 	w.line = append(append(w.line[:0], w.prefix...), line...)
 	if cut {
 		w.line = append(w.line, '\n')
 	}
 	_, _ = w.out.Write(w.line)
+}
+
+// logLineCut is where prefixWriter cuts run, a line's first maxLogLine bytes with no newline in
+// them, so that a line longer than maxLogLine reaches the container's log in writes of its own:
+// just after run's last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL of
+// the part before the cut then ends inside it, and each of the rest starts after it, so the rule
+// of the container's log (redact.Writer) reads each whole, in one write, and removes from the two
+// writes what it would remove from the line whole. A run whose only such byte is its first, or
+// that holds none, is cut at its end: one URL can be such a run, and that cut is the one cut of
+// the role log that can fall inside a URL. The search reads back from the run's end to the cut,
+// and the bytes it read past hold no such byte, so a line's cuts read each of its bytes twice at
+// most.
+func logLineCut(run []byte) int {
+	for i := len(run) - 1; i > 0; i-- {
+		if redact.EndsURLByte(run[i]) {
+			return i + 1
+		}
+	}
+	return len(run)
 }
 
 // flush writes the unfinished line the writer holds, behind its prefix and ended as a line of its
@@ -1133,7 +1353,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 	if proxy != nil {
 		_ = proxy.Close()
 	}
-	_ = os.RemoveAll(dir)
+	_ = rolefile.RemoveTree(dir)
 }
 
 // resumable refuses a resume of a session nothing holds, so the launcher never starts a fresh

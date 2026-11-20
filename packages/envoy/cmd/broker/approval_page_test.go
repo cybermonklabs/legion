@@ -319,8 +319,8 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 			t.Fatalf("response_type %q, PKCE %q %q; want code with an S256 challenge", q.Get("response_type"), q.Get("code_challenge_method"), q.Get("code_challenge"))
 		case q.Get("nonce") == "" || q.Get("state") == "":
 			t.Fatal("the sign-in carries no nonce or no state")
-		case q.Get("login_hint") != ada:
-			t.Fatalf("login_hint = %q, want the record's approver %s", q.Get("login_hint"), ada)
+		case q.Has("login_hint"):
+			t.Fatalf("login_hint = %q, want none: a sign-in for a browser with no session reads no record, so it names nobody", q.Get("login_hint"))
 		case q.Has("access_type") || q.Get("prompt") == "consent":
 			t.Fatalf("the online sign-in asks for offline access: access_type=%q prompt=%q", q.Get("access_type"), q.Get("prompt"))
 		}
@@ -472,8 +472,8 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		}
 		status, answer := accountCall(t, base, http.MethodPost, "/v1/credential-requests/"+recordB+"/approve",
 			map[string]string{"Authorization": "Bearer " + idToken}, map[string]any{"approver": ada})
-		if status != http.StatusForbidden || decodeError(t, answer).Code != "DECIDE_ON_BROKER_PAGE" {
-			t.Fatalf("the account approve route with ada's Dispatch ID token = %d %s, want 403 DECIDE_ON_BROKER_PAGE", status, answer)
+		if status != http.StatusUnauthorized || decodeError(t, answer).Code != "ACCOUNT_TOKEN_INVALID" || strings.Contains(string(answer), recordB) {
+			t.Fatalf("the account approve route with ada's Dispatch ID token = %d %s, want 401 ACCOUNT_TOKEN_INVALID naming nothing of the record", status, answer)
 		}
 		requirePending(f.pods(t, base), podB, requestB, "ada's Dispatch ID token")
 	})

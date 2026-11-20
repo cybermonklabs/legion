@@ -213,9 +213,7 @@ holds() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 is() { [ "$1" = "$2" ]; }
 lacks() { ! holds "$1" "$2"; }
 # counted judges a property that is about what a run asked GitHub for rather than how many times
-# it asked: the mint of a refused read-only narrowing asks once more without actions (secrets'
-# optionalReadOnlyPermission), so one ask of the search below is one record at the stand-in or
-# two.
+# it asked, so a count of at least one holds it.
 counted() { # <how many>
 	[ "${1:-0}" -gt 0 ]
 }

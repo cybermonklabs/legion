@@ -36,8 +36,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -63,9 +61,9 @@ const (
 	// each bounds its grants to an hour (policy.TagRules demands that of the google-service-account
 	// one); requesterOpenSecret lists nobody, which is the negative control: it behaves exactly as
 	// it did before the change.
-	requesterGCloudSami = "GCLOUD_SAMI"
+	requesterGCloudSami = "GCLOUD_DEMO"
 	requesterAzureAdmin = "AZURE_ADMIN"
-	requesterDevAditya  = "DEV_ADITYA"
+	requesterDevAditya  = "DEV_PERSON"
 	requesterOpenSecret = "TEAM_WIKI_TOKEN"
 
 	requesterGCloudValue = "gcloud-sami-value"
@@ -92,7 +90,7 @@ const (
 	requesterBoxService = "shared-box"
 	requesterBoxAccount = "example-sharedbox@example-project.iam.gserviceaccount.com"
 
-	// requesterServiceAccount is the Google service account DEV_ADITYA mints a token as, in the
+	// requesterServiceAccount is the Google service account DEV_PERSON mints a token as, in the
 	// one shape secrets.GoogleServiceAccount accepts, and requesterMintedToken what the fake IAM
 	// Service Account Credentials endpoint answers for it.
 	requesterServiceAccount = "dev-aditya@example-project.iam.gserviceaccount.com"
@@ -130,7 +128,7 @@ const (
 	requesterGCPAdminAccount = "workspace-admin@example-project.iam.gserviceaccount.com"
 	// requesterGCPAdminToken is what the fake IAM Service Account Credentials endpoint answers
 	// for that account: a token of its own, so that the pod reading it has read the mint of
-	// GCP_ADMIN and not DEV_ADITYA's.
+	// GCP_ADMIN and not DEV_PERSON's.
 	requesterGCPAdminToken = "ya29.fake-gcp-admin-access-token"
 
 	// The two Google Workspace scopes GCP_ADMIN's token carries, as its scopes tag names them:
@@ -267,11 +265,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 
 	dispatchToken := accountToken(t, issuer, clusterKey, apiAccount)
 	reviewToken := accountToken(t, issuer, clusterKey, reviewAccount)
@@ -302,14 +296,14 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		proves  string
 	}{
 		{
-			name: "jason's session is refused DEV_ADITYA, which lists aditya alone",
+			name: "jason's session is refused DEV_PERSON, which lists aditya alone",
 			// The google-service-account type is served to the one person who owns it, so the
 			// list is exactly aditya and jason is off it whatever the tier would have given him.
 			session: jasonSession, secret: requesterDevAditya,
 			proves: "a secret whose requesters name one person is refused to every other session before owner and tier are read",
 		},
 		{
-			name:    "jason's session is refused GCLOUD_SAMI, which lists the daemon and sami",
+			name:    "jason's session is refused GCLOUD_DEMO, which lists the daemon and sami",
 			session: jasonSession, secret: requesterGCloudSami,
 			proves: "a list of a service and one person admits neither jason's person nor his session's service, which is none",
 		},
@@ -340,7 +334,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		})
 	}
 
-	t.Run("aditya's session is granted DEV_ADITYA and reads the token the fake IAM endpoint minted", func(t *testing.T) {
+	t.Run("aditya's session is granted DEV_PERSON and reads the token the fake IAM endpoint minted", func(t *testing.T) {
 		code, stdout, stderr := adityaSession.run(t, cli, base, requesterDevAditya, "--ttl", requesterTTL,
 			"--", "sh", "-c", `printf %s "$`+requesterDevAditya+`"`)
 		if code != 0 || stdout != requesterMintedToken {
@@ -493,7 +487,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		// so the retag is a write to it and a reread of that one name, as a `agent-secrets secret
 		// retag` would be in production.
 		fakeStore.retag(t, requesterAzureAdmin, policy.TagRequesters, requesterDaemonService+" "+sami)
-		fakeStore.reread(t, base, requesterAzureAdmin)
+		fakeStore.reread(t, broker, databaseURL, requesterAzureAdmin)
 
 		// sami approves it on the broker's own page, as the owner does.
 		browser := brokertest.NewBrowser(t, base, http.DefaultTransport, issuer)
@@ -959,21 +953,12 @@ func (s *requesterStore) retag(t *testing.T, name, tag, value string) {
 	t.Fatalf("the fake store holds no secret served as %s", name)
 }
 
-// reread has the broker read one name's tags again, the route a retag is followed by, and fails t
-// unless the broker still serves it.
-func (s *requesterStore) reread(t *testing.T, base, name string) {
+// reread has the broker read one name's tags again, the route a retag is followed by, as a session
+// so the answer says what the broker serves, and fails t unless the broker still serves it.
+func (s *requesterStore) reread(t *testing.T, broker *brokerProcess, databaseURL, name string) {
 	t.Helper()
-	response, err := http.Post(base+"/v1/secrets/"+name+"/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/%s/reread: %v", name, err)
-	}
-	defer response.Body.Close()
-	var answer struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil || response.StatusCode != http.StatusOK || !answer.Served {
-		t.Fatalf("reread %s = status %d, %+v, %v; want it served under its new tags", name, response.StatusCode, answer, err)
+	if status, _, answer := broker.sessionReread(t, databaseURL, name); status != http.StatusOK || answer["served"] != true {
+		t.Fatalf("a session's reread of %s = status %d, %v; want it served under its new tags", name, status, answer)
 	}
 }
 

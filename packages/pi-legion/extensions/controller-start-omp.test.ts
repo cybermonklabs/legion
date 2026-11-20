@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  LISTENER_CALL_ATTEMPTS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
@@ -25,6 +26,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
   endsWhole,
@@ -312,6 +314,11 @@ interface StandinHooks {
    */
   readonly onRoleClaim?: (sid: string) => void;
   /**
+   * Asked at each claim of the controller role (`/v1/roles/set`): true answers it 503 with
+   * `Retry-After: 1`, as the listener answers a claim that wrote nothing.
+   */
+  readonly roleSetBusy?: () => boolean;
+  /**
    * Called with the session's id as the first listener registration after that role claim
    * arrives (`/v1/interests/subscribe`): the one envoy.ts sends right after it opens the
    * controller topic's NATS subscription (`subscribeNotice`), which the claim awaits. A promise
@@ -460,6 +467,19 @@ async function serveController(
     // the read below answers that session, and a claim of the role is refused with it, as the
     // listener refuses a claim of a role a live session holds.
     const otherHolder = hooks.roleHeldBy?.();
+    if (
+      url.pathname === "/v1/roles/set" &&
+      body.role === registered.claimToken &&
+      hooks.roleSetBusy?.()
+    ) {
+      return Response.json(
+        {
+          error:
+            "envoy: the takeover record of this claim did not store, so the claim was not written",
+        },
+        { status: 503, headers: { "Retry-After": "1" } }
+      );
+    }
     if (url.pathname === "/v1/roles/set") {
       if (otherHolder !== undefined && body.role === registered.claimToken) {
         return Response.json(
@@ -535,7 +555,10 @@ async function startController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state.json", hooks);
   const secretFile = path.join(root, "controller-secret");
-  await writeFile(secretFile, "controller-start-capability\n", { mode: 0o600 });
+  // Random, as the daemon's capability is: the controller holds it, and every line it prints is
+  // scrubbed of it (`@legion/contracts/held-secrets`), so one spelled from words would take those
+  // words out of the refusal the operator reads ("invalid controller capability").
+  await writeFile(secretFile, `${fixtureSecret("ctl")}\n`, { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
@@ -682,7 +705,8 @@ async function startDaemonController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state-controller-claim.json", hooks);
   const bootFile = path.join(root, "LEGION_BOOT_TOKEN");
-  await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+  // Random, as the daemon's boot token is (see the capability above).
+  await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
@@ -1335,6 +1359,56 @@ test.skipIf(skip)(
     // with no Messages request shows the absence.
     await Bun.sleep(3_000);
     expect(session.turns).toHaveLength(0);
+  },
+  CASE_TIMEOUT_MS
+);
+
+// A claim the listener answers 503 wrote nothing, and a person's claim makes it again after a
+// growing wait, each wait on screen with its attempt, until a counted number of tries: then the
+// command fails with the listener's answer where the person reads it. The start message goes out
+// before the role claim (`claimWith`), so it is sent either way. The listener answers 503 to each
+// transport attempt of a claim (LISTENER_CALL_ATTEMPTS), so a claim answered 503 costs that many
+// requests. The control is a listener that answers one claim's attempts 503 and then takes the
+// claim: the wait shows, and the role lands.
+test.skipIf(skip)(
+  "a person's controller claim the listener keeps answering 503 shows each wait and then fails on screen",
+  async () => {
+    let landed = false;
+    const session = await startController({
+      roleSetBusy: () => true,
+      onRoleClaim: () => {
+        landed = true;
+      },
+    });
+    await session.shows(
+      "a wait of the busy claim on screen",
+      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+    );
+    await session.shows(
+      "the busy claim's failure on screen",
+      "the controller claim failed",
+      "/legion-claim-controller"
+    );
+    expect(landed).toBe(false);
+  },
+  CASE_TIMEOUT_MS
+);
+
+test.skipIf(skip)(
+  "control: a person's controller claim the listener answers 503 once and then takes claims the role",
+  async () => {
+    let claims = 0;
+    const landed = Promise.withResolvers<void>();
+    const session = await startController({
+      roleSetBusy: () => ++claims <= LISTENER_CALL_ATTEMPTS,
+      onRoleClaim: () => landed.resolve(),
+    });
+    await session.shows(
+      "a wait of the busy claim on screen",
+      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+    );
+    await landed.promise;
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
   },
   CASE_TIMEOUT_MS
 );

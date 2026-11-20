@@ -113,7 +113,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it, or its status could not be read when --wait ran out
+	exitPending      = 75  // request still waiting for a person or for the model judge, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -144,9 +144,9 @@ var commands = []command{
 	{"machine login-status", "agent-secrets machine login-status",
 		"Print \"issued\" and exit 0 while this machine's helper holds a launcher credential; otherwise\nprint the last login's state and exit 1."},
 	{"machine list", "agent-secrets machine list [--json]",
-		"List your own machines' logins that can still reach a secret, under this machine's login:\neach one's id, host, who approved it, when it was issued and expires, and whether it has\nexpired with sessions still running. Dispatch's machine-login page lists the same, and every\nservice's login beside them."},
+		"List your own machines' logins, and the logins of your pods (pods whose Kubernetes account the\nbroker's BROKER_POD_OPERATORS maps to you), that can still reach a secret, under this machine's\nlogin: each one's id, host, who approved it, when it was issued and expires, and whether it\nhas expired with sessions still running. Dispatch's machine-login page lists the same, and\nevery service's login beside them."},
 	{"machine revoke", "agent-secrets machine revoke <credential_id>",
-		"End one of your own machines' logins under this machine's login, as Dispatch's machine-login\npage does: it enrolls nothing more, and every session it enrolled ends. Revoking this\nmachine's own login ends this machine's broker access too."},
+		"End one of your own machines' logins, or a login of one of your pods, under this machine's\nlogin, as Dispatch's machine-login page does: it enrolls nothing more, and every session it\nenrolled ends. Revoking this machine's own login ends this machine's broker access too."},
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
@@ -864,7 +864,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
 		printDetail(stdout, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -909,7 +909,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
 		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
@@ -1074,7 +1074,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		githubRepos = append(githubRepos, name)
 		return nil
 	})
-	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents: read, metadata: read, pull_requests: read and actions: read")
+	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents, metadata, pull_requests, actions, checks and statuses, each at read (the last three where the App's installation holds them)")
 	githubToken := flags.Bool("github-token", false, "hand over each GitHub App token alone, in place of the JSON object of installations the release carries: the form a command that sends the token to GitHub needs, and it needs --github-owner")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -1131,7 +1131,8 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// waiting for is one nothing collects.
 	var pollErr error
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
+		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
 		// backoff is the sleep before the next read after one that came back undecided before
 		// the wait it asked had run out. The broker holds a read until the request is decided or
@@ -1155,6 +1156,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			case err == nil:
 				pollErr = nil
 				state, grantID, detail = status.State, status.GrantID, status.Detail
+				// The judge held the request and has given it up: it is its person's now, and the
+				// agent is told who that is and where they decide it, once.
+				if judging && !status.JudgeDeciding && state == "pending" {
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					judging = false
+				}
 			case retryable(err):
 				// Said once per run of failed polls, not once per poll.
 				if pollErr == nil {
@@ -1266,12 +1273,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	return 0 // unreachable: syscall.Exec replaces this process on success
 }
 
-// reportPending says, once, before the exec form's wait, that a person must decide the request,
-// where the secrets it would inject come from (src), and who decides it, and on which page of the
-// broker when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, wait time.Duration, src source) {
+// reportPending says, once, before the exec form's wait, who decides the request — a person, or
+// the model judge while it holds the request — where the secrets it would inject come from (src),
+// and on which page of the broker a person decides it when its answer names one (waitingOn).
+func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
 	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage))
+	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
 }
 
 // waitingOn is the sentence that says whom a pending request waits on and where they decide it:
@@ -1288,7 +1295,15 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // before it did names none, and the sentence says so rather than guessing. The page is the
 // broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
 // character in it would start a line of its own.
-func waitingOn(approver *string, brokerPage string) string {
+//
+// A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
+// keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
+// is asked, and never that its approver must approve it. If the judge cannot decide it, a later
+// answer carries the page, and the exec form says so.
+func waitingOn(approver *string, brokerPage string, judging bool) string {
+	if judging {
+		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	}
 	where := ""
 	if brokerPage != "" {
 		where = ": " + redact.OneLine(brokerPage)
@@ -1305,7 +1320,7 @@ func waitingOn(approver *string, brokerPage string) string {
 
 // deniedBecause is what the exec form's denied line adds to name why: ": " and the broker's own
 // sentence about the refusal (RequestResult.Detail), which names the secret that refused the
-// request and the rule that did, as ": GCLOUD_SAMI: requester-not-listed". An agent reading that
+// request and the rule that did, as ": GCLOUD_DEMO: requester-not-listed". An agent reading that
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
 // before the field, adds nothing, so such a denial reads exactly as it always has.

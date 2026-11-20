@@ -1131,7 +1131,9 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			` (paragraph) reads "![a photo](/photo.png)"; no document edit writes a paragraph into a decision, ` +
 			`so none reaches this block - upload the document again as a new version ` +
 			`with the question written beside that paragraph (dispatch artifact --issue <KEY>, or ` +
-			`--project <KEY> for a project's document, --name <the document> --content-file - --force), or write the ` +
+			`--project <KEY> for a project's document, --name <the document> --content-file - --force ` +
+			`--precondition-json '{"document":"<the token dispatch doc-read prints>"}', which names the ` +
+			`text the upload replaces), or write the ` +
 			`question beside it in the document editor; ` +
 			`either keeps what the paragraph holds`
 		if err == nil || err.Error() != want {
@@ -4680,7 +4682,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if got, err := service.Text(joined, artifactID); err != nil || got != "after\n" {
@@ -5392,9 +5394,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5582,9 +5582,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	settled := make(chan struct{})
@@ -5859,10 +5857,78 @@ func joinedWrite(service *Service, write func(ctx context.Context) error) error 
 	return ledger.Commit(ctx)
 }
 
+// replacementPrecondition is what a replacement names: the token the document stands at now,
+// which ReplaceText asks of every replacement, and none at all for a document whose live tree is
+// outside the Proof schema, which has no token and which only a replacement can repair. A test
+// whose subject is not the token reads it here.
+//
+// The token comes from the write's own fork inside a joined context, from the room where one
+// holds the document, and from the store where none does: reading the live document of a room
+// nothing holds would load one, and a cold write is measured by finding none
+// (TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt).
+func replacementPrecondition(ctx context.Context, service *Service, artifactID string) (*model.EditPrecondition, error) {
+	token, err := documentTokenForReplacement(ctx, service, artifactID)
+	if errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &model.EditPrecondition{Document: token}, nil
+}
+
+func documentTokenForReplacement(ctx context.Context, service *Service, artifactID string) (string, error) {
+	if _, joined := txFromContext(ctx); !joined && service.srv.GetDoc(artifactID) == nil {
+		tree, err := service.storedTree(ctx, artifactID)
+		if err != nil {
+			return "", err
+		}
+		return nodeToken(tree)
+	}
+	return service.currentToken(ctx, artifactID)
+}
+
+// liveDocumentToken is replacementPrecondition for a test that holds a *testing.T and reads the
+// token outside any write of its own.
+func liveDocumentToken(t *testing.T, service *Service, artifactID string) *model.EditPrecondition {
+	t.Helper()
+	precondition, err := replacementPrecondition(context.Background(), service, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's token: %v", err)
+	}
+	return precondition
+}
+
+// joinedDocumentToken is liveDocumentToken on a write's own joined context, which reads the tree
+// that write has already changed: a second replacement in one transaction names what the first
+// left, not what the room held before both.
+func joinedDocumentToken(t *testing.T, ctx context.Context, service *Service, artifactID string) *model.EditPrecondition {
+	t.Helper()
+	precondition, err := replacementPrecondition(ctx, service, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's token on the write's context: %v", err)
+	}
+	return precondition
+}
+
+// joinedReplaceText replaces the document in a transaction of its own, naming the token it
+// stands at now. The token is read outside the write, as a caller reads it before it uploads:
+// read on the write's own context it would fork the document's room, which a test of a cold
+// write must not find loaded.
 func joinedReplaceText(service *Service, artifactID, markdown string, actor model.Actor) (string, error) {
+	precondition, err := replacementPrecondition(context.Background(), service, artifactID)
+	if err != nil {
+		return "", err
+	}
+	return joinedReplaceTextNaming(service, artifactID, markdown, actor, precondition)
+}
+
+// joinedReplaceTextNaming is joinedReplaceText for a test that read the token itself: one
+// counting what a write reads, where this helper's own read would be one read more.
+func joinedReplaceTextNaming(service *Service, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	var canonical string
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor)
+		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 		return err
 	})
 	return canonical, err
@@ -6318,8 +6384,12 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("name a version of a room evicted once warm: %v", err)
 			}
+			// The version's insert is a write, which the transaction's write phase runs at Commit.
+			if err := ledger.Commit(ctx); err != nil {
+				t.Fatalf("commit the named version: %v", err)
+			}
 			var markdown string
-			if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
+			if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
 				t.Fatal(err)
 			}
 			if markdown != "The quick brown fox\n" {

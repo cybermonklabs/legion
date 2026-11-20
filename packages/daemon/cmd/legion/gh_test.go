@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -179,9 +180,15 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 		{"no usage", prView, "FLAGS\n  --help   Show help for command\n", "names no usage"},
 		{"no --help", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n", "lists no --help"},
 		{"an option line it cannot read", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w --web   Open\n", "cannot read the options"},
+		{"a line of an options section naming no option", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n           for this command\n", "names no option"},
+		{"an option at the margin of an options section", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n-w, --web   Open\n", "at the margin of its FLAGS"},
+		{"an optional-value marker that names no type", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web [=true|false]   Open\n", "optional-value marker names no type"},
+		{"an option listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n\nINHERITED FLAGS\n  --help   Show help\n  --web string   Open\n", "lists --web again"},
+		{"a shorthand listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web   Open\n  -w, --watch   Watch\n", "already gives --web"},
 		{"an option line marking its option boolean and naming a value", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web[=true|false] string   Open\n", "marks its option boolean and names a value"},
 		{"a parent's help", prView, "USAGE\n  gh pr <command> [flags]\n", "gh has no command"},
 		{"gh co's, pr checkout's, which lists no alias co", []string{"co"}, co, "is a gh alias"},
+		{"a passthrough leaf passing on something it does not know", []string{"repo", "archive"}, "USAGE\n  gh repo archive [<repository>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n", `passes "<git-args>" on after ` + "`--`"},
 	} {
 		if _, err := parseGhHelp(tc.path, tc.help); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseGhHelp of %s = %v, want an error containing %q", tc.name, err, tc.want)
@@ -192,6 +199,24 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 	}
 	if later, err := parseGhHelp(prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --mirror string   Read the pull request from this repository instead\n  --notes string   Notes\n\nINHERITED FLAGS\n  --help   Show help\n"); err != nil || later.flags["mirror"].selects != "unknown" || later.flags["notes"].selects != "" {
 		t.Errorf("a later gh's options read as %+v, %v; want --mirror, which names a repository, unknown and --notes none of the table's", later.flags, err)
+	}
+	// A later gh that renames `<gitflags>` keeps a clone leaf's passed-on flags judged
+	// (ghCloneLeaves), so round 2's clone route cannot reopen through a new name; the same
+	// rename on a leaf that clones nothing is refused above. Control: today's name is judged.
+	for _, tc := range []struct{ path, help string }{
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo fork", "USAGE\n  gh repo fork [<repository>] [-- <git-flags>...] [flags]\n\nFLAGS\n  --clone   Clone the fork\n  --help   Show help\n"},
+		{"gist clone", "USAGE\n  gh gist clone <gist> [<directory>] [-- <args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <gitflags>...]\n\nFLAGS\n  --help   Show help\n"},
+	} {
+		cmd, err := parseGhHelp(strings.Fields(tc.path), tc.help)
+		if err != nil || !cmd.passesGitFlags {
+			t.Errorf("%s's help %q reads as passesGitFlags=%v, %v; want its passed-on arguments judged as git clone's flags", tc.path, tc.help, cmd.passesGitFlags, err)
+			continue
+		}
+		if _, err := cmd.parse([]string{"acme/widgets", "--", "-c", "http.https://github.com/.sslVerify=false"}); err == nil || !strings.Contains(err.Error(), `hands "-c" to git clone`) {
+			t.Errorf("%s under the help %q took -- -c ...: %v, want it refused", tc.path, tc.help, err)
+		}
 	}
 }
 
@@ -317,7 +342,10 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // owners; only a command naming no repository at all is not named, once the working directory's
 // git remotes name no owner but the token's, and a command gh only prints the help or version of
 // sends nothing. GH_REPO names the owner only when nothing explicit does, and only for a leaf that
-// reads it.
+// reads it. A read naming only owners the bundle holds no directory for and no repository a
+// configured rename moves, read in a working directory whose remotes name no github.com
+// repository for it, runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); every
+// other call naming such an owner is routed and refused as with no R4.
 func TestGhTargetOfFailsClosed(t *testing.T) {
 	acme := map[string]string{"GH_REPO": "acme/widgets"}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
@@ -332,6 +360,13 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	}
 	acmeClone := ghRemote{name: "origin", url: "https://github.com/Acme/widgets.git"}
 	sjawharClone := ghRemote{name: "origin", url: "https://github.com/sjawhar/legion"}
+	// The marked fork checkout of dispatch://INFRA-3399: acme's fork, whose upstream is sjawhar's
+	// and whose origin carries gh's default marker, followed by more lines.
+	forkUpstream := ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}
+	originBase := ghMarkerLine("remote.origin.gh-resolved base")
+	markedFork := func(more ...ghRemote) func() ([]ghRemote, error) {
+		return remotes(append([]ghRemote{acmeClone, forkUpstream, originBase}, more...)...)
+	}
 	// A gh whose pr view lists an option a later gh might add, naming a repository.
 	ghWithARepositoryOption := editedGhHelp(map[string][2]string{
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
@@ -345,16 +380,18 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		err     string                         // a refusal containing this
 	}{
 		// The final gates' at 96e1672cd, as round 4 reads them. A command naming no repository acts
-		// on the working directory's: every github.com remote and gh-resolved setting names an
-		// owner, and they must name one.
+		// on the working directory's: origin's fetch URL alone names its owner where the leaf
+		// honours gh's default marker and the marker makes origin's repository gh's own (the
+		// marked fork checkout's rows below); otherwise every github.com remote and gh-resolved
+		// setting names an owner, and they must name one.
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone), owner: "acme"},
-		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "base"}), owner: "acme"},
+		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, originBase), owner: "acme"},
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"repo", "view"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"api", "repos/{owner}/{repo}"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/octocat/hello"}), owner: "octocat"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git)) and sjawhar (the working directory's remote "upstream" (git@github.com:sjawhar/legion.git))`},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "sjawhar/legion"}), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
@@ -363,6 +400,43 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"-R", "acme/widgets", "pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: paneWith("GH_REPO", "acme/widgets"), remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "view", "--help"}, env: pane, remotes: remotes(sjawharClone)},
+		// R1 of dispatch://INFRA-3399, in the marked fork checkout unless a row says otherwise: its
+		// conditions as unit rows, among them the remote lists real git cannot print (a push line
+		// alone, two origin fetch lines) and the marker lines it writes in no config file (a dotted
+		// key with no remote, a key with no dot). The leaf must honour the marker: a group gh builds
+		// without it (secret) takes the first of gh's sorted remotes, upstream, and repo set-default
+		// reads every remote's network unless --view or --unset is true, which a value that is no
+		// boolean is not, the last value given each option deciding, as pflag reads it.
+		{argv: []string{"secret", "set", "TOKEN", "--body", "dummy"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "-v"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--unset"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "-u"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--view=maybe", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view", "--view=false", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view=false", "--view"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--unset", "--unset=false", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--unset=false", "--unset"}, remotes: markedFork(), owner: "acme"},
+		// One marker line gh reads must be left: a dotted key gh gives origin, `base` or empty, is
+		// a second, while a key with no dot, which names gh no remote, a key with no value and an
+		// empty value on a remote other than origin, as gh names it, are none.
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.fork.gh-resolved base")), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("origin base")), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.gh-resolved")), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.fork.gh-resolved ")), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.upstream.x.gh-resolved ")), owner: "acme"},
+		// That line must be origin's `base`: `origin base` alone is no marker gh reads.
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, forkUpstream, ghMarkerLine("origin base")), err: "more than one owner"},
+		// origin must have one fetch line, whose URL gh keeps as github.com's with nothing the
+		// wrapper cannot read: two fetch lines, a push line alone and an ssh URL are refused; a
+		// port is no part of gh's host; a local path gh drops, taking upstream's repository, so
+		// every remote counts and sjawhar is the one owner. gh api naming nothing reads the marker.
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "origin", url: "https://github.com/acme/other.git"}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/Acme/widgets.git", push: true}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "ssh://git@github.com/acme/widgets"}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "https://github.com:443/acme/widgets"}, forkUpstream, originBase), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "/srv/widgets"}, forkUpstream, originBase), owner: "sjawhar"},
+		{argv: []string{"api", "graphql", "-f", "query=q"}, remotes: markedFork(), owner: "acme"},
 		// Round 4's: a remote URL gh reads as github.com's whatever its scheme, as gh's own parser
 		// reads it (deep 2, quality A, final B1).
 		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git+https://github.com/sjawhar/legion.git"}), err: "more than one owner"},
@@ -403,13 +477,16 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// `--` (deep 1); `repo set-default` reads every remote's network whatever its argument
 		// names (deep 2, quality 1); project link and unlink read no repository of their own
 		// with --team (quality 2); a pr command reads OWNER/REPO#N and a URL other than a pull
-		// request's as a branch of its own repository, and only agent-task view reads OWNER/REPO#N
-		// (final F1).
+		// request's as a branch of its own repository (final F1).
 		{argv: []string{"repo", "fork", "--", "sjawhar/legion"}, remotes: remotes(acmeClone), owner: "sjawhar"},
 		{argv: []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, err: "more than one owner"},
 		{argv: []string{"repo", "fork", "--", "sjawhar/legion", "--depth=1"}, owner: "sjawhar"},
 		{argv: []string{"repo", "clone", "--", "sjawhar/legion"}, remotes: remotes(acmeClone), owner: "sjawhar"},
-		{argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "-R", "acme/w"}, owner: "sjawhar"},
+		// What a clone leaf hands git clone after its repository is git's, not gh's: a value
+		// naming another owner's repository there routes nothing. Only the git clone flags
+		// ghCloneGitFlagTakes holds pass, so a -R there, which git clone has no use for, is refused.
+		{argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "--branch", "acme/w"}, owner: "sjawhar"},
+		{argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "-R", "acme/w"}, err: `hands "-R" to git clone`},
 		{argv: []string{"repo", "set-default", "sjawhar/legion"}, remotes: remotes(acmeClone), err: "more than one owner"},
 		{argv: []string{"repo", "set-default", "sjawhar/legion"}, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"project", "link", "1", "--team", "sjawhar/core"}, remotes: remotes(acmeClone), owner: "sjawhar"},
@@ -449,12 +526,20 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"api", "repos/:owner/:repo/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar"},
 		{argv: []string{"api", "graphql", "-f", "o=:owner", "-f", "query=q"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}},
 		{argv: []string{"api", "repos/{owner}/{repo}/commits/{branch}"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar"},
-		// agent-task view reads OWNER/REPO#N as that repository, and a URL through gh's pr
-		// finder: only a pull request's names its repository. A pr command reads OWNER/REPO#N as a
-		// branch of its own repository.
-		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, owner: "sjawhar"},
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), owner: "sjawhar"},
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, remotes: remotes(acmeClone), err: "more than one owner"},
+		// A pr command reads OWNER/REPO#N as a branch of its own repository. `gh agent-task`
+		// sends the token to the Copilot API host GitHub names, so it is refused whatever it
+		// names, an issue URL and a pull request's alike; and `--editor` runs an editor after the
+		// guard has read the call. Each is refused before any repository is read. (`gh gist
+		// edit` and `gh auth login`, `logout`, `refresh` and `switch`, whose help these saved
+		// files do not hold, are refused in TestRealGhAndGitSendTheTargetOwnersToken, with the
+		// real gh.)
+		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, err: "`gh agent-task` sends the token to the Copilot API host"},
+		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), err: "`gh agent-task` sends the token"},
+		{argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, err: `"-e" runs an editor program`},
+		{argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, err: `"--editor" runs an editor program`},
+		// -e is refused where it is --editor, and taken where the leaf's help gives it another
+		// option: `gh secret set`'s -e is --env.
+		{argv: []string{"secret", "set", "TOKEN", "-R", "acme/widgets", "-e", "production", "--body", "x"}, owner: "acme"},
 		{argv: []string{"pr", "view", "sjawhar/legion#1", "-R", "acme/widgets"}, owner: "acme"},
 		// The first re-review's reproductions.
 		{argv: []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, owner: "sjawhar"},
@@ -567,7 +652,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"api", "-X", "GET", "https://api.github.com/orgs/Acme/teams"}, owner: "acme"},
 		{argv: []string{"pr", "-R", "sjawhar/legion", "view", "1"}, owner: "sjawhar"},
 		{argv: []string{"pr", "create", "--fill", "-R", "github.com/Acme/widgets"}, owner: "acme"},
-		{argv: []string{"repo", "clone", "sjawhar/legion", "--", "--depth=1", "-R", "acme/w"}, owner: "sjawhar"},
+		{argv: []string{"repo", "clone", "sjawhar/legion", "--", "--depth=1", "--branch", "acme/w"}, owner: "sjawhar"},
 		{argv: []string{"repo", "create", "sjawhar/new", "--private"}, owner: "sjawhar"},
 		{argv: []string{"repo", "create", "newrepo", "--private"}},
 		{argv: []string{"repo", "list", "Sjawhar"}, owner: "sjawhar"},
@@ -614,6 +699,98 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 			}
 		case err != nil || target.owner != tc.owner:
 			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the owner %q", tc.argv, tc.env, target, err, tc.owner)
+		}
+	}
+
+	// R4 of dispatch://INFRA-3399, against a bundle written as the daemon writes one
+	// (ghconfig.WriteBundle) and routed by ghConfigDirFor: directories for acme and sjawhar and
+	// none for any other owner, which ghConfigDirFor answers with a bare OwnerNotServedError; and
+	// two configured renames, octocat/moved -> sjawhar/moved, whose `to` owner has a directory, and
+	// sjawhar/gone -> nobody/gone, whose `to` owner has none, which it refuses naming the pair
+	// around that error. The pane is acme's over that bundle (bundlePane). A call that writes
+	// nothing, whose every item is an owner with no directory and whose working directory's
+	// remotes name no github.com repository for it, runs with GH_CONFIG_DIR's directory: in a
+	// working directory that is no git repository, and in a checkout whose remotes the reader
+	// reads for no call naming its repository, acme's clone and the marked fork checkout. Every
+	// other call gets the routing and the refusal it gets with no fallback (selectors.dir): a
+	// write, a GraphQL mutation, a read beside an owner the bundle serves, a read with no
+	// GH_CONFIG_DIR, a read whose remotes were read for it (whether or not the remote's entry was
+	// kept), and a read of a pair's repository.
+	root := filepath.Join(t.TempDir(), "gh")
+	expires := time.Now().Add(time.Hour)
+	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
+		Default: "acme",
+		Dirs: map[string]ghconfig.Rendered{
+			"acme":    ghconfig.Render("ghs_acme_write", "implement", expires),
+			"sjawhar": ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+		},
+		Pairs: []ghrepo.Rename{ghrepo.MustRename("octocat/moved", "sjawhar/moved"), ghrepo.MustRename("sjawhar/gone", "nobody/gone")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundlePane := map[string]string{"GH_CONFIG_DIR": ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR": root}
+	routed := func(owner, name string) (string, error) { return ghConfigDirFor(root, owner, name) }
+	const unserved = `the role's GitHub App is not installed on "octocat"`
+	octocatClone := ghRemote{name: "origin", url: "https://github.com/octocat/hello.git"}
+	for _, tc := range []struct {
+		argv    []string
+		env     map[string]string
+		remotes func() ([]ghRemote, error) // a working directory that is no git repository when nil
+		dir     string                     // the directory the command runs with, where it is not refused
+		err     string                     // a refusal containing this
+	}{
+		// Reads naming two owners with no directory, by a search query's qualifiers and by a
+		// GraphQL query's variables.
+		{argv: []string{"search", "issues", "owner:octocat", "org:hubot"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=hubot", "-f", "query=query($owner:String!,$org:String!){a:repositoryOwner(login:$owner){login} b:organization(login:$org){login}}"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
+		// Reads naming octocat/hello, by an argument, -R, gh api's endpoint and a GraphQL query's
+		// variables, in acme's clone and in the marked fork checkout: the reader reads no remote
+		// for a call naming its repository, so the checkout's remotes name none for it.
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"pr", "list", "-R", "octocat/hello", "--json", "number"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"pr", "list", "-R", "octocat/hello", "--json", "number"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "repos/octocat/hello"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "repos/octocat/hello"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		// A read for which gh reads the working directory's remotes and finds none on github.com
+		// still runs with GH_CONFIG_DIR's directory: only a github.com remote read for it counts.
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(ghRemote{name: "origin", url: "https://gitlab.example.com/acme/widgets.git"}), dir: bundlePane["GH_CONFIG_DIR"]},
+		// A read where no GH_CONFIG_DIR names the directory a command naming no owner runs with.
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "name"}, err: unserved},
+		// A write naming an owner with no directory, and a GraphQL mutation naming one.
+		{argv: []string{"issue", "create", "-R", "octocat/hello", "--title", "t", "--body", "b"}, env: bundlePane, err: unserved},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`}, env: bundlePane, err: unserved},
+		// A read naming an owner with no directory beside one the bundle serves.
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query={viewer{login}}"}, env: bundlePane, err: unserved},
+		// Reads for which gh takes a repository from the working directory's remotes: an owner
+		// named by a GraphQL query's variable beside a {repo} gh fills from the remote; a URL gh's
+		// pr finder reads as a branch of the command's own repository, where the remote is acme's,
+		// and where it is the URL's own repository, whose entry add drops; and an endpoint's
+		// {owner}, in a clone of the repository the endpoint names.
+		{argv: []string{"api", "graphql", "-F", "owner=octocat", "-F", "name={repo}", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}"}, env: bundlePane, remotes: remotes(octocatClone), err: unserved},
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(acmeClone), err: unserved},
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(octocatClone), err: unserved},
+		{argv: []string{"api", "repos/octocat/hello/pulls?head={owner}:x"}, env: bundlePane, remotes: remotes(octocatClone), err: unserved},
+		// The repository a configured rename pair moves: refused naming the pair where its `to`
+		// owner has no directory, though its `from` owner has one, and served from the `to`
+		// owner's directory where that owner has one, though its `from` owner has none.
+		{argv: []string{"repo", "view", "sjawhar/gone", "--json", "name"}, env: bundlePane, err: "the configured rename sjawhar/gone -> nobody/gone"},
+		{argv: []string{"repo", "view", "octocat/moved", "--json", "name"}, env: bundlePane, dir: ghconfig.Dir(root, "sjawhar")},
+	} {
+		listed := tc.remotes
+		if listed == nil {
+			listed = noGitRepository
+		}
+		target, err := ghTargetOfKept(t, tc.argv, tc.env, savedGhHelp, listed, routed)
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.argv, tc.env, target, err, tc.err)
+			}
+		case err != nil || target.dir != tc.dir:
+			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the directory %q", tc.argv, tc.env, target, err, tc.dir)
 		}
 	}
 }
@@ -666,7 +843,6 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"repo", "clone", "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"repo", "clone", "github.com/sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/2/files"}, owner: "sjawhar", repo: "legion"},
-		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "REPOS/sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
@@ -674,8 +850,8 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/{owner}/{repo}/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone), owner: "acme", repo: "widgets"},
-		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "origin", resolved: "base"}), owner: "acme", repo: "widgets"},
-		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", resolved: "acme/widgets"}), owner: "acme", repo: "widgets"},
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved base")), owner: "acme", repo: "widgets"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghMarkerLine("remote.origin.gh-resolved acme/widgets")), owner: "acme", repo: "widgets"},
 		// The same repository named twice is still the one: the leaf's own argument beside the
 		// working directory's remote, and an option's URL beside -R.
 		{argv: []string{"pr", "view", "1", "-R", "acme/widgets"}, remotes: remotes(acmeClone), owner: "acme", repo: "widgets"},
@@ -713,6 +889,219 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		if err != nil || target.owner != tc.owner || target.repo != tc.repo {
 			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the owner %q and the repository %q", tc.argv, tc.env, target, err, tc.owner, tc.repo)
 		}
+	}
+}
+
+// A read naming an owner the bundle holds no gh directory for, through any selector the selector
+// reader (fromCommand, fromOwnRepository) counts, runs with the directory a call naming no owner
+// runs with, GH_CONFIG_DIR's (R4 of dispatch://INFRA-3399): octocat's repository or account, read
+// through each, runs with acme's directory, the pane's, and is not refused, and the same read
+// naming sjawhar, whom the bundle serves, runs with sjawhar's directory as selectors.dir routes a
+// served owner. R4 is a rule over a class, so the class is read from the code and from gh's own
+// saved help rather than from memory, at both saved gh releases: each kind of argument
+// (ghSlot.kind) and of option (ghOptionKind) the help of a leaf of ghReadLeaves gives, but the
+// kinds that select nothing, must have a row reading octocat through it, and a leaf an older help
+// does not list is skipped at that release. To those come, by name, the members no help lists:
+// the endpoint forms of gh api ghWritesNothing admits, a GraphQL query's owner variables
+// (ghGraphQLQueryRead), a search query's repo:, owner:, user: and org: qualifiers, and GH_REPO.
+// Two members the selector reader counts are no read ghWritesNothing admits, so they keep the
+// OwnerNotServedError refusal of octocat: a whole URL as gh api's endpoint, since
+// ghAPIRESTEndpoint admits a relative path alone, and a search endpoint's q given as a field,
+// since ghAPIReadOptions holds neither -f nor -F, and gh sends a call with a field as a POST
+// (gh api's help: "adding request parameters will automatically switch the request method to
+// `POST`").
+func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
+	// The pane of the issue owner acme, whose bundle under /owners serves acme and sjawhar and
+	// holds no directory for octocat, which dirFor answers as ghConfigDirFor answers an owner it
+	// holds none for: a bare OwnerNotServedError, wrapping nothing.
+	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
+	dirFor := func(owner, _ string) (string, error) {
+		if owner == "acme" || owner == "sjawhar" {
+			return ghconfig.Dir("/owners", owner), nil
+		}
+		return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: "/owners"}
+	}
+	const refusal = `the role's GitHub App is not installed on "octocat"`
+	// Each row is octocat's read, with the leaf whose path it is typed with and the kind it reads
+	// octocat through: an argument's or an option's as the help's kinds are named below, or, for a
+	// member no help lists, what it is. GH_REPO, where the row sets it, joins the pane's
+	// environment. The read naming sjawhar is the same row with sjawhar in octocat's place.
+	// refused marks a member the selector reader counts that is no read ghWritesNothing admits.
+	type read struct {
+		leaf, kind string
+		argv       []string
+		env        map[string]string
+		refused    bool
+	}
+	const viaRepo = "option --repo (repository)"
+	reads := []read{
+		{leaf: "pr view", kind: "argument url", argv: []string{"pr", "view", "https://github.com/octocat/hello/pull/1", "--json", "number"}},
+		{leaf: "pr view", kind: viaRepo, argv: []string{"pr", "view", "1", "-R", "octocat/hello", "--json", "number"}},
+		{leaf: "pr list", kind: viaRepo, argv: []string{"pr", "list", "-R", "octocat/hello"}},
+		{leaf: "pr diff", kind: "argument url", argv: []string{"pr", "diff", "https://github.com/octocat/hello/pull/1"}},
+		{leaf: "pr diff", kind: viaRepo, argv: []string{"pr", "diff", "1", "-R", "octocat/hello"}},
+		{leaf: "pr checks", kind: "argument url", argv: []string{"pr", "checks", "https://github.com/octocat/hello/pull/1"}},
+		{leaf: "pr checks", kind: viaRepo, argv: []string{"pr", "checks", "1", "-R", "octocat/hello"}},
+		{leaf: "pr status", kind: viaRepo, argv: []string{"pr", "status", "-R", "octocat/hello"}},
+		{leaf: "run view", kind: viaRepo, argv: []string{"run", "view", "1", "-R", "octocat/hello"}},
+		{leaf: "run list", kind: viaRepo, argv: []string{"run", "list", "-R", "octocat/hello"}},
+		{leaf: "run watch", kind: viaRepo, argv: []string{"run", "watch", "1", "-R", "octocat/hello"}},
+		{leaf: "issue view", kind: "argument url", argv: []string{"issue", "view", "https://github.com/octocat/hello/issues/1", "--json", "number"}},
+		{leaf: "issue view", kind: viaRepo, argv: []string{"issue", "view", "1", "-R", "octocat/hello"}},
+		{leaf: "issue list", kind: viaRepo, argv: []string{"issue", "list", "-R", "octocat/hello"}},
+		{leaf: "issue status", kind: viaRepo, argv: []string{"issue", "status", "-R", "octocat/hello"}},
+		{leaf: "repo view", kind: "argument repository", argv: []string{"repo", "view", "octocat/hello", "--json", "name"}},
+		{leaf: "repo list", kind: "argument owner", argv: []string{"repo", "list", "octocat", "--json", "name"}},
+		{leaf: "release view", kind: viaRepo, argv: []string{"release", "view", "v1", "-R", "octocat/hello"}},
+		{leaf: "release list", kind: viaRepo, argv: []string{"release", "list", "-R", "octocat/hello"}},
+		{leaf: "workflow view", kind: viaRepo, argv: []string{"workflow", "view", "ci.yml", "-R", "octocat/hello"}},
+		{leaf: "workflow list", kind: viaRepo, argv: []string{"workflow", "list", "-R", "octocat/hello"}},
+		{leaf: "label list", kind: viaRepo, argv: []string{"label", "list", "-R", "octocat/hello"}},
+		{leaf: "cache list", kind: viaRepo, argv: []string{"cache", "list", "-R", "octocat/hello"}},
+		{leaf: "search code", kind: viaRepo, argv: []string{"search", "code", "hello", "--repo", "octocat/hello"}},
+		{leaf: "search code", kind: "option --owner (owner)", argv: []string{"search", "code", "hello", "--owner", "octocat"}},
+		{leaf: "search commits", kind: viaRepo, argv: []string{"search", "commits", "fix", "--repo", "octocat/hello"}},
+		{leaf: "search commits", kind: "option --owner (owner)", argv: []string{"search", "commits", "fix", "--owner", "octocat"}},
+		{leaf: "search issues", kind: viaRepo, argv: []string{"search", "issues", "bug", "--repo", "octocat/hello"}},
+		{leaf: "search issues", kind: "option --owner (owner)", argv: []string{"search", "issues", "bug", "--owner", "octocat"}},
+		{leaf: "search issues", kind: "option --project (owner/name)", argv: []string{"search", "issues", "--project", "octocat/1", "--json", "number"}},
+		{leaf: "search prs", kind: viaRepo, argv: []string{"search", "prs", "fix", "--repo", "octocat/hello"}},
+		{leaf: "search prs", kind: "option --owner (owner)", argv: []string{"search", "prs", "fix", "--owner", "octocat"}},
+		{leaf: "search prs", kind: "option --project (owner/name)", argv: []string{"search", "prs", "--project", "octocat/1", "--json", "number"}},
+		{leaf: "search repos", kind: "option --owner (owner)", argv: []string{"search", "repos", "--owner", "octocat", "--json", "name"}},
+		// gh api's endpoint forms, the GraphQL variables naming an owner and GH_REPO, which no
+		// help lists.
+		{leaf: "api", kind: "endpoint repos/<owner>/<repo>/…", argv: []string{"api", "repos/octocat/hello/pulls"}},
+		{leaf: "api", kind: "endpoint repos/<owner>/<repo>", argv: []string{"api", "repos/octocat/hello"}},
+		{leaf: "api", kind: "endpoint orgs/<owner>", argv: []string{"api", "orgs/octocat"}},
+		{leaf: "api", kind: "endpoint users/<owner>", argv: []string{"api", "users/octocat"}},
+		{leaf: "api", kind: "GraphQL variable owner", argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "query=query($owner: String!) { repositoryOwner(login: $owner) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable org", argv: []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org: String!) { organization(login: $org) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable organization", argv: []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization: String!) { organization(login: $organization) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable login", argv: []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login: String!) { user(login: $login) { login } }"}},
+		{leaf: "pr list", kind: "GH_REPO", argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "octocat/hello"}},
+		// The two members that are no read: octocat's gets the OwnerNotServedError refusal.
+		{leaf: "api", kind: "endpoint https://api.github.com/…", argv: []string{"api", "https://api.github.com/repos/octocat/hello"}, refused: true},
+		{leaf: "api", kind: "a search endpoint's q field", argv: []string{"api", "search/issues", "-f", "q=repo:octocat/hello"}, refused: true},
+	}
+	// A search query's qualifiers naming an owner, as the query words of every search leaf, and
+	// as the q of gh api's search endpoint.
+	for _, qualifier := range []string{"repo:octocat/hello", "owner:octocat", "user:octocat", "org:octocat"} {
+		for _, leaf := range []string{"search code", "search commits", "search issues", "search prs", "search repos"} {
+			reads = append(reads, read{leaf: leaf, kind: "argument query", argv: append(strings.Fields(leaf), qualifier)})
+		}
+		reads = append(reads, read{leaf: "api", kind: "endpoint search/<kind>?q=…", argv: []string{"api", "search/issues?q=" + qualifier}})
+	}
+	covered := map[[2]string]bool{}
+	for _, r := range reads {
+		covered[[2]string{r.leaf, r.kind}] = true
+	}
+	// The kinds no read leaf carries are out of R4's reach, since every leaf whose help gives one
+	// is outside ghReadLeaves, and so writes as ghWritesNothing reads it: a repository the command
+	// creates (new-repository: repo create's <name>), another repository it acts on beside its
+	// own (second-repository: repo sync's, issue transfer's and label clone's), the repositories
+	// of an --org (org-repositories: secret set's and variable set's --repos), an option naming an
+	// issue or a pull request by URL (url: issue edit's --add-blocked-by, project item-add's
+	// --url), and a host (host: --hostname, gh api's, auth's and attestation's). No row reads
+	// octocat through one, and a read leaf or option that gives one fails here, to be given rows
+	// and R4 a reading of it.
+	outOfReach := map[string]bool{"org-repositories": true, "url": true, "host": true}
+	for _, version := range []string{"2.98.0", "2.104.0"} {
+		t.Run(version, func(t *testing.T) {
+			help := savedGhHelpOf(t, version)
+			// lists says whether this release's help lists path: whether its parent's help
+			// lists its last word.
+			lists := func(path []string) bool {
+				parent, err := readGhCommand(path[:len(path)-1], help)
+				if err != nil {
+					t.Fatalf("gh %s: %v", version, err)
+				}
+				return parent.listed[path[len(path)-1]]
+			}
+			leaves := 0
+			for _, leaf := range slices.Sorted(maps.Keys(ghReadLeaves)) {
+				path := strings.Fields(leaf)
+				if !lists(path) {
+					continue
+				}
+				leaves++
+				cmd, err := readGhCommand(path, help)
+				if err != nil {
+					t.Errorf("gh %s: %v", version, err)
+					continue
+				}
+				var kinds []string
+				for _, slot := range cmd.slots {
+					if slot.takes("new-repository") || slot.takes("second-repository") {
+						t.Errorf("gh %s's `gh %s` takes %v, a repository it creates or acts on beside its own, out of R4's reach", version, leaf, slot.args)
+					}
+					// An argument of no kind, or a number, names nothing the selector reader
+					// counts (fromCommand); one whose name no table knows is listed, and no row
+					// reads octocat through it, since fromCommand refuses it.
+					switch kind, unknown := slot.kind(); {
+					case unknown != "":
+						kinds = append(kinds, "argument <"+unknown+"> of no known kind")
+					case kind != "" && kind != "number":
+						kinds = append(kinds, "argument "+kind)
+					}
+				}
+				for _, name := range slices.Sorted(maps.Keys(cmd.flags)) {
+					switch kind := ghOptionKind(cmd.path, name, cmd.flags[name]); {
+					case outOfReach[kind]:
+						t.Errorf("gh %s's `gh %s` takes --%s, a selector of kind %q, out of R4's reach", version, leaf, name, kind)
+					case kind != "" && kind != "nothing":
+						kinds = append(kinds, "option --"+name+" ("+kind+")")
+					}
+				}
+				for _, kind := range kinds {
+					if !covered[[2]string{leaf, kind}] {
+						t.Errorf("gh %s's `gh %s` gives the %s, and no row reads octocat through it", version, leaf, kind)
+					}
+				}
+			}
+			rows := 0
+			for _, r := range reads {
+				if !lists(strings.Fields(r.leaf)) {
+					continue
+				}
+				rows++
+				name := "gh " + strings.Join(r.argv, " ")
+				if repo := r.env["GH_REPO"]; repo != "" {
+					name = "GH_REPO=" + repo + " " + name
+				}
+				t.Run(name, func(t *testing.T) {
+					for _, owner := range []string{"octocat", "sjawhar"} {
+						t.Run(owner, func(t *testing.T) {
+							argv := make([]string, len(r.argv))
+							for i, word := range r.argv {
+								argv[i] = strings.ReplaceAll(word, "octocat", owner)
+							}
+							env := maps.Clone(pane)
+							for key, value := range r.env {
+								env[key] = strings.ReplaceAll(value, "octocat", owner)
+							}
+							target, err := ghTargetOfKept(t, argv, env, help, noGitRepository, dirFor)
+							switch {
+							case owner == "sjawhar":
+								if err != nil || target.dir != ghconfig.Dir("/owners", "sjawhar") {
+									t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want sjawhar's directory", argv, env, version, target, err)
+								}
+							case r.refused:
+								if err == nil || !strings.Contains(err.Error(), refusal) {
+									t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want main's refusal, %q", argv, env, version, target, err, refusal)
+								}
+							case err != nil || target.dir != pane["GH_CONFIG_DIR"]:
+								t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want GH_CONFIG_DIR's directory, %s", argv, env, version, target, err, pane["GH_CONFIG_DIR"])
+							}
+						})
+					}
+				})
+			}
+			t.Logf("gh %s: %d read leaves, %d rows", version, leaves, rows)
+			if leaves == 0 || rows == 0 {
+				t.Errorf("gh %s lists %d read leaves and %d rows ran, want each read leaf and every row", version, leaves, rows)
+			}
+		})
 	}
 }
 
@@ -767,10 +1156,62 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	remotes, err := readGitRemotes()
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
-		{name: "origin", url: "https://github.com/acme/pushed.git"},
+		{name: "origin", url: "https://github.com/acme/pushed.git", push: true},
 		{name: "upstream", url: "git@github.com:sjawhar/legion"},
-		{name: "upstream", url: "git@github.com:sjawhar/legion"},
-		{name: "origin", resolved: "base"},
+		{name: "upstream", url: "git@github.com:sjawhar/legion", push: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "base", valued: true},
+	}
+	if err != nil || !slices.Equal(remotes, want) {
+		t.Errorf("readGitRemotes = %+v, %v; want %+v", remotes, err, want)
+	}
+}
+
+// gh reads every line `git config --get-regexp` prints for a gh-resolved key, giving it the
+// remote its key's second `.`-separated part names and skipping one with no value (cli/cli
+// git/client.go, populateResolvedRemotes), so readGitRemotes hands each on as a marker line, in
+// git's order, with git's own key and value and whether git printed one: a key given two values,
+// a marker on a dotted remote name, an empty value and a key set with none.
+func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on this machine")
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	repository := t.TempDir()
+	t.Chdir(repository)
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	for _, args := range [][]string{
+		fixturegit.InitWorkTree("", "")[1:],
+		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+		{"config", "remote.origin.gh-resolved", "base"},
+		{"config", "--add", "remote.origin.gh-resolved", "sjawhar/legion"},
+		// The dotted remote has a URL: a marker's section alone is a remote `git remote -v`
+		// prints with none, a line readGitRemotes refuses.
+		{"remote", "add", "origin.fork", "https://github.com/acme/fork.git"},
+		{"config", "remote.origin.fork.gh-resolved", "base"},
+		{"remote", "add", "upstream", "git@github.com:sjawhar/legion.git"},
+		{"config", "remote.upstream.gh-resolved", ""},
+	} {
+		// The fixture configures the repository readGitRemotes reads, named rather than
+		// inherited, under an environment of its own, for the reason the test above gives.
+		fixture.Run(repository, append([]string{"git"}, args...)...)
+	}
+	// git config writes no key without a value, so that line is written into the repository's
+	// configuration file itself.
+	appendTo(t, filepath.Join(repository, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
+	remotes, err := readGitRemotes()
+	want := []ghRemote{
+		{name: "origin", url: "https://github.com/acme/widgets.git"},
+		{name: "origin", url: "https://github.com/acme/widgets.git", push: true},
+		{name: "origin.fork", url: "https://github.com/acme/fork.git"},
+		{name: "origin.fork", url: "https://github.com/acme/fork.git", push: true},
+		{name: "upstream", url: "git@github.com:sjawhar/legion.git"},
+		{name: "upstream", url: "git@github.com:sjawhar/legion.git", push: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "base", valued: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "sjawhar/legion", valued: true},
+		{name: "origin.fork", marker: true, key: "remote.origin.fork.gh-resolved", resolved: "base", valued: true},
+		{name: "upstream", marker: true, key: "remote.upstream.gh-resolved", valued: true},
+		{name: "upstream", marker: true, key: "remote.upstream.gh-resolved"},
 	}
 	if err != nil || !slices.Equal(remotes, want) {
 		t.Errorf("readGitRemotes = %+v, %v; want %+v", remotes, err, want)
@@ -849,6 +1290,28 @@ func legionCommand(t *testing.T, dir string, env map[string]string, args ...stri
 	return cmd
 }
 
+// testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
+// allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
+// helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
+// these tests reads (GH_STANDIN_*); and the pairs testGhChildEnv names. None of these is one
+// ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary. The
+// stand-ins tell the guard's visibility read by its argv, as the real gh would have to
+// (ghStandInPrefix), so no Legion variable naming that read is handed on.
+func testGhChildEnviron(environ []string) []string {
+	out := []string{testMainEnv + "=1"}
+	for _, pair := range environ {
+		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") {
+			out = append(out, pair)
+		}
+	}
+	for _, line := range strings.Split(os.Getenv(testGhChildEnv), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // legionGhCommand is the command legionGhIn runs: legionCommand's `legion gh args…`.
 func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
@@ -880,7 +1343,8 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // reads each command from the real gh's own help. The real gh runs with GH_PATH naming the `gh`
 // wrapper first on PATH, so the git gh runs asks `legion gh auth git-credential`, which answers by
 // the path's owner as `legion git-credential` does; with useHttpPath on for github.com, and gh's
-// update check and prompts off. A command naming an owner the bundle holds no directory for is
+// update check and prompts off. A read naming only an owner the bundle holds no directory for
+// runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); a write naming one is
 // refused, exit 2, naming the owner, and so are one it cannot read, a gh alias, and any command
 // when PATH's first gh is the real gh; the real gh never runs. In a clone of an owner's
 // repository, a command naming none runs as that repository's. Each of the three variables it needs is
@@ -898,7 +1362,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf '%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$*\"\n" +
-		"printf 'env %s|%s|%s=%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\"\n"
+		"printf 'env %s|%s|%s=%s|%s=%s|%s=%s|%s=%s|%s=%s|%s|%s|%s|%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" " +
+		"\"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" \"$GIT_CONFIG_KEY_2\" \"$GIT_CONFIG_VALUE_2\" " +
+		"\"$GIT_CONFIG_KEY_3\" \"$GIT_CONFIG_VALUE_3\" \"$GIT_CONFIG_KEY_4\" \"$GIT_CONFIG_VALUE_4\" " +
+		"\"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\" \"$GH_EDITOR\" \"$GH_TELEMETRY\" \"$GIT_CONFIG_GLOBAL\" \"$GIT_CONFIG_NOSYSTEM\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +1378,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
-	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
+	// gh's git gets http.sslVerify on, submodule recursion off and useHttpPath for github.com,
+	// reads no global or system file, and gh gets an editor that fails and its telemetry off
+	// (ghChildForced, ghForcedGitConfig).
+	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|5|http.sslVerify=true|submodule.recurse=false|fetch.recurseSubmodules=false|push.recurseSubmodules=no|credential.https://github.com.useHttpPath=true|1|1|" + ghNoEditor + "|0|/dev/null|1\n"
 	for _, tc := range []struct {
 		args []string
 		dir  string
@@ -931,7 +1401,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		// A repository of an owner the project maps nothing of: the bundle holds that owner's
 		// directory because the role's App is installed on the account, and the token in it
 		// reaches every repository of that installation.
-		{[]string{"pr", "create", "-R", "theorem-labs/agent-infra", "--fill"}, filepath.Join(root, "theorem-labs")},
+		{[]string{"pr", "create", "-R", "example-org/deployment", "--fill"}, filepath.Join(root, "example-org")},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
 		want := stub + "|" + tc.dir + "|" + strings.Join(tc.args, " ") + "\n" + wantEnv
@@ -940,12 +1410,27 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		}
 	}
 
+	// A read naming only an owner the bundle holds no directory for runs with GH_CONFIG_DIR's
+	// directory, as a command naming no owner does (R4 of dispatch://INFRA-3399). It runs under
+	// the stand-in the tests count as the shared check the read rule was proven against
+	// (testProvenCheckEnv), which the guard runs alone for a call that writes nothing; the whole
+	// guard would first read the repository's visibility, which `legion gh` refuses for an owner
+	// it holds no directory for, and then ask GitHub itself, with no credential (git ls-remote).
+	proven := maps.Clone(env)
+	proven["PUBLIC_LEAK_CHECK"], proven[testProvenCheckEnv] = ghCheckAt(t, ghCheckPasses), ghProvenProgramSHA256
+	for _, args := range [][]string{{"pr", "view", "https://github.com/other/thing/pull/1"}, {"api", "repos/Other/thing"}} {
+		code, stdout, stderr := legionGh(t, proven, args...)
+		if want := stub + "|" + defaultDir + "|" + strings.Join(args, " ") + "\n" + wantEnv; code != 0 || stdout != want {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and %q", args, code, stdout, stderr, want)
+		}
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `the role's GitHub App is not installed on "other"`},
-		{[]string{"api", "repos/Other/thing"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"pr", "create", "-R", "other/thing", "--fill"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"api", "-X", "POST", "repos/Other/thing/issues", "-f", "title=t"}, `the role's GitHub App is not installed on "other"`},
 		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
 		{[]string{"issue", "lock", "1"}, "cannot read `gh issue lock`"},
 		{[]string{"co", "1"}, `"co" is a gh alias`},
@@ -1281,20 +1766,30 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 // ghStandInPrefix is what a stand-in real gh of this package answers with first, and what every
 // one of them carries after any line of its own that records its run (loggingGh). It answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, which is the help
-// the command resolver reads; and it answers the shared public leak check's own visibility read
-// — the one call `legion gh` hands gh without checking it — with a visibility, the word
-// GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test names
-// one. Without that second answer the guard's read of a destination's visibility would get a
-// stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
+// the command resolver reads; and it answers the leak guard's own visibility reads — `gh api
+// --hostname github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read `gh api
+// --hostname github.com graphql --include -f query=… -f owner=… -f name=…` — with a visibility,
+// the word GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test
+// names one. It tells those reads by their argv, as the real gh would have to: `legion gh` runs gh
+// from an allowlist of its environment, which holds no Legion variable naming the read
+// (ghChildEnviron). Without that answer the guard's read of a destination's visibility would get
+// a stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
 // is a setup failure.
 func ghStandInPrefix(help string) string {
 	return ghStandInHelp(help) +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
+		"case \" $* \" in\n" +
+		ghVisibilityReadArgv + ")\n" +
 		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		"  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n" +
-		"  exit 0\n" +
-		"fi\n"
+		"  exit 0;;\n" +
+		"esac\n"
 }
+
+// ghVisibilityReadArgv is the shell `case` pattern that matches the leak guard's own visibility
+// reads by their argv, as a stand-in gh must tell them: the REST read, `gh api --hostname
+// github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read, `gh api --hostname
+// github.com graphql --include -f query=… -f owner=… -f name=…`, each matched against " $* ".
+const ghVisibilityReadArgv = "\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ |\\ api\\ --hostname\\ github.com\\ graphql\\ --include\\ -f\\ query=*\\ -f\\ owner=*\\ -f\\ name=*\\ "
 
 // ghStandInHelp is the start of every stand-in gh of this package: a shell script that answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, and falls through
@@ -1812,7 +2307,9 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
 // one it reads public as held, which it does not scan, so a public the guard kept for a
 // repository made private since must not answer it. A kept public, which the guard's own
-// Visibility does answer with, is passed over for the read, and no answer is kept.
+// Visibility does answer with, is passed over for the read, and no answer is kept. For a
+// repository of an owner the bundle holds no directory for, `legion gh` refuses the guard's REST
+// read before any gh runs, and ls-remote alone answers: public, or nothing.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1885,7 +2382,9 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name          string
+		name string
+		// slug is the repository the check reads, sjawhar/legion where it is empty.
+		slug          string
 		rest, graphql string
 		git           string
 		// kept is whether the guard holds a kept public answer for the repository when the read
@@ -1910,8 +2409,11 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
 		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+		{name: "an unserved owner's repository ls-remote lists", slug: "other-owner/invented-repo", rest: rest("private"), git: lists, want: "public\n", reads: "git\n"},
+		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			repo := cmp.Or(tc.slug, slug)
 			bin, record, state := t.TempDir(), filepath.Join(t.TempDir(), "reads"), t.TempDir()
 			if tc.kept {
 				keepPublic(t, state)
@@ -1933,8 +2435,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: slug,
-			}, leakguard.VisibilityReadArgs(slug)...)
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo,
+			}, leakguard.VisibilityReadArgs(repo)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):
 				t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, tc.want)
@@ -2084,7 +2586,10 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0\n", "  echo unavailable >&2\n  exit 1\n", 1) + "exit 0\n"
+	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0;;\n", "  echo unavailable >&2\n  exit 1;;\n", 1) + "exit 0\n"
+	if !strings.Contains(script, "echo unavailable") {
+		t.Fatal("the stand-in's visibility answer was not replaced, so this test would read a visibility")
+	}
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -2476,11 +2981,12 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 
 // gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,
 // and the leak guard reads no such file, so `legion gh` refuses a call giving one, naming the
-// option, before anything runs, on each of the six issue and pr leaves whose help lists it. The
-// same calls without it read as they did, so the option alone is what is refused; and at gh
-// 2.98.0, which has no --attach, each is refused already, as an option its help does not list.
-// The seventh leaf listing it, `gh issue artifact create`, which also uploads the files its
-// arguments name, is refused whole with or without it, for an argument this does not know.
+// option, before anything runs, on each of the eight leaves whose help lists it. On the six issue
+// and pr leaves the same calls without it read as they did, so the option alone is what is
+// refused; and at gh 2.98.0, which has no --attach, each is refused already, as an option its help
+// does not list. On `gh issue artifact create` and `edit` --attach is refused by name too; a
+// create that names a file by argument, which it also uploads, is refused for an argument this
+// does not know.
 func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	latest := savedGhHelpOf(t, "2.104.0")
 	rows := 0
@@ -2515,36 +3021,78 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	if rows != 6 {
 		t.Errorf("%d rows ran, want 6", rows)
 	}
-	for _, argv := range [][]string{
-		{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"},
-		{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"},
+	for _, tc := range []struct {
+		argv   []string
+		refuse string
+	}{
+		{[]string{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "edit", "142", "2", "-R", "acme/widgets", "--attach", "./flow.png"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"}, "an argument this does not know"},
 	} {
-		if _, err := ghTargetOf(argv, nil, latest, noGitRepository, ownersOwnDirectories); err == nil {
-			t.Errorf("ghTargetOf(%q) at gh 2.104.0 = nil, want a refusal", argv)
+		if _, err := ghTargetOf(tc.argv, nil, latest, noGitRepository, ownersOwnDirectories); err == nil || !strings.Contains(err.Error(), tc.refuse) {
+			t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %v, want a refusal containing %q", tc.argv, err, tc.refuse)
 		}
 	}
 }
 
 // A gh directory whose hosts.yml or config.yml sends gh's requests elsewhere is refused, naming
 // the file and the key and never the value: api_host in a host's block, http_unix_socket at the
-// top of config.yml or in a host's block, at any depth gh might read it. The files the daemon
-// renders, a config.yml holding aliases, and a directory holding neither file pass; one that does
-// not parse is refused.
-func TestGhRoutingKeyRefusesADirectoryThatSendsElsewhere(t *testing.T) {
+// top of config.yml or in a host's block, at any depth and in any shape gh might read it as a key,
+// a list's even-indexed items among them (go-gh's FindEntry reads a list as pairs). So is a
+// config.yml holding any other hosts block or an alias named `help`, and a file that is no regular
+// file (a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which
+// is refused without being read, so a named pipe stalls nothing. The files the daemon renders, a
+// config.yml holding aliases, one naming an alias after a command `legion gh` refuses (which gh
+// never expands), a routing key's name as a value, and a directory holding neither file pass; one
+// that does not parse is refused.
+func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 	hosts := ghconfig.Hosts("ghs_acme_write")
+	fifo := func(dir, name string) error { return syscall.Mkfifo(filepath.Join(dir, name), 0o600) }
+	link := func(text string) func(dir, name string) error {
+		return func(dir, name string) error {
+			target := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(target, []byte(text), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, filepath.Join(dir, name))
+		}
+	}
+	directory := func(dir, name string) error { return os.Mkdir(filepath.Join(dir, name), 0o700) }
+	large := func(dir, name string) error {
+		return os.WriteFile(filepath.Join(dir, name), []byte(strings.Repeat("#", ghconfig.MaxFileBytes+1)), 0o600)
+	}
+	at := func(plant func(dir, name string) error, name string) func(dir string) error {
+		return func(dir string) error { return plant(dir, name) }
+	}
 	for _, tc := range []struct {
 		name          string
 		hosts, config string // "" writes no such file
+		plant         func(dir string) error
 		want          string // "" for a directory that passes
 	}{
 		{name: "the files the daemon renders", hosts: hosts, config: ghconfig.Config},
 		{name: "a config.yml holding aliases", hosts: hosts, config: ghconfig.Config + "aliases:\n    co: pr checkout\n"},
+		{name: "an alias named after a refused command", hosts: hosts, config: ghconfig.Config + "aliases:\n    agent-task: pr view\n"},
+		{name: "api_host as a list's value", hosts: "github.com: [user, api_host]\n", config: ghconfig.Config},
 		{name: "neither file"},
 		{name: "api_host in hosts.yml's github.com block", hosts: hosts + "    api_host: api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "api_host under the account", hosts: strings.Replace(hosts, "            oauth_token: ghs_acme_write\n", "            oauth_token: ghs_acme_write\n            api_host: api.example.invalid\n", 1), config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "http_unix_socket at the top of config.yml", hosts: hosts, config: ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "api_host in a flow list of hosts.yml", hosts: "github.com: [oauth_token, ghs_acme_write, user, x-access-token, api_host, api.example.invalid]\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "api_host in a block list of hosts.yml", hosts: "github.com:\n    - api_host\n    - api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "config.yml as a list", hosts: hosts, config: "[http_unix_socket, /tmp/example.sock]\n", want: "config.yml sets http_unix_socket"},
 		{name: "http_unix_socket in a host's block of config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "any other hosts block in config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        editor: vi\n", want: "config.yml holds a hosts block"},
+		{name: "an alias named help", hosts: hosts, config: ghconfig.Config + "aliases:\n    help: api repos/sjawhar/legion\n", want: "config.yml names an alias `help`"},
 		{name: "a hosts.yml that does not parse", hosts: "github.com: [\n", config: ghconfig.Config, want: "hosts.yml does not parse as YAML"},
+		{name: "a named pipe at hosts.yml", config: ghconfig.Config, plant: at(fifo, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a named pipe at config.yml", hosts: hosts, plant: at(fifo, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a symbolic link at hosts.yml", config: ghconfig.Config, plant: at(link(hosts), ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a symbolic link at config.yml", hosts: hosts, plant: at(link(ghconfig.Config), ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a directory at hosts.yml", config: ghconfig.Config, plant: at(directory, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a directory at config.yml", hosts: hosts, plant: at(directory, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a hosts.yml larger than any the daemon writes", config: ghconfig.Config, plant: at(large, ghconfig.HostsFile), want: "hosts.yml is larger than any file the daemon writes"},
+		{name: "a config.yml larger than any the daemon writes", hosts: hosts, plant: at(large, ghconfig.ConfigFile), want: "config.yml is larger than any file the daemon writes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2555,14 +3103,27 @@ func TestGhRoutingKeyRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					}
 				}
 			}
-			err := ghRoutingKey(dir)
+			if tc.plant != nil {
+				if err := tc.plant(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A check that opened a named pipe would wait on it, so each runs with a bound.
+			done := make(chan error, 1)
+			go func() { done <- ghConfigShape(dir) }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("ghConfigShape did not return within 5 s")
+			}
 			switch {
 			case tc.want == "" && err != nil:
-				t.Fatalf("ghRoutingKey = %v, want none", err)
+				t.Fatalf("ghConfigShape = %v, want none", err)
 			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
-				t.Fatalf("ghRoutingKey = %v, want a refusal containing %q", err, tc.want)
-			case err != nil && (strings.Contains(err.Error(), "example.invalid") || strings.Contains(err.Error(), "example.sock")):
-				t.Fatalf("ghRoutingKey's refusal %q quotes the value", err)
+				t.Fatalf("ghConfigShape = %v, want a refusal containing %q", err, tc.want)
+			case err != nil && (strings.Contains(err.Error(), "example.invalid") || strings.Contains(err.Error(), "example.sock") || strings.Contains(err.Error(), "vi\n")):
+				t.Fatalf("ghConfigShape's refusal %q quotes the value", err)
 			}
 		})
 	}

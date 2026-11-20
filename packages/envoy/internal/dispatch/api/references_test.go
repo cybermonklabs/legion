@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createReferenceAPIProject(t *testing.T, handler http.Handler, key string) {
@@ -122,8 +124,9 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 		t.Fatalf("conditional issue references: status=%d etag=%q body=%q", notModified.Code, notModified.Header().Get("ETag"), notModified.Body.String())
 	}
 
-	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\nNo references\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice")
 	if updated.Code != http.StatusCreated {
 		t.Fatalf("update Design notes: status=%d body=%s", updated.Code, updated.Body.String())
@@ -253,6 +256,41 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"NO_IDENTITY"`) {
 			t.Fatalf("unauthenticated %s: status=%d body=%s", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
+// that bound and gives its connection back. refs is locked in another connection, so the walk,
+// which reads refs, waits however fast it would run, and the bound is what ends it. The control
+// is the first read, before the lock: the same request answers 200.
+func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
+		t.Fatalf("references before the lock: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	holdLock(t, database, "lock table refs in access exclusive mode")
+	acquired := database.Pool.Stat().AcquiredConns()
+	started := time.Now()
+	response := issueReferencesRequest(t, handler, issue.Key, "")
+	took := time.Since(started)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
+	}
+	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
+		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
+	}
+	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
+		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	}
+	var conns int32
+	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
+		conns = database.Pool.Stat().AcquiredConns()
+		return conns <= acquired
+	})
+	if conns > acquired {
+		t.Errorf("the pool holds %d acquired connections after the answer, more than the %d it held before the request: the walk kept its connection", conns, acquired)
 	}
 }
 
@@ -484,7 +522,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // transaction holds below a, so it answers neither mention while a is open: each read waits out
 // referencesSinceWait for the horizon, then answers the mentions at or below it, which are none.
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
-// (refs.ReplaceCounted, then refs.Stamp with the edit's event).
+// (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
@@ -507,7 +545,15 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	ctx := t.Context()
 	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
 		t.Helper()
-		if _, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "comment", commentID, ""), "Now see "+targetRef); err != nil {
+		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
+		if err != nil {
+			t.Fatalf("plan comment %s's references: %v", commentID, err)
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		}); err != nil {
 			t.Fatalf("index comment %s: %v", commentID, err)
 		}
 		event, err := broker.Append(ctx, tx, model.Event{

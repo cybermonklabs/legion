@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -23,6 +24,7 @@ import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
@@ -47,10 +49,9 @@ interface MappingInput {
 }
 
 /** A mapping write the server refused or never answered, with what the page says about it: the
- *  server's reason when it gave one (a mapping issues still name, say), else a generic line. */
-type FailedAction =
-  | ({ readonly kind: "put"; readonly message: string } & MappingInput)
-  | { readonly kind: "delete"; readonly message: string; readonly repo: string };
+ *  server's reason when it gave one (a mapping issues still name, say), what a write the reader
+ *  stopped may have done and what Retry does with it (`retry`), else a generic line. */
+type FailedAction = { readonly kind: "put" | "delete"; readonly message: string };
 
 /** The mappings with `mapping` in place of its row, and, when it is its project's default, every
  *  other mapping of that project no longer the default: a project has at most one. */
@@ -77,12 +78,18 @@ export function SettingsPage(): ReactNode {
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
-  // Both mapping writes show their refusal on the row they changed.
+  // Both mapping writes show their refusal on the row they changed. Neither holds back the reads
+  // of the mappings while it is out (`holds`): a read asked then can answer a default another
+  // browser set after Dispatch took this write, which an event brings here, and the page shows it
+  // at once. A read already out at the press is given up in the step the press shows its row, so
+  // no second press reads the rows from before it. Each write reads the mappings again once it
+  // settles, so a read Dispatch answered before it took the write is put right then.
   const putMapping = useKeyedWrite<
     RepoProject,
     MappingInput,
     { previous: RepoProject[] | undefined }
   >({
+    method: "PUT",
     write: ({ repo, ...input }, bounds) => api.putRepoProject(repo, input, bounds),
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
@@ -90,12 +97,19 @@ export function SettingsPage(): ReactNode {
       queryClient.setQueryData(["repo-projects"], context?.previous);
       setFailedAction({
         kind: "put",
-        message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
-        ...variables,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `putMapping`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `PUT` (`useKeyedWrite` method).
+              stoppedWriteNote(`the mapping of ${variables.repo}`, "saved", {
+                method: "PUT",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
       });
     },
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
+    onMutate: (variables) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
       const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
       const existing = previous?.find((mapping) => mapping.repo === variables.repo);
       queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
@@ -115,10 +129,11 @@ export function SettingsPage(): ReactNode {
       );
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. An
+    // answer goes over any read of the mappings still out, asked before it (`replaceQueryData`).
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+        replaceQueryData<RepoProject[]>(queryClient, ["repo-projects"], (current = []) =>
           withMapping(current, mapping)
         );
       }
@@ -131,10 +146,12 @@ export function SettingsPage(): ReactNode {
     // A write's answer is one row as the server saved it, not the project's mappings when the
     // answer arrives: another write (another browser's default pick, read through a mapping event
     // while this one was on the way) may have changed them since. Reading them again once the
-    // write settles leaves the page on the server's state, as useIssueFieldWrite does an issue's.
+    // write settles leaves the page on the server's state, as issueFieldWrite does an issue's once
+    // no newer live write of the field is left.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
+    method: "DELETE",
     write: (repo: string, bounds) => api.deleteRepoProject(repo, bounds),
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
@@ -142,12 +159,19 @@ export function SettingsPage(): ReactNode {
       queryClient.setQueryData(["repo-projects"], context?.previous);
       setFailedAction({
         kind: "delete",
-        message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
-        repo,
+        message:
+          error instanceof SendStoppedError
+            ? // Built inside `deleteMapping`'s own `onError`, where its `KeyedWriteResult` is not in
+              // hand to read the method from; it is this write's own `DELETE` (`useKeyedWrite`).
+              stoppedWriteNote(`the removal of ${repo}'s mapping`, "made", {
+                method: "DELETE",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't delete ${repo}.`),
       });
     },
-    onMutate: async (repo) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
+    onMutate: (repo) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
       const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
       queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
         current.filter((mapping) => mapping.repo !== repo)
@@ -158,14 +182,17 @@ export function SettingsPage(): ReactNode {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
 
+  // The refusal on screen is the newest press of its write: a later press of either write that
+  // lands lets it go, and Retry waits while either is out. So Retry is that write's own
+  // (`retry`), which makes a press the reader stopped again as that press. Both are a `PUT` or a
+  // `DELETE`, which sends no key, so that is the same change sent again.
   const retry = () => {
     if (failedAction?.kind === "put") {
-      const { kind: _kind, message: _message, ...variables } = failedAction;
-      putMapping.mutate(variables);
+      putMapping.retry();
       return;
     }
     if (failedAction?.kind === "delete") {
-      deleteMapping.mutate(failedAction.repo);
+      deleteMapping.retry();
     }
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {

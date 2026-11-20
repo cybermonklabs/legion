@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -46,6 +47,16 @@ import (
 // wire is a named time whatever it reads — `"0001-01-01T00:00:00Z"` decodes to a non-nil pointer
 // and passes that refusal — and the workflow moves a time already past out to the wake floor, a
 // minute from now (workflow.CheckWakeFloor), so such a report starts the next look a minute on.
+// PlanRating and PlanReason are the rating of the plan the issue ran, which the completion that
+// ends the retro carries and no other completion does (PlanRatingContract). Both are pointers for
+// the reason WakeAt is: a completion naming no rating is told from one naming 0, which is refused
+// as outside 1 to 5, and a completion naming no reason from one naming "", which with a rating is
+// refused as blank, so a completion that names either member with a value is held to the rule of
+// the rating.
+// A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
+// the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
+// (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
+// plugin sends one.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -54,6 +65,8 @@ type HandoffCompleteRequest struct {
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
+	PlanRating     *int       `json:"planRating,omitempty"`
+	PlanReason     *string    `json:"planReason,omitempty"`
 }
 
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
@@ -300,6 +313,17 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if of == "" {
 		of = issue.Phase
 	}
+	// The rating of the plan is held here to its form alone (planRatingOf), which no state of the
+	// issue changes; which completion ends the retro, and so carries a rating or must, is the
+	// workflow's to judge where it ends the retro, on the issue its transaction reads under the
+	// fact's lock (PlanRatingContract). It is read past the fences above, which decide whether
+	// this completion is the turn's own work at all, and before the handoff record and the pull
+	// request are read, so a rating of the wrong form costs no read of Dispatch or GitHub.
+	rating, refusal := planRatingOf(req)
+	if refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
 	recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)
@@ -346,14 +370,21 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
-	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && reported != position.lastHandoff {
+	// The phase's last handoff is stored text, so what this completion reports is compared as the
+	// store would keep it (storetext.Text).
+	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
 		}
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	// The rating rides the fact as the completion named it, beside whether the claim must rate,
+	// and the workflow judges both (PlanRatingContract). It is left out of the key as the summary
+	// is: the first completion the workflow took is what stands, so a retry that rates again is
+	// answered already received and the first rating stands, and a completion the workflow
+	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -394,6 +425,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 //     from before handoffs moved to the Dispatch issue is under the daemon's own session
 //     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
 //     and write it again from the worker's session.
+//
+// The claim holds session as the store keeps it (supervise's register), so the record Dispatch
+// answers is compared as the store would keep it (storetext.Strings).
 func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, of phase.Phase, word string, req HandoffCompleteRequest) bool {
 	write := fmt.Sprintf("`dispatch handoff-write --issue %s --phase %s --body-file <file>`", issue.Key, word)
 	read := fmt.Sprintf("`dispatch handoff-read --issue %s --phase %s`", issue.Key, word)
@@ -421,6 +455,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 			req.HandoffID, err))
 		return false
 	}
+	handoff = storetext.Strings(handoff)
 	if handoff.IssueKey != issue.Key || handoff.Phase != word || handoff.Version != req.HandoffVersion {
 		writeFailure(w, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
 			"handoff record %s is version %d of %s's %s handoff, and this completion is of %s's %s handoff at version %d: name the record %s shows; this completion changed nothing",
@@ -665,10 +700,10 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
-// task's work and writes a handoff of its own for it, which staleEntryInstruction says.
+// own. A review's request for changes takes the issue back to implementing, and the testing entry
+// the implementer's next completion raises is for a new head, so a verdict reported for the head
+// before it would stand as that new head's. The worker does the new task's work and writes a
+// handoff of its own for it, which staleEntryInstruction says.
 //
 // clause says what refused this completion (behindEntryClause).
 func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) string {
@@ -794,7 +829,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	fact, read := intake.OpenedRead(issue.Project, issue.GitHubRepo, branch, pull, issue.Generation, recorded)
-	if _, err := intake.ApplyFact(ctx, s.pool, "github", read, fact, s.handlers...); err != nil {
+	if _, err := s.apply(ctx, "github", read, fact); err != nil {
 		s.logRequestFailure(r, err, "api: apply the open pull request a completing implementer's branch shows", "issue", issue.Key, "pullRequest", pull.Number)
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the open pull request read from GitHub; this completion changed nothing")
 		return false
@@ -830,6 +865,8 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
+//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, whatever its form, which only the
+//     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
 // No commit is read: the look pushed nothing. No run is read either: the check fences itself on
 // the issue and the look, since the look's task is no phase's run and a woken session may hold an
@@ -878,9 +915,14 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
 		return
 	}
+	if req.PlanRating != nil || req.PlanReason != nil {
+		refusal := intake.PlanRatingUnexpected(fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue))
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
+		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return

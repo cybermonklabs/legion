@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// agentBusyMessage is the message Oh My Pi refuses a prompt with when the agent is busy: the
+// default of its AgentBusyError (packages/agent/src/agent.ts of cybermonklabs/oh-my-pi at the
+// pinned tag), which it throws for a prompt sent with no streamingBehavior while a turn streams,
+// and which its own test of the refusal expects the error to start with
+// (packages/coding-agent/test/rpc-prompt-busy-code.test.ts there).
+const agentBusyMessage = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
 // (worker-rpc.ts:420, 430, 452, 475, 490, 493-496; worker-shim.ts:332, 356-366;
 // worker-stream-listener.ts:14; fake-omp-rpc.ts:24-79). A frame decodes to its Go type and
@@ -43,6 +50,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"refusal response",
 			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"busy"}`,
 			Response{ID: "r2", Command: TypePrompt, Success: false, Error: "busy"},
+		},
+		{
+			// Oh My Pi's refusal of a prompt sent while a turn streams: its error response carries
+			// `code` at the top level, right after `error`, and the member survives the round
+			// trip (Response.Code).
+			"busy refusal response",
+			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"` + agentBusyMessage + `","code":"session_busy"}`,
+			Response{ID: "r2", Command: TypePrompt, Success: false, Error: agentBusyMessage, Code: "session_busy"},
 		},
 		{
 			"get_state response",
@@ -104,10 +119,19 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		},
 		{
 			// A prompt Oh My Pi failed outright, which it writes with the two members its fail()
-			// fills and no provider at all.
+			// fills for a failure it gives no code, and no provider at all.
 			"prompt_result of a prompt that ran no turn",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"error":{"message":"no model","retryable":false}}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
+		},
+		{
+			// The prompt_result of a prompt Oh My Pi refused because the agent was busy: its
+			// error carries Oh My Pi's class of the failure, which survives the round trip
+			// (PromptError.Code).
+			"prompt_result of a prompt refused because the agent was busy",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,` +
+				`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: "session_busy"}},
 		},
 		{"shutdown", `{"type":"shutdown"}`, Shutdown{}},
 		{
@@ -142,6 +166,43 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1", LeakCheckTag: "leak-check-v15", LeakCheckInstalled: true},
 		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
+		{
+			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
+			// the row above, and the only ack that hands the launcher no settings
+			// (TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem).
+			"launcher_hello_ack with trimmer settings",
+			`{"type":"launcher_hello_ack","volumeTrim":{"highPercent":85,"lowPercent":70,"minAgeMinutes":120,"intervalSeconds":60}}`,
+			LauncherHelloAck{VolumeTrim: &LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}},
+		},
+		{
+			// One sweep as the trimmer reports it, every member set: the episode and what raised
+			// it, the volume before and after, the sizes of the directories two levels under the
+			// root, one of them read only in part, a directory it could not open with the read the
+			// kernel refused, and the faults that have now stopped the trimmer itself.
+			"launcher_volume_report",
+			`{"type":"launcher_volume_report","trimmer":"trim-9f3c","episode":2,"raisedBy":"rise","usedBytes":48318382080,"freeBytes":5368709120,"freedBytes":10737418240,` +
+				`"stopReason":"the reading fell below the low mark","refusedReads":["1842 role-init"],` +
+				`"sizes":[{"path":"/legion/go/build","bytes":32212254720,"bytesOverHour":21474836480,"bytesOverDay":10737418240},` +
+				`{"path":"/legion/scratch/tmp","bytes":16106127360,"bytesOverHour":8589934592,"bytesOverDay":0,"refused":"/legion/scratch/tmp/.../locked (depth 3)","refusals":2}],` +
+				`"sizesAt":"2026-11-10T04:05:06Z","sizesPartial":true,"sizesMissing":[{"path":"/legion/uv","reason":"openat: permission denied"}],` +
+				`"faults":["panic: the size walk read a path that went away (goroutine 42)"],"switchedOff":true}`,
+			LauncherVolumeReport{
+				Trimmer: "trim-9f3c", Episode: 2, RaisedBy: VolumeEpisodeRise,
+				UsedBytes: 48_318_382_080, FreeBytes: 5_368_709_120, FreedBytes: 10_737_418_240,
+				StopReason:   "the reading fell below the low mark",
+				RefusedReads: []string{"1842 role-init"},
+				Sizes: []LauncherVolumeSize{
+					{Path: "/legion/go/build", Bytes: 32_212_254_720, BytesOverHour: 21_474_836_480, BytesOverDay: 10_737_418_240},
+					{Path: "/legion/scratch/tmp", Bytes: 16_106_127_360, BytesOverHour: 8_589_934_592,
+						Refused: "/legion/scratch/tmp/.../locked (depth 3)", Refusals: 2},
+				},
+				SizesAt:      time.Date(2026, 11, 10, 4, 5, 6, 0, time.UTC),
+				SizesPartial: true,
+				SizesMissing: []LauncherVolumeMissing{{Path: "/legion/uv", Reason: "openat: permission denied"}},
+				Faults:       []string{"panic: the size walk read a path that went away (goroutine 42)"},
+				SwitchedOff:  true,
+			},
+		},
 		{
 			"launcher_state",
 			`{"type":"launcher_state","child":{"generation":7,"pid":42},"lastExit":{"generation":6,"code":143,"signal":"terminated"}}`,
@@ -217,13 +278,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 	}
 }
 
-// The prompt_result lines the pinned Oh My Pi actually writes, members and order as its own
-// schema declares them (`PromptResultEvent { type, id?, agentInvoked, status, error?:
-// PromptError, sessionSettled }`, `PromptError { message, provider?, model?, httpStatus?,
-// retryable }`, read out of /opt/omp/bin/omp). The daemon reads three of those members, so the
-// decode must take the rest without being handed them and without refusing them: a frame it
-// refuses is a prompt whose end the daemon never learns, and a claim that waits for that end
-// forever.
+// The prompt_result lines the pinned Oh My Pi actually writes, with the members, and except where
+// a case says otherwise their order, as its own schema declares them (`PromptResultEvent { type,
+// id?, agentInvoked, status, error?: PromptError, sessionSettled }`, `PromptError { message,
+// provider?, model?, httpStatus?, retryable, code? }`, read in
+// packages/coding-agent/src/modes/rpc/wire/frames.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// The daemon reads three of those members, so the decode must take the rest without being handed
+// them and without refusing them: a frame it refuses is a prompt whose end the daemon never
+// learns, and a claim that waits for that end forever.
 func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -249,11 +311,23 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 		},
 		{
 			// Oh My Pi's fail(): the prompt never reached a turn, and the error carries only the
-			// two members that path fills.
+			// two members that path fills for a failure it gives no code.
 			"a prompt that failed before any turn",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error",` +
 				`"error":{"message":"no model","retryable":false},"sessionSettled":true}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
+		},
+		{
+			// Oh My Pi's refusal of a prompt sent with no streamingBehavior while a turn streams,
+			// with its members in the order Oh My Pi writes them rather than the schema's:
+			// `#report` writes `sessionSettled` before the `error` it adds last, and `fail`
+			// writes `message`, `retryable`, then the `code` rpcBusyCode gave
+			// (packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts at the pinned tag). A
+			// turn still streams, so the session has not settled.
+			"a prompt refused because the agent was busy",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error","sessionSettled":false,` +
+				`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: "session_busy"}},
 		},
 		{
 			// A refusal of the provider's content filter: Oh My Pi sets retryable for its own
@@ -292,8 +366,9 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
 			}
 			// Each member of the error object by itself: the daemon decides what a failed turn
-			// means from the four beside the message, so one dropped here is a failure it reads
-			// as something else.
+			// means from four of the members beside the message, so one dropped here is a
+			// failure it reads as something else; code, which nothing reads, is kept so the
+			// frame survives whole.
 			if want := tc.want.Error; want != nil {
 				got := result.Error
 				if got == nil {
@@ -308,6 +383,7 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 					{"model", got.Model, want.Model},
 					{"httpStatus", got.HTTPStatus, want.HTTPStatus},
 					{"retryable", got.Retryable, want.Retryable},
+					{"code", got.Code, want.Code},
 				} {
 					if member.got != member.want {
 						t.Errorf("error %s = %v, want %v", member.name, member.got, member.want)
@@ -403,9 +479,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// The two frames the shipped code refuses when their fields are malformed, because in each case
-// the sender is the only writer and a malformed one is a bug to name: the hello
-// (worker-stream-listener.ts:140-148) and the daemon's adoption request (worker-shim.ts:171-180).
+// Four frames the shipped code refuses when their fields are malformed, because in each case the
+// sender is the only writer and a malformed one is a bug to name: the hello
+// (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180), the
+// compaction request and the launcher's volume report.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -446,6 +523,59 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
+	}
+	// The volume report is the trimmer's own, and the daemon counts its notice bounds per
+	// trimmer and per episode: a report missing either is one it could not count.
+	report := LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst}
+	if err := report.Validate(); err != nil {
+		t.Fatalf("LauncherVolumeReport.Validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame LauncherVolumeReport
+	}{
+		{"no trimmer", LauncherVolumeReport{Episode: 1, RaisedBy: VolumeEpisodeFirst}},
+		{"an episode below the first", LauncherVolumeReport{Trimmer: report.Trimmer, RaisedBy: VolumeEpisodeFirst}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+}
+
+// A volume report may hold each of its four lists up to the list's cap and not one entry past
+// it. The caps are the ones the launcher's trimmer cuts its reports at (internal/launcher's
+// bound), and this is the daemon's side of them: a report over a cap is refused rather than
+// rendered whole into the notice, whatever sent it. The negative control is the report at every
+// cap, which validates.
+func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
+	at := LauncherVolumeReport{
+		Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst,
+		Sizes:        make([]LauncherVolumeSize, VolumeReportSizes),
+		SizesMissing: make([]LauncherVolumeMissing, VolumeReportSizesMissing),
+		RefusedReads: make([]string, VolumeReportRefusedReads),
+		Faults:       make([]string, VolumeReportFaults),
+	}
+	if err := at.Validate(); err != nil {
+		t.Fatalf("a report holding every list at its cap was refused: %v", err)
+	}
+	for _, tc := range []struct {
+		list string
+		over func(*LauncherVolumeReport)
+	}{
+		{"sizes", func(r *LauncherVolumeReport) { r.Sizes = append(r.Sizes, LauncherVolumeSize{}) }},
+		{"sizesMissing", func(r *LauncherVolumeReport) { r.SizesMissing = append(r.SizesMissing, LauncherVolumeMissing{}) }},
+		{"refusedReads", func(r *LauncherVolumeReport) { r.RefusedReads = append(r.RefusedReads, "") }},
+		{"faults", func(r *LauncherVolumeReport) { r.Faults = append(r.Faults, "") }},
+	} {
+		t.Run(tc.list, func(t *testing.T) {
+			report := at
+			tc.over(&report)
+			err := report.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
+				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
 	}
 }
 
@@ -628,9 +758,10 @@ func TestMemoryGuardFramesRoundTripThroughTheWire(t *testing.T) {
 	}
 }
 
-// The acknowledgement of a daemon built before the guard, and of one whose deployment turned the
-// guard off, carries no member, and decodes with none: the launcher's guard turns off on that
-// absence. The empty acknowledgement every caller already builds is that same line.
+// An acknowledgement with no memoryGuard member decodes with none, and the launcher's guard turns
+// off on that absence: a daemon built before the guard writes such a line, and so does one whose
+// deployment turned the guard off, with or without a volumeTrim member beside it. This case
+// decodes the empty acknowledgement, the plainest such line.
 func TestMemoryGuardAnAcknowledgementWithNoMemberDecodesWithNone(t *testing.T) {
 	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
 	if err != nil {
@@ -737,6 +868,53 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// An ack with no volumeTrim member is the one ack that hands the launcher no settings: a daemon
+// built before INFRA-2009 writes such a line, and so does a deployment that turned the trimmer
+// off, with or without a memoryGuard member beside it. This case decodes the empty object, the
+// plainest such line. Settings whose numbers are all zero are not that line — they are
+// settings, which the launcher refuses value by value, and a launcher that read them as an
+// absence would say no settings came and discard a held report that the daemon which sent them
+// can take — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
+func TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem(t *testing.T) {
+	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
+	if err != nil {
+		t.Fatalf("Decode the old empty ack: %v", err)
+	}
+	ack, ok := decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode the old empty ack = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim != nil {
+		t.Fatalf("the old empty ack decoded VolumeTrim = %#v, want nil", ack.VolumeTrim)
+	}
+	decoded, err = Decode([]byte(`{"type":"launcher_hello_ack","volumeTrim":{}}`))
+	if err != nil {
+		t.Fatalf("Decode an ack carrying zeroed settings: %v", err)
+	}
+	ack, ok = decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode an ack carrying zeroed settings = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim == nil {
+		t.Fatal("an ack carrying zeroed settings decoded VolumeTrim = nil, want settings a launcher can read")
+	}
+	if *ack.VolumeTrim != (LauncherVolumeTrim{}) {
+		t.Fatalf("an ack carrying zeroed settings decoded VolumeTrim = %#v, want the zero settings it carried", *ack.VolumeTrim)
+	}
+}
+
+// A report whose walk measured nothing still writes `sizes` as an array: a strict reader refuses
+// a null, which is why record.UpdateStalled.MarshalJSON keeps `waiting` one the same way.
+func TestAVolumeReportWithNoSizesEncodesAnEmptyArray(t *testing.T) {
+	line, err := json.Marshal(LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst})
+	if err != nil {
+		t.Fatalf("Marshal a report with no sizes: %v", err)
+	}
+	if !bytes.Contains(line, []byte(`"sizes":[]`)) || bytes.Contains(line, []byte(`"sizes":null`)) {
+		t.Fatalf("Marshal a report with no sizes = %s, want its sizes as an empty array", line)
 	}
 }
 

@@ -595,17 +595,18 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	// Step 7: a secret request is decided only on the broker's own page, by its approver signed in
-	// to the broker: the account route answers 403 DECIDE_ON_BROKER_PAGE naming that page to a
-	// listed caller giving the approver's own login and to a caller with no ServiceAccount token
-	// alike; another person signed in to the page is offered no decision; the request is still
-	// pending, and its approver's approval on the page then releases the value.
+	// to the broker: the account route answers a caller with no ServiceAccount token 401 before it
+	// reads the record, naming nothing of it, and answers 403 DECIDE_ON_BROKER_PAGE naming that page
+	// to a listed caller giving the approver's own login; another person signed in to the page is
+	// offered no decision; the request is still pending, and its approver's approval on the page
+	// then releases the value.
 	t.Run("7_TheAccountRoutesOrAnotherPersonDecideNothing", func(t *testing.T) {
 		requestID, recordID := ts.createPending(t, sessionKey, enrollmentID, "e2e wrong login", "NOTION_API_KEY")
 
 		status, body := ts.req(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve", nil,
 			map[string]any{"approver": testApprover})
-		if status != http.StatusForbidden || decode[wireError](t, body).Code != "DECIDE_ON_BROKER_PAGE" {
-			t.Fatalf("approve with no ServiceAccount token = %d %s, want 403 DECIDE_ON_BROKER_PAGE", status, body)
+		if status != http.StatusUnauthorized || decode[wireError](t, body).Code != "ACCOUNT_TOKEN_INVALID" || strings.Contains(string(body), recordID) {
+			t.Fatalf("approve with no ServiceAccount token = %d %s, want 401 ACCOUNT_TOKEN_INVALID naming nothing of the record", status, body)
 		}
 		status, body = ts.ui(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve",
 			map[string]any{"approver": testApprover})
@@ -650,15 +651,17 @@ func TestEndToEnd(t *testing.T) {
 		}
 	})
 
-	// Step 9: a shared human-tier secret's request names "anyone" as its approver, reaches the
-	// pending list of a person who is neither its requester's operator nor anyone the policy names,
-	// and that person's approval on the broker's page releases its value.
+	// Step 9: a shared human-tier secret's request names "anyone" as its approver and is listed for
+	// the person responsible for the session that asked, its operator, and for nobody else; a
+	// person who is neither its requester's operator nor anyone the policy names still approves it
+	// on the broker's page, and that approval releases its value.
 	t.Run("9_AnyoneSignedInApprovesASharedHumanTierSecret", func(t *testing.T) {
 		requestID, recordID := ts.createPending(t, sessionKey, enrollmentID, "e2e shared deploy", "SHARED_DEPLOY_KEY")
 		if read := ts.status(t, sessionKey, enrollmentID, requestID); read.Approver == nil || *read.Approver != record.AnyoneApprover {
 			t.Fatalf("shared request = %+v, want approver %q", read, record.AnyoneApprover)
 		}
-		ts.awaitPendingFor(t, otherPerson, recordID)
+		ts.awaitPendingFor(t, testApprover, recordID)
+		ts.refutePendingFor(t, otherPerson, recordID)
 
 		ts.signedIn(t, otherPerson, recordID).Decide(t, recordID, true)
 		ts.awaitValue(t, sessionKey, enrollmentID, ts.grantOf(t, sessionKey, enrollmentID, requestID), "SHARED_DEPLOY_KEY", "shared-deploy-v1")
@@ -690,8 +693,8 @@ func TestEndToEnd(t *testing.T) {
 
 	// Step 11: a human-tier secret owned by one identity that is neither the asking session's
 	// operator nor policy.OwnerShared. Step 9 is this step's control: there a shared-owner
-	// human-tier secret's card is on every signed-in person's page, its approver being
-	// record.AnyoneApprover, so any of them may release it. Here the card is on exactly one
+	// human-tier secret's card waits on record.AnyoneApprover, so a person whose page does not
+	// list it may still release it. Here the card is on exactly one
 	// person's page — the owner's — and on nobody else's: not the requesting session's own
 	// operator's, and not the shared approver's pending list. Only that one owner, signed in to
 	// the broker, decides it on the broker's own page, as step 3's approver does, and only then

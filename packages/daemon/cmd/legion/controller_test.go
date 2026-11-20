@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -395,11 +396,15 @@ exit %[2]d
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
+	// Oh My Pi's directories are this HOME's: the plugin gate reads the process environment through
+	// ompdirs.ProfileRoot, so each variable that would move them is cleared, OMP_CONFIG_ROOT, which
+	// ProfileRoot honours over PI_CONFIG_DIR, included.
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("OMP_PROFILE", "")
 	t.Setenv("PI_CONFIG_DIR", "")
+	t.Setenv("OMP_CONFIG_ROOT", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("LEGION_OMP_PATH", omp)
@@ -954,13 +959,13 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 // its design gate steps, as a sentence of its own: the owner accounts the daemon read the review
 // App installed on as it built the gh bundle it has just answered (controllerReach). They are
 // not the owners of the repositories the project is mapped (GET /legion/v1/state): here the
-// mapping is acme/widgets alone and the review App is installed on theorem-labs too, so the
+// mapping is acme/widgets alone and the review App is installed on example-org too, so the
 // controller's gh holds both directories and its prompt names both. A prompt built from the
 // mapping told the controller it reached acme alone. It names no repository, since the App
 // installation and not the mapping decides where the project may work (INFRA-2543).
 func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 	tokens := newControllerCredentialTokens("ghs_first")
-	tokens.installOn("acme", "theorem-labs")
+	tokens.installOn("acme", "example-org")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps: config.DesignGateOff.Steps(), tokens: tokens,
 		repos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, repositories: []string{"acme/widgets"},
@@ -969,12 +974,12 @@ func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	for _, owner := range []string{"acme", "theorem-labs"} {
+	for _, owner := range []string{"acme", "example-org"} {
 		if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", owner, ghconfig.HostsFile)); err != nil {
 			t.Fatalf("the controller's gh holds no token for %s (%v), so this case proves nothing", owner, err)
 		}
 	}
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, theorem-labs, and its token reaches every repository of those owners.\n\n"
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, example-org, and its token reaches every repository of those owners.\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
@@ -1096,14 +1101,14 @@ func TestControllerStartRefusesAnUnusableRepositoryMapping(t *testing.T) {
 // real, fully-booted state) launches on both paths, rather than refusing and burning a launch
 // budget the App install cannot recover from on its own. The controller is told the owners its
 // App is installed on and its gh holds a token of, which the mapping does not decide: here the
-// review App is installed on theorem-labs and not on acme, so the daemon refuses acme/widgets
-// and the controller's gh still reaches theorem-labs. A prompt built from the mapping said the
+// review App is installed on example-org and not on acme, so the daemon refuses acme/widgets
+// and the controller's gh still reaches example-org. A prompt built from the mapping said the
 // App was installed on no owner while the gh directory held that token. The refused
 // repositories are named in the state and never in the addressing, which names no repository at
 // all.
 func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	tokens := newControllerCredentialTokens("ghs_first")
-	tokens.installOn("theorem-labs")
+	tokens.installOn("example-org")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps:        config.DesignGateOff.Steps(),
 		tokens:       tokens,
@@ -1113,10 +1118,10 @@ func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", "theorem-labs", ghconfig.HostsFile)); err != nil {
-		t.Fatalf("the controller's gh holds no token for theorem-labs (%v), so this case proves nothing", err)
+	if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", "example-org", ghconfig.HostsFile)); err != nil {
+		t.Fatalf("the controller's gh holds no token for example-org (%v), so this case proves nothing", err)
 	}
-	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner theorem-labs, and its token reaches every repository of that owner.\n\n"
+	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner example-org, and its token reaches every repository of that owner.\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
@@ -1612,6 +1617,23 @@ func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
 		if value, set := env["LEGION_SLACK_CHANNELS"]; set {
 			t.Errorf("the %s's environment carries LEGION_SLACK_CHANNELS=%q", kind, value)
+		}
+	}
+}
+
+// A start from inside a resumed Legion pane inherits OMP_SESSION_EXCLUSIVE=1, the pair the runtime
+// tells a pane that resumes a recorded session. This controller resumes none, so neither it nor
+// its load probe is handed the variable, which would stop it where Oh My Pi moves a held session.
+func TestControllerStartDropsAnInheritedSessionExclusive(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	t.Setenv(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+		if value, set := env[runtime.SessionExclusiveVariable]; set {
+			t.Errorf("the %s's environment carries %s=%q", kind, runtime.SessionExclusiveVariable, value)
 		}
 	}
 }

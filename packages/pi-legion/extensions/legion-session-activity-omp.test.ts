@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -36,10 +37,11 @@ import {
 //     `subagent`;
 //   - a named `bash` service — it is *not* reported, and this case pins that it is not. A service
 //     runs outside the session's job manager, so `getAsyncJobSnapshot()` never names it and the
-//     daemon cannot know it is there. That is what skills/legion-worker/SKILL.md tells a worker
-//     ("A named Oh My Pi `bash` service goes with the pod too … your session reports nothing about
-//     it"), and the case fails if a pin starts reporting one, because the skill would then be
-//     telling a worker to throw away work the daemon could have kept.
+//     daemon cannot know it is there. That is what the worker prompt tells a worker
+//     (packages/daemon/internal/prompts/go/worker-common.md: "A named Oh My Pi `bash` service
+//     does not keep the pod: it runs outside your session's job manager, so your session reports
+//     nothing about it"), and the case fails if a pin starts reporting one, because the prompt
+//     would then be telling a worker to throw away work the daemon could have kept.
 //
 // The pane is a role session as a pod runs one: pi-envoy's extension and this package's root (the
 // root, not extensions/legion.ts, so Oh My Pi discovers the `agents/` beside it), the role's
@@ -57,6 +59,9 @@ const { skip, setup } = ompNatsGuard();
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
+
+/** The registration secret the stand-in daemon answers. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
 
 /**
  * The daemon's assignment, sent as the RPC prompt. Every turn of the role's own conversation
@@ -215,7 +220,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "act-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });

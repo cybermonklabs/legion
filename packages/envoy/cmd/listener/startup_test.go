@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // During a rolling deploy the replacement listener cannot bind its durable consumer until the task
@@ -146,7 +147,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, want int) {
 	t.Helper()
 	status, answer := callListener(t, listener.port, http.MethodGet, "/v1/sessions", "")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if status != http.StatusOK || json.Unmarshal([]byte(answer), &rows) != nil || len(rows) != want {
 		t.Fatalf("GET /v1/sessions: status %d %q, want a 200 list of %d\n%s", status, answer, want, listener.Output.String())
 	}

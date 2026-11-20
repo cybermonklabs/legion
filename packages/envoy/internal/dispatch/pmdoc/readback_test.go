@@ -40,7 +40,7 @@ func TestParseForWriteRefusesADocumentItsRenderingReadsBackOtherwise(t *testing.
 // The padding is a normalisation the document write makes, not a reading of the markdown the
 // browser editor's parser shares: that parser reads a short row as the cells it writes, and
 // prosemirror-tables' fixTables pads it as this reader does the moment the document reaches an
-// editor (packages/envoy/AGENTS.md, "Milkdown's gfm preset"). What is stored is what both read
+// editor (PadTables in blocks.go says how). What is stored is what both read
 // alike, which is what this pins: the row is written out padded, and that markdown reads back as
 // the tree it was stored from. Measured against the engine over the 99 documents of this class
 // found in a 50,000-document sample: 99 of 99 of their stored renderings read alike in both

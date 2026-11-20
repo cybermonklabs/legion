@@ -1068,7 +1068,7 @@ func (l *keptLog) mark() int {
 }
 
 // mirror writes what Dispatch says of key — its status and the keys it waits on — as the
-// blockers.Mirror handler writes one from an event (record.DispatchIssueRow), under the project
+// blockers.Mirror handler writes one from an event (record.DispatchReading), under the project
 // key admission judges the line by ("LEGION", the one the records carry). It is the only thing
 // that holds a root out of the line here (blockers.WaitsOn) and a child at phase.Admitted
 // (blockers.Holds). The engine of this run reads the mirror under its own project key
@@ -1077,8 +1077,8 @@ func (l *keptLog) mark() int {
 // blocker holds is handed over by the step that writes that hand-over (handOverChildWithoutItsRun).
 func (r *keptRun) mirror(key, status string, seq int64, waits ...string) {
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchIssueRow{Key: key, Project: "LEGION",
-			Status: status, Blockers: waits, Seq: seq})
+		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	}); err != nil {
 		r.fatalf("mirror what Dispatch says of %s: %v", key, err)
 	}
@@ -2577,11 +2577,16 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
+	// Each architect is a session of its own, with a file of its own: the daemon holds a session's
+	// id and its file's path and name to the first claim of the project that recorded them
+	// (supervise's holdRecorded), so two trees' architects registering one would have the second
+	// refused.
+	session := "ses-architect-" + tree.key
 	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
+		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: session, SessionFile: "/tmp/" + session + ".jsonl"})
 	}
 	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
+		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: session})
 	}
 	r.waitMachines()
 	r.tracef("ready tree=%s launch=%d state=%s", tree.key, launch, machine.Claim().State)

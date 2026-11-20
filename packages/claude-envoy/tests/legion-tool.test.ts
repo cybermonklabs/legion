@@ -5,6 +5,7 @@ import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -77,12 +78,13 @@ interface Request {
   readonly body: unknown
 }
 
-async function daemon(): Promise<{
+/** A stub daemon answering the golden fixtures, `state` in place of `state.json` when given. */
+async function daemon(state?: unknown): Promise<{
   readonly client: LegionDaemonClient
   readonly requests: Request[]
 }> {
   const answers: Record<string, unknown> = {
-    "/legion/v1/state": await daemonFixture("state.json"),
+    "/legion/v1/state": state ?? (await daemonFixture("state.json")),
     "/legion/v1/grants": await daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
@@ -145,16 +147,19 @@ test("declares the five phase-worker operations under one op, and names the Envo
       since: { type: "string" },
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail"] },
+      wake_at: { type: "string" },
+      plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+      plan_reason: { type: "string" },
       reason: { type: "string" },
       round: { type: "string" },
     },
     required: ["op"],
   })
   expect(definition.description).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
+    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -196,6 +201,40 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       },
     },
   ])
+})
+
+// The agent that does the retro rates the plan in the completion that ends it, through this tool
+// as through every host's: the two fields reach the daemon under its own names.
+test("the retro's handoff_complete sends its rating of the plan as planRating and planReason", async () => {
+  const { client, requests } = await daemon(stateAtPhase("retro"))
+  const lookups: string[] = []
+  const standing = "c".repeat(40)
+  const reason = "The reviewer's second round found what the plan had left out."
+  await executeLegionTool(
+    {
+      daemon: client,
+      claim: () => implementer,
+      handoffReport: async (phase: LegionPhase, role: LegionRole) => {
+        lookups.push(`${phase} ${role}`)
+        return { commit: standing }
+      },
+      branchHead: noBranchHead,
+    },
+    { op: "handoff_complete", summary: "Retro done.", plan_rating: 3, plan_reason: reason },
+  )
+  expect(lookups).toEqual(["retro implementer"])
+  expect(requests.at(-1)).toEqual({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    body: {
+      grantId: "grant-for-one-command",
+      summary: "Retro done.",
+      verdict: "",
+      commit: standing,
+      planRating: 3,
+      planReason: reason,
+    },
+  })
 })
 
 test("a handoff report the pane refuses posts nothing and mints nothing", async () => {

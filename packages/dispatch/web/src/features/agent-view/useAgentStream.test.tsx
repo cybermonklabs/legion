@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import {
@@ -72,6 +72,18 @@ function replay(socket: FakeLiveSocket, session: string): void {
   );
 }
 
+/** Dispatch passing on the relay's answer to whether `session` answers on its control subject. */
+function responder(socket: FakeLiveSocket, session: string, responding: boolean): void {
+  act(() =>
+    socket.receive({
+      type: "agent",
+      sub: subscription(socket, session),
+      event: "responder",
+      data: { responding, v: 1 },
+    })
+  );
+}
+
 // `replays` is what tells the transcript it was rebuilt, so it counts the first subscription's
 // replay and the one that follows each time the socket sends the subscription again - here after
 // Dispatch rotated the socket at its age, which the page answers by reopening at once.
@@ -119,6 +131,50 @@ test("another session id unsubscribes the old view, subscribes the new one, and 
   rerender({ id: PLANNER });
   expect(socket.subscribed("agent").view).toEqual({ kind: "agent", session_id: PLANNER });
   expect(result.current).toMatchObject({ replays: 0, status: "connecting" });
+});
+
+// The relay's word that nobody answers the session's control subject is a status of its own, and
+// the session speaking again - any frame, or a later answer of `true` - takes it back to live
+// without a reconnect. A lost socket outranks it, and a refusal outranks everything.
+test("a session nobody answers reads not-answering until it speaks, under a lost socket and a refusal", async () => {
+  const { result } = renderStream(PLANNER);
+  const first = sockets.latest();
+  act(() => first.open());
+
+  responder(first, PLANNER, false);
+  expect(result.current).toMatchObject({ responding: false, status: "not-answering" });
+
+  act(() =>
+    first.receive({
+      type: "agent",
+      sub: subscription(first, PLANNER),
+      event: "frame",
+      data: { kind: "context-cleared", seq: 1, v: 1 },
+    })
+  );
+  expect(result.current).toMatchObject({ responding: true, status: "live" });
+
+  responder(first, PLANNER, false);
+  expect(result.current.status).toBe("not-answering");
+  responder(first, PLANNER, true);
+  expect(result.current).toMatchObject({ responding: true, status: "live" });
+
+  responder(first, PLANNER, false);
+  act(() => first.restart());
+  expect(result.current.status).toBe("reconnecting");
+  await waitFor(() => expect(sockets.latest()).not.toBe(first));
+  const second = sockets.latest();
+  act(() => second.open());
+  expect(result.current.status).toBe("not-answering");
+
+  // Refused, the view lets its subscription go and the socket, holding nothing else, closes a
+  // microtask later: the act awaits that too.
+  await act(async () =>
+    second.receive(
+      errorFrame(subscription(second, PLANNER), "STREAM_UNAVAILABLE", "the relay is down")
+    )
+  );
+  expect(result.current).toMatchObject({ responding: false, status: "unavailable" });
 });
 
 // The socket's state also carries what the delivery pages show - the last change time, how long

@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -25,7 +26,7 @@ func TestAFreshLaunchEnrollsAtRegistrationWithTheSession(t *testing.T) {
 		t.Fatalf("enrollments %+v, want one at registration", enrollments)
 	}
 	loc := h.locator()
-	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments[0], want)
 	}
@@ -52,7 +53,7 @@ func TestAnIssuePodProcessEnrollsWithItsPodUIDAndRoleSlot(t *testing.T) {
 	h.helloWithIdentity()
 	h.register()
 	enrollments := broker.enrolled()
-	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if len(enrollments) != 1 || enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments, want)
 	}
@@ -462,5 +463,43 @@ func TestAnExpiredTokenRefusalReadsTheTokenAgainAtTheNextObservation(t *testing.
 	}
 	if c := h.claim(); c.Enrollment == nil {
 		t.Fatal("the claim records no enrollment")
+	}
+}
+
+// nulIDEnroller is the broker answering every enrollment with an id that ends in a NUL.
+type nulIDEnroller struct{ *fakeEnroller }
+
+func (e nulIDEnroller) Enroll(ctx context.Context, p PodEnrollment) (string, error) {
+	id, err := e.fakeEnroller.Enroll(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	return id + "\x00", nil
+}
+
+// The broker's enrollment id is held as the store keeps it (storetext.Text): a NUL in it is
+// U+FFFD in the claim, in the claim's write and in what the shim is told, as a restart would read
+// it back from the store.
+func TestABrokerEnrollmentIDWithNULIsHeldAsTheStoreKeepsIt(t *testing.T) {
+	h := newHarness(t)
+	h.deps.Secrets = nulIDEnroller{&fakeEnroller{now: h.clock.Now}}
+	h.start(h.store.load(h.token))
+	h.launch()
+	h.helloWithIdentity()
+	h.register()
+
+	const want = "enr-1\uFFFD"
+	held, stored := h.claim().Enrollment, h.store.load(testToken).Enrollment
+	if held == nil || stored == nil {
+		t.Fatalf("the claim holds the enrollment %+v and its write carries %+v, want one in each", held, stored)
+	}
+	if held.ID != want {
+		t.Errorf("the claim holds the enrollment id %q, want %q, as the store keeps the broker's", held.ID, want)
+	}
+	if stored.ID != want {
+		t.Errorf("the claim's write carries the enrollment id %q, want %q", stored.ID, want)
+	}
+	if told := h.conn.Enrollments(); len(told) != 1 || told[0] != want {
+		t.Errorf("the shim was told %q, want [%q]", told, want)
 	}
 }

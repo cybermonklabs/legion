@@ -374,9 +374,7 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 
 // TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo: the refusing option answers the 422 GitHub
 // answers a body it will not mint for, and the minter must read that as the caller's narrowing
-// rather than as the upstream's trouble. It answers a read-only narrowing's second request - the
-// one the minter asks without actions - the same way, so no narrowing driven against it releases
-// a token.
+// rather than as the upstream's trouble, so no narrowing driven against it releases a token.
 func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
@@ -412,8 +410,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 // narrowing reads. The repository answer refuses the narrowing naming its repository, mints the
 // one naming another, and mints the request that names no repository at all - the probe that
 // finds the repositories to be the refused part. The permissions answer refuses a read-only
-// narrowing, its second request without actions included, and mints a narrowing that names
-// repositories alone.
+// narrowing and mints a narrowing that names repositories alone.
 func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 	value := gitHubAppValue(t)
 	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}
@@ -772,7 +769,7 @@ func TestTheMicrosoftStandRecordsTheAssertionItWasGiven(t *testing.T) {
 // verdictSchema is the form of reply the model rows ask for: the one the broker's model judge
 // asks for, written here because what the row is about is that a reply of this shape survives
 // the wire the stand-in writes it on.
-const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","refer"]},` +
+const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["grant","deny"]},` +
 	`"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}`
 
 // TestTheModelStandAnswersEachCaseARunCanMeet drives agentloop, the reader the broker's judge
@@ -782,7 +779,7 @@ const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string"
 // reader makes of it.
 func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
-	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"approve","reason":"the reason names the issue"}`}})
+	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"grant","reason":"the reason names the issue"}`}})
 	service.AnswerWith(stand.Answer)
 	ask := func(t *testing.T, bound time.Duration) agentloop.Result {
 		t.Helper()
@@ -808,8 +805,8 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	if result.Fault != "" {
 		t.Fatalf("the run ended in %s: %s", result.Fault, result.Detail)
 	}
-	if err := json.Unmarshal(result.Value, &answer); err != nil || answer.Verdict != "approve" {
-		t.Fatalf("the value is %s, %v; want the approving object the stand-in was set to", result.Value, err)
+	if err := json.Unmarshal(result.Value, &answer); err != nil || answer.Verdict != "grant" {
+		t.Fatalf("the value is %s, %v; want the granting object the stand-in was set to", result.Value, err)
 	}
 
 	stand.Answers(ModelAnswer{Text: "I have thought about it and I would rather not say."})
@@ -817,7 +814,7 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 		t.Errorf("a reply that is no object ended in %q; want %q", result.Fault, agentloop.FaultMalformed)
 	}
 
-	stand.Answers(ModelAnswer{Text: `{"verdict":"refer","reason":"too late"}`, Delay: 5 * time.Second})
+	stand.Answers(ModelAnswer{Text: `{"verdict":"deny","reason":"too late"}`, Delay: 5 * time.Second})
 	if result := ask(t, 300*time.Millisecond); result.Fault != agentloop.FaultTime {
 		t.Errorf("an answer held past the bound ended in %q; want %q", result.Fault, agentloop.FaultTime)
 	}
@@ -831,33 +828,41 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	}
 }
 
-// TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes drives judge.Dispatch, the broker's own
-// reader of those two routes, against the stand-in: the issue it holds with its spec, the issue
-// it holds without one, a key it holds no issue for, and a read presenting no token at all.
-func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
+// TestTheDispatchStandAnswersTheReadsItsReaderMakes drives judge.Dispatch, the broker's own
+// reader of those three routes, against the stand-in: the issue it holds with its spec, the
+// issue it holds without one, a key it holds no issue for, the ask a person answered, an id it
+// holds no ask for, and a read presenting no token at all.
+func TestTheDispatchStandAnswersTheReadsItsReaderMakes(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
-	service.AnswerWith(NewDispatchStand(DispatchOptions{Issues: []DispatchIssue{
-		{Key: "INFRA-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
-		{Key: "INFRA-1200", Title: "The local stack", Status: "done"},
-	}}).Answer)
+	service.AnswerWith(NewDispatchStand(DispatchOptions{
+		Issues: []DispatchIssue{
+			{Key: "ACME-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
+			{Key: "ACME-1200", Title: "The local stack", Status: "done"},
+		},
+		Asks: []DispatchAsk{{
+			ID: "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b", IssueKey: "ACME-1353", State: "answered",
+			Question: "Spend the key on this issue's runs?", Options: []string{"Spend it", "Leave it"},
+			AnsweredBy: "approver@example.com", Selected: []string{"Spend it"}, Text: "Go ahead.",
+		}},
+	}).Answer)
 	tokenFile := filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := judge.Dispatch{BaseURL: service.URL(), Account: brokertoken.NewAccountToken(tokenFile)}
 
-	issue, err := reader.Issue(t.Context(), "INFRA-1353")
+	issue, err := reader.Issue(t.Context(), "ACME-1353")
 	if err != nil {
 		t.Fatalf("read the open issue: %v", err)
 	}
-	if issue.Key != "INFRA-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
+	if issue.Key != "ACME-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
 		t.Errorf("the issue read is %+v; want the fixture's own key, title and status", issue)
 	}
 	if !issue.HasSpec || !strings.Contains(issue.Spec, "One model decides.") {
 		t.Errorf("the spec read is %q (held: %v); want the fixture's markdown", issue.Spec, issue.HasSpec)
 	}
 
-	done, err := reader.Issue(t.Context(), "INFRA-1200")
+	done, err := reader.Issue(t.Context(), "ACME-1200")
 	if err != nil {
 		t.Fatalf("read the done issue: %v", err)
 	}
@@ -865,13 +870,28 @@ func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 		t.Errorf("the done issue read is %+v; want it done and holding no spec", done)
 	}
 
-	if _, err := reader.Issue(t.Context(), "INFRA-9999"); !errors.Is(err, judge.ErrNoIssue) {
+	if _, err := reader.Issue(t.Context(), "ACME-9999"); !errors.Is(err, judge.ErrNoIssue) {
 		t.Errorf("a key no issue carries answered %v; want %v", err, judge.ErrNoIssue)
+	}
+
+	ask, err := reader.Ask(t.Context(), "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b")
+	if err != nil {
+		t.Fatalf("read the answered ask: %v", err)
+	}
+	if ask.IssueKey != "ACME-1353" || ask.State != "answered" || ask.Question != "Spend the key on this issue's runs?" {
+		t.Errorf("the ask read is %+v; want the fixture's own issue, state and question", ask)
+	}
+	if ask.AnsweredBy != "approver@example.com" || len(ask.Selected) != 1 || ask.Selected[0] != "Spend it" || ask.Text != "Go ahead." {
+		t.Errorf("the ask's answer reads %q / %v / %q; want the fixture's own answer", ask.AnsweredBy, ask.Selected, ask.Text)
+	}
+
+	if _, err := reader.Ask(t.Context(), "11111111-2222-4333-a444-555555555555"); !errors.Is(err, judge.ErrNoAsk) {
+		t.Errorf("an id no ask carries answered %v; want %v", err, judge.ErrNoAsk)
 	}
 
 	// The 401 the real API answers a request with no credential, which a fixture of answers
 	// alone would quietly drop: a caller that presented nothing must read the refusal.
-	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/INFRA-1353", nil)
+	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/ACME-1353", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

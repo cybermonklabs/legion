@@ -44,9 +44,12 @@ type route struct {
 
 // readRoutes reads routes() from the route table, one row per route, refusing a row it cannot
 // read or one with no comment above it.
-func readRoutes(src *source, funcs map[string]*ast.FuncDecl) ([]route, error) {
-	fn, ok := funcs["routes"]
-	if !ok {
+func readRoutes(src *source, funcs funcTable) ([]route, error) {
+	fn, err := funcs.decl("routes")
+	switch {
+	case err != nil:
+		return nil, err
+	case fn == nil:
 		return nil, fmt.Errorf("%s declares no routes()", apiDir)
 	}
 	var table *ast.CompositeLit
@@ -135,21 +138,23 @@ type authClass struct {
 // credentialLabels names, for a reader, the credential each adapter accepts. refgen refuses an
 // adapter missing here, so a new one cannot reach the page under its Go name.
 var credentialLabels = map[string]string{
-	"public":                     "None",
-	"sessionAuth":                "Session proof",
-	"renewAuth":                  "Renewal session proof",
-	"launcherAuth":               "Machine credential",
-	"accountAuth":                "Caller ServiceAccount token",
-	"accountAuthAfterRecordKind": "Caller ServiceAccount token, checked by the handler",
-	"serviceAuth":                "Service login ServiceAccount token",
-	"signInAuth":                 "Broker sign-in session",
+	"public":       "None",
+	"sessionAuth":  "Session proof",
+	"renewAuth":    "Renewal session proof",
+	"launcherAuth": "Machine credential",
+	"accountAuth":  "Caller ServiceAccount token",
+	"serviceAuth":  "Service login ServiceAccount token",
+	"signInAuth":   "Broker sign-in session",
 }
 
 // readAuthClasses reads each adapter a route uses: its doc comment, the routeAuth constant it
 // builds its routeHandler with, and what authenticate's case for that constant can refuse.
 func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
-	authenticate, ok := g.funcs["authenticate"]
-	if !ok {
+	authenticate, err := g.funcs.decl("authenticate")
+	switch {
+	case err != nil:
+		return nil, err
+	case authenticate == nil:
 		return nil, fmt.Errorf("%s declares no authenticate", apiDir)
 	}
 	cases := map[string]*ast.CaseClause{}
@@ -178,8 +183,11 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 			continue
 		}
 		seen[r.Wrapper] = true
-		fn, ok := g.funcs[r.Wrapper]
-		if !ok {
+		fn, err := g.funcs.decl(r.Wrapper)
+		switch {
+		case err != nil:
+			return nil, fmt.Errorf("%s: %w", r.At, err)
+		case fn == nil:
 			return nil, fmt.Errorf("%s: no adapter %s", r.At, r.Wrapper)
 		}
 		label, ok := credentialLabels[r.Wrapper]
@@ -201,7 +209,10 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s: authenticate has no case for %s, %s's authentication", g.src.at(authenticate), constant, r.Wrapper)
 		}
-		info := g.collect(g.src.fileOf(authenticate), &ast.BlockStmt{List: cc.Body}, authenticate.Type.Params)
+		info, err := g.collect(g.src.fileOf(authenticate), &ast.BlockStmt{List: cc.Body}, authenticate.Type.Params)
+		if err != nil {
+			return nil, err
+		}
 		refusals, err := g.resolve(info, map[string][]string{}, map[string]bool{"authenticate": true})
 		if err != nil {
 			return nil, err
@@ -215,7 +226,7 @@ func (g *graph) readAuthClasses(routes []route) ([]authClass, error) {
 // package's, or another's whose method serves a route.
 type graph struct {
 	src   *source
-	funcs map[string]*ast.FuncDecl
+	funcs funcTable
 	pkgs  map[string]*source // the broker's other packages, parsed on first use, by directory
 	// graphs is the graph of each package a route's handler is declared in, by directory, shared
 	// by every graph read from one tree.
@@ -227,11 +238,7 @@ func newGraph(root string) (*graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	funcs, err := src.funcs()
-	if err != nil {
-		return nil, err
-	}
-	g := &graph{src: src, funcs: funcs, pkgs: map[string]*source{}, graphs: map[string]*graph{}}
+	g := &graph{src: src, funcs: src.funcs(), pkgs: map[string]*source{}, graphs: map[string]*graph{}}
 	g.graphs[apiDir] = g
 	return g, nil
 }
@@ -245,11 +252,7 @@ func (g *graph) in(dir string) (*graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	funcs, err := src.funcs()
-	if err != nil {
-		return nil, err
-	}
-	other := &graph{src: src, funcs: funcs, pkgs: g.pkgs, graphs: g.graphs}
+	other := &graph{src: src, funcs: src.funcs(), pkgs: g.pkgs, graphs: g.graphs}
 	g.graphs[dir] = other
 	return other, nil
 }
@@ -274,9 +277,9 @@ type site struct {
 	callee    string
 	dir       string   // a pageAnswerers call's: the directory of the package declaring callee, "" for this one
 	sentinels []string // the messages of the errors.Is targets of the case clause around it
-	bodyType  string   // readJSON's: the request body's type
+	bodyType  string   // readJSON's or readCarriedBody's: the request body's type
 	respType  string   // writeJSON's: the response body's type, "" when refgen cannot name it; a refusal writer's, the body it answers beyond code and error
-	query     string   // r.URL.Query().Get's: the query parameter
+	query     string   // r.URL.Query().Get's, or r.URL.Query()[name]'s for a repeated one: the query parameter
 	guards    []guard  // the boolean conditions it runs under
 	at        string
 }
@@ -360,8 +363,9 @@ type funcInfo struct {
 	assigned map[string][]ast.Expr
 }
 
-// collect lists the sites in body, a function whose parameters are params.
-func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) funcInfo {
+// collect lists the sites in body, a function whose parameters are params, refusing a call of the
+// package's own whose name more than one declaration shares (funcTable.decl).
+func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) (funcInfo, error) {
 	info := funcInfo{assigned: map[string][]ast.Expr{}}
 	if params != nil {
 		for _, field := range params.List {
@@ -390,13 +394,28 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 		}
 		return true
 	})
+	var err error
 	var stack []ast.Node
 	ast.Inspect(body, func(n ast.Node) bool {
 		if n == nil {
 			stack = stack[:len(stack)-1]
 			return true
 		}
+		if err != nil {
+			return false
+		}
 		stack = append(stack, n)
+		// r.URL.Query()["name"] reads a query parameter a route takes more than once, which no Get
+		// call names, so the route's page lists it from the index instead.
+		if ix, ok := n.(*ast.IndexExpr); ok && isQueryCall(ix.X) {
+			if name, ok := strLit(ix.Index); ok {
+				info.sites = append(info.sites, site{
+					kind: siteCall, call: ix.X.(*ast.CallExpr), query: name, at: g.src.at(ix),
+					sentinels: g.caseSentinels(file, stack), guards: siteGuards(stack),
+				})
+			}
+			return true
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -413,9 +432,9 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 				if len(call.Args) == 3 {
 					s.respType = g.typeName(call.Args[2], info.assigned, locals)
 				}
-			case g.funcs[fun.Name] != nil:
+			case g.funcs.declares(fun.Name):
 				s.kind, s.callee = siteCall, fun.Name
-				if fun.Name == "readJSON" && len(call.Args) > 2 {
+				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody") && len(call.Args) > 2 {
 					if u, ok := call.Args[2].(*ast.UnaryExpr); ok {
 						if id, ok := u.X.(*ast.Ident); ok {
 							s.bodyType = locals[id.Name]
@@ -435,7 +454,7 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 					return true
 				}
 				s.kind, s.callee, s.query = siteCall, "", name
-			case g.funcs[fun.Sel.Name] != nil && g.funcs[fun.Sel.Name].Recv != nil:
+			case g.funcs.declaresMethod(fun.Sel.Name):
 				s.kind, s.callee = siteCall, fun.Sel.Name
 			case !g.pages() && pageAnswerers[fun.Sel.Name] != "":
 				s.kind, s.callee, s.dir = siteCall, fun.Sel.Name, pageAnswerers[fun.Sel.Name]
@@ -445,12 +464,21 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 		default:
 			return true
 		}
+		if s.kind == siteCall && s.callee != "" && s.dir == "" {
+			// A call of this package's own is refused here, before resolve follows any site of
+			// the body, when its name is ambiguous: typeName reads a call's result type by name
+			// as well, and the call it reads is one of the body's, which this refuses.
+			if _, err = g.funcs.decl(s.callee); err != nil {
+				err = fmt.Errorf("%s: %w", s.at, err)
+				return true
+			}
+		}
 		s.sentinels = g.caseSentinels(file, stack)
 		s.guards = siteGuards(stack)
 		info.sites = append(info.sites, s)
 		return true
 	})
-	return info
+	return info, err
 }
 
 // typeName is the package type e is a value of, when refgen can read it: a composite literal
@@ -471,7 +499,9 @@ func (g *graph) typeName(e ast.Expr, assigned map[string][]ast.Expr, locals map[
 		if !ok {
 			return ""
 		}
-		fn := g.funcs[id.Name]
+		// An ambiguous name reads as no function here: the call is one of the body's, and
+		// collect refuses it.
+		fn, _ := g.funcs.decl(id.Name)
 		if fn == nil || fn.Recv != nil || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
 			return ""
 		}
@@ -669,13 +699,19 @@ func (g *graph) resolve(info funcInfo, params map[string][]string, visiting map[
 				if err != nil {
 					return nil, err
 				}
-				if other.funcs[s.callee] == nil {
+				if !other.funcs.declares(s.callee) {
 					return nil, fmt.Errorf("%s: %s declares no %s, which pageAnswerers names", s.at, s.dir, s.callee)
 				}
 				cg = other
 			}
-			callee := cg.funcs[s.callee]
-			calleeInfo := cg.collect(cg.src.fileOf(callee), callee.Body, callee.Type.Params)
+			callee, err := cg.funcs.decl(s.callee)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", s.at, err)
+			}
+			calleeInfo, err := cg.collect(cg.src.fileOf(callee), callee.Body, callee.Type.Params)
+			if err != nil {
+				return nil, err
+			}
 			calleeEnv := map[string][]string{}
 			for i, name := range calleeInfo.params {
 				if i < len(s.call.Args) {
@@ -792,7 +828,10 @@ func (g *graph) handlerOutcomes(r route) ([]outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	info := hg.collect(hg.src.fileOf(fn), fn.Body, fn.Type.Params)
+	info, err := hg.collect(hg.src.fileOf(fn), fn.Body, fn.Type.Params)
+	if err != nil {
+		return nil, err
+	}
 	return hg.resolve(info, map[string][]string{}, map[string]bool{r.Handler: true})
 }
 
@@ -802,8 +841,11 @@ func (g *graph) handler(r route) (*graph, *ast.FuncDecl, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	fn, ok := hg.funcs[r.Handler]
-	if !ok || fn.Recv == nil {
+	fn, err := hg.funcs.decl(r.Handler)
+	switch {
+	case err != nil:
+		return nil, nil, fmt.Errorf("%s: %w", r.At, err)
+	case fn == nil || fn.Recv == nil:
 		return nil, nil, fmt.Errorf("%s: %s declares no method %s", r.At, r.Dir, r.Handler)
 	}
 	return hg, fn, nil

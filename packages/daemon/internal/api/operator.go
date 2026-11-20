@@ -397,7 +397,8 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 }
 
 // spawn creates the claim — or finds it, when it exists — and posts the launch to its machine,
-// then the task, so a claim the machine will not launch is given no task either.
+// then the task, so a claim the machine will not launch is given no task either. While the project
+// is paused it creates and launches nothing (refusedWhilePaused).
 func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	var req SpawnRequest
 	if !s.readBody(w, r, &req, nil) || !requireFields(w,
@@ -425,6 +426,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, "spawn") {
 		return
 	}
+	c := supervise.Claim{
+		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
+	}
+	if s.refusedWhilePaused(w, r, "spawn", c) {
+		return
+	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
@@ -434,9 +441,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	m, created, err := s.supervisor.Create(ctx, supervise.Claim{
-		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
-	}, req.Prompt)
+	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
 		s.operatorFailure(w, "spawn", token, err)
 		return
@@ -545,9 +550,14 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	return true, m.Handle(ctx, ev)
 }
 
+// deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
+// claim but the controller's (refusedWhilePaused).
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
 	var req DeliverRequest
 	if !s.readBody(w, r, &req, nil) || !requireFields(w, field{"task", req.Task}) {
+		return nil, false
+	}
+	if s.refusedWhilePaused(w, r, "deliver", c) {
 		return nil, false
 	}
 	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task}, true
@@ -557,7 +567,12 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 	return supervise.RequestSuspend{Claim: c.Token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}, true
 }
 
-func resumeEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
+// resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
+// claim but the controller's (refusedWhilePaused).
+func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.refusedWhilePaused(w, r, "resume", c) {
+		return nil, false
+	}
 	return supervise.RequestResume{Claim: c.Token}, true
 }
 
@@ -598,7 +613,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := m.Claim()
-	if req.Session != c.Session {
+	if !c.HoldsSession(req.Session) {
 		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
 			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
 		return
@@ -660,6 +675,8 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		// it logs names the request and nothing it did (operatorDone), and freshSession logs
 		// its own Warn where it stopped the claim and did not start it.
 		status, notRestarted, _, ok = s.freshSession(w, r, m, token)
+	} else if s.refusedWhilePaused(w, r, "retry", m.View().Claim) {
+		return
 	} else {
 		status, ok = s.retryStart(w, r, m, token, false)
 	}
@@ -741,7 +758,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	if recorded.Phase == phase.Held {
 		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("operator/retry"), fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: apply the operator's retry of a phase", "claim", token, "issue", c.Issue)
 		return http.StatusInternalServerError, fmt.Sprintf("could not retry %s's phase %s: %v", c.Issue, working, err), true

@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
+import {
+  LEGION_PHASE_BACKWARD_TARGETS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+} from "@legion/contracts/legion-api";
 import { z } from "zod";
+import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
+import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
+import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -40,11 +47,24 @@ const REPORT = {
   handoffVersion: 2,
 };
 
+/** What the implementer's retro reports in the pane: the commit alone, since a retro ends with no
+ * handoff record and the daemon refuses a retro's completion that names one
+ * (`HANDOFF_RECORD_MISMATCH`). */
+const RETRO_REPORT = { commit: "c".repeat(40) };
+
+/** A daemon refusal as its route answers it: the status, the code and the sentence. */
+type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
+
 /** A runtime over a stub daemon answering the golden fixtures, recording each route it is sent
- * and each body it is posted. `state` is what `GET /legion/v1/state` answers. */
+ * and each body it is posted. `state` is what `GET /legion/v1/state` answers, `ratingRefusal`,
+ * when given, what the daemon answers a completion that carries `planRating`, and `report` what
+ * the pane reports for the phase it finds: `REPORT`, or the commit alone that a phase with no
+ * handoff record reports (handoff-record's standingReport). */
 function runtime(
   claim: ClaimCapability = implementer,
-  state: Record<string, unknown> = daemonFixture("state.json")
+  state: Record<string, unknown> = daemonFixture("state.json"),
+  ratingRefusal?: DaemonRefusal,
+  report: HandoffReport = REPORT
 ) {
   const routes: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -57,7 +77,20 @@ function runtime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     routes.push(route);
-    if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
+    const body: Record<string, unknown> | undefined =
+      typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    if (body !== undefined) posted.push(body);
+    if (
+      route === "/legion/v1/handoff/complete" &&
+      ratingRefusal !== undefined &&
+      body !== undefined &&
+      "planRating" in body
+    ) {
+      return Response.json(
+        { code: ratingRefusal.code, error: ratingRefusal.error },
+        { status: ratingRefusal.status }
+      );
+    }
     return Response.json(answers[route] ?? {});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
@@ -65,7 +98,7 @@ function runtime(
     claim,
     handoffReport: async (phase, role) => {
       lookups.push(`${phase} ${role}`);
-      return REPORT;
+      return report;
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -84,6 +117,8 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail"] },
       wake_at: { type: "string" },
+      plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+      plan_reason: { type: "string" },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
@@ -114,7 +149,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -165,6 +200,47 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       // field's name rather than as the daemon's generic invalid-body answer (LegionInstant).
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: "2026-11-06T10:00Z" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+    ],
+    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: not
+    // blank, and at most 2,000 characters counted as the daemon counts them. Each is refused by its
+    // field's name, before the client's own parse of the request would refuse it unnamed.
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 0, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 6, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4.5, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: "4", plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: " \t\n" },
+      "handoff_complete requires plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: "é".repeat(2001) },
+      "handoff_complete's plan_reason holds at most 2,000 characters",
+    ],
+    // The two come together: one alone is refused naming the other.
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4 },
+      "handoff_complete names plan_rating without plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
+      "handoff_complete names plan_reason without plan_rating",
+    ],
+    // The pair is the schema's own rule, so it is named with the call's other problems at once.
+    [
+      { op: "handoff_complete", summary: " ", plan_rating: 4 },
+      "handoff_complete requires summary; handoff_complete names plan_rating without plan_reason",
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
@@ -221,6 +297,185 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "pass",
     ...REPORT,
   });
+});
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro. Which completion that is, is the daemon's to say (PLAN_RATING_UNEXPECTED,
+// PLAN_RATING_REQUIRED), so the tool sends the two fields as given, under the daemon's names.
+test("the retro's completion sends plan_rating and plan_reason as planRating and planReason", async () => {
+  const { ops, routes, posted, lookups } = runtime(
+    implementer,
+    stateAtPhase("retro"),
+    undefined,
+    RETRO_REPORT
+  );
+  const reason = "The tester found the bug the plan had left out.";
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: 4,
+      plan_reason: reason,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["retro implementer"]);
+  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/grants", "/legion/v1/handoff/complete"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Retro done.",
+    verdict: "",
+    ...RETRO_REPORT,
+    planRating: 4,
+    planReason: reason,
+  });
+  // 2,000 characters of two UTF-16 units each is a reason of 2,000 characters as the daemon
+  // counts them, and it is sent; so are both ends of the scale.
+  for (const [rating, sent] of [
+    [1, "😀".repeat(2000)],
+    [5, "The plan fit the work."],
+  ] as const) {
+    await executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: rating,
+      plan_reason: sent,
+    });
+    expect(posted.at(-1)).toMatchObject({ planRating: rating, planReason: sent });
+  }
+});
+
+// Which completion ends the retro is the daemon's to say from phase.Of, never from the issue's
+// phase: the implementer's late completion of retro, once the issue has moved on to merging, is
+// still of retro, so the daemon reads its rating (and its workflow then refuses it
+// HANDOFF_NOT_CURRENT_PHASE, since the retro's completion already stands, and writes no rating of
+// it), and a completion of implementing that carries one is the daemon's to refuse
+// (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any phase, since a filter
+// on the record's phase would drop a rating the agent believes it gave.
+test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
+  // A retro writes no handoff record, so the pane reports the commit alone for it.
+  const lateHead = "b".repeat(40);
+  const late = runtime(implementer, stateAtPhase("merging"), undefined, { commit: lateHead });
+  const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
+  await expect(
+    executePhaseOp(late.ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: 2,
+      plan_reason: lateReason,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(late.lookups).toEqual(["merging implementer"]);
+  expect(late.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Retro done.",
+    verdict: "",
+    commit: lateHead,
+    planRating: 2,
+    planReason: lateReason,
+  });
+
+  const early = runtime(implementer, stateAtPhase("implementing"), {
+    status: 400,
+    code: "PLAN_RATING_UNEXPECTED",
+    error:
+      "this completion of phase implementing of LEGION-208 names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+  });
+  const earlyReason = "The plan named every file this round changed.";
+  await expect(
+    executePhaseOp(early.ops, {
+      op: "handoff_complete",
+      summary: "Implemented.",
+      plan_rating: 3,
+      plan_reason: earlyReason,
+    })
+  ).rejects.toThrow("400 PLAN_RATING_UNEXPECTED");
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+    planRating: 3,
+    planReason: earlyReason,
+  });
+  // The same completion with no rating is taken, so the refusal above is the rating's.
+  await expect(
+    executePhaseOp(early.ops, { op: "handoff_complete", summary: "Implemented." })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+  });
+});
+
+// A rating's rule is the daemon's, and this tool states it again so that it refuses a rating by
+// the field's name before any request. Every case the daemon's golden test answered
+// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden), parsed with the schema the
+// contract's own test parses it with, goes through the executor as the retro's completion: the
+// tool takes exactly the cases the daemon accepted and posts each rating and reason as it was
+// given, and refuses every other case naming a rating field, with no request sent. Blank is Go's
+// strings.TrimSpace on the daemon's side, not JavaScript's trim; `goBlankPattern`'s doc comment
+// (`@legion/contracts/go-blank`) names the two characters on which the two differ.
+test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
+  const { cases } = PlanRatingCases.parse(daemonFixture("plan-rating-cases.json"));
+  const parted: string[] = [];
+  for (const c of cases) {
+    const { ops, routes, posted } = runtime(
+      implementer,
+      stateAtPhase("retro"),
+      undefined,
+      RETRO_REPORT
+    );
+    const rating = {
+      ...(c.planRating === undefined ? {} : { plan_rating: c.planRating }),
+      ...(c.planReason === undefined ? {} : { plan_reason: c.planReason }),
+    };
+    const refusal = await executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      ...rating,
+    }).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    const told = `${c.name}: the daemon answers ${c.verdict}, the tool`;
+    if (refusal === undefined) {
+      const sent = posted.at(-1);
+      const want = {
+        grantId: "grant-for-one-command",
+        summary: "Retro done.",
+        verdict: "",
+        ...RETRO_REPORT,
+        planRating: c.planRating,
+        planReason: c.planReason,
+      };
+      if (c.verdict !== "accepted") parted.push(`${told} took it`);
+      else if (!Bun.deepEquals(sent, want)) parted.push(`${told} sent ${JSON.stringify(sent)}`);
+    } else if (c.verdict === "accepted") parted.push(`${told} refused it: ${refusal}`);
+    else if (routes.length > 0 || !/plan_rating|plan_reason/.test(refusal)) {
+      parted.push(`${told} refused it after ${routes.join(", ") || "no request"}: ${refusal}`);
+    }
+  }
+  expect(parted).toEqual([]);
+});
+
+// The description is where every host's agent reads what the completion that ends the retro
+// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
+// a rating.
+test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  for (const words of [
+    "`plan_rating`",
+    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
+    "`plan_reason`",
+    "skill://legion-retro",
+    "PLAN_RATING_UNEXPECTED",
+    "PLAN_RATING_INPUT",
+    "PLAN_RATING_REQUIRED",
+  ]) {
+    expect(description).toContain(words);
+  }
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
@@ -337,7 +592,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -360,7 +615,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -402,18 +657,12 @@ const NEXT_LOOK = "2026-09-29T09:00:00Z";
 function closedRuntime(
   claim: ClaimCapability,
   record: Record<string, unknown>,
-  refusal?: { readonly status: number; readonly code: string; readonly error: string }
+  refusal?: DaemonRefusal
 ) {
   const posted: Record<string, unknown>[] = [];
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
-    if (route === "/legion/v1/state") {
-      const state = daemonFixture("state.json") as { issues: Record<string, object> };
-      return Response.json({
-        ...state,
-        issues: { "LEGION-208": { ...state.issues["LEGION-208"], phase: "done", ...record } },
-      });
-    }
+    if (route === "/legion/v1/state") return Response.json(stateAtPhase("done", record));
     if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
     if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
     if (route === "/legion/v1/handoff/complete" && refusal !== undefined) {
@@ -515,6 +764,34 @@ test("a tester's completion on a done issue with no check object reaches the dae
     { grantId: "grant-for-one-command", summary: "Looked.", verdict: "pass" },
     { grantId: "grant-for-one-command", summary: "Looked.", verdict: "" },
   ]);
+});
+
+// A rating belongs to the completion that ends the retro alone, and a report on a production check
+// is not that completion. The tool sends it all the same, so the daemon refuses it by its code,
+// rather than the tool dropping a rating the agent believes it gave.
+test("a rating on a production check's report is sent, and the daemon's PLAN_RATING_UNEXPECTED reaches the agent", async () => {
+  const { ops, posted } = closedRuntime(implementer, checkRecord(), {
+    status: 400,
+    code: "PLAN_RATING_UNEXPECTED",
+    error:
+      "this report on look 2 of LEGION-208's production check names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+  });
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Look 2: pass.",
+      verdict: "pass",
+      plan_rating: 4,
+      plan_reason: "The plan fit the work.",
+    })
+  ).rejects.toThrow("400 PLAN_RATING_UNEXPECTED");
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Look 2: pass.",
+    verdict: "pass",
+    planRating: 4,
+    planReason: "The plan fit the work.",
+  });
 });
 
 test("a report by a role the check does not record is refused before any call, nothing minted or posted", async () => {
@@ -972,6 +1249,7 @@ test("read_release_records posts the claim's own token and secret, and counts th
     wakeToFirstTurnSeconds: {
       measured: 2,
       withoutFirstTurn: 1,
+      heldByPause: 0,
       median: 120,
       p90: 360,
       max: 360,
@@ -1013,6 +1291,7 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
     wakeToFirstTurnSeconds: {
       measured: 0,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: null,
       p90: null,
       max: null,
@@ -1083,11 +1362,166 @@ test("a release that suspended no role is counted as a release and measured in n
     wakeToFirstTurnSeconds: {
       measured: 1,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: 120,
       p90: 120,
       max: 120,
     },
   });
+});
+
+// The window the daemon's own golden wrote (`release-records.json`): a release woken after half
+// an hour, a release that suspended no role, a backstop wake with no first turn yet, and a wake
+// a project pause held, which carries `pause` and pairs with no release. The held wake reached
+// its first turn 31 minutes after it was taken, and those minutes are the pause's: it is counted
+// as `heldByPause` and is in neither the measured seconds nor `withoutFirstTurn`, while the
+// resume counts still name it. Its issue has no release in the window, so it ends none.
+test("a wake a project pause held is counted apart and left out of the wake-to-first-turn seconds", async () => {
+  const golden = daemonFixture("release-records.json");
+  const { ops } = recordsRuntime(golden);
+
+  await expect(
+    executePhaseOp(ops, { op: "read_release_records", since: "2026-11-01T00:00:00Z" })
+  ).resolves.toEqual({
+    since: "2026-11-01T00:00:00Z",
+    asOf: "2026-11-01T18:00:00.000Z",
+    ...golden,
+    counts: {
+      releases: 2,
+      releasesSuspendingNoRole: 1,
+      resumes: 3,
+      resumesByKind: { delivery: 1, backstop: 1, pause: 1 },
+      holds: 2,
+      holdsByReason: { background_work: 1, overtaken: 1 },
+    },
+    // The half hour of the one release a wake ended; the held wake's issue has no release.
+    podHoursReleased: 0.5,
+    wokenWithinTenMinutes: { releases: 0, share: 0 },
+    // The delivery wake's 120 seconds alone. The held wake's 1860 are not among them.
+    wakeToFirstTurnSeconds: {
+      measured: 1,
+      withoutFirstTurn: 1,
+      heldByPause: 1,
+      median: 120,
+      p90: 120,
+      max: 120,
+    },
+  });
+
+  // A held wake with no first turn yet is held all the same: it is not one the pod is slow for.
+  const resumes = golden.resumes as Record<string, unknown>[];
+  const waiting = resumes.map((resume) =>
+    resume.pause === undefined
+      ? resume
+      : { ...resume, podReadyAt: undefined, firstTurnAt: undefined }
+  );
+  const unturned = (await executePhaseOp(recordsRuntime({ ...golden, resumes: waiting }).ops, {
+    op: "read_release_records",
+    since: "2026-11-01T00:00:00Z",
+  })) as { readonly wakeToFirstTurnSeconds: Record<string, unknown> };
+  expect(unturned.wakeToFirstTurnSeconds).toEqual({
+    measured: 1,
+    withoutFirstTurn: 1,
+    heldByPause: 1,
+    median: 120,
+    p90: 120,
+    max: 120,
+  });
+});
+
+// A pod released before a pause and woken during it. The wake is held, so its resume names no
+// release (`release` 0), and no resume ever names that release: the role launches at the
+// project's resume, on the held wake. The held wake ends the release all the same, at its own
+// moment, so the release is charged to that wake and not to the moment of every later read, and
+// it counts as woken, within ten minutes where the wake came that soon.
+test("a wake a project pause held ends the releases of its issue that came before it", async () => {
+  const release = (id: number, issue: string, at: string) => ({
+    id,
+    issue,
+    generation: 1,
+    roles: ["implementer", "tester"],
+    at,
+    bundleBytes: 0,
+  });
+  const heldWake = (id: number, issue: string, at: string) => ({
+    id,
+    release: 0,
+    issue,
+    role: "implementer",
+    kind: "message",
+    at,
+    stuck: false,
+    pause: 7,
+  });
+  const records = {
+    releases: [
+      // Woken six minutes later by a held wake, and by nothing else.
+      release(1, "LEGION-208", "2026-11-01T12:00:00Z"),
+      // Woken an hour later by a held wake, then again at 15:00 by a wake of its other role, which
+      // names the release: the first of the two ends it.
+      release(2, "LEGION-209", "2026-11-01T12:00:00Z"),
+    ],
+    resumes: [
+      heldWake(1, "LEGION-208", "2026-11-01T12:06:00Z"),
+      heldWake(2, "LEGION-209", "2026-11-01T13:00:00Z"),
+      {
+        id: 3,
+        release: 2,
+        issue: "LEGION-209",
+        role: "tester",
+        kind: "message",
+        at: "2026-11-01T15:00:00Z",
+        firstTurnAt: "2026-11-01T15:02:00Z",
+        stuck: false,
+      },
+    ],
+    holds: [],
+  };
+  const summary = async (window: unknown, asOf: string) =>
+    (await executePhaseOp(recordsRuntime(window, asOf).ops, {
+      op: "read_release_records",
+      since: "2026-11-01T00:00:00Z",
+    })) as {
+      readonly podHoursReleased: number;
+      readonly wokenWithinTenMinutes: { readonly releases: number; readonly share: number };
+      readonly wakeToFirstTurnSeconds: Record<string, unknown>;
+    };
+
+  // Six minutes and one hour, at a read six hours after the releases and at one a day after
+  // them: neither release is open, so neither grows with the clock.
+  const atSixHours = await summary(records, "2026-11-01T18:00:00Z");
+  const atADay = await summary(records, "2026-11-02T12:00:00Z");
+  expect([atSixHours.podHoursReleased, atADay.podHoursReleased]).toEqual([1.1, 1.1]);
+  // The first release was wanted again within ten minutes, and the second was not.
+  expect(atSixHours.wokenWithinTenMinutes).toEqual({ releases: 1, share: 0.5 });
+  // The held wakes are still measured in no wake-to-first-turn second.
+  expect(atSixHours.wakeToFirstTurnSeconds).toEqual({
+    measured: 1,
+    withoutFirstTurn: 0,
+    heldByPause: 2,
+    median: 120,
+    p90: 120,
+    max: 120,
+  });
+
+  // A held wake ends no release that came after it: this pod was released an hour after the
+  // wake, and nothing has woken it since, so it is open at the read, four hours later.
+  const releasedAfter = {
+    releases: [release(3, "LEGION-210", "2026-11-01T14:00:00Z")],
+    resumes: [heldWake(4, "LEGION-210", "2026-11-01T13:00:00Z")],
+    holds: [],
+  };
+  const open = await summary(releasedAfter, "2026-11-01T18:00:00Z");
+  expect(open.podHoursReleased).toBe(4);
+  expect(open.wokenWithinTenMinutes).toEqual({ releases: 0, share: 0 });
+
+  // Nor does it end a release of another issue.
+  const otherIssue = {
+    releases: [release(5, "LEGION-211", "2026-11-01T12:00:00Z")],
+    resumes: [heldWake(6, "LEGION-212", "2026-11-01T12:06:00Z")],
+    holds: [],
+  };
+  expect((await summary(otherIssue, "2026-11-01T18:00:00Z")).podHoursReleased).toBe(6);
 });
 
 test("the pod hours of a release that suspended no role do not grow with the clock", async () => {

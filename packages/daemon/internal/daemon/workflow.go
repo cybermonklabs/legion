@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -30,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -92,8 +96,15 @@ type workflowRuntime struct {
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
-	// then — the outbox's boot sweep finds every row written before it ran.
+	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
+	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
+	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
+	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
+	// steps the machines and the service call. run builds it once this runtime is open and before
+	// supervision, since a pause's stops run on this runtime's outbox; a runtime a test builds by
+	// hand holds none.
+	pauses *projectPause
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
@@ -135,6 +146,11 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
+	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
+	// idle, wake and stuck passes read their now from, so a test clock moves all of them
+	// together; nil, in a runtime a test builds by hand, is the wall clock (clockNow).
+	now func() time.Time
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -260,16 +276,24 @@ type workflowRuntime struct {
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
-	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
-	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
-	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
-	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
-	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
-	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
+	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
+	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
+	// testing through merging), each the start read found GitHub still computing
+	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
+	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
+	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
+	// long the outbox's merge-queue read and second conflict read wait before they read again
+	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
+	// shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateRunning map[string]bool
+	mergeStateQueued  map[string]string
+	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
 
@@ -386,7 +410,11 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+//
+// clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
+// runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
+// clock.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -425,8 +453,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]bool{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
+		mergeStateRunning: map[string]*mergeStateRun{},
+		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
@@ -481,11 +509,15 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
+	// runtime's passes read too (dispatch://INFRA-3759).
+	engineCfg.Clock = clock
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -638,8 +670,8 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 // roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
 // (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
 // a transaction of its own, which owns the commit hook its write registers, so the board lane is
-// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
-// task goes first.
+// woken once it commits; it queues none for an issue of another project (enqueueRoleHolders).
+// An error is the route's to answer: it refuses the ready with 503, so no task goes first.
 func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -653,9 +685,16 @@ func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Cl
 
 // enqueueRoleHolders queues the publication of issue's role sessions in tx
 // (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
-// scope of ctx (intake.WithCommitHooks), which both callers open.
+// scope of ctx (intake.WithCommitHooks), which both callers open. An issue of another project
+// queues nothing and wakes nothing, since only that project's daemon runs a row keyed by its issue
+// (claim.KeyOfProject). That is an ordinary path, not a fault: every ready of the operator's spawn
+// of such an issue takes it, so it is passed over here, before the store, and logs nothing. The
+// store's own refusal of such a key stands behind it for every other caller.
 func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
-	if err := store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+	if !claim.KeyOfProject(w.dispatchProject, issue) {
+		return nil
+	}
+	if _, err := store.EnqueueRoleHolders(ctx, tx, w.dispatchProject, issue, nextAt); err != nil {
 		return err
 	}
 	intake.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
@@ -668,6 +707,82 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
+// write of the record that names a session or a model (workflow.Config.StepAgent): the session the
+// claim's machine published (supervise.Machine.View) and the model that answered last in that
+// session (supervise.Machine.LastAnswer). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing, as does a claim this daemon does
+// not supervise. It finds the machine without the supervisor's lock (supervisedMachine), since the
+// engine reads here inside a fact's transaction, which holds the fact lock that a Create holding
+// that lock waits on. Neither read of the machine waits on a decision in flight, so the engine's
+// transaction may make them. The session is read on both sides of the model, and a model read while
+// the session changed is left out, so the pair never names a model with a session it did not serve;
+// the end is the record's one write of either, so that record then names no model.
+//
+// Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
+// agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
+// than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
+// shift the columns of `dispatch steps` or forge a line of it.
+//
+// The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
+// suspend can record another claim's session, or one no claim holds, and its step's record would
+// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
+// no store call), and where the machine has not seen the answer, as after a restart, it reads
+// claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
+// savepoint on the connection that already holds the fact lock: no store write, and no wait on
+// another connection while that lock is held, where the store's hold (HoldSessions) would write
+// through the pool. A read that fails names no session, and the record's end then names none.
+func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.Token) workflow.StepAgent {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return workflow.StepAgent{}
+	}
+	machine, ok := r.supervisor.supervisedMachine(token)
+	if !ok {
+		return workflow.StepAgent{}
+	}
+	view := machine.View()
+	session := view.Session
+	model := machine.LastAnswer().Model
+	if machine.View().Session != session {
+		model = ""
+	}
+	if session != "" && !machine.Admits(session, view.SessionFile) && !w.sessionHeld(ctx, tx, view.Claim) {
+		session = ""
+	}
+	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
+// transaction tx (record.SessionHeld); false for no transaction and for a read that failed, which
+// is logged.
+func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool {
+	if tx == nil {
+		return false
+	}
+	held, err := record.SessionHeld(ctx, tx, c.Project, c.Token, c.Session, c.SessionFile)
+	if err != nil {
+		w.log.Warn("legion step record names no session: the read of whether its claim holds it failed", "claim", string(c.Token), "error", err)
+	}
+	return held
+}
+
+// agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
+// "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
+// what the record leaves out without the log carrying text of any length. The text comes from the
+// agent's frames, so redact.Bytes reads it whole through the URL rule before the cut: a cut made
+// first could end inside a URL's userinfo, before its "@", where the log's rule no longer finds it.
+func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
+	if text == "" || steprecord.AgentTextHolds(text) {
+		return text
+	}
+	quoted, _ := redact.Bytes(text, 256)
+	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
+		"bytes", len(text), "text", strconv.Quote(quoted))
+	return ""
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
@@ -1000,7 +1115,8 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
 // boot's whole listing (keep nil, boot set, which also holds the roots the boot's catch-up reads
-// out of admission's decision), or a recovery's (recoverRepositories), scoped to the summaries
+// out of admission's decision and refills the project's rows of the copy of Dispatch's issues
+// where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record, while every summary of the listing is still the walk
 // each chain is read up.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
@@ -1063,16 +1179,55 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on.
+	// is recording an issue on. It settles the runs its writes end as a fact does
+	// (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
 		}
+		// The boot's whole listing refills the project's rows of the copy of Dispatch's issues
+		// where the project's mark asks for it (record.Store.TakeDispatchRefill): the first boot
+		// of a project on the release of 20261120055717_dispatch_issue_value_sequences empties
+		// the project's rows here, and the mirror below fills them from this listing, so the
+		// empty, the fill and the mark's stamp commit together, under the fact lock and before
+		// admission's pass, the boot's first decision. A transaction that fails leaves the mark,
+		// and the next attempt refills. A recovery's listing is a part of the project, and it
+		// never refills. Dispatch deletes no issue and moves none to another project, and the
+		// listing is unpaged, so a key the refill removes that the listing does not hold is an
+		// anomaly the line below names.
+		if boot {
+			removed, refilled, err := w.records.TakeDispatchRefill(scoped, tx, w.dispatchProject)
+			if err != nil {
+				return err
+			}
+			if refilled {
+				inListing := make(map[string]bool, len(scope))
+				for _, summary := range scope {
+					inListing[summary.Key] = true
+				}
+				unlisted := make([]string, 0, len(removed))
+				for _, key := range removed {
+					if !inListing[key] {
+						unlisted = append(unlisted, key)
+					}
+				}
+				intake.OnCommit(scoped, func() {
+					w.log.Info("workflow: the first boot on this release refilled the copy of Dispatch's issues from the listing",
+						"project", w.dispatchProject, "removed", len(removed), "written", len(scope), "removedUnlisted", unlisted)
+				})
+			}
+		}
 		// The mirror takes every summary, before admission decides anything from it — including a
 		// summary admission defers to the Dispatch consumer: a deferred key's listed status is
-		// still the freshest thing the daemon holds about it, and the sequence fence keeps an
-		// event already applied from being written back over.
+		// still the freshest thing the daemon holds about it. Each value a summary carries
+		// replaces the copy's only where an older reading wrote it or none did
+		// (record.Store.PutDispatchIssue), so a listing no newer than an event already applied
+		// changes nothing that event wrote. At the boot that refills, no reading of this boot has
+		// reached the copy before this listing: the durable consumers start only in serve, after
+		// the catch-up that follows this listing, and the API serves only from serve too (run), so
+		// the rows the refill emptied are filled from this listing alone.
 		if err := blockers.Reconcile(scoped, tx, w.records, w.dispatchProject, scope); err != nil {
 			return err
 		}
@@ -1087,7 +1242,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
@@ -1129,16 +1287,26 @@ func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, rep
 // enqueueOutbox writes outbox rows of issue, due now, in one transaction of its own, which owns
 // the commit hook that write registers (projectRecords, intake.OnCommit) so each row's lane is
 // woken as it commits — exactly as the re-hold of a notice does (reholdNotice). It is what
-// supervision's update-round sweep writes its controller notice and its issue message through
-// (supervision.enqueue), and the narrowest thing that gives supervision an outbox at all: rows
-// to write, and no engine, no admission and no Dispatch client behind it. Rows given together
-// land together or not at all, so a stall is never half told.
-func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
+// supervision's update-round sweep and its stall backstop write their notices, their asks and
+// their issue message through (supervision.enqueue), and the narrowest thing that gives
+// supervision an outbox at all: rows to write, and no engine, no admission and no Dispatch client
+// behind it. Rows given together land together or not at all, so a stall is never half told.
+//
+// It answers whether it wrote them. Supervision builds its rows from a claim's issue with no
+// record read, and a claim of another project's issue, which the operator's spawn makes under
+// this daemon's token, is in its sweeps as every claim is: a row keyed by that issue is one only
+// that project's daemon runs (claim.KeyOfProject). So for such an issue it writes nothing, logs
+// nothing and answers false, and each caller says what it did instead; the store's refusal of
+// such a key (projectRecords.ownsKey) is never reached from here.
+func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+	if !claim.KeyOfProject(w.dispatchProject, issue) {
+		return false, nil
+	}
 	rows := make([]record.OutboxRow, 0, len(payloads))
 	for _, payload := range payloads {
 		row, err := record.NewOutboxRow(issue, payload, time.Now().UTC())
 		if err != nil {
-			return fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
+			return false, fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
 		}
 		rows = append(rows, row)
 	}
@@ -1151,10 +1319,10 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, err
 	}
 	committed()
-	return nil
+	return true, nil
 }
 
 // sweptFact is one fact a sweep of supervision read and the id it is applied under. It is held
@@ -1219,36 +1387,52 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
-// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
-// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake).
+// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// request, the merge-queue read and the second read of a conflicting head, read GitHub through
+// this runtime's own read of a pull request, apply its answer as every read of this runtime does,
+// the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
+// read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
+// attempt read no answer hands the head to this runtime's merge-state reader to follow
+// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
-		w.repositories, supervision.plan.tools, w.log)
-	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
-		_, pull, err := w.readPullRequest(ctx, pr)
-		return pull, err
-	}
-	w.outbox.mergeStateWait = w.mergeStateWait
+		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
+	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	if w.pauses != nil {
+		// The flag is read again at each sweep (decision 18), so a pause made or ended through
+		// another daemon of a rolling restart reaches this daemon's machines within one sweep.
+		w.outbox.refreshPause = w.pauses.service.Refresh
+	}
 	w.attachIdleRelease(supervision)
 }
 
-// attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
-// `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names and whether it still holds the issue's
-// Sandbox (issuePods).
+// idleRelease is the deployment's idle release, and whether the deployment releases pods at all:
+// `runtime: kubernetes` with a non-zero idle_minutes. The idle tick (attachIdleRelease) and the
+// backstop a pause's stop arms (releaseBackstop) both read it.
+func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
+	k := cfg.Runtime.Kubernetes
+	if cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+		return config.IdleReleaseConfig{}, false
+	}
+	return k.IdleRelease, true
+}
+
+// attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods
+// (idleRelease), over a runtime that can say whether an issue's pod runs the image the
+// configuration names and whether it still holds the issue's Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
-	k := supervision.cfg.Runtime.Kubernetes
-	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+	release, ok := idleRelease(supervision.cfg)
+	if !ok {
 		return
 	}
 	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
@@ -1256,8 +1440,8 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
-	w.outbox.backstop = k.IdleRelease.Backstop()
+	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
+	w.outbox.backstop = releaseBackstop(supervision.cfg)
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no
@@ -1373,6 +1557,31 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 	return nil
 }
 
+// openUncountedRuns gives each run no start of this release counted, which an issue of the
+// project stands in at the boot, an open row in step_starts (workflow's OpenUncountedRuns), in one
+// transaction of its own under the lock every fact applies under. run runs it before the listing's
+// reconcile, the boot's first admission pass, and before any fact, so each fact's settle ends such
+// a run as an open run, and a fact its agent's request applies waits for that agent's stream
+// first. It queues nothing, and a boot that runs again opens nothing; it logs how many runs it
+// opened when it opened any.
+func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
+	var opened int
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the open of the uncounted runs with every fact: %w", err)
+		}
+		var err error
+		opened, err = w.engine.OpenUncountedRuns(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	if opened != 0 {
+		w.log.Info("opened the runs a start of an earlier release began", "count", opened)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can
@@ -1454,7 +1663,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:

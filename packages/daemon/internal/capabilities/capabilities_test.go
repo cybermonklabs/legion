@@ -359,6 +359,27 @@ func TestCleanDetailKeepsWhatCameBeforeTheCutAndIsIdempotent(t *testing.T) {
 	t.Logf("%d cases, %d pushed cases in all", len(fixture.Patterns), pushes)
 }
 
+// truncate cuts where a character starts, looking back no further than one character, as
+// redact.Bytes does: under a bound shorter than a character it keeps none of it, and a run of bytes
+// that start no character keeps the bound's bytes rather than emptying the detail.
+func TestTruncateCutsWhereACharacterStartsAndNoFurtherBack(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		max  int
+		want string
+	}{
+		{"😀x", 2, ""},
+		{"a😀x", 3, "a"},
+		{"ab😀", 5, "ab"},
+		{strings.Repeat("\x80", 10), 9, strings.Repeat("\x80", 9)},
+		{"short", 9, "short"},
+	} {
+		if got := truncate(tc.text, tc.max); got != tc.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tc.text, tc.max, got, tc.want)
+		}
+	}
+}
+
 // What the session's plugin sends for the shared fixture's branches —
 // packages/contracts/fixtures/capability-redaction-plugin-report.json, which the plugin's test
 // holds to what it sends — is already clean, so Normalize keeps every row of it as it came.

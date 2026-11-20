@@ -366,7 +366,7 @@ LOAD_LISTENERS=(load-listener-1 load-listener-2 load-listener-3 load-listener-4)
 # though: the sessions those containers opened outlive them, which is db_free's work.
 DB_HOLDERS=(dispatch dispatch-listener "${LOAD_LISTENERS[@]}" hub-listener)
 # Dispatch's ephemeral storage limit, the setting that exists because Autopilot's 1Gi default
-# evicted production's Dispatch (agent-infra dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
+# evicted production's Dispatch (deployment dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
 # It has no form on these machines and is not set: docker takes such a limit as
 # --storage-opt size=, which its own daemon refuses here -- "--storage-opt is supported only for
 # overlay over xfs with 'pquota' mount option", measured on the deployment's Container-Optimized
@@ -974,7 +974,11 @@ membytes() {
 }
 
 # container_env ROLE: ROLE's environment, one NAME=value a line. Empty for a container that takes
-# none.
+# none. Dispatch presents its machine's Google identity to the listener it calls (the
+# deployment's dispatch_service_account, an identity token for VM_LISTENER_AUDIENCE the metadata
+# server mints), the identity that listener takes a send's role mark from: without it Dispatch
+# refuses every send for a `role:` route, which the replay's role-routed issues make.
+VM_LISTENER_AUDIENCE=envoy-listener-loadtest
 container_env() {
   local role=$1
   case $role in
@@ -993,6 +997,7 @@ ENVOY_MACHINE_ID=dispatch
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_URL=$(listener_url)
 ENVOY_TOKEN=$(cfg .secrets.listener_token)
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
 DISPATCH_EMBEDDER=azure
 DISPATCH_AZURE_EMBED_ENDPOINT=$(stub_embed_url)
 DISPATCH_AZURE_EMBED_KEY=$(cfg .secrets.embed_key)
@@ -1008,6 +1013,9 @@ ENVOY_MACHINE_ID=$role
 NATS_URLS=$(nats_url)
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_API_TOKEN=$(cfg .secrets.listener_token)
+ENVOY_OIDC_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
+ENVOY_OIDC_GOOGLE_ACCOUNTS=$(cfg_valid service_account .dispatch_service_account)
+ENVOY_DISPATCH_PRINCIPAL=$(cfg_valid service_account .dispatch_service_account)
 EOF
       ;;
   esac

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -118,10 +119,12 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to push its work and answer (api's
-	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
-	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted.
+	// non-empty answer: the round asks each role of that place to do the steps of its update
+	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
+	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
+	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -219,34 +222,65 @@ type LaunchSessionNamer interface {
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
-// with everything it owns — the role Secrets holding each launcher's token and credentials — and
-// the call returns once the cluster no longer has it; a Sandbox already gone is success, so a
-// retried close finishes. Nothing durable is kept by keeping it: an issue pod's disk is the pod's
-// own and went with the pod, so the issue's next launch makes the Sandbox again.
+// with everything it owns — the role Secrets holding each launcher's token and credentials, and a
+// kept volume (IssueReleaser) — and the call returns once the cluster no longer has it; a Sandbox
+// already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
+// the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
 // Process-only runtimes have no shared issue resources to suspend.
 type IssueSuspender interface {
 	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
 }
 
+// IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
+// idle release, and the release of a pod no claim of the issue can use. It is named apart from
+// Runtime.Release, which ends one claim's process. It stops the pod once authorize, called under
+// the runtime's issue launch lock, says the release still stands (false finishes the release
+// without acting). Then it keeps what the issue's next pod can use: a Sandbox that owns the
+// issue's kept volume stays, Suspended, with that volume, and the Secrets that the next launch
+// writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
+// already gone is success, so a retried release finishes. Process-only runtimes have no pod to
+// release.
+type IssueReleaser interface {
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+}
+
+// IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
+// since and that the issue's next launch keeps: the runtime's stored Sandbox of the issue owns a
+// kept volume, was made before since, carries no reset mark, and has the disk shape that the
+// configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
+// which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
+// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
+// its update round is over, with the time the round opened, to tell the issue whether the work its
+// roles did not push is still on the volume. A runtime whose pods keep no volume implements
+// nothing here, and the daemon then reads no kept volume.
+type IssueVolumeReader interface {
+	IssueKeepsVolume(issue string, since time.Time) bool
+}
+
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. The role named must be one whose process runs: the shim builds the
-// bundle with the jj and git of the workspace it already works in. A runtime whose processes
-// share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
+// (IssueReleaser), and the pod after the release takes no saved work that volume holds
+// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
+// the save is then the one copy of the unpushed work. The role named must be one whose process
+// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
+// runtime whose processes share no workspace implements nothing here, and the release of such a
+// pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
+// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
+// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
+// the new workspace before any role of that pod starts.
 //
 // WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
 // whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
+// had its one attempt already, one the daemon's project does not record, whose bundle another
+// project's daemon saved, and the pod the work was taken off asking for its own workspace's
 // work back. The runtime calls this at every start of every role, and a release stops the roles
 // of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
 // one of those calls; the store knows that pod by the uid the save recorded
@@ -278,6 +312,22 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
+// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
+// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
+// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
+// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
+// than the save. It would then log a notice that the work was lost, and the bundle would hold the
+// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
+// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
+// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
+// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
+// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
+// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
+// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
+// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
+// rule cannot order against the save.
+type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
+
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
 // kernel stopped because the pod ran out of memory (the report's Cause,
@@ -290,13 +340,38 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
 // and the guard's kill line in the pod's own log is then the one record of the kill.
 type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
+// VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
+// trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
+// per sweep that ended with the volume still above its low mark, none for a sweep the settings
+// stopped, and one when the trimmer has switched itself off after three faults
+// (shimwire.LauncherVolumeReport). The session gives it the issue key, the uid of the pod the
+// launcher runs in and the report; the trimmer's own identifier, which is what makes a restarted
+// roles container a new counting line for the daemon's notice bounds, is inside the report.
+//
+// It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
+//
+// A store that does not answer is logged and the report is dropped there. The launcher cannot
+// hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
+// the next sweep that ends above the low mark reports the volume again, under the same trimmer
+// and the episode it is then in, so the state a dropped report would have told reaches the
+// architect from a later one, as far as the notice bounds let that one through (workflow's
+// volumeNoticeHeldBy; internal/runtime/sandbox's volumeReported, as restoreReported's own
+// comment says of its delete). The report that the trimmer switched itself off is its last, and
+// one dropped here is not sent again.
+type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
@@ -579,6 +654,69 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
+	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
+	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the
+	// one that costs an issue its work. It is a field rather than a shape of Detail for the
+	// reason Displaced is: Detail is prose for an operator and nothing else. The Detail the
+	// Sandbox runtime writes beside a pod end holds this same reason and message, and after them
+	// a tail of the role's log and the container's, over many lines and the role's own in words
+	// a role chose: it reads a container's own log to its logTailBytes and the issue pod's one
+	// container's, which every role writes to, to its sharedLogBytes, and quotes at most
+	// logTailLines of the role's lines and as many of the container's own from what it read.
+	//
+	// An eviction ends every role of the pod, and a sibling's launch can replace the ended pod
+	// before a role's next check reads it. Where that launch finds the Sandbox not yet
+	// suspended, the Sandbox runtime records the ended pod's end on its Sandbox, keyed by the
+	// pod's uid, in the write that suspends it, so a role recorded in that pod reads the same
+	// PodEnd once the pod is gone or another has taken its name, a restarted daemon included
+	// (sandbox's endedPodAnnotation), until the end of a later pod is recorded in its place: the
+	// Sandbox holds one. A launch that finds the Sandbox already suspended records nothing, and a
+	// Sandbox a migrating launch deletes and creates again does not carry the record over.
+	//
+	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
+	// reaches a notice two ways: whole, as the `death` of the failure record a claim that failed
+	// with a cause carries (workflow's noticeFailure), and as its first line alone, quoted, cut
+	// at PodEndRunes and without the header of the log tail, in the tree architect's worker-died
+	// reason, which carries no failure record, for a claim that failed because its process died
+	// and holds no pod end (workflow's deathReason). Where there is one, that reason names this
+	// field in Detail's place: the pod's cause once, on one line, and nothing of the log.
+	//
+	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
+	// message above is 120 runes, and the longest the kubelet writes names each resource it
+	// reclaimed. A longer one is cut at that bound with an ellipsis, once the URL rule has read it
+	// whole (PodEnd).
+	PodEnd string
+}
+
+// PodEndRunes bounds Observation.PodEnd: a few hundred runes, which is a kubelet's reason and
+// message whole and nothing of a log. The bound exists because the field is what a worker-died's
+// reason names whole, on the one line the architect reads (workflow's deathReason), beside the
+// supervisor's sentence and, where it names one, the first line of the runtime's account of the
+// death, each cut to this same bound before it is quoted (workflow's quoteBounded), so what the
+// reason carries of each is bounded by this number rather than by the size a node's message or a
+// provider's happened to have. The claim keeps the runtime's whole account beside it
+// (supervise.Claim.LastDeathCause); this field is the part of it a reason carries.
+const PodEndRunes = 400
+
+// PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
+// reason alone when there is no message, "" when there is no reason, and a value cut at the
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
+func PodEnd(reason, message string) string {
+	if reason == "" {
+		return ""
+	}
+	end := reason
+	if message != "" {
+		end += ": " + message
+	}
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

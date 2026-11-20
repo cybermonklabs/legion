@@ -33,7 +33,11 @@ const OVERLOADED = {
 
 let entries = 0;
 
-function fixture(startOn = OPUS) {
+/** The longest delay a Bun timer holds: one past it runs after 1 ms, which the fixture's timer
+ * does too, so a test sees what a timer the runner asks for does on the real runtime. */
+const BUN_LONGEST_TIMER_MS = 2_147_483_647;
+
+function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const branch: unknown[] = [];
   const setModelCalls: string[] = [];
   const saved: FallbackCooldownState[] = [];
@@ -44,7 +48,30 @@ function fixture(startOn = OPUS) {
   const suppressed = new Set<string>();
   /** Selectors this session can use no model for. */
   const unresolvable = new Set<string>();
-  const live = { now: 1_000_000_000, current: startOn, setModelAnswers: true };
+  const live = {
+    now: 1_000_000_000,
+    current: startOn,
+    setModelAnswers: true,
+    /** Whether the pane is on this session when a timer fires. */
+    onPane: true,
+    /** The session the context is on, which `getSessionId` reads live. */
+    sessionId: "session-a",
+    /** Whether the pane runs no turn now, which `isIdle` reads live. */
+    idle: true,
+    /** Whether a message waits to steer or follow the turn, which `hasPendingMessages` reads. */
+    pending: false,
+    /** A switch of the model calls this once it has started, then waits for `setModelHeld`, when
+     * either is set. */
+    onSetModel: undefined as (() => void) | undefined,
+    setModelHeld: undefined as Promise<void> | undefined,
+  };
+  /** Every callback the runner handed the host's timer, with the delay it asked for and the
+   * moment the timer runs, in order. */
+  const timers: {
+    readonly callback: () => Promise<void>;
+    readonly delayMs: number;
+    readonly at: number;
+  }[] = [];
 
   /** One `model_change` as the host appends it, and its id. Every entry carries the time it was
    * written, as the host stamps them all (`SessionEntryBase`, `session/session-entries.ts` at
@@ -65,7 +92,9 @@ function fixture(startOn = OPUS) {
   };
 
   const ctx: ModelFallbackContext = {
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => branch, getSessionId: () => live.sessionId },
+    isIdle: () => live.idle,
+    hasPendingMessages: () => live.pending,
     models: {
       list: () => [],
       current: () => model(live.current),
@@ -83,21 +112,37 @@ function fixture(startOn = OPUS) {
   const runner = createModelFallback({
     setModel: async (next) => {
       setModelCalls.push(`${next.provider}/${next.id}`);
+      live.onSetModel?.();
+      await live.setModelHeld;
       if (!live.setModelAnswers) return false;
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
-      // (`session/model-controls.ts:249-252` at the pinned tag), never a fallback claim.
+      // (`session/model-controls.ts:322-325` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
       return true;
     },
     saveState: (state) => void saved.push(state),
     now: () => live.now,
-    limits: { baseMs: HOUR, maxMs: 8 * HOUR },
+    limits,
     nextModel: async (_chain, current) => {
       const next = chain.get(`${current.provider}/${current.id}`);
       return next === undefined ? undefined : model(next);
     },
     log: { warn: (message) => void warnings.push(message) },
+    // The host's timer, which a test runs when it chooses (`fireTimers`), with no clock involved:
+    // as Bun runs a timer, a delay past the longest one it holds runs after 1 ms.
+    armTimer: (callback, delayMs) => {
+      timers.push({
+        callback,
+        delayMs,
+        at: live.now + (delayMs > BUN_LONGEST_TIMER_MS ? 1 : delayMs),
+      });
+      return true;
+    },
+    paneContext: async () => (live.onPane ? ctx : undefined),
   });
+  // The pane's session_start: the runner reads the session's state, an empty one here, and the
+  // session it is, as the entry restores every claimed session before anything arms it.
+  runner.restore(undefined, ctx);
 
   return {
     branch,
@@ -116,6 +161,15 @@ function fixture(startOn = OPUS) {
     modelChange: (to: string) => append(to, "default", false),
     /** The state the last save recorded. */
     last: () => saved[saved.length - 1],
+    timers,
+    /** Runs, in order, every timer due by now, as the host does when its clock reaches them, and
+     * answers how many ran. */
+    fireTimers: async (): Promise<number> => {
+      const due = timers.filter((timer) => timer.at <= live.now);
+      for (const timer of due) timers.splice(timers.indexOf(timer), 1);
+      for (const timer of due) await timer.callback();
+      return due.length;
+    },
   };
 }
 
@@ -437,6 +491,276 @@ describe("the return to the session's own model", () => {
     expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
     expect(pane.last()?.arming).toBeUndefined();
     expect(pane.last()?.levels).toEqual({ [OPUS]: 2 });
+  });
+
+  test("is made when a refusal's wait ends, with no request to make it at", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    // One timer, at the due time the arming records.
+    const dueAt = pane.last()?.arming?.dueAt;
+    expect(dueAt).toBe(pane.live.now + HOUR);
+    expect(pane.timers.map((timer) => timer.at)).toEqual([pane.live.now + HOUR]);
+
+    // The pane sits idle: no request runs a hook, and the host runs the timer when it is due.
+    pane.live.now += HOUR;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.last()).toEqual({ levels: { [OPUS]: 2 } });
+    // The return wrote no arming, so it set no timer of its own.
+    expect(pane.timers).toEqual([]);
+  });
+
+  test("is set again by a timer the host ran before the due time", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    const dueAt = pane.last()?.arming?.dueAt ?? 0;
+
+    // The host's clock ran it one millisecond before this runner's says the wait is over.
+    pane.live.now = dueAt - 1;
+    for (const timer of pane.timers.splice(0)) await timer.callback();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+    expect(pane.timers.map((timer) => timer.at)).toEqual([dueAt]);
+
+    pane.live.now = dueAt;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("sets no timer for a fallback that waits on the host's suppression, not on a time", async () => {
+    const pane = fixture();
+    pane.hostFallback(SONNET);
+    pane.runner.armFromEvent(applied(OPUS, SONNET), pane.ctx);
+    expect(pane.last()?.arming?.cause).toBe("other");
+    expect(pane.timers).toEqual([]);
+  });
+
+  test("leaves a timer whose arming a newer one replaced, and makes the newer one's return at its own time", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    pane.chain.set(SONNET, GPT);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    // The fallback model is refused too: the walk goes one step further and the wait doubles.
+    pane.live.now += 1_000;
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    const dueAt = pane.last()?.arming?.dueAt ?? 0;
+    expect(pane.timers).toHaveLength(2);
+
+    // The first timer is due; it belongs to an arming that is no longer the session's.
+    pane.live.now = (pane.timers[0]?.at ?? 0) + 1;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, GPT]);
+    // The pane comes back onto the same arming, as a session switch back does: the timer that
+    // arming has is still the one set, so no second one is.
+    pane.runner.restore(pane.last(), pane.ctx);
+    expect(pane.timers).toHaveLength(1);
+
+    pane.live.now = dueAt;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, GPT, OPUS]);
+  });
+
+  test("waits out a cooldown longer than one timer holds with one timer for each piece of it", async () => {
+    // Thirty days: past the 2^31 - 1 ms a timer holds, which the cooldown settings allow.
+    const pane = fixture(OPUS, { baseMs: 30 * 24 * HOUR, maxMs: 60 * 24 * HOUR });
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    const dueAt = pane.last()?.arming?.dueAt ?? 0;
+    expect(pane.timers.map((timer) => timer.delayMs)).toEqual([BUN_LONGEST_TIMER_MS]);
+
+    // The host runs each timer at its own time; every one that runs while the clock is short of
+    // the due time is counted. The wait is longer than one timer by less than one more, so one
+    // runs early and is set again for what is left. A timer whose delay a timer cannot hold runs
+    // after 1 ms and is set again at once, every millisecond of the thirty days, which the bound
+    // on the count stops.
+    let early = 0;
+    while (early <= 10) {
+      const next = pane.timers[0];
+      if (next === undefined || next.at >= dueAt) break;
+      pane.live.now = next.at;
+      early += await pane.fireTimers();
+    }
+    expect(early).toBe(1);
+    expect(pane.setModelCalls).toEqual([SONNET]);
+    expect(pane.timers.map((timer) => timer.at)).toEqual([dueAt]);
+
+    pane.live.now = dueAt;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("records no return into a session the pane moved to while the switch back was awaited", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.now += HOUR;
+    const started = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    pane.live.onSetModel = started.resolve;
+    pane.live.setModelHeld = held.promise;
+
+    const returning = pane.fireTimers();
+    await started.promise;
+    // The switch back is under way when the pane moves to another session, whose own state
+    // `restore` reads: a fallback of its own, its wait not over.
+    pane.runner.restore(
+      {
+        arming: {
+          restoreTo: GPT,
+          entryId: "entry-other",
+          dueAt: pane.live.now + HOUR,
+          cause: "refusal",
+        },
+        levels: { [GPT]: 2 },
+      },
+      pane.ctx
+    );
+    const saves = pane.saved.length;
+    held.resolve();
+    await returning;
+
+    // The first session's `restored` is not written over the other session's arming.
+    expect(pane.saved.length).toBe(saves);
+  });
+
+  test("goes into no session when the pane is on none that is a Legion role's", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.onPane = false;
+
+    pane.live.now += HOUR;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+    // The next request of a session that is one still makes the return.
+    await pane.runner.maybeRestore(pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("sets the timer of the arming a session is restored with, and the timer makes its return", async () => {
+    // A relaunched worker: the transcript records an arming due in an hour, on the fallback the
+    // branch's newest model change made.
+    const pane = fixture();
+    const entryId = pane.hostFallback(SONNET);
+    const dueAt = pane.live.now + HOUR;
+    pane.runner.restore(
+      { arming: { restoreTo: OPUS, entryId, dueAt, cause: "refusal" }, levels: { [OPUS]: 2 } },
+      pane.ctx
+    );
+    expect(pane.timers.map((timer) => timer.at)).toEqual([dueAt]);
+
+    // No request runs a hook: the timer alone makes the return.
+    pane.live.now = dueAt;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([OPUS]);
+  });
+
+  test("switches no model while a turn runs, and leaves the return to that turn's next request", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+
+    // The wait ends while a turn streams: a switch now could drop that response. The timer looks
+    // again a moment later.
+    pane.live.now += HOUR;
+    pane.live.idle = false;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+    expect(pane.timers.map((timer) => timer.delayMs)).toEqual([250]);
+
+    // The turn's next request runs the `context` hook, which makes the return.
+    await pane.runner.maybeRestore(pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("makes the return at the first idle firing after a turn that ended waiting on a background job", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.now += HOUR;
+    pane.live.idle = false;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // The turn ends waiting on a background job, as the host settles it, and sends no request
+    // after the timer, so no hook makes the return.
+    await pane.runner.turnSettled(
+      { ...CLEAN, willContinue: true, awaitingAsyncWork: true },
+      pane.ctx
+    );
+    pane.live.idle = true;
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // The pane is idle while the job runs: the timer's next firing makes the return, so the
+    // job's result starts its run on the model the session fell back from.
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.live.current).toBe(OPUS);
+    expect(pane.timers).toEqual([]);
+  });
+
+  test("switches no model while a message waits to steer the turn's continuation", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+
+    // The turn has ended and a steering message waits: the continuation is about to read its
+    // model, so the timer leaves it alone.
+    pane.live.now += HOUR;
+    pane.live.pending = true;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // The continuation streams: still no switch.
+    pane.live.pending = false;
+    pane.live.idle = false;
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // Its next request's `context` hook makes the return.
+    await pane.runner.maybeRestore(pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("stops looking again once a hook has made the return, and leaves no timer", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.now += HOUR;
+    pane.live.idle = false;
+    await pane.fireTimers();
+    expect(pane.timers).toHaveLength(1);
+
+    // The turn's `context` hook makes the return while the pane is still busy.
+    await pane.runner.maybeRestore(pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.timers).toEqual([]);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("names a move to another session made while the model it fell back from was set again, and records nothing there", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.now += HOUR;
+    pane.live.onSetModel = () => {
+      pane.live.sessionId = "session-b";
+    };
+    const saves = pane.saved.length;
+
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.warnings).toContain(
+      "legion: the pane moved to another session while the model it fell back from was set again"
+    );
+    // Session B gets no `restored` record of session A's arming.
+    expect(pane.saved.length).toBe(saves);
   });
 
   test("waits for the host's own suppression to end when the fallback was no refusal", async () => {

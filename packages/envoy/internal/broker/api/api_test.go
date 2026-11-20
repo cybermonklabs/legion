@@ -81,10 +81,19 @@ type testServer struct {
 	ServiceLogins map[string]string
 	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
 	registry *metrics.Registry
+	// sessions is the store the enrollment route binds session names through
+	// (enroll.Service.Sessions). A test pairs two accounts on it (SetSessionPairs) before the
+	// server serves an enrollment, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS into it before
+	// the broker serves.
+	sessions *oauthstore.Store
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
 const podAudience = "legion-broker-pod"
+
+// registrationAudience is the test server's BROKER_POD_REGISTRATION_AUDIENCE: the second audience
+// POST /v1/oauth/exchange/pod-sessions accepts a pod token at, of the same issuer as podAudience.
+const registrationAudience = "legion-broker-pod-registration"
 
 // daemonAccount and otherDaemonAccount are the ServiceAccounts the test server's
 // BROKER_SERVICE_LOGINS lets log in as legion-daemon with their tokens, as two Legion daemons' own
@@ -98,8 +107,9 @@ const (
 // approves for every requester; WORKER_TOKEN, shared and agent-tier, which every session and pod
 // gets at once; and SHARED_KEY, shared and human-tier, which anyone signed in approves. It wires a
 // real pod verifier against a local OIDC issuer, as cmd/broker/main.go does when
-// BROKER_K8S_OIDC_ISSUER is set, and mounts api.Register on an httptest.Server so every proof's
-// htu and every request object's aud have one real, consistent PublicURL to check against.
+// BROKER_K8S_OIDC_ISSUER is set, and a second at registrationAudience, as it does when
+// BROKER_POD_REGISTRATION_AUDIENCE is set, and mounts api.Register on an httptest.Server so every
+// proof's htu and every request object's aud have one real, consistent PublicURL to check against.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	return newTestServerWith(t, func(*api.Deps) {})
@@ -128,10 +138,12 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
+		t.Fatalf("oidc.NewKeys: %v", err)
 	}
+	podVerifier := oidc.NewWithKeys(issuer.URL(), podAudience, keys)
+	registrationVerifier := oidc.NewWithKeys(issuer.URL(), registrationAudience, keys)
 	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
@@ -139,9 +151,27 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	// Wired as cmd/broker/main.go wires it, so a session name belongs to one principal on this
-	// server too: the enrollment route refuses a name another principal holds.
-	enr.Sessions = oauthstore.New(st.Pool)
+	// Wired as cmd/broker/main.go wires the enrollment route, so the route refuses a name another
+	// principal holds, unless a test pairs that principal's account with the enrolling pod's
+	// (testServer.sessions), when the enrollment takes it. It is a store of its own and not the
+	// provider's (brokertest.NewOAuthProvider builds that one), so it holds none of the names the
+	// provider's policy fixes (oauthstore.Store.Reserved, which oauth.New sets on the provider's
+	// store alone): a pair here would take a name such as brokertest.ExchangeSession, which the
+	// broker, whose one store serves both routes, refuses.
+	sessions := oauthstore.New(st.Pool)
+	enr.Sessions = sessions
+
+	// BROKER_POD_REGISTRARS: both daemon accounts listed for every pod account this package's
+	// tests register — the worker's and the other pods', the rig exchange's two accounts, an
+	// account no exchange entry lists, and the first daemon's own account, whose sibling pod a
+	// rollout registers — so every test of the route reaches the refusal it asserts. A test of the
+	// list itself narrows it with adjust.
+	podRegistrars := api.PodRegistrars{}
+	for _, registrar := range []string{daemonAccount, otherDaemonAccount} {
+		for _, pod := range []string{workerAccount, otherAccount, brokertest.ExchangeAccount, brokertest.ExchangeRolesAccount, unlistedAccount, daemonAccount} {
+			podRegistrars[api.PodRegistrar{Registrar: registrar, Pod: pod}] = struct{}{}
+		}
+	}
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
@@ -161,6 +191,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, dispatchCaller)},
 		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
@@ -170,7 +201,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }
@@ -281,6 +312,16 @@ func (ts *testServer) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID,
 	return ts.req(t, method, path, map[string]string{"Proof": p}, body)
 }
 
+// sessionReread asks the broker to reread name as a session of its own, freshly enrolled: the
+// caller the route answers once the reread is done, with whether the broker serves the name, why
+// not and as which type, rather than the 202 it answers at once to a caller with no proof. A row
+// that reads what the broker now serves, or that goes on to ask for the secret, rereads this way.
+func (ts *testServer) sessionReread(t *testing.T, name string) (int, []byte) {
+	t.Helper()
+	id, key := ts.newSessionEnrollment(t, "rereader-"+uuid.NewString(), brokertest.RereaderOperator)
+	return ts.session(t, key, id, http.MethodPost, "/v1/secrets/"+name+"/reread", nil)
+}
+
 func (ts *testServer) launcher(t *testing.T, key *ecdsa.PrivateKey, launcherID, method, path string, body any) (int, []byte) {
 	t.Helper()
 	p, err := proof.SignLauncher(key, launcherID, method, ts.URL+path, time.Now())
@@ -344,12 +385,14 @@ type wireRecord struct {
 }
 
 type wireCreateRequestResponse struct {
-	RequestID  string  `json:"request_id"`
-	State      string  `json:"state"`
-	GrantID    *string `json:"grant_id"`
-	RecordID   *string `json:"record_id"`
-	Coalesced  bool    `json:"coalesced"`
-	ApproveURL *string `json:"approve_url"`
+	RequestID     string  `json:"request_id"`
+	State         string  `json:"state"`
+	GrantID       *string `json:"grant_id"`
+	RecordID      *string `json:"record_id"`
+	Coalesced     bool    `json:"coalesced"`
+	ApproveURL    *string `json:"approve_url"`
+	JudgeDeciding *bool   `json:"judge_deciding"`
+	Detail        *string `json:"detail"`
 }
 
 type wireRequestDecision struct {
@@ -358,12 +401,13 @@ type wireRequestDecision struct {
 }
 
 type wireRequestStatus struct {
-	State      string               `json:"state"`
-	GrantID    *string              `json:"grant_id"`
-	RecordID   *string              `json:"record_id"`
-	DecidedAt  *time.Time           `json:"decided_at"`
-	Decision   *wireRequestDecision `json:"decision"`
-	ApproveURL *string              `json:"approve_url"`
+	State         string               `json:"state"`
+	GrantID       *string              `json:"grant_id"`
+	RecordID      *string              `json:"record_id"`
+	DecidedAt     *time.Time           `json:"decided_at"`
+	Decision      *wireRequestDecision `json:"decision"`
+	ApproveURL    *string              `json:"approve_url"`
+	JudgeDeciding *bool                `json:"judge_deciding"`
 }
 
 type wirePendingEntry struct {
@@ -373,6 +417,9 @@ type wirePendingEntry struct {
 	RequestedAt time.Time   `json:"requested_at"`
 	Session     wireSession `json:"session"`
 	ApproveURL  *string     `json:"approve_url"`
+	State       string      `json:"state"`
+	// ExpiresAt is nil for a row that carries no expires_at.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // wirePageRefusal is a refusal naming the record's approval page.
@@ -999,7 +1046,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	limited := policytest.TypeSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "LIMITED_KEY"); status != http.StatusOK {
 		t.Fatalf("reread LIMITED_KEY = %d %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -1032,7 +1079,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	const canary = "refresh-not-a-secret-canary-4e1d"
 	stored := `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
 	ts.Secrets.Put(policytest.TypeSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, stored))
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "LAPSED_LOGIN"); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -1122,17 +1169,17 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 	}
 }
 
-// TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage pins that the two decide routes
-// refuse a secret request before they look at the caller at all: approve and deny of an
-// agent_secret record — naming the record's own approver, another login or none, with a code or
-// a body that is not one — each answer 403 DECIDE_ON_BROKER_PAGE carrying the record's page as
-// approve_url and in the message, and write nothing: the record stays pending, with no event, no
-// grant and no audit row. A caller with no ServiceAccount token and a caller whose account
-// BROKER_API_ACCOUNTS does not list get that same refusal, not 401 and not ACCOUNT_NOT_LISTED,
-// since no credential would let either decide one here. The same routes still decide a machine
-// login with its code, and the secret request is decided on the broker's page, after which the
-// routes still refuse it.
-func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
+// TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage pins that the two decide routes
+// refuse a secret request to the listed caller that relays a person's decisions: approve and deny
+// of an agent_secret record — naming the record's own approver, another login or none, with a
+// code or a body that is not one — each answer 403 DECIDE_ON_BROKER_PAGE carrying the record's
+// page as approve_url and in the message, and write nothing: the record stays pending, with no
+// event, no grant and no audit row. An id no record has is 404 NOT_FOUND to that caller. (A
+// caller the broker does not authenticate is refused before any record is read, alike for every
+// id: TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordID.) The same
+// routes still decide a machine login with its code, and the secret request is decided on the
+// broker's page, after which the routes still refuse it.
+func TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking who may decide this request", "DEEL_API_KEY")
@@ -1149,17 +1196,6 @@ func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	}
 	before := written()
 
-	for name, headers := range map[string]map[string]string{
-		"no ServiceAccount token": nil,
-		"an unlisted account":     {"Authorization": "Bearer " + ts.accountToken(t, unlistedAccount, "", time.Hour)},
-	} {
-		status, body := ts.req(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve", headers,
-			map[string]any{"approver": testApprover})
-		refusal := decode[wirePageRefusal](t, body)
-		if status != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page || !strings.Contains(refusal.Error, page) {
-			t.Fatalf("approve with %s = %d %s, want 403 DECIDE_ON_BROKER_PAGE naming %s", name, status, body, page)
-		}
-	}
 	for _, route := range []string{"approve", "deny"} {
 		for name, decision := range map[string]any{
 			"the approver":     map[string]any{"approver": testApprover},
@@ -1174,6 +1210,10 @@ func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 			if status != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page || !strings.Contains(refusal.Error, page) {
 				t.Fatalf("%s naming %s = %d %s, want 403 DECIDE_ON_BROKER_PAGE naming %s", route, name, status, body, page)
 			}
+		}
+		status, body := ts.ui(t, http.MethodPost, "/v1/credential-requests/"+strings.Repeat("0", 64)+"/"+route, map[string]any{"approver": testApprover})
+		if status != http.StatusNotFound || decode[wireError](t, body).Code != "NOT_FOUND" {
+			t.Fatalf("%s of an id no record has = %d %s, want 404 NOT_FOUND", route, status, body)
 		}
 	}
 	if got := ts.record(t, recordID); got.State != "pending" || got.Decided != nil {

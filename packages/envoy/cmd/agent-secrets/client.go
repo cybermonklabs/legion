@@ -441,10 +441,17 @@ func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path
 	signedPath, _, _ := strings.Cut(path, "?")
 	token, err := signer.Sign(method, c.route(signedPath))
 	if err != nil {
-		return 0, nil, fmt.Errorf("sign proof: %w", err)
+		return 0, nil, &signError{err: err}
 	}
 	return c.doStatus(ctx, method, url, body, map[string]string{"Proof": token})
 }
+
+// signError is proofCall's failure to sign the proof, before anything was sent: the signer's own
+// error, which a caller tells apart from any answer of the broker's (askReread).
+type signError struct{ err error }
+
+func (e *signError) Error() string { return "sign proof: " + e.err.Error() }
+func (e *signError) Unwrap() error { return e.err }
 
 // --- POST /v1/requests, GET /v1/requests/{id}, POST /v1/requests/{id}/cancel ---
 
@@ -460,7 +467,7 @@ type SecretDecision struct {
 // the broker, where its approver signs in and decides it, while the request is pending; empty
 // once it is not, and from a broker from before that page. Detail is the broker's one sentence
 // about why it denied the request — the secret that refused it and the rule that did, as
-// "GCLOUD_SAMI: requester-not-listed" — which every line this CLI prints about a refusal carries,
+// "GCLOUD_DEMO: requester-not-listed" — which every line this CLI prints about a refusal carries,
 // so a session reads that asking again will not help; nil when the broker recorded none, and from
 // a broker from before the field.
 type RequestResult struct {
@@ -474,6 +481,10 @@ type RequestResult struct {
 	Coalesced       bool             `json:"coalesced,omitempty"`
 	Detail          *string          `json:"detail"`
 	ApproveURL      string           `json:"approve_url"`
+	// JudgeDeciding is true while the model judge holds the request: no person is asked unless
+	// the judge cannot decide it, and the answer then carries ApproveURL. Such a request carries
+	// no page while it is held.
+	JudgeDeciding bool `json:"judge_deciding"`
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
@@ -572,14 +583,15 @@ type requestDecision struct {
 // RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
 // and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
 type RequestStatus struct {
-	State      string           `json:"state"`
-	GrantID    *string          `json:"grant_id"`
-	RecordID   *string          `json:"record_id"`
-	Approver   *string          `json:"approver"`
-	DecidedAt  *time.Time       `json:"decided_at"`
-	Decision   *requestDecision `json:"decision"`
-	Detail     *string          `json:"detail"`
-	ApproveURL string           `json:"approve_url"`
+	State         string           `json:"state"`
+	GrantID       *string          `json:"grant_id"`
+	RecordID      *string          `json:"record_id"`
+	Approver      *string          `json:"approver"`
+	DecidedAt     *time.Time       `json:"decided_at"`
+	Decision      *requestDecision `json:"decision"`
+	Detail        *string          `json:"detail"`
+	ApproveURL    string           `json:"approve_url"`
+	JudgeDeciding bool             `json:"judge_deciding"`
 }
 
 // refusedBeforeCall is a refusal this client made before it sent anything, so refusalText adds
@@ -819,65 +831,6 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 	return result.LeaseExpiresAt, nil
 }
 
-// --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
-
-// Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are; on either store,
-// the Google exchange audience a machine's own identity token must carry, from which the use
-// command finds that identity with no setting (machineSource); and whether the broker reads a
-// secret's type from the type tag (SecretTypeTag), without which the secret forms write no typed
-// secret (requireTypeTag). A broker from before the store field answers none, and holds them in
-// AWS Secrets Manager; one from before the audience, or one that accepts no machine identity,
-// names none; and one from before the type tag answers no secret_type_tag.
-type Settings struct {
-	Store                  string `json:"store,omitempty"`
-	SecretsPrefix          string `json:"secrets_prefix"`
-	KMSKeyARN              string `json:"kms_key_arn,omitempty"`
-	AWSAccountID           string `json:"aws_account_id,omitempty"`
-	AWSRegion              string `json:"aws_region,omitempty"`
-	KMSKeyName             string `json:"kms_key_name,omitempty"`
-	GCPProject             string `json:"gcp_project,omitempty"`
-	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
-	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
-}
-
-func (c *client) Settings(ctx context.Context) (Settings, error) {
-	raw, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
-	if err != nil {
-		return Settings{}, err
-	}
-	var settings Settings
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		return Settings{}, fmt.Errorf("decode settings: %w", err)
-	}
-	return settings, nil
-}
-
-// Reread is POST /v1/secrets/{name}/reread's exact response shape: whether the broker serves the
-// secret now, as which type ("" for a stored secret, and from a broker older than the field), and,
-// when it does not serve it, why.
-type Reread struct {
-	Name   string `json:"name"`
-	Served bool   `json:"served"`
-	Reason string `json:"reason"`
-	Type   string `json:"type"`
-}
-
-// RereadSecret asks the broker to read the secret name from Secrets Manager now, as whoever just
-// wrote it does, so the write is served (or gone) at once instead of at its next reload. name is a
-// validated agent secret name, so it needs no escaping in the path.
-func (c *client) RereadSecret(ctx context.Context, name string) (Reread, error) {
-	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/secrets/"+name+"/reread"), nil, nil)
-	if err != nil {
-		return Reread{}, err
-	}
-	var reread Reread
-	if err := json.Unmarshal(raw, &reread); err != nil {
-		return Reread{}, fmt.Errorf("decode reread: %w", err)
-	}
-	return reread, nil
-}
-
 // --- GET /v1/operator/machines, POST /v1/operator/machines/{id}/revoke,
 // GET /v1/operator/grants, POST /v1/operator/grants/{id}/revoke (launcher proof) ---
 
@@ -898,9 +851,9 @@ type OperatorMachines struct {
 	Credentials []OperatorMachine `json:"credentials"`
 }
 
-// OperatorMachines lists the calling machine login's operator's own machines' logins, as
-// Dispatch's machine-login page lists them but without any service's login, with the raw body
-// for --json.
+// OperatorMachines lists the calling machine login's operator's own logins, their machines' and
+// those of the pods whose account BROKER_POD_OPERATORS maps to them, as Dispatch's machine-login
+// page lists them but without any service's login, with the raw body for --json.
 func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, []byte, error) {
 	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/machines", nil)
 	if err != nil {
@@ -913,7 +866,8 @@ func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (Oper
 	return out, raw, nil
 }
 
-// RevokeOperatorMachine ends one of the calling machine login's operator's own machines' logins.
+// RevokeOperatorMachine ends one of the calling machine login's operator's own logins, a
+// machine's or a pod's, as OperatorMachines lists them.
 // An id that would not name one path segment as written is refused (pathID).
 func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, id string) error {
 	if err := pathID("a machine id", id); err != nil {

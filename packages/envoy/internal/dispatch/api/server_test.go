@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -37,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -132,6 +134,10 @@ type testServerOptions struct {
 	// testHookTimeout replaces the test hooks' acknowledgement timeout (Deps.TestHookTimeout);
 	// zero keeps the production ten seconds.
 	testHookTimeout time.Duration
+	// tracer is installed on every connection of the server's pool (storetest.Traced), so a test
+	// sees each statement the server runs; nil leaves the pool untraced. The xid window tests
+	// (xid_window_test.go) pass a storetest.XidTracer.
+	tracer pgx.QueryTracer
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
@@ -148,6 +154,13 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
+	// mention's send waits for the earlier events of its owner the outbox still owes its session.
+	// False is the deployment with no outbox, which every test that runs none is.
+	outboxPublishes bool
+	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
+	// none, as every test that reads no gauge leaves it.
+	metrics *metrics.Registry
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -204,6 +217,20 @@ func newTestHandlerWithDefaultProject(t *testing.T) (http.Handler, *store.Store)
 	return handler, database
 }
 
+// testEnvoyAccountTokenFile is a file holding a stand-in for Dispatch's projected token at the
+// listener, for a server whose Envoy client is configured (envoyURL set), and "" otherwise.
+func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
+	t.Helper()
+	if envoyURL == "" {
+		return ""
+	}
+	path := filepath.Join(t.TempDir(), "envoy-account-token")
+	if err := os.WriteFile(path, []byte("dispatch-test-account-token\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch's test account token: %v", err)
+	}
+	return path
+}
+
 // newTestServer builds the mux an API test drives and hands back the store behind it and the
 // dependencies it runs on, so a test that also calls a handler or a delivery step directly
 // (directServer) shares this server's broker and document service instead of standing up a
@@ -229,6 +256,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	database := options.store
 	if database == nil {
 		database = storetest.Open(t)
+	}
+	if options.tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
 	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore
@@ -258,21 +288,25 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentPublisher = NewAgentPublishRecorder()
 	}
 	deps, err := NewDeps(DepsInput{
-		Store:                  database,
-		Identity:               people,
-		AgentTokens:            sharedAgentTokens(t, "agent-token"),
-		DefaultProject:         options.defaultProject,
-		NewIssueLabel:          options.newIssueLabel,
-		NewIssueSession:        options.newIssueSession,
-		ServerURL:              testServerURL,
-		Docs:                   documentService,
-		Events:                 broker,
-		App:                    options.app,
-		GitHubAPIBase:          options.githubAPIBase,
-		TestHooksEnabled:       options.testHooks,
-		StreamHeartbeat:        options.streamHeartbeat,
-		EnvoyURL:               options.envoyURL,
-		EnvoyTimeout:           options.envoyTimeout,
+		Store:            database,
+		Identity:         people,
+		AgentTokens:      sharedAgentTokens(t, "agent-token"),
+		DefaultProject:   options.defaultProject,
+		NewIssueLabel:    options.newIssueLabel,
+		NewIssueSession:  options.newIssueSession,
+		ServerURL:        testServerURL,
+		Docs:             documentService,
+		Events:           broker,
+		App:              options.app,
+		GitHubAPIBase:    options.githubAPIBase,
+		TestHooksEnabled: options.testHooks,
+		StreamHeartbeat:  options.streamHeartbeat,
+		EnvoyURL:         options.envoyURL,
+		EnvoyTimeout:     options.envoyTimeout,
+		// Dispatch presents an identity of its own to the listener, as a deployment does: without
+		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
+		// check no bearer.
+		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
@@ -289,6 +323,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:             options.files,
 		DashboardEntry:    options.dashboardEntry,
 		BuildCommit:       options.buildCommit,
+		OutboxPublishes:   options.outboxPublishes,
+		Metrics:           options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -395,7 +431,7 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 	}
 }
 
-func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
+func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
@@ -533,7 +569,7 @@ func assertRefusal(t *testing.T, request string, status int, body []byte, code, 
 	}
 }
 
-func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
+func decodeBody[T any](t testing.TB, response *httptest.ResponseRecorder) T {
 	t.Helper()
 	var value T
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
@@ -1157,7 +1193,7 @@ func TestArtifactVersions(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"artifact"`
 	}](t, notes)
-	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
+	replacement := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": uploadBaseField(t, handler, uploaded.Artifact.ID)}, "notes.md", "text/markdown", []byte("# Revised"), "alice")
 	if replacement.Code != http.StatusCreated {
 		t.Fatalf("replace document: status=%d body=%s", replacement.Code, replacement.Body.String())
 	}
@@ -1709,7 +1745,8 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 		t.Fatalf("upload Report.md: status=%d body=%s", dashed.Code, dashed.Body.String())
 	}
 	versioned := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
-		"name": "report.md",
+		"name":         "report.md",
+		"precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "report.md")),
 	}, "report.md", "text/markdown", []byte("# Revision"), "alice")
 	if versioned.Code != http.StatusCreated {
 		t.Fatalf("upload report.md version 2: status=%d body=%s", versioned.Code, versioned.Body.String())
@@ -1764,9 +1801,8 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 		t.Fatalf("begin status lock: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var lockedKey string
-	if err := lock.QueryRow(context.Background(), `select key from issues where key = $1 for update`, child.Key).Scan(&lockedKey); err != nil {
-		t.Fatalf("lock child: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.IssueOwner(child.Key)); err != nil {
+		t.Fatalf("take the child's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1843,14 +1879,16 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 		t.Fatalf("create state: status=%d body=%s", initial.Code, initial.Body.String())
 	}
 
+	// The project's owner lock, the one putUserState takes before it reads the row: both writes
+	// queue behind it, and each reads the row only once the write before it has committed, so the
+	// second keeps the field the first wrote.
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
-		t.Fatalf("begin user state lock: %v", err)
+		t.Fatalf("begin the project lock's holder: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var login string
-	if err := lock.QueryRow(context.Background(), `select login from user_issue_state where login = 'alice' and issue_key = $1 for update`, issue.Key).Scan(&login); err != nil {
-		t.Fatalf("lock user state: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.ProjectOwner("TEST")); err != nil {
+		t.Fatalf("hold the project's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1866,7 +1904,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 	}()
 	waitForDatabaseLocks(t, lock, 2)
 	if err := lock.Commit(context.Background()); err != nil {
-		t.Fatalf("release user state lock: %v", err)
+		t.Fatalf("release the project's owner lock: %v", err)
 	}
 	for range 2 {
 		response := awaitResponse(t, responses)

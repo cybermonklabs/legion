@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -45,11 +46,15 @@ type Failure struct {
 // tells it, since the code is in hand here and the writer would otherwise read the body back.
 type refusalNoter interface{ noteRefusal(code string) }
 
+// writeFailure writes the refusal of code with message. The message passes the URL rule
+// (redact.URLCredentials): a refusal can quote a far side's error, a Dispatch or GitHub transport
+// error that names the URL it asked (dispatch_url's user name, a redirect's query), and the answer
+// goes to an agent.
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
 	if noter, ok := w.(refusalNoter); ok {
 		noter.noteRefusal(code)
 	}
-	writeJSON(w, status, Failure{Code: code, Error: message})
+	writeJSON(w, status, Failure{Code: code, Error: redact.URLCredentials(message)})
 }
 
 // requireFailureFields refuses the first field that is blank, by its wire name, in the Failure
@@ -82,7 +87,8 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	case !s.operatorAuthorized(r):
 		writeFailure(w, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
 	default:
-		s.mintControllerGrant(w)
+		grant, err := s.grants.MintOperatorController()
+		s.writeControllerGrant(w, grant, err)
 	}
 }
 
@@ -121,7 +127,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		return nil, false, err
 	}
 	for _, current := range claims {
-		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
+		if !current.HoldsSession(sessionID) || current.Tree != tree || current.Issue != issue {
 			continue
 		}
 		m, _, ok := s.authenticated(current.Token, secret)
@@ -163,7 +169,8 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // registration that minted it; the credential routes check that again after their GitHub await. A
 // claim grant whose claim speaks another plugin contract than the daemon's is refused the
 // stale-caller 409 here, once every other check has passed: every grant-bearing route takes its
-// claim caller's staleness from this one place.
+// claim caller's staleness from this one place. A claim grant it takes notes its claim as the
+// request's requester (noteRequester), whose stream apply waits for.
 //
 // A controller grant is returned here without consulting the controller record at all (LEGION-164):
 // its own staleness is refused at mint (controllerSessionGrant -> refuseIfStaleController), grants
@@ -195,6 +202,7 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request, id string) (cred
 	if s.refuseIfStaleClaimFailure(w, r, machine.Claim()) {
 		return credential.Grant{}, false
 	}
+	noteRequester(r.Context(), grant.Claim)
 	return grant, true
 }
 

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -28,7 +31,9 @@ type createEnrollmentBody struct {
 	// A pod only, optional: which of the pod's independent enrollments this is.
 	Slot string `json:"slot"`
 	// Optional: the operator the session runs for. The broker records the machine credential's own
-	// operator whatever is sent, and refuses any other login. Absent or null for a pod.
+	// operator whatever is sent, and refuses any other login. Absent or null for a service's pod.
+	// A pod that a person's pod login (enroll.PersonPodLogin) enrols records that person, sent or
+	// not.
 	Operator *string `json:"operator"`
 	// The RFC 7638 JWK thumbprint of the session's P-256 signing key.
 	Thumbprint string `json:"thumbprint"`
@@ -37,6 +42,12 @@ type createEnrollmentBody struct {
 	SessionID *string `json:"session_id"`
 	// A pod only: its projected service-account token, which proves the runtime id is its UID.
 	PodToken *string `json:"pod_token"`
+	// A pod a launcher enrols only, optional: what the pod runs for, which every later process of
+	// it states again (the Legion daemon sends the role claim token, legion-<project>-<issue>-<role>,
+	// matching ^[a-z][a-z0-9-]{0,127}$, else 400 INVALID_CLAIM). A request the pod makes belongs to
+	// that claim, so the next pod of the claim reads and cancels it and takes the grants a dormant
+	// pod of it left (enroll.ownerKey).
+	Claim string `json:"claim"`
 }
 
 // enrollmentResponse is POST /v1/enrollments's answer: 201 for a new enrollment, 200 when the same
@@ -75,7 +86,11 @@ type selfResponse struct {
 	Kind string `json:"kind"`
 	// When the session's lease lapses unless it is renewed.
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
-	// The person the session runs for; null for a pod.
+	// The person the session runs for, as its enrollment row recorded it. For a pod it is the
+	// person that a person's pod login (enroll.PersonPodLogin) carried when it enrolled the pod,
+	// and null for any other pod. The row keeps that person after BROKER_POD_OPERATORS stops
+	// mapping the pod's account, while the pod then acts for no person
+	// (requests.Machine.requester).
 	Operator *string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`
@@ -105,6 +120,7 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		Thumbprint: body.Thumbprint,
 		SessionID:  body.SessionID,
 		PodToken:   derefOr(body.PodToken, ""),
+		Claim:      body.Claim,
 	})
 	switch {
 	case errors.Is(err, enroll.ErrUnauthenticated):
@@ -113,13 +129,17 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrInvalidSlot):
 		writeError(w, http.StatusBadRequest, "INVALID_SLOT", err.Error())
 		return
+	case errors.Is(err, enroll.ErrInvalidClaim):
+		writeError(w, http.StatusBadRequest, "INVALID_CLAIM", err.Error())
+		return
 	case errors.Is(err, enroll.ErrOperatorMismatch):
 		writeError(w, http.StatusForbidden, "OPERATOR_MISMATCH", err.Error())
 		return
-	// A session name another principal holds, which the enrollment's own bind refuses
-	// (enroll.ErrSessionHeld): the launcher enrols under a name of its own, as the refusal's own
-	// text says and as POST /v1/pod-sessions answers a name the configuration has fixed
-	// (SESSION_FIXED).
+	// A session name another principal holds and the enrollment's own principal may not take,
+	// which the enrollment's own bind refuses (enroll.ErrSessionHeld; an account
+	// BROKER_SESSION_ACCOUNT_PAIRS pairs with the holder takes the name instead): the launcher
+	// enrols under a name of its own, as the refusal's own text says and as POST /v1/pod-sessions
+	// answers a name the configuration has fixed (SESSION_FIXED).
 	case errors.Is(err, enroll.ErrSessionHeld):
 		writeError(w, http.StatusForbidden, "SESSION_HELD", err.Error())
 		return
@@ -164,10 +184,12 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 // design, so it never writes a spurious audit row for an enrollment that never transitioned);
 // DELETE's own idempotent semantics mean the caller doesn't need to know or care which happened.
 // Ownership is checked first: a launcher credential may only revoke an enrollment of its own
-// operator, and a pod enrollment, which carries no operator, only when it is the credential that
-// enrolled the pod (enroll.Service.Revoke says why, and what that leaves a restarted Legion daemon)
-// — so a mismatch is always 403 (OPERATOR_MISMATCH, or NOT_ENROLLING_CREDENTIAL for another
-// service credential's pod), never a no-op 204, regardless of whether the target enrollment is live.
+// operator, and a pod enrollment only when it is the credential that enrolled the pod. A service's
+// pod enrollment carries no operator. A pod enrollment that a person's pod login made
+// (enroll.PersonPodLogin) carries that person, and the same rule holds it (enroll.Service.Revoke
+// says why, and what that leaves a restarted Legion daemon). So a mismatch is always 403
+// (OPERATOR_MISMATCH, or NOT_ENROLLING_CREDENTIAL for a pod enrollment that another credential or
+// another pod made), never a no-op 204, regardless of whether the target enrollment is live.
 func (s *server) deleteEnrollment(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
 	id, ok := pathUUID(w, r, "id", "ENROLLMENT_ID_INPUT", "enrollment")
 	if !ok {
@@ -186,6 +208,169 @@ func (s *server) deleteEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxCarriedBodyBytes is POST /v1/enrollments/carried's body cap, in place of maxJSONBodyBytes:
+// the longest list Carried takes, written compactly, with every byte of every id escaped as
+// JSON's longest escape (\u00XX, six bytes), its quotes and commas, and the object around it.
+// About 6 MiB. Under maxJSONBodyBytes a list of 4,096 plain 255-byte ids, which Carried answers,
+// would be refused 413 before it reached Carried.
+const maxCarriedBodyBytes = int64(enroll.MaxCarriedSessionIDs*(6*enroll.MaxCarriedSessionIDBytes+3) + len(`{"session_ids":[]}`))
+
+// carriedBody is POST /v1/enrollments/carried's body, which readCarriedBody decodes.
+type carriedBody struct {
+	// The session ids to ask about: 1 to 4096 of them, each 1 to 255 bytes. An id named twice is
+	// answered once.
+	SessionIDs []string `json:"session_ids"`
+}
+
+// carriedResponse is POST /v1/enrollments/carried's answer.
+type carriedResponse struct {
+	// Every pod enrollment a login of the caller's own account launched that still carries
+	// something for one of the named sessions, sorted by session id and then enrollment id; empty,
+	// never null, when none does.
+	Carried []carriedEnrollment `json:"carried"`
+}
+
+// carriedEnrollment is one enrollment POST /v1/enrollments/carried answers.
+type carriedEnrollment struct {
+	// The session id the enrollment names.
+	SessionID string `json:"session_id"`
+	// The enrollment's id.
+	EnrollmentID string `json:"enrollment_id"`
+	// "live": no end has reached it, and it counts whatever it holds, since it may still be
+	// granted something or ask for something. "dormant": a box's end left it holding a live grant
+	// or a pending request for the session's next enrollment.
+	State string `json:"state"`
+	// When it stops carrying unless something ends it first: a live enrollment's lease end, which
+	// each renewal moves, and a dormant one's carry window end (BROKER_SESSION_CARRY_SECONDS past
+	// its end), when the broker's sweep revokes what it holds.
+	EndsAt time.Time `json:"ends_at"`
+}
+
+// carriedEnrollments answers which pod enrollments a login of the caller's own account launched
+// still carry something for the named sessions, that the next enrollment of the session under
+// the same login would take: what enroll.Service.Carried reads, and why each row counts, is that
+// method's. A Legion daemon asks before it frees a session id it holds, and frees one only when
+// the answer names none of its enrollments (plan E's t-e-54). Another login's enrollments
+// are never answered, so another daemon's session of the same id never keeps this one from
+// freeing it. A credential whose login names no account, one a person approved through a code,
+// launched nothing it could be answered for (403 SERVICE_LOGIN_REQUIRED), and is refused before
+// its body is read; any other is answered with the rows its own login launched.
+func (s *server) carriedEnrollments(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
+	// The caller is checked first, by the sentinel it answers, so the reference generator
+	// (cmd/broker-refgen) reads the refusal's text from it; Carried's own check of the caller
+	// then never refuses, and its answer needs no case of its own.
+	switch err := enroll.CheckCarriedCaller(cred); {
+	case errors.Is(err, enroll.ErrServiceLoginRequired):
+		writeError(w, http.StatusForbidden, "SERVICE_LOGIN_REQUIRED", err.Error())
+		return
+	}
+	var body carriedBody
+	if !readCarriedBody(w, r, &body) {
+		return
+	}
+	carried, err := s.deps.Enroll.Carried(r.Context(), cred, body.SessionIDs)
+	switch {
+	case errors.Is(err, enroll.ErrInvalidSessionIDs):
+		writeError(w, http.StatusBadRequest, "INVALID_SESSION_IDS", err.Error())
+		return
+	case err != nil:
+		writeInternal(w, "read carried enrollments", err)
+		return
+	}
+	out := carriedResponse{Carried: make([]carriedEnrollment, 0, len(carried))}
+	for _, c := range carried {
+		out.Carried = append(out.Carried, carriedEnrollment{
+			SessionID: c.SessionID, EnrollmentID: c.EnrollmentID.String(), State: c.State, EndsAt: c.EndsAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// readCarriedBody reads POST /v1/enrollments/carried's body into body, a carriedBody of at most
+// maxCarriedBodyBytes (413 REQUEST_TOO_LARGE), as readJSON reads one under its own cap, but one id at a time: a list
+// longer than enroll.MaxCarriedSessionIDs is refused at the entry past it, before the rest of the
+// body is read or held (400 INVALID_SESSION_IDS). Decoding the whole list first let a body of empty
+// ids at the cap decode to about two million of them, 180 MiB allocated, before the count was
+// checked (side review of #4355). Any other fault of the body is 400 INVALID_SESSION_IDS too. It
+// takes the body's address as readJSON does, which is how the reference generator names the
+// route's request body. It writes the refusal itself and reports whether it read the body.
+func readCarriedBody(w http.ResponseWriter, r *http.Request, body *carriedBody) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCarriedBodyBytes)
+	read, err := decodeCarriedBody(json.NewDecoder(r.Body))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case err == nil:
+		*body = read
+		return true
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", fmt.Sprintf("request body exceeds %d bytes", maxCarriedBodyBytes))
+	case errors.Is(err, enroll.ErrInvalidSessionIDs):
+		writeError(w, http.StatusBadRequest, "INVALID_SESSION_IDS", err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_SESSION_IDS", "body must be one valid JSON object: "+err.Error())
+	}
+	return false
+}
+
+// decodeCarriedBody decodes one carriedBody from d, a token at a time: an object whose one field
+// is session_ids, a list of strings, and nothing after it. It stops at the list's entry past
+// enroll.MaxCarriedSessionIDs with enroll.ErrInvalidSessionIDs. A body with no list answers no
+// ids, which Carried refuses as naming none.
+func decodeCarriedBody(d *json.Decoder) (carriedBody, error) {
+	var body carriedBody
+	if err := wantDelim(d, '{'); err != nil {
+		return carriedBody{}, err
+	}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return carriedBody{}, err
+		}
+		if key != "session_ids" || body.SessionIDs != nil {
+			return carriedBody{}, fmt.Errorf("the body's field %v is not session_ids, or names it twice", key)
+		}
+		if err := wantDelim(d, '['); err != nil {
+			return carriedBody{}, err
+		}
+		body.SessionIDs = []string{}
+		for d.More() {
+			if len(body.SessionIDs) == enroll.MaxCarriedSessionIDs {
+				return carriedBody{}, fmt.Errorf("%w: it names more than %d", enroll.ErrInvalidSessionIDs, enroll.MaxCarriedSessionIDs)
+			}
+			var id string
+			if err := d.Decode(&id); err != nil {
+				return carriedBody{}, err
+			}
+			body.SessionIDs = append(body.SessionIDs, id)
+		}
+		if err := wantDelim(d, ']'); err != nil {
+			return carriedBody{}, err
+		}
+	}
+	if err := wantDelim(d, '}'); err != nil {
+		return carriedBody{}, err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		if err == nil {
+			err = errors.New("body must contain one JSON value")
+		}
+		return carriedBody{}, err
+	}
+	return body, nil
+}
+
+// wantDelim reads d's next token and fails unless it is delim.
+func wantDelim(d *json.Decoder, delim json.Delim) error {
+	got, err := d.Token()
+	if err != nil {
+		return err
+	}
+	if got != delim {
+		return fmt.Errorf("the body has %v where %v belongs", got, delim)
+	}
+	return nil
 }
 
 // renewEnrollment renews the caller's own enrollment. The proof-verified enrollment id is

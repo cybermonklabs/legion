@@ -20,11 +20,12 @@ package appauth
 // The release reaches every repository the account's installation holds, here as in key mode: the
 // account that installs the App chooses them, and the daemon asks for no narrowing of them
 // (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
-// holds contents, metadata, pull requests and Actions read, which is key mode's ReadToken set
-// less its issues read, and less the Actions read an installation that is not granted it does not
-// hold. What a release leaves out is the command's own business: the daemon reads what an
-// installation is granted only where it mints with a key of its own (exchangeGranted), and asks a
-// command for no permission at all.
+// holds the broker's own set, contents, metadata, pull requests, Actions, checks and statuses
+// read, less each of the last three the installation is not granted. That set differs from key
+// mode's ReadToken set (readPermissions), so a read lease in token mode holds no issues or
+// attestations. What a release leaves out is the command's own business: the daemon
+// reads what an installation is granted only where it mints with a key of its own
+// (exchangeGranted), and asks a command for no permission at all.
 //
 // No token reaches a log or an error: the command's stdout is never quoted, and its stderr, which
 // `agent-secrets` uses for the names and the request it waits on, goes to the daemon's stderr and
@@ -231,15 +232,15 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 		return nil, &TransientError{Err: fmt.Errorf("%s did not finish within %s: %w", field, tokenCommandLimit, ctx.Err())}
 	}
 	if err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
+		end := procgroup.Ended(err)
+		if !end.Ran() {
 			return nil, fmt.Errorf("%s could not run: %w", field, err)
 		}
-		failed := fmt.Errorf("%s failed (exit %d)", field, exit.ExitCode())
+		failed := fmt.Errorf("%s failed (%s)", field, end)
 		if message := strings.TrimSpace(stderr.String()); message != "" {
-			failed = fmt.Errorf("%s failed (exit %d): %s", field, exit.ExitCode(), message)
+			failed = fmt.Errorf("%s failed (%s): %s", field, end, message)
 		}
-		if exit.ExitCode() == exitPending {
+		if end.ExitedWith(exitPending) {
 			return nil, &TransientError{Err: failed}
 		}
 		return nil, failed
