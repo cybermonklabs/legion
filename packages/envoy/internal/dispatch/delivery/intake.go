@@ -323,7 +323,8 @@ func consumerGenerationMetadata() map[string]string {
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
 // ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
-// on a reconnecting link it is refused at once (intakeDelivery.handBackOwn).
+// on a reconnecting link between attempts it is refused at once, and while an
+// attempt holds nats.go's lock it waits until the attempt ends (intakeDelivery.handBackOwn).
 //
 // It is handed back a bounded number of times and then acknowledged, with an Error naming the
 // envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a

@@ -51,12 +51,13 @@ type intakeDelivery struct {
 	// once (giveBack).
 	released bool
 	// handBackAllowed is false at the start and set once from the drain result: true when the
-	// drain answered with a handle. A failed connected read during a stop clears it. The stop withholds its
+	// drain answered with a handle. A failed connected read during a stop clears it; the drain
+	// cannot undo that read because no read runs while the flag is false. The stop withholds its
 	// hand-backs while it is false (mayHandBack).
 	handBackAllowed bool
 	// publishing counts the hand-back publishes NATS has not answered yet (publishHandBack), and
-	// published is closed each time that count falls to zero. published is made at the first
-	// publish and never set back to nil, so handedBack reads it. The hold's release waits for
+	// published is closed each time that count falls to zero. It is made again each time the
+	// count rises from zero, and once made is never set back to nil, so handedBack reads it. The hold's release waits for
 	// them (heldDurable.handBacksReached).
 	publishing int
 	published  chan struct{}
@@ -142,9 +143,8 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // and the hold's release (up to intakeHoldRenew, 5 s) run before the close. Only a pending
 // hand-back's finalizer, with its release, follows the close: Client.Close waits for nats.go's
 // connection lock, which a write can hold until its one-minute write deadline; a kubelet kill
-// then ends the client and renewal. It is also well past what a handler GitHub answers needs,
-// a pull request and its commit
-// pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
+// then ends the client and renewal. It is also well past what a handler GitHub answers
+// needs, a pull request and its commit pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
 // an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
 // answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
 // which no budget inside stopGrace could wait out. A var so a test can shrink it.
@@ -342,8 +342,9 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 //     is connected within bus.ConnLockWait (callNATS), or answers that it is not (mayHandBack): a
 //     hand-back on a link that is down, or in a reconnect's handshake, would wait for the
 //     reconnect. That read clears handBackAllowed. Outside any stop, the connected read is not
-//     made: a hand-back is published, left running when a write holds nats.go's lock, and refused
-//     at once on a reconnecting link with an INFO line.
+//     made: a hand-back is published, left running when a write holds nats.go's lock, and on a
+//     reconnecting link refused between attempts with an INFO line, or held until the attempt
+//     ends.
 //
 // The publish itself waits for NATS at most bus.ConnLockWait too (publishHandBack), since the stop
 // waits for the handlers that make it and for its own hand-backs: a write to a slow socket can take
