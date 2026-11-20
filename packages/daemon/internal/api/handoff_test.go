@@ -2016,7 +2016,7 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 // of a run the issue has left, or one of another phase is still refused HANDOFF_NO_RUN with
 // nothing recorded, and the refusal says what the claim holds — naming the run or the phase of
 // the task when it holds one — that nothing was recorded, and what the worker does next, which is
-// what skills/legion-worker/references/skill-handoff-and-completion.md tells it for this code:
+// what skills/legion-worker/references/handoff-and-completion.md tells it for this code:
 // never the work again, never a second handoff.
 func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *testing.T) {
 	for _, tc := range []struct {

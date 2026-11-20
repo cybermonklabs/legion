@@ -1,6 +1,6 @@
 # The pull request and the merge gate
 
-Read it before you open, comment on or merge a pull request, write a GitHub issue, or change `gh`'s config, its aliases or its token variables (`skill://legion-worker`, "Pull request and merge gate").
+Read it before you open or comment on a pull request, write a GitHub issue, or change `gh`'s config, its aliases or its token variables (`skill://legion-worker`, "Pull request and merge gate").
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body. Later phases push to that branch and edit that pull request.
 - The implementer records a result for every `before_merge` check with no `ci_check` before its phase completes, and writes the `Checks` lines when the pull request opens. Whatever blocks a check is fixed, not skipped (`skill://legion-worker/references/pr-body.md#when-no-surface-reaches-the-changed-path`).

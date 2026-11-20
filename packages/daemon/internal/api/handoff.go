@@ -512,9 +512,9 @@ func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *su
 // retired none, and held is heldTaskNotCurrent's answer for the task it is holding — the very
 // reason the fallback that would have taken the run and the entry from that task does not
 // apply. It says what the claim holds, that nothing was recorded, and what the worker does next,
-// which is what skills/legion-worker/references/skill-handoff-and-completion.md tells it for
-// this code: push nothing further, end the turn without completing, tell the architect, and call
-// the same completion in the turn the issue's own task arrives in rather than redoing the work.
+// which is what skills/legion-worker/references/handoff-and-completion.md tells it for this
+// code: push nothing further, end the turn without completing, tell the architect, and call the
+// same completion in the turn the issue's own task arrives in rather than redoing the work.
 func noRunCompletion(issue string, current uint64, p phase.Phase, held string) string {
 	return fmt.Sprintf("this completion belongs to no run of %s: %s; nothing was recorded. Push nothing further, end this turn without completing and tell the architect; if the daemon queues this claim a generation-%d %s task (none may: this run's phase can be another claim's) and its work and handoff are already done, call the same handoff_complete in that task's turn, and never redo the work or write a second handoff",
 		issue, held, current, p)

@@ -25,7 +25,7 @@ Read it before every push. Your `Legion addressing` line names your issue's repo
 ## What your own commits must show
 
 - `Omp-Session:` with your session and `Legion-Role:` with your `LEGION_ROLE`. Your session is `DISPATCH_SESSION_ID` under Oh My Pi and `CLAUDE_CODE_SESSION_ID` under Claude Code. A jj commit names the session your pane registered: the id in the `omp-attribution-<id>.toml` file at the end of `JJ_CONFIG` (`printf '%s\n' "${JJ_CONFIG##*:}"`), which differs only after a session switch or a fork.
-- A line short: cure it as `skill://legion-worker/references/skill-commits.md` says.
+- A line short: cure it as `skill://legion-worker/references/commits.md` says.
 - Another session or another role, or `(no author)` or `(no committer)`, which `jj git push` refuses: send the architect this log.
 - The git author and committer name no role; do not compare them.
 - Never set `user.name`, `user.email`, `templates.commit_trailers`, `templates.revert_description`, `templates.duplicate_description` or any `trailer.*` key in any jj or git scope: the repository's jj config is shared by every workspace of the clone, and a `templates.commit_trailers` there replaces the pane's trailers.

@@ -1,6 +1,6 @@
 # The handoff, the completion, and a refused completion
 
-Read it before you record the handoff your role prompt names or complete (step 7 of `skill://legion-worker`), and when `handoff_complete` refuses your completion.
+Read it before you record the handoff your role prompt names or complete (step 6 of `skill://legion-worker`), and when `handoff_complete` refuses your completion.
 
 ## The handoff
 
@@ -12,7 +12,7 @@ A handoff is never a commit and never a result: what you ran is a result you rec
 
 ## A refused completion
 
-Quote the answer verbatim to the architect, as the stop rules of `skill://legion-worker` say, then act on its code:
+A refused completion is information, not a retry loop. Quote the answer verbatim to the architect, then act on its code:
 
 - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing. When the task then arrives with its work and handoff done, call `handoff_complete` again in its turn; never redo the work or write a second handoff.
 - `HANDOFF_STALE_ENTRY`: end the turn without completing, and report that work and that verdict no further; the daemon sends the new entry's task by itself, so ask no one for it. Do what it asks at the head it names, with a handoff of its own, never this completion's record, commit or verdict.

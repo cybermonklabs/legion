@@ -20,3 +20,7 @@ Resist opportunistic refactors. A diff with significant additions means the scop
 ## Complete the deletion chain
 
 When a feature has an implementation, a CLI wrapper, a `package.json` entry and docs, remove all of them together. A partial deletion leaves broken references.
+
+## Historical records stay
+
+A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
