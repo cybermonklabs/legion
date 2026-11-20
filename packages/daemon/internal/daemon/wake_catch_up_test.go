@@ -127,7 +127,7 @@ func noticeRows(t *testing.T, pool *store.Pool) []noticeRow {
 func pacedCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now, at time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
@@ -389,7 +389,7 @@ func TestAnOrdinaryCatchUpAndAHandOversAreNotDelayed(t *testing.T) {
 
 	// The hand-over's, which drops the ready's as every catch-up does (DropCatchUps): the composer
 	// every released decision's catch-up goes through (workflow.HandOverKept, CatchUpTheTreesOwed).
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return workflow.CatchUpTheTreesOwed(ctx, tx, records, config.DesignGateRootIssues.Steps(), []string{"LEGION-1"}, now)
 	}); err != nil {
 		t.Fatalf("write the hand-over's catch-up: %v", err)

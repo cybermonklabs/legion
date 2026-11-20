@@ -509,7 +509,7 @@ func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, clai
 	}
 	defer st.Close()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

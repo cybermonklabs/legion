@@ -107,7 +107,7 @@ func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer, recorded 
 		w.defaultBranches = newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)
 		w.defaultBranches.onHold = w.heldThroughLimit
 		w.log = slog.New(slog.NewJSONHandler(logs, nil))
-		if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
 			for _, issue := range recorded {
 				if err := w.records.PutIssue(context.Background(), tx, issue); err != nil {
 					return err
@@ -416,7 +416,7 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, doneOn("LEGION-1", "LEGION", "Old/Widgets", "main"))
 	}); err != nil {
 		t.Fatal(err)
@@ -483,7 +483,7 @@ func TestABootsBackfillWaitsOutARateLimitAndFillsTheRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, key := range []string{"LEGION-7", "LEGION-9"} {
 					if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 						values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
@@ -512,7 +512,7 @@ func TestABootsBackfillWaitsOutARateLimitAndFillsTheRecord(t *testing.T) {
 				t.Fatalf("unfilled after the backfill = %v, want none", unfilled)
 			}
 			var issues []record.Issue
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				issues, err = w.records.Issues(ctx, tx)
 				return err
@@ -629,7 +629,7 @@ func recordBeforeBoot(t *testing.T, cfg config.Config, issues ...record.Issue) {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range issues {
 			if err := record.NewStore().PutIssue(ctx, tx, issue); err != nil {
 				return err

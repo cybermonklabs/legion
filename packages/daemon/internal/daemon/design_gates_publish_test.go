@@ -160,7 +160,7 @@ func (r *gatePublishRig) clock() time.Time { return time.Now().UTC().Add(r.ahead
 // already run would hold, and how they read those records back.
 func (r *gatePublishRig) inTx(fn func(ctx context.Context, tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return fn(r.ctx, tx) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return fn(r.ctx, tx) }); err != nil {
 		r.t.Fatalf("the rig's transaction: %v", err)
 	}
 }

@@ -62,7 +62,7 @@ func TestADroppedHandOverFenceEndsTheMergeItHeldOpen(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestClosed, Issue: "LEGION-209", Repo: "sjawhar/legion",
 					Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}}); err != nil {
 					return err
@@ -124,7 +124,7 @@ func TestAFenceAFactPutsAgainOutlivesTheDropOfTheCancelledOne(t *testing.T) {
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Parent: &parent, Project: "LEGION", Title: "member", Phase: phase.Testing, Generation: 1,
 		Status: "testing", Rank: "V", LastDispatchSeq: 1})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutHandover(ctx, tx, record.Handover{Issue: "LEGION-209", Tree: "LEGION-208", Generation: 1}); err != nil {
 			return err
 		}
@@ -145,7 +145,7 @@ func TestAFenceAFactPutsAgainOutlivesTheDropOfTheCancelledOne(t *testing.T) {
 	if err := <-racing.put; err != nil {
 		t.Fatalf("the fact's put of the fence: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		fence, err := records.Handover(ctx, tx, "LEGION-209")
 		if err != nil {
 			return err
@@ -177,7 +177,7 @@ func (s *factPutsTheFenceAgain) Handover(ctx context.Context, tx pgx.Tx, issue s
 	s.put = make(chan error, 1)
 	backend := make(chan int32, 1)
 	go func() {
-		s.put <- pgx.BeginFunc(context.Background(), s.pool, func(tx pgx.Tx) error {
+		s.put <- store.Transact(context.Background(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var pid int32
 			if err := tx.QueryRow(context.Background(), "select pg_backend_pid()").Scan(&pid); err != nil {
 				close(backend)

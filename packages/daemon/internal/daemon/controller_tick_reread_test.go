@@ -364,7 +364,7 @@ func seedBlockedRoots(t *testing.T, pool *store.Pool, count int) {
 
 func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, issue)
 	}); err != nil {
 		t.Fatalf("seed the record of %s: %v", issue.Key, err)
@@ -373,7 +373,7 @@ func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 
 func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
 			Key: key, Project: "CAPTURE", Status: status, Blockers: blocked, Seq: seq})
 	}); err != nil {
@@ -408,7 +408,7 @@ func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 func tickSlotted(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var slots []record.Slot
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		slots, err = record.NewStore().Slots(context.Background(), tx)
 		return err
@@ -426,7 +426,7 @@ func tickSlotted(t *testing.T, pool *store.Pool) []string {
 func tickMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		mirrored, err = record.NewStore().DispatchIssues(context.Background(), tx, "CAPTURE")
 		return err

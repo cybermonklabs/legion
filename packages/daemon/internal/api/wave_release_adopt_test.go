@@ -412,7 +412,9 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 	}
 	seed := func(a *adoptionHarness, write func(tx pgx.Tx) error) {
 		a.t.Helper()
-		if err := a.store.Tx(context.Background(), write); err != nil {
+		if err := store.Transact(context.Background(), a.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return write(tx)
+		}); err != nil {
 			a.t.Fatalf("seed: %v", err)
 		}
 	}

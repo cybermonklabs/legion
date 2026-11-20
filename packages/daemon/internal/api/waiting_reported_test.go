@@ -235,7 +235,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 
 	server := api.NewServer("127.0.0.1", 8437, api.Options{
-		Steps: steps, State: projectedSource{records: records, steps: steps}, StateTransactions: st,
+		Steps: steps, State: projectedSource{records: records, steps: steps}, StateTransactions: st.Pool(),
 	})
 	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 	recorder := httptest.NewRecorder()

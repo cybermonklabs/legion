@@ -190,7 +190,7 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 	records := record.NewStore()
 	running := record.Issue{Key: tree, Tree: tree, Project: "CAPTURE", Title: tree, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "A",
 		HandedOver: true, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, running); err != nil {
 			return err
 		}
@@ -229,7 +229,7 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 	var waiting []string
 	var slotted []string
 	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := records.Issues(ctx, tx)
 		if err != nil {
 			return err
@@ -280,7 +280,7 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, recordedOn(tree, tree, "in_progress"))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -315,7 +315,7 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 	slotOf := func(key string) bool {
 		t.Helper()
 		var slotted bool
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			slots, err := records.Slots(ctx, tx)
 			slotted = slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == key })
 			return err
@@ -358,7 +358,7 @@ func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ances
 	for _, issue := range recorded {
 		putOutboxIssue(t, pool, records, issue)
 	}
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -401,7 +401,7 @@ func (l *ancestryLine) slotted(key string) (bool, *record.Issue) {
 	l.t.Helper()
 	var slotted bool
 	var issue *record.Issue
-	if err := pgx.BeginFunc(context.Background(), l.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), l.pool, func(ctx context.Context, tx pgx.Tx) error {
 		slots, err := l.records.Slots(context.Background(), tx)
 		if err != nil {
 			return err
@@ -419,7 +419,7 @@ func (l *ancestryLine) slotted(key string) (bool, *record.Issue) {
 func (l *ancestryLine) waiting(key string) bool {
 	l.t.Helper()
 	var waiting bool
-	if err := pgx.BeginFunc(context.Background(), l.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), l.pool, func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := l.records.Issues(context.Background(), tx)
 		if err != nil {
 			return err
@@ -559,7 +559,7 @@ func TestARereadReadsOnlyTheRootsWhoseChainHoldsTheEventsIssue(t *testing.T) {
 func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
 	const tree, other, member, parent, child = "LEGION-168", "LEGION-190", "LEGION-170", "LEGION-169", "LEGION-214"
 	line := newAncestryLine(t, tree, parkedIn(member, tree), recordedOn(other, other, "in_progress"))
-	if err := pgx.BeginFunc(context.Background(), line.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), line.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := line.records.PutSlot(context.Background(), tx, record.Slot{Issue: other, Index: 1, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}

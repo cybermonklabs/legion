@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -94,7 +95,7 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 	// way the engine writes one (workflow.Engine.started), both in its own transaction.
 	next := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer,
 		Generation: issue.Generation, Phase: issue.Phase, Task: nextTask, Entry: nextEntry}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: token,
 			Entry: nextEntry, EntryTask: nextTask, EntryRaisedAt: clock}); err != nil {
 			return err

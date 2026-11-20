@@ -160,7 +160,7 @@ func catchUpRigOn(t *testing.T, pool *store.Pool, client dispatch.Client, cap in
 // reconcile's transaction (holdForCatchUp), then caught up (catchUpAwaiting).
 func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)
 	}
 	return w.catchUpAwaiting(context.Background())
@@ -170,7 +170,7 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }

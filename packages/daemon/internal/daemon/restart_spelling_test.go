@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -33,7 +34,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 		values ('LEGION-301', 'LEGION-301', 'LEGION', 'running', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-301", Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatal(err)
@@ -111,7 +112,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 			values ('LEGION-301', 'LEGION-301', 'LEGION', 'running', 'implementing', 1, 'in_progress', 'A', 1, 'acme/widgets', 'main')`); err != nil {
 			t.Fatal(err)
 		}
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-301", Index: 0, AdmittedAt: time.Now()})
 		}); err != nil {
 			t.Fatal(err)

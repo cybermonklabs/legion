@@ -291,7 +291,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 	defer st.Close()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
@@ -487,7 +487,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 
 	// The stop and the end of the other root's work, under the lock every fact takes, so that the
 	// first pass after them is one pass with both.
-	lock, err := pool.Begin(context.Background())
+	lock, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("open the transaction the fact lock is held in: %v", err)
 	}

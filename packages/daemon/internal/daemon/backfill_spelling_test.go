@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -136,7 +137,7 @@ func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testi
 				t.Fatal(err)
 			}
 			records := record.NewStore()
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: "LEGION-1", Repo: tc.prRepo, Number: 7, Branch: "legion/LEGION-1",
 					HeadSHA: "head", State: record.PullRequestOpen})
 			}); err != nil {

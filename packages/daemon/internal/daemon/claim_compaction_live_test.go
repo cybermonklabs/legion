@@ -359,7 +359,7 @@ func (r *claimCompactionLive) seed() {
 	for _, seeded := range r.seededPanes() {
 		r.board.show(seeded.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.seededPanes() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.issue,

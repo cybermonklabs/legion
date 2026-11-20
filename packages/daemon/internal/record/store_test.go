@@ -1171,7 +1171,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 		row = due[0]
 	})
 
-	tx1, err := st.BeginTx(ctx, pgx.TxOptions{})
+	tx1, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	first, ok, err := records.ClaimRow(ctx, tx1, row.ID, now, time.Minute)
 	must(t, err)
@@ -1184,7 +1184,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		tx2, err := st.BeginTx(ctx, pgx.TxOptions{})
+		tx2, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1683,7 +1683,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	})
 
 	// Daemon A's lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1700,7 +1700,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1774,7 +1774,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	})
 
 	// Daemon A's lifecycle lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1790,7 +1790,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1875,7 +1875,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	})
 
 	// The lane's lease of the catch-up, a moment from committing.
-	txLane, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txLane, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txLane.Rollback(ctx) }()
 	if _, leased, err := records.ClaimRow(ctx, txLane, catchUp, now, time.Minute); err != nil || !leased {
@@ -1958,7 +1958,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	})
 
 	// The adoption's transaction locks the tree's decisions.
-	txAdopt, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txAdopt, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txAdopt.Rollback(ctx) }()
 	if _, _, err := records.UnclaimedKept(ctx, txAdopt, "LEGION-1"); err != nil {
@@ -2044,7 +2044,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	})
 
 	// The drop, which takes both rows and holds its lock from here until it commits.
-	txDrop, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txDrop, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txDrop.Rollback(ctx) }()
 	must(t, records.DropCatchUps(ctx, txDrop, "LEGION-1", now))

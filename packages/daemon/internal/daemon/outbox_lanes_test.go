@@ -575,7 +575,7 @@ func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
 	// A phase worker's start waits while its issue holds no admission slot (StartOrOwe's
 	// NeedsSlot), so the slot is granted first, and through the bare store: projectRecords.PutSlot
 	// wakes the issue's lifecycle lane itself, and that wake would stand in for the one under test.
-	if err := pgx.BeginFunc(ctx, tree.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, tree.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutSlot(ctx, tx, record.Slot{Issue: tree.root.Key, Index: 0, AdmittedAt: tree.clock.Now()})
 	}); err != nil {
 		t.Fatalf("grant the admission slot of %s: %v", tree.root.Key, err)

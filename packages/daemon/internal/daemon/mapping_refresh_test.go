@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -160,7 +161,7 @@ func githubFilterSubjects(t *testing.T, stream jetstream.Stream) []string {
 func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = w.records.Issue(context.Background(), tx, key)
 		return err
@@ -225,7 +226,7 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing.T) {
 	ctx := context.Background()
 	w, client, _, stream := mappingRig(t, map[string]bool{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Planning,
 			Generation: 1, Status: "in_progress", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
 			return err
@@ -342,7 +343,7 @@ func TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls(t *testing.T) {
 	held.await(t)
 	serialized := make(chan error, 1)
 	go func() {
-		serialized <- pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
+		serialized <- store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
 	}()
 	select {
 	case err := <-serialized:
@@ -370,7 +371,7 @@ func TestAnAdmissionAgainstTheOldMappingStaysHeard(t *testing.T) {
 	ctx := context.Background()
 	held := newHeldSubscription()
 	w, client, _, stream := mappingRigWith(t, &installations{}, held.install)
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Planning,
 			Generation: 1, Status: "in_progress", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
 			return err
@@ -572,7 +573,7 @@ func TestARecordCommittedBeforeAReadsNarrowingStaysHeard(t *testing.T) {
 func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
 	ctx := context.Background()
 	w, client, _, stream := mappingRig(t, map[string]bool{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Done,
 			Generation: 1, Status: "done", Rank: "A", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools"})
 	}); err != nil {
@@ -617,7 +618,7 @@ func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
 func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
 	ctx := context.Background()
 	w, _, _, _ := mappingRig(t, map[string]bool{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for index, issue := range []record.Issue{
 			{Key: "LEGION-300", Repo: "ACME/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
 			{Key: "LEGION-301", Repo: "orbit/gadgets", DefaultBranch: "main", GitHubRepo: "Orbit/Gadgets"},

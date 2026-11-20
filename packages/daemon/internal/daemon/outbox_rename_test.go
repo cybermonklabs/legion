@@ -80,7 +80,7 @@ func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) 
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "ready-head"}); err != nil {
 			return err
 		}

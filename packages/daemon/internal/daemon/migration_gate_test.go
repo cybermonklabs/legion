@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A7's first boot, for the root the release must not take a slot from: one whose architect is
@@ -34,7 +35,7 @@ func TestTheMigrationLeavesAGateThatNeverOpenedUnopened(t *testing.T) {
 	pool := st.Pool()
 	records := record.NewStore()
 	root, parked := bootProject+"-1", bootProject+"-2"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// The root whose architect is writing the spec, and the child of its tree a person
 		// parked before any approval, which the record keeps at phase done.
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {

@@ -334,7 +334,7 @@ func (r *busyRelaunchLive) seed() {
 	for _, pane := range r.panes {
 		r.board.show(pane.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		keys := make([]string, 0, len(r.panes))
 		for _, pane := range r.panes {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{

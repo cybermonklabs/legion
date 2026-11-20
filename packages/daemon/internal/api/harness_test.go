@@ -257,7 +257,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
-				if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					issue, err = record.NewStore().Issue(ctx, tx, c.Tree)
 					return err

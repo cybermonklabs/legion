@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // listingDispatch lists summaries for the project.
@@ -33,7 +34,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
 		pool := isolatedOutboxPool(t)
-		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			for _, key := range []string{"LEGION-7", "LEGION-9", "LEGION-12"} {
 				if _, err := tx.Exec(context.Background(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 					values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
@@ -90,7 +91,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 func unfilledKeys(t *testing.T, w *workflowRuntime) []string {
 	t.Helper()
 	var keys []string
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		unfilled, err := w.records.UnfilledIssues(context.Background(), tx, "LEGION")
 		for _, issue := range unfilled {
 			keys = append(keys, issue.Key)

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -62,7 +63,7 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	}}
 	records := projectRecords{Store: record.NewStore(), project: "CAPTURE"}
 	// A running tree's issue on orbit/gadgets, which the mapping change below unmaps.
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: "CAPTURE-7", Repo: "orbit/gadgets", DefaultBranch: "main", GitHubRepo: "orbit/gadgets", Tree: "CAPTURE-7",
 			Project: "CAPTURE", Title: "running", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1}); err != nil {
 			return err

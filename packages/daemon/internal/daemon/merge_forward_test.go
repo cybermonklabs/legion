@@ -40,7 +40,7 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 	ctx := context.Background()
 	logs := &syncBuffer{}
 	runner, sup, pool := runnerIn(t, phase.Testing, "testing", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: asked})

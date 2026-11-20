@@ -40,7 +40,7 @@ func openCheck(issue record.Issue, merge string) record.ProductionCheck {
 
 func putProductionCheck(t *testing.T, pool *store.Pool, records record.Store, check record.ProductionCheck) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutProductionCheck(context.Background(), tx, check)
 	}); err != nil {
 		t.Fatalf("put production check: %v", err)
@@ -50,7 +50,7 @@ func putProductionCheck(t *testing.T, pool *store.Pool, records record.Store, ch
 func readProductionCheck(t *testing.T, pool *store.Pool, records record.Store, issue string) record.ProductionCheck {
 	t.Helper()
 	var check *record.ProductionCheck
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = records.ProductionCheck(context.Background(), tx, issue)
 		return err

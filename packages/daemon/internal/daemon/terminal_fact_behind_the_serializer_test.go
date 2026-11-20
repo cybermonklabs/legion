@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -33,7 +34,7 @@ func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testi
 	failed := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-1001", Issue: "LEGION-1001", Role: claim.RoleTester, Generation: 1,
 		State: supervise.StateFailed, Failure: "pane exited", FailureCause: supervise.CauseNeverRegistered, Budgets: supervise.Budgets{LaunchFailures: 3}}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

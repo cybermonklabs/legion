@@ -31,7 +31,9 @@ func seedReleasedPod(t *testing.T, store *Store, session string) {
 // inTx runs read in a transaction of the store's pool, as a fact's handler does.
 func inTx(t *testing.T, store *Store, read func(pgx.Tx) error) {
 	t.Helper()
-	if err := store.Tx(context.Background(), read); err != nil {
+	if err := Transact(context.Background(), store.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return read(tx)
+	}); err != nil {
 		t.Fatalf("transaction: %v", err)
 	}
 }

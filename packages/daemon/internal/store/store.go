@@ -124,18 +124,6 @@ func (s *Store) Pool() *Pool {
 	return s.pool
 }
 
-// Tx runs fn inside one transaction: committed when fn returns nil, rolled back
-// when it does not, and fn's own error is what the caller gets back.
-func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, s.pool, fn)
-}
-
-// BeginTx begins a caller-owned transaction. The API uses it for its one read-only state
-// projection transaction; workflow intake uses Tx for its commit-or-rollback boundary.
-func (s *Store) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	return s.pool.BeginTx(ctx, options)
-}
-
 // Migrate applies every embedded migration this database has not recorded, in
 // version order, and reports how many it applied. A migration and its
 // schema_version row commit together, so a half-applied schema is not a state

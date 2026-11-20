@@ -118,7 +118,7 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return store.EnqueueRoleHolders(r.ctx, tx, issue, r.clock())
 	}); err != nil {
 		r.t.Fatalf("enqueue the role-holder publication of %s: %v", issue, err)

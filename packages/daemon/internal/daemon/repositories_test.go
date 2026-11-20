@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -783,7 +784,7 @@ func TestARepositoryOnlyALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart
 	ctx := context.Background()
 	w, _, installs, _ := unmappedRig(t, &installations{}, withoutWebhookAppFor, func(w *workflowRuntime) {
 		// The tree an earlier process recorded, which this one boots over.
-		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-952", Tree: "LEGION-952", Project: "LEGION", Title: "a tree on a repository no project maps",
 				Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: unmappedNamed, DefaultBranch: "trunk", GitHubRepo: unmappedNamed})
 		}); err != nil {
@@ -1264,7 +1265,7 @@ func TestAnAdoptedPanesRepositoryIsTheOneItsIssueWorks(t *testing.T) {
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.Renames{}),
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-2", Tree: "LEGION-2", Project: "LEGION", Title: "root", Phase: phase.Implementing,
 			Generation: 1, Status: "in_progress", Rank: "A", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools"})
 	}); err != nil {

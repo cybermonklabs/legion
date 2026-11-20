@@ -264,7 +264,7 @@ func (r *mainPathRig) runStarts() {
 		case err != nil:
 			r.t.Fatalf("run the architect start row %d: %v", row.ID, err)
 		}
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 		}); err != nil {
 			r.t.Fatalf("finish the architect start row %d: %v", row.ID, err)

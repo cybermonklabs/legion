@@ -147,7 +147,7 @@ func TestTheCloseEventTakesTheIssueOutAfterItsWriteWasRefused(t *testing.T) {
 func storedIssueOf(t *testing.T, ctx context.Context, pool *store.Pool, records record.Store, key string) *record.Issue {
 	t.Helper()
 	var stored *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = records.Issue(ctx, tx, key)
 		return err

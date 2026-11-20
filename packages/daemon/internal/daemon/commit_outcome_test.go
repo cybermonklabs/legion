@@ -360,7 +360,7 @@ func TestAHeldReleaseWhoseCommitOutcomeIsUnknownReleasesOnceTheStoreAnswers(t *t
 	logged, log := watchedLog()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), direct, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), direct, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range []struct{ key, rank string }{{"LEGION-HELD", "A"}, {"LEGION-NEXT", "B"}} {
 			if err := record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 				Key: seed.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: seed.key, Tree: seed.key, Phase: phase.Admitted,

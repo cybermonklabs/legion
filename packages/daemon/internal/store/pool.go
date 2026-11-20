@@ -146,7 +146,7 @@ const refusalDepth = 32
 
 // logRefusal logs a refusal once per distinct calling stack, with that stack, which is what names
 // the path to repair. The stack, read into a fixed array, is itself the key (loggedSites): a
-// function that only passes a call on to the pool — pgx.BeginFunc, a Store method, intake's
+// function that only passes a call on to the pool — TransactWith, a Store method, intake's
 // ApplyFact or any function of the daemon's own — stands in the stacks of all its callers without
 // making them one, so no caller's refusal silences another's. The stack is formatted only on a
 // stack's first refusal; a refusal of a stack already seen costs the read of its program counters
@@ -268,7 +268,7 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 // acquire hands out one of the pool's connections to a caller that must run its own work on the
 // connection after its transaction ends and before the connection returns to the pool. Store.apply
 // is the one such caller: it resets the session of the connection that a migration ran on
-// (releaseMigrationConn). A transaction from Begin cannot serve it, because pgx returns that
+// (releaseMigrationConn). A transaction from BeginTx cannot serve it, because pgx returns that
 // transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
 // every other way this pool hands out a connection does. Then it marks the caller as holding a
 // connection, as begin does. The caller runs release only once the connection is back in the pool
@@ -289,19 +289,8 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 	return conn, release, nil
 }
 
-// Begin opens a transaction and marks the caller as holding a connection. It is what
-// pgx.BeginFunc opens its transaction through, and with it Store.Tx, so every call site that
-// wraps a transaction in a function keeps working as it was written.
-func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, pgx.TxOptions{})
-}
-
 // BeginTx opens a transaction with options and marks the caller as holding a connection. It is
-// what pgx.BeginTxFunc opens its transaction through, and what intake.ApplyFact opens each
-// fact's with.
+// what TransactWith opens every transaction of the daemon through.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
@@ -309,9 +298,9 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 	return p.begin(ctx, options)
 }
 
-// begin is the body both transaction entry points share once their guard has passed. A
-// transaction on a context the pool cannot see has no mark to clear and is handed on as pgx
-// opened it: a trackedTx around it would only forward its Commit and Rollback.
+// begin is BeginTx's body once its guard has passed. A transaction on a context the pool cannot
+// see has no mark to clear and is handed on as pgx opened it: a trackedTx around it would only
+// forward its Commit and Rollback.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
