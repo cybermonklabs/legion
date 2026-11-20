@@ -2128,6 +2128,9 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // connection's user may not make, ErrTooLarge for a subject or body past the server's bounds,
 // ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first, which
 // wraps ErrUnacknowledged once the write went out, since the stream may then hold it (sendStored).
+// A write whose first send went unanswered and whose resend the stream refused for the cursor's
+// sequence wraps ErrUnacknowledged too, not ErrCursorMoved: the first send may have stored it and
+// moved the cursor itself, so the caller reads the cursor back to tell (cursorMoved).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
 	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
@@ -2164,10 +2167,13 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is.
+// not match as the ErrCursorMoved it is, and returns any other error as it is. A refusal that wraps
+// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went unanswered
+// (sendStored), and that first send may have stored this write, so it is no proof the write stored
+// nothing.
 func cursorMoved(err error) error {
 	var apiErr *nats.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence && !errors.Is(err, ErrUnacknowledged) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err

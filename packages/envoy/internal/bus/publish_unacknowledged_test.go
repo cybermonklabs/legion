@@ -192,6 +192,57 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 	})
 
+	// A cursor write under a precondition is sent again after a reconnect cuts its answer, and the
+	// stream refuses the resend because the first send already moved the cursor. That refusal is
+	// no ErrCursorMoved, which says the write stored nothing: the error wraps ErrUnacknowledged, so
+	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write.
+	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
+		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		proxy.FreezeServerReplies()
+		body := []byte(`{"kept":7}`)
+		answered := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
+			answered <- err
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the cursor write to be stored before reconnecting",
+			func() bool { return storedOn(t, subject) == 1 })
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got error
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the cursor write interrupted by reconnect did not return")
+		}
+		if errors.Is(got, bus.ErrCursorMoved) {
+			t.Fatalf("a cursor write the stream stored before the reconnect = %v, want no ErrCursorMoved: the cursor holds this write", got)
+		}
+		if !errors.Is(got, bus.ErrUnacknowledged) {
+			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want ErrUnacknowledged", got)
+		}
+		stored, err := client.JS().GetLastMsg(bus.Stream, subject)
+		if err != nil {
+			t.Fatalf("read the cursor back: %v", err)
+		}
+		if string(stored.Data) != string(body) {
+			t.Fatalf("the cursor reads back %q, want this write's %q", stored.Data, body)
+		}
+		if n := storedOn(t, subject); n != 1 {
+			t.Fatalf("the stream holds %d cursor writes on %s, want the one this call stored", n, subject)
+		}
+	})
+
 	t.Run("a publish that waits out its deadline for a reconnect sends nothing and is no ErrUnacknowledged", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnecting")
 		server.Stop(t)
