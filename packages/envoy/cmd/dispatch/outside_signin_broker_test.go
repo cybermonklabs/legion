@@ -240,13 +240,13 @@ func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // brokerRouter is the router main serves for s's boot with the secrets broker configured
-// (DISPATCH_AGENT_SECRETS_URL naming broker), its broker-token check built as main builds it
-// (brokerTokenVerifier) over s's database, its people store with the options main gives one for
-// that boot (peopleOptions), which s.people then is, and the database's own session store, as
-// routerWithSessions has it; it answers the API server's background work too, whose revocation
-// pass a test runs as the server's loop does. The broker records accounts under s's sign-in
-// issuer, the one Dispatch's approves name. Each approve it serves is timed to the broker's receipt
-// of its relay (approvetimingtest).
+// (DISPATCH_AGENT_SECRETS_URL naming broker) and brokerOrigin as DISPATCH_SERVER_URL, its
+// broker-token check built as main builds it (brokerTokenVerifier) over s's database, its people
+// store with the options main gives one for that boot (peopleOptions), which s.people then is, and
+// the database's own session store, as routerWithSessions has it; it answers the API server's
+// background work too, whose revocation pass a test runs as the server's loop does. The broker
+// records accounts under s's sign-in issuer, the one Dispatch's approves name. Each approve it
+// serves is timed to the broker's receipt of its relay (approvetimingtest).
 func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Handler, api.Background) {
 	t.Helper()
 	broker.issuer = s.pool.URL()
@@ -264,7 +264,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	s.people = testPeople{PgPeopleStore: store.NewPgPeopleStore(s.database.Pool, testSigningKey, nil, peopleOptions(boot)...), pool: s.database.Pool}
 	s.metrics = metrics.New()
 	built := routes.AppContextOptions{
-		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: s.people,
+		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: s.people, ServerURL: brokerOrigin,
 		Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool), BrokerTokens: verifier,
 		Metrics: s.metrics, BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(s.metrics),
 	}

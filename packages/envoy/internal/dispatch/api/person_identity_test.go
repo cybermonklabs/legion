@@ -319,7 +319,7 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 			verifier, err := brokertoken.New(brokertoken.Options{
 				BrokerURL: broker.Server.URL,
 				Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
+				Origins:   []string{testServerURL},
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   auth.ForwardedAddress,
 			})

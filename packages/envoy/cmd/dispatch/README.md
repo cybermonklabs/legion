@@ -185,7 +185,7 @@ With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the v
 
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
 A request whose `Host` is its host, compared without regard to case, is answered as that origin:
-its sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too, and a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other.
+its sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too, a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other, and an agent's broker token proof must name that origin (below), so an agent whose Dispatch URL is the outside origin signs for it.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
 under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
@@ -221,7 +221,9 @@ It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with the origin the request came to as the origin the proof's `htu` must name:
+`DISPATCH_OUTSIDE_ORIGIN` for a request whose `Host` is its host, compared without regard to case, and `DISPATCH_SERVER_URL` for every other request, whatever a forwarded header says.
+A proof naming one origin is refused `401 BROKER_TOKEN_PROOF_INVALID` at the other, so an agent signs for the origin of the Dispatch URL it sends to.
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.

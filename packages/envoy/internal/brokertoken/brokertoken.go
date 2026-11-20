@@ -212,7 +212,7 @@ type Caller struct {
 	CredentialCreatedAt time.Time
 }
 
-// Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
+// Options is what a Verifier needs. BrokerURL, Account, Origins, Replay and Address are required.
 type Options struct {
 	// BrokerURL is the secrets broker's base URL (DISPATCH_AGENT_SECRETS_URL for Dispatch,
 	// ENVOY_AGENT_SECRETS_URL for a listener), the origin IntrospectPath is asked on.
@@ -221,10 +221,12 @@ type Options struct {
 	// a projected Kubernetes ServiceAccount token (AccountToken) or a machine's Google identity
 	// token (GoogleAccount).
 	Account Account
-	// Origin is the mounting program's own public origin (DISPATCH_SERVER_URL,
-	// ENVOY_PUBLIC_URL): an absolute http(s) URL with no path. A proof's 'htu' is checked
-	// against it plus the request's path, never against a forwarded header — see atOrigin.
-	Origin string
+	// Origins are the mounting program's own public origins, the canonical one first
+	// (DISPATCH_SERVER_URL, then DISPATCH_OUTSIDE_ORIGIN where it is set; ENVOY_PUBLIC_URL alone):
+	// each an absolute http(s) URL with no path, and no two on one host. A proof's 'htu' is
+	// checked against one of them plus the request's path, never against a forwarded header — see
+	// atOrigin.
+	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).
 	Replay rfc9449.DPoPReplayStorage
@@ -265,11 +267,8 @@ type Options struct {
 type Verifier struct {
 	brokerURL string
 	account   Account
-	origin    *url.URL
-	// originTLS is the TLS state atOrigin puts on the request it rewrites: one empty state for
-	// the whole process when the origin is https, nil when it is not. Nothing reads more of it
-	// than whether it is there, and nothing writes to it, so every request shares this one.
-	originTLS *tls.ConnectionState
+	// origins are Options.Origins as atOrigin puts each on a request, the canonical one first.
+	origins   []origin
 	http      *http.Client
 	strategy  *rfc9449.DefaultStrategy
 	address   func(r *http.Request) string
@@ -282,9 +281,19 @@ type Verifier struct {
 	servesReadOnly bool
 }
 
+// origin is one of Options.Origins as atOrigin puts it on a request: its scheme and host, and the
+// TLS state of a request that reached it — one empty state built with the Verifier when the
+// origin is https, nil when it is not. Nothing reads more of that state than whether it is there,
+// and nothing writes to it, so every request rewritten to the origin shares this one.
+type origin struct {
+	scheme, host string
+	tls          *tls.ConnectionState
+}
+
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
-// failing one request at a time: a missing dependency and an Origin that is not an absolute
-// http(s) origin are both deployment errors.
+// failing one request at a time: a missing dependency, no origin, an origin that is not an
+// absolute http(s) origin, and two origins on one host, which no request's Host could tell apart
+// (atOrigin), are all deployment errors.
 func New(options Options) (*Verifier, error) {
 	if options.BrokerURL == "" {
 		return nil, errors.New("brokertoken: the broker URL is required")
@@ -298,12 +307,9 @@ func New(options Options) (*Verifier, error) {
 	if options.Address == nil {
 		return nil, errors.New("brokertoken: the source address function is required")
 	}
-	origin, err := url.Parse(options.Origin)
+	origins, err := originsOf(options.Origins)
 	if err != nil {
-		return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", options.Origin, err)
-	}
-	if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-		return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", options.Origin)
+		return nil, err
 	}
 	limit := options.AddressLimit
 	if limit == (ratelimit.Limit{}) {
@@ -317,19 +323,12 @@ func New(options Options) (*Verifier, error) {
 	if now == nil {
 		now = time.Now
 	}
-	// One empty state serves every request atOrigin rewrites, built here rather than per
-	// request: what reads it asks only whether the request carried TLS.
-	var originTLS *tls.ConnectionState
-	if origin.Scheme == "https" {
-		originTLS = &tls.ConnectionState{}
-	}
 	return &Verifier{
 		// The trailing slash goes so BrokerURL + IntrospectPath is one path, as agentsecrets.New
 		// trims it for the same reason.
 		brokerURL: strings.TrimRight(options.BrokerURL, "/"),
 		account:   options.Account,
-		origin:    origin,
-		originTLS: originTLS,
+		origins:   origins,
 		http:      client,
 		strategy:  rfc9449.NewDefaultStrategy(proofConfig{}, withoutNonces{options.Replay}),
 		address:   options.Address,
@@ -339,6 +338,35 @@ func New(options Options) (*Verifier, error) {
 
 		servesReadOnly: options.ServesReadOnly,
 	}, nil
+}
+
+// originsOf is raw, Options.Origins, as the origins atOrigin puts on a request, in the same
+// order, or the refusal of the first origin New cannot serve a request with.
+func originsOf(raw []string) ([]origin, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("brokertoken: at least one origin is required")
+	}
+	origins := make([]origin, 0, len(raw))
+	for _, value := range raw {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", value, err)
+		}
+		if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+			return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", value)
+		}
+		for _, earlier := range origins {
+			if strings.EqualFold(earlier.host, parsed.Host) {
+				return nil, fmt.Errorf("brokertoken: the origin %q is on the host of %s://%s, and no request's Host could tell the two apart", value, earlier.scheme, earlier.host)
+			}
+		}
+		next := origin{scheme: parsed.Scheme, host: parsed.Host}
+		if parsed.Scheme == "https" {
+			next.tls = &tls.ConnectionState{}
+		}
+		origins = append(origins, next)
+	}
+	return origins, nil
 }
 
 // RetryAfter is how long a source address waits for its next introspection, for the Retry-After
@@ -562,19 +590,33 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 	return shared.(Introspection), nil
 }
 
-// atOrigin is r as if it had reached Dispatch's own public origin directly: its URL's scheme and
-// host and its Host are that origin's, it carries TLS state exactly when that origin is https,
-// and it has no forwarding headers.
+// atOrigin is r as if it had reached the origin it came to directly: its URL's scheme and host
+// and its Host are that origin's, it carries TLS state exactly when that origin is https, and it
+// has no forwarding headers. The origin it came to is the one of Options.Origins whose host is
+// r.Host, compared without regard to case, and the first, the canonical one, for every other
+// Host — Dispatch's own rule for which origin a request is answered as (routes.publicOrigin). So
+// a verifier of one origin checks every request against it, whatever its Host, as it always has.
 //
 // The library rebuilds a proof's expected 'htu' from X-Forwarded-Proto and r.Host
 // (oauth2.RequestURL), both of which a caller behind a proxy could choose, so the proof would
 // name a URL the caller picked rather than Dispatch's. The broker answers this the same way for
 // its own OAuth routes (internal/broker/api/handlers_oauth.go, atPublicURL): the caller signs
-// DISPATCH_SERVER_URL plus the request's path, and Dispatch checks against exactly that.
+// DISPATCH_SERVER_URL plus the request's path, and Dispatch checks against exactly that. r.Host
+// is the caller's to write too, and choosing it chooses only which of the program's own origins
+// the proof must name, never a URL the caller picked: a proof names one 'htu', and the replay
+// store records it by that 'htu', so a proof one origin accepted is spent, and the other never
+// accepts it.
 func (v *Verifier) atOrigin(r *http.Request) *http.Request {
+	at := v.origins[0]
+	for _, other := range v.origins[1:] {
+		if strings.EqualFold(r.Host, other.host) {
+			at = other
+			break
+		}
+	}
 	out := r.Clone(r.Context())
-	out.URL.Scheme, out.URL.Host, out.Host = v.origin.Scheme, v.origin.Host, v.origin.Host
-	out.TLS = v.originTLS
+	out.URL.Scheme, out.URL.Host, out.Host = at.scheme, at.host, at.host
+	out.TLS = at.tls
 	out.Header.Del("X-Forwarded-Proto")
 	out.Header.Del("X-Forwarded-Host")
 	return out

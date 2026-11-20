@@ -4079,7 +4079,7 @@ A verifier built without the switch answers that token `brokertoken.ErrNotASessi
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
-`DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` and `DISPATCH_SERVER_URL`, the origin a proof's `htu` is checked against).
+`DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, and `DISPATCH_SERVER_URL` and `DISPATCH_OUTSIDE_ORIGIN`, the origins a proof's `htu` is checked against: the outside origin for a request whose `Host` is its host, as the router answers that request as that origin, and `DISPATCH_SERVER_URL` for every other request, never a forwarded header).
 A deployment with no broker configured has no such kind at all, and a `DPoP` presentation there is the `401 UNAUTHORIZED` `invalid bearer token` that any non-bearer `Authorization` header has always been.
 
 Which routes a credential may reach is decided by two OAuth scopes rather than by whether it is a browser, and which routes a read-only broker token may reach is decided by the read list below.
