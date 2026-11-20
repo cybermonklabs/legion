@@ -427,6 +427,62 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByTestId("artifact-header")).toContainText(name);
 });
 
+// The issue's tab strip rests where its last layout puts the selected tab: at the smallest scroll
+// that shows that tab whole and clear of the trailing fade. The tablist can be narrower for a
+// moment while the page lays out, and a reveal that only ever added the scroll it needed left the
+// strip where that moment put it once the tablist widened again: the visual row of this page then
+// read the strip at the end of its scroll, 212 px from where its baseline is shot. Here the
+// tablist is made 300 px wide for a moment, with the Artifacts tab selected, and released: it must
+// scroll for the narrow moment, and come back to the scroll its own layout gives it, not stay.
+test("the issue's tab strip rests where its last layout puts the selected tab, whatever narrower layout came first", async ({
+  page,
+}) => {
+  await createProject({ key: "OPS", name: "Ops" });
+  const issue = await createIssue({ project: "OPS", title: "A strip that settles" });
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const tablist = page.getByRole("tablist", { name: "Issue detail" });
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(tablist.getByRole("tab")).toHaveCount(10);
+  // The comment margin loads after the first paint, and until it is drawn the tablist is wider
+  // and every tab fits: a resting point read then would be the start, and the strip moves again
+  // once the margin arrives. So the resting point is read only with the margin drawn.
+  await expect(page.getByTestId("desktop-margin-shell")).toBeVisible();
+  // Where the strip is, and where its layout alone puts the selected tab: its right edge in the
+  // strip's content, less what the fade leaves of the tablist. Sub-pixel layout rounds a scroll
+  // to a whole pixel, so the two are compared within one.
+  const place = () =>
+    tablist.evaluate((list, fade) => {
+      const tab = list.querySelector('[role="tab"][aria-selected="true"]');
+      const right = (tab?.getBoundingClientRect().right ?? 0) - list.getBoundingClientRect().left;
+      const target = Math.max(0, right + list.scrollLeft - (list.clientWidth - fade));
+      return {
+        offBy: Math.abs(list.scrollLeft - target),
+        overflow: list.scrollWidth - list.clientWidth,
+        scrollLeft: list.scrollLeft,
+      };
+    }, scrollFadeTrailingPx);
+  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
+  const { overflow, scrollLeft: rested } = await place();
+  // The strip can scroll past where it rests, so a strip left at the end of its scroll is a
+  // different reading from the resting one, and the last assertion below can fail.
+  expect(overflow).toBeGreaterThan(rested + 1);
+
+  await tablist.evaluate((list) => {
+    list.style.width = "300px";
+  });
+  // The narrow moment moves the strip, or this row proves nothing.
+  await expect.poll(async () => (await place()).scrollLeft).toBeGreaterThan(rested + 50);
+  await tablist.evaluate((list) => {
+    list.style.width = "";
+  });
+  // Polled: the strip answers a layout change on the browser's next resize observation.
+  await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
+  expect(Math.abs((await place()).scrollLeft - rested)).toBeLessThanOrEqual(1);
+});
+
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
   page,
 }) => {

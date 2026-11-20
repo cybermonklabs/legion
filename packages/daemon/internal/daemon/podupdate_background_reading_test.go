@@ -199,12 +199,13 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			group := tc.group(t)
-			bound := roundBound(group, podUpdateRound, podUpdateGrace)
+			clock := roundClock{now: tc.now, grace: podUpdateGrace}
+			bound := clock.roundBound(group, podUpdateRound)
 			if bound == nil || !bound.Equal(podUpdateBound) {
 				t.Fatalf("the group's bound is %v, want %s", bound, podUpdateBound)
 			}
 
-			end := readRoundEnd(group, podUpdateRound, bound, tc.now)
+			end := readRoundEnd(group, podUpdateRound, clock)
 			if got := end.background.running; !maps.EqualFunc(got, tc.named, slices.Equal[[]string]) {
 				t.Errorf("the round's end names background %v, want %v", got, tc.named)
 			}
@@ -215,7 +216,7 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 				t.Errorf("the round's end reads bounded=%t, want %t", got, tc.bounded)
 			}
 
-			reading := readReplacement(group, podUpdateRound, bound, tc.now)
+			reading := readReplacement(group, podUpdateRound, clock)
 			if reading.wait != tc.wait {
 				t.Fatalf("the walk reads wait %d, want %d", reading.wait, tc.wait)
 			}

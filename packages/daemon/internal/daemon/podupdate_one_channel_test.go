@@ -10,13 +10,16 @@ package daemon
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
@@ -232,4 +235,69 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 	rig.tick()
 
 	rig.awaitReplacement(1, "once the one role of a round with no outbox answered")
+}
+
+// An operator's spawn of another project's issue runs in a pod of this daemon's, which the
+// update-round sweep reads as it reads every pod, and the round over that pod asks its role as
+// every round does. But the ask is an outbox row keyed by that issue, which only that project's
+// daemon runs (claim.KeyOfProject), so the sweep's enqueue writes none (supervision.enqueue): the
+// round asks nothing, logs no Warn and marks the claim asked at no sweep, while the round itself
+// is recorded and runs on. The daemon's records are wrapped as the daemon wraps them
+// (projectRecords), whose refusal of such a key is a writer's defect. Before the fix the ask
+// reached that refusal, which logged its Warn at every sweep's ask, and the sweep then logged the
+// ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
+// mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
+func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
+	const (
+		other    = "OTHERPROJECT-9"
+		otherPod = "5b1e7d20-3c64-4a8f-b2d9-8e0f6a1c4d37"
+	)
+	rig := newPodUpdateRig(t)
+	rig.s.enqueue = (&workflowRuntime{pool: rig.pool, records: projectRecords{Store: rig.records, project: "LEGION", log: rig.log},
+		dispatchProject: "LEGION", log: rig.log}).enqueueOutbox
+	token := mustClaimToken(t, other, claim.RoleArchitect)
+	if err := rig.st.PutClaim(rig.ctx, supervise.Claim{Token: token, Project: podUpdateProject, Tree: other, Issue: other,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+		Session: "ses_other", SessionFile: "/sessions/other.jsonl", Locator: podUpdateLocator(token, other, otherPod)}); err != nil {
+		t.Fatalf("seed the operator's spawn of %s: %v", other, err)
+	}
+	stored, err := rig.sup.Claims(rig.ctx)
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	if _, err := rig.sup.restore(rig.ctx, slices.DeleteFunc(stored, func(c supervise.Claim) bool { return c.Token != token })); err != nil {
+		t.Fatalf("restore the spawn of %s: %v", other, err)
+	}
+	rig.conns.Register(token, fake.NewConn())
+	rig.rt.ScriptPodDrift(token, podUpdateDrift)
+	round := supervise.PodRound(otherPod)
+	since := len(rig.logs.String())
+
+	rig.tick()
+	testwait.Eventually(t, "the round over the spawn's pod to be recorded on its claim", func() bool {
+		return rig.machineClaim(token).UpdateRound == round
+	})
+	for range 3 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+	}
+
+	var asks []int64
+	for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
+		asks = append(asks, row.ID)
+	}
+	if len(asks) != 0 {
+		t.Errorf("the sweeps queued update asks %v, want none: no ask of %s is this daemon's to write", asks, other)
+	}
+	if c := rig.machineClaim(token); c.UpdateRound != round || c.UpdateTaskedAt != nil {
+		t.Errorf("the spawn = round %q asked at %v, want the round recorded and no ask marked: nothing asked it", c.UpdateRound, c.UpdateTaskedAt)
+	}
+	for line := range strings.Lines(rig.logs.String()[since:]) {
+		if !strings.Contains(line, other) {
+			continue
+		}
+		if strings.Contains(line, `"level":"WARN"`) {
+			t.Errorf("the sweeps logged %s, want no Warn: a spawn of another project's issue in a round is no defect", line)
+		}
+	}
 }

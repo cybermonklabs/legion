@@ -1249,6 +1249,7 @@ test("read_release_records posts the claim's own token and secret, and counts th
     wakeToFirstTurnSeconds: {
       measured: 2,
       withoutFirstTurn: 1,
+      heldByPause: 0,
       median: 120,
       p90: 360,
       max: 360,
@@ -1290,6 +1291,7 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
     wakeToFirstTurnSeconds: {
       measured: 0,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: null,
       p90: null,
       max: null,
@@ -1360,11 +1362,166 @@ test("a release that suspended no role is counted as a release and measured in n
     wakeToFirstTurnSeconds: {
       measured: 1,
       withoutFirstTurn: 0,
+      heldByPause: 0,
       median: 120,
       p90: 120,
       max: 120,
     },
   });
+});
+
+// The window the daemon's own golden wrote (`release-records.json`): a release woken after half
+// an hour, a release that suspended no role, a backstop wake with no first turn yet, and a wake
+// a project pause held, which carries `pause` and pairs with no release. The held wake reached
+// its first turn 31 minutes after it was taken, and those minutes are the pause's: it is counted
+// as `heldByPause` and is in neither the measured seconds nor `withoutFirstTurn`, while the
+// resume counts still name it. Its issue has no release in the window, so it ends none.
+test("a wake a project pause held is counted apart and left out of the wake-to-first-turn seconds", async () => {
+  const golden = daemonFixture("release-records.json");
+  const { ops } = recordsRuntime(golden);
+
+  await expect(
+    executePhaseOp(ops, { op: "read_release_records", since: "2026-11-01T00:00:00Z" })
+  ).resolves.toEqual({
+    since: "2026-11-01T00:00:00Z",
+    asOf: "2026-11-01T18:00:00.000Z",
+    ...golden,
+    counts: {
+      releases: 2,
+      releasesSuspendingNoRole: 1,
+      resumes: 3,
+      resumesByKind: { delivery: 1, backstop: 1, pause: 1 },
+      holds: 2,
+      holdsByReason: { background_work: 1, overtaken: 1 },
+    },
+    // The half hour of the one release a wake ended; the held wake's issue has no release.
+    podHoursReleased: 0.5,
+    wokenWithinTenMinutes: { releases: 0, share: 0 },
+    // The delivery wake's 120 seconds alone. The held wake's 1860 are not among them.
+    wakeToFirstTurnSeconds: {
+      measured: 1,
+      withoutFirstTurn: 1,
+      heldByPause: 1,
+      median: 120,
+      p90: 120,
+      max: 120,
+    },
+  });
+
+  // A held wake with no first turn yet is held all the same: it is not one the pod is slow for.
+  const resumes = golden.resumes as Record<string, unknown>[];
+  const waiting = resumes.map((resume) =>
+    resume.pause === undefined
+      ? resume
+      : { ...resume, podReadyAt: undefined, firstTurnAt: undefined }
+  );
+  const unturned = (await executePhaseOp(recordsRuntime({ ...golden, resumes: waiting }).ops, {
+    op: "read_release_records",
+    since: "2026-11-01T00:00:00Z",
+  })) as { readonly wakeToFirstTurnSeconds: Record<string, unknown> };
+  expect(unturned.wakeToFirstTurnSeconds).toEqual({
+    measured: 1,
+    withoutFirstTurn: 1,
+    heldByPause: 1,
+    median: 120,
+    p90: 120,
+    max: 120,
+  });
+});
+
+// A pod released before a pause and woken during it. The wake is held, so its resume names no
+// release (`release` 0), and no resume ever names that release: the role launches at the
+// project's resume, on the held wake. The held wake ends the release all the same, at its own
+// moment, so the release is charged to that wake and not to the moment of every later read, and
+// it counts as woken, within ten minutes where the wake came that soon.
+test("a wake a project pause held ends the releases of its issue that came before it", async () => {
+  const release = (id: number, issue: string, at: string) => ({
+    id,
+    issue,
+    generation: 1,
+    roles: ["implementer", "tester"],
+    at,
+    bundleBytes: 0,
+  });
+  const heldWake = (id: number, issue: string, at: string) => ({
+    id,
+    release: 0,
+    issue,
+    role: "implementer",
+    kind: "message",
+    at,
+    stuck: false,
+    pause: 7,
+  });
+  const records = {
+    releases: [
+      // Woken six minutes later by a held wake, and by nothing else.
+      release(1, "LEGION-208", "2026-11-01T12:00:00Z"),
+      // Woken an hour later by a held wake, then again at 15:00 by a wake of its other role, which
+      // names the release: the first of the two ends it.
+      release(2, "LEGION-209", "2026-11-01T12:00:00Z"),
+    ],
+    resumes: [
+      heldWake(1, "LEGION-208", "2026-11-01T12:06:00Z"),
+      heldWake(2, "LEGION-209", "2026-11-01T13:00:00Z"),
+      {
+        id: 3,
+        release: 2,
+        issue: "LEGION-209",
+        role: "tester",
+        kind: "message",
+        at: "2026-11-01T15:00:00Z",
+        firstTurnAt: "2026-11-01T15:02:00Z",
+        stuck: false,
+      },
+    ],
+    holds: [],
+  };
+  const summary = async (window: unknown, asOf: string) =>
+    (await executePhaseOp(recordsRuntime(window, asOf).ops, {
+      op: "read_release_records",
+      since: "2026-11-01T00:00:00Z",
+    })) as {
+      readonly podHoursReleased: number;
+      readonly wokenWithinTenMinutes: { readonly releases: number; readonly share: number };
+      readonly wakeToFirstTurnSeconds: Record<string, unknown>;
+    };
+
+  // Six minutes and one hour, at a read six hours after the releases and at one a day after
+  // them: neither release is open, so neither grows with the clock.
+  const atSixHours = await summary(records, "2026-11-01T18:00:00Z");
+  const atADay = await summary(records, "2026-11-02T12:00:00Z");
+  expect([atSixHours.podHoursReleased, atADay.podHoursReleased]).toEqual([1.1, 1.1]);
+  // The first release was wanted again within ten minutes, and the second was not.
+  expect(atSixHours.wokenWithinTenMinutes).toEqual({ releases: 1, share: 0.5 });
+  // The held wakes are still measured in no wake-to-first-turn second.
+  expect(atSixHours.wakeToFirstTurnSeconds).toEqual({
+    measured: 1,
+    withoutFirstTurn: 0,
+    heldByPause: 2,
+    median: 120,
+    p90: 120,
+    max: 120,
+  });
+
+  // A held wake ends no release that came after it: this pod was released an hour after the
+  // wake, and nothing has woken it since, so it is open at the read, four hours later.
+  const releasedAfter = {
+    releases: [release(3, "LEGION-210", "2026-11-01T14:00:00Z")],
+    resumes: [heldWake(4, "LEGION-210", "2026-11-01T13:00:00Z")],
+    holds: [],
+  };
+  const open = await summary(releasedAfter, "2026-11-01T18:00:00Z");
+  expect(open.podHoursReleased).toBe(4);
+  expect(open.wokenWithinTenMinutes).toEqual({ releases: 0, share: 0 });
+
+  // Nor does it end a release of another issue.
+  const otherIssue = {
+    releases: [release(5, "LEGION-211", "2026-11-01T12:00:00Z")],
+    resumes: [heldWake(6, "LEGION-212", "2026-11-01T12:06:00Z")],
+    holds: [],
+  };
+  expect((await summary(otherIssue, "2026-11-01T18:00:00Z")).podHoursReleased).toBe(6);
 });
 
 test("the pod hours of a release that suspended no role do not grow with the clock", async () => {
