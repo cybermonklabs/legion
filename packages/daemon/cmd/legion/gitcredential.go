@@ -48,7 +48,10 @@ var gitCredentialStdin io.Reader = os.Stdin
 // for the fork's source where it serves that owner. GitHub then decides what that token may push
 // to the fork. A repository of such an owner that is no fork of a served repository, or that the
 // read cannot tell is one, answers nothing. A pairs file that cannot be read makes no read, since
-// neither the fork's parent nor its source could be routed by it either.
+// neither the fork's parent nor its source could be routed by it either. Where the directory the
+// fork routed to holds a hosts.yml that cannot be read or names no token, it answers nothing on a
+// line that names the fork, that directory and whether the fork's parent or its source routed
+// there (forkUpstreamDir's route), since the token read's own error names the directory alone.
 //
 // Any other host or protocol, a request with no path, a path whose owner is no GitHub login, a
 // pair whose `to` owner has no directory, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with no
@@ -110,10 +113,13 @@ func runGitCredential(ctx context.Context, args []string, stdout, stderr io.Writ
 	second, _, _ := strings.Cut(rest, "/")
 	name := ghconfig.RepositoryName(second)
 	dir, err := ghConfigDirFor(ownersDir, owner, name)
+	// route is how the fork read reached dir (forkUpstreamDir), and "" where the request's own path
+	// routed it.
+	route := ""
 	var unserved *leakguard.OwnerNotServedError
 	if errors.As(err, &unserved) {
 		if repo, ok := forkRepository(ownersDir, owner, name); ok {
-			dir, err = forkUpstreamDir(ctx, ownersDir, repo, err)
+			dir, route, err = forkUpstreamDir(ctx, ownersDir, repo, err)
 		}
 	}
 	if err != nil {
@@ -122,6 +128,9 @@ func runGitCredential(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	token, err := ghDirToken(dir)
 	if err != nil {
+		if route != "" {
+			err = fmt.Errorf("%s, and %w", route, err)
+		}
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
 	}
@@ -164,8 +173,9 @@ func ghDirToken(dir string) (string, error) {
 // ownerGHConfigDir is the gh directory of the bundle under ownersDir that answers for owner:
 // `<owner>`, the one directory the bundle holds for that account, whose lease reaches every
 // repository its installation holds (appauth.GitHubCredential). It is the answer for every
-// repository of that owner but one a configured rename moved away from it, which its one caller
-// routes by the repository instead (ghConfigDirFor).
+// repository of that owner but one a configured rename moved away from it, which ghConfigDirFor
+// routes by its name instead. forkRepository calls it as well, to ask whether the bundle holds a
+// directory for a request path's own owner at all.
 //
 // An owner the bundle holds no directory for is refused: the role's App has no installation on
 // owner, so no lease of this bundle is that owner's own. The credential helper then reads whether

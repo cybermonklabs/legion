@@ -570,9 +570,9 @@ func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
 	renamed := pairRoutedBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
 	// fork-of-a-served-repository.http with its parent's full_name changed to sjawhar/legion: of
-	// its two `"full_name": "acme/oss-verify"` lines, the first is the parent's and the second
+	// its two `"full_name": "acme/sample-project"` lines, the first is the parent's and the second
 	// the source's.
-	movedParent := derivedForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/oss-verify"`, `"full_name": "sjawhar/legion"`)
+	movedParent := derivedForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/sample-project"`, `"full_name": "sjawhar/legion"`)
 	for _, tc := range []struct {
 		name string
 		// root is the bundle, configDir the directory of it GH_CONFIG_DIR names, and readToken
@@ -585,24 +585,24 @@ func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
 	}{
 		{
 			name: "a fork of a served repository", root: root, configDir: acme, readToken: "ghs_acme_write",
-			path: "outside-author/oss-verify", answer: forkOfAcme, token: "ghs_acme_write",
+			path: "outside-author/sample-project", answer: forkOfAcme, token: "ghs_acme_write",
 		},
 		{
 			name: "the owner and name asked in another case", root: root, configDir: acme, readToken: "ghs_acme_write",
-			path: "Outside-Author/OSS-Verify", answer: forkOfAcme, token: "ghs_acme_write",
+			path: "Outside-Author/Sample-Project", answer: forkOfAcme, token: "ghs_acme_write",
 		},
 		{
 			name: "a .git suffix on the path", root: root, configDir: acme, readToken: "ghs_acme_write",
-			path: "outside-author/oss-verify.git", answer: forkOfAcme, token: "ghs_acme_write",
+			path: "outside-author/sample-project.git", answer: forkOfAcme, token: "ghs_acme_write",
 		},
 		{
 			name: "a parent that a configured rename moved", root: renamed, configDir: ghconfig.Dir(renamed, "cybermonklabs"),
 			readToken: "ghs_implement_write_cybermonklabs",
-			path:      "outside-author/oss-verify.git", answer: movedParent, token: "ghs_implement_write_cybermonklabs",
+			path:      "outside-author/sample-project.git", answer: movedParent, token: "ghs_implement_write_cybermonklabs",
 		},
 		{
 			name: "through legion gh auth git-credential get", root: root, configDir: acme, readToken: "ghs_acme_write",
-			path: "outside-author/oss-verify.git", answer: forkOfAcme, viaGh: true, token: "ghs_acme_write",
+			path: "outside-author/sample-project.git", answer: forkOfAcme, viaGh: true, token: "ghs_acme_write",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -629,13 +629,13 @@ func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
 // R2: a fork whose parent's owner the bundle holds no directory for is answered with the token
 // of its source, the repository at the root of its fork network, where the bundle holds the
 // source owner's directory. fork-of-a-fork.http is such a fork: its parent is
-// outside-org/oss-verify, itself a fork, and its source acme/oss-verify.
+// outside-org/sample-project, itself a fork, and its source acme/sample-project.
 func TestGitCredentialAnswersAForksSourceTokenWhenItsParentIsNotServed(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
 	github := newFakeGitHub(t, "ghs_acme_write", printsAnswer(forkReadFixture(t, "fork-of-a-fork.http"), 0))
 	useForkRead(t, github.program, forkReadBound)
 	forkReadPane(t, root, acme)
-	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify.git"), "get")
+	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
 	if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
 		t.Fatalf("legion git-credential get for a fork of a fork = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
 	}
@@ -653,7 +653,7 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 	github := newFakeGitHub(t, forkToken("sjawhar"), printsAnswer(forkReadFixture(t, "fork-of-a-fork.http"), 0))
 	useForkRead(t, github.program, forkReadBound)
 	forkReadPane(t, root, sjawhar)
-	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify.git"), "get")
+	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
 	if want := "username=x-access-token\npassword=" + forkToken("outside-org") + "\n"; code != 0 || stdout != want {
 		t.Fatalf("legion git-credential get for a fork of a fork = exit %d, stdout %q, stderr %q; want exit 0 and the parent's %q", code, stdout, stderr, want)
 	}
@@ -668,9 +668,9 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // the machine can read; and curl is handed none of the caller's token variables, trust stores or
 // TLS key log (forkReadSecrets), which the test sets in its own environment to see whether they
 // reach it. The fake GitHub answers 401 to any other header, so the answer, acme's token from
-// either directory, proves which token went. The request is the guard's own curl read's, for the
-// repository git named at https://api.github.com, with a --max-time of one decimal inside the
-// read's bound of 10 s.
+// either directory, proves which token went. curl's last argument is the repository git named at
+// https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
+// read's bound of 10 s; leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
@@ -685,9 +685,9 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 			github := newFakeGitHub(t, tc.token, printsAnswer(forkOfAcme, 0))
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
-			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify.git"), "get")
+			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
 			if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
-				t.Fatalf("legion git-credential get for outside-author/oss-verify = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
+				t.Fatalf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
 			}
 			runs := github.runs(t)
 			if len(runs) != 1 {
@@ -707,22 +707,20 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 					t.Errorf("curl's argv %q holds the token", read.argv)
 				}
 			}
-			// The argv the guard's curl read runs (leakguard's Guard.CurlGet), its
-			// --max-time compared apart.
-			want := []string{"-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
-				"--proto", "=https", "--max-time", "<seconds>", "--header", "@-",
-				"--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
-				"https://api.github.com/repos/outside-author/oss-verify"}
-			got, maxTime := slices.Clone(read.argv), ""
-			if len(got) == len(want) {
-				maxTime, got[9] = got[9], "<seconds>"
+			// What the fork read hands the guard's curl read (leakguard's Guard.CurlGet): the
+			// repository git named, and a --max-time inside the read's bound. The guard's own
+			// tests read its other options.
+			const wantURL = "https://api.github.com/repos/outside-author/sample-project"
+			if len(read.argv) == 0 || read.argv[len(read.argv)-1] != wantURL {
+				t.Errorf("curl ran with %q, want %s as its last argument", read.argv, wantURL)
 			}
-			if !slices.Equal(got, want) {
-				t.Errorf("curl ran with %q, want %q", read.argv, want)
+			maxTime := ""
+			if at := slices.Index(read.argv, "--max-time"); at >= 0 && at+1 < len(read.argv) {
+				maxTime = read.argv[at+1]
 			}
 			seconds, err := strconv.ParseFloat(maxTime, 64)
 			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > 10 {
-				t.Errorf("curl's --max-time is %q, want seconds of one decimal, more than 0 and at most 10", maxTime)
+				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most 10", read.argv, maxTime)
 			}
 		})
 	}
@@ -740,7 +738,7 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 	neither, sjawhar := forkBundle(t, "sjawhar", "sjawhar", "example-org")
 	// fork-of-a-served-repository.http with its own full_name, the first full_name of the file,
 	// changed to outside-author/other-repository.
-	another := derivedForkRead(t, "fork-of-a-served-repository.http", `"full_name": "outside-author/oss-verify"`, `"full_name": "outside-author/other-repository"`)
+	another := derivedForkRead(t, "fork-of-a-served-repository.http", `"full_name": "outside-author/sample-project"`, `"full_name": "outside-author/other-repository"`)
 	for _, tc := range []struct {
 		name                       string
 		root, configDir, readToken string
@@ -750,17 +748,17 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 	}{
 		{
 			name: "no fork", root: root, configDir: acme, readToken: "ghs_acme_write",
-			slug: "outside-org/libdiginet", answer: forkReadFixture(t, "not-a-fork.http"),
+			slug: "outside-org/sample-library", answer: forkReadFixture(t, "not-a-fork.http"),
 			says: []string{"is no fork"},
 		},
 		{
 			name: "a fork whose parent's and source's owners are outside the bundle", root: neither, configDir: sjawhar, readToken: forkToken("sjawhar"),
-			slug: "outside-author/oss-verify", answer: forkReadFixture(t, "fork-of-a-fork.http"),
-			says: []string{"outside-org/oss-verify", "acme/oss-verify"},
+			slug: "outside-author/sample-project", answer: forkReadFixture(t, "fork-of-a-fork.http"),
+			says: []string{"outside-org/sample-project", "acme/sample-project"},
 		},
 		{
 			name: "a full_name of another repository", root: root, configDir: acme, readToken: "ghs_acme_write",
-			slug: "outside-author/oss-verify", answer: another,
+			slug: "outside-author/sample-project", answer: another,
 			says: []string{"outside-author/other-repository"},
 		},
 	} {
@@ -896,17 +894,55 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 			}
 			useForkRead(t, curl, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
-			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify"), "get")
+			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
 			paths := strings.NewReplacer("<GH_CONFIG_DIR>", tc.configDir, "<curl>", curl)
 			says := make([]string, 0, len(tc.says))
 			for _, said := range tc.says {
 				says = append(says, paths.Replace(said))
 			}
-			answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/oss-verify", says...)
+			answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", says...)
 			if runs := github.runs(t); len(runs) != tc.reads {
 				t.Errorf("the fake GitHub ran %d times, want %d", len(runs), tc.reads)
 			}
 		})
+	}
+}
+
+// R2: where the directory the fork read routed to holds a hosts.yml that names no token, the
+// helper answers nothing, exit 1, on a line that names the fork, that directory and the parent
+// that routed there: the token read's own error names the directory alone, which tells a person
+// reading git's refusal neither which fork was read nor why that directory was asked. The bundle
+// holds sjawhar's directory, which GH_CONFIG_DIR names and whose token the read carries, and
+// acme's, the parent's owner's, with an empty hosts.yml. No stderr holds a token.
+func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) {
+	root, sjawhar := forkBundle(t, "sjawhar", "sjawhar")
+	acme := ghconfig.Dir(root, "acme")
+	if err := os.MkdirAll(acme, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(acme, ghconfig.HostsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	github := newFakeGitHub(t, forkToken("sjawhar"), printsAnswer(forkReadFixture(t, "fork-of-a-served-repository.http"), 0))
+	useForkRead(t, github.program, forkReadBound)
+	forkReadPane(t, root, sjawhar)
+	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
+	if code != 1 || stdout != "" {
+		t.Errorf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 1 and no answer", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"legion git-credential: the fork outside-author/sample-project routes to " + acme + " through its parent acme/sample-project, and ",
+		"names no github.com oauth_token; answering nothing",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("legion git-credential get for outside-author/sample-project printed %q on stderr, which does not name %q", stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "ghs_") {
+		t.Errorf("legion git-credential get for outside-author/sample-project printed %q on stderr, which holds a token", stderr)
+	}
+	if runs := github.runs(t); len(runs) != 1 {
+		t.Errorf("the fake GitHub ran %d times, want one read", len(runs))
 	}
 }
 
@@ -930,11 +966,11 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	forkReadPane(t, root, acme)
 	killRecordedHelper(t, pidFile, sleepSeconds)
 	start := time.Now()
-	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify"), "get")
+	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("legion git-credential get took %s, want at most the bound of 2 s and 3 s more", took)
 	}
-	answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/oss-verify", "bound of 2 s")
+	answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", "bound of 2 s")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("the fake GitHub recorded no sleep: %v", err)
@@ -1002,7 +1038,7 @@ func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 		{name: "a path naming only an outside owner", root: root, path: "outside-author", code: 1, stderrIn: unserved},
 		{name: "a path whose name is no GitHub name", root: root, path: "outside-author/..", code: 1, stderrIn: unserved},
 		{
-			name: "an outside owner's repository under a pairs file that cannot be read", root: broken, path: "outside-author/oss-verify.git",
+			name: "an outside owner's repository under a pairs file that cannot be read", root: broken, path: "outside-author/sample-project.git",
 			code: 1, stderrIn: "read the gh bundle's configured renames: " + pairsErr.Error(),
 		},
 	} {

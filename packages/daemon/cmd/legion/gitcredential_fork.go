@@ -16,10 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-// leakguardCurl is the curl the guard's curl reads run in this binary: empty in the binary, where
-// the guard then runs /usr/bin/curl; only tests set it.
-var leakguardCurl string
-
 // forkReadBound is the bound of the credential helper's whole fork read, the token read included;
 // only tests shorten it.
 var forkReadBound = 10 * time.Second
@@ -55,44 +51,49 @@ func forkRepository(ownersDir, owner, name string) (repo ghrepo.Repository, ok b
 // (leakguard's Guard.CurlGet), with the token of GH_CONFIG_DIR's directory (forkReadToken). The
 // read runs within forkReadBound, the token read included, and inside ctx. Where GitHub answers
 // that repo is a fork, the answer is the directory ghConfigDirFor routes the fork's parent to,
-// and where the parent routes to none, the one it routes the fork's source to (forkAnswer.dir).
-// The caller then reads that directory's token as it reads every answer's.
+// and where the parent routes to none, the one it routes the fork's source to (forkAnswer.dir),
+// with route, the words that say how: `the fork <repo> routes to <dir> through its parent
+// <full name>`, or `through its source <full name>`. The caller then reads that directory's
+// token as it reads every answer's, and puts route in front of a failure of that read, whose own
+// error names the directory alone and so neither the fork nor which of its two upstreams led
+// there.
 //
 // Anything else is an error that holds refused, ghConfigDirFor's refusal of the request, and then
 // what the read found, on one line: no token to read with, a read that could not be made or did
 // not finish, any answer of GitHub's but a 200 for repo, a repository that is no fork, and a fork
 // whose parent and source both route nowhere. No second read is made, and no error holds a token.
-func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Repository, refused error) (string, error) {
-	dir, err := readForkUpstream(ctx, ownersDir, repo)
+func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Repository, refused error) (dir, route string, err error) {
+	dir, route, err = readForkUpstream(ctx, ownersDir, repo)
 	if err != nil {
 		// A line break in the reason, such as one of curl's own, would make git show the refusal
 		// as two lines.
 		reason := strings.Join(strings.FieldsFunc(err.Error(), func(r rune) bool { return r == '\n' || r == '\r' }), " ")
-		return "", fmt.Errorf("%w, and %s", refused, reason)
+		return "", "", fmt.Errorf("%w, and %s", refused, reason)
 	}
-	return dir, nil
+	return dir, route, nil
 }
 
-// readForkUpstream is forkUpstreamDir's read and its answer, the error saying why there is none.
-// A SIGHUP cancels the read (hangupCancels), so a pane that closes while git waits on the helper
-// stops curl's process group, as `legion gh` and `legion leak-check` stop theirs, rather than
-// killing the helper and leaving curl running until its --max-time.
-func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Repository) (string, error) {
+// readForkUpstream is forkUpstreamDir's read and its answer, the directory and the route to it,
+// the error saying why there is none. A SIGHUP cancels the read (hangupCancels), so a pane that
+// closes while git waits on the helper stops curl's process group, as `legion gh` and `legion
+// leak-check` stop theirs, rather than killing the helper and leaving curl running until its
+// --max-time.
+func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
 	ctx, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
 	ctx, cancel := context.WithTimeout(ctx, forkReadBound)
 	defer cancel()
 	token, err := forkReadToken(ownersDir, repo)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	response, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).CurlGet(ctx, "repos/"+repo.String(), token)
 	if err != nil {
-		return "", fmt.Errorf("the helper could not read %s from GitHub: %w", repo, err)
+		return "", "", fmt.Errorf("the helper could not read %s from GitHub: %w", repo, err)
 	}
 	answer, err := readForkAnswer(response, repo)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	return answer.dir(ownersDir, repo)
 }
@@ -187,9 +188,11 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 // dir is the gh directory that answers for the fork repo: the one ghConfigDirFor routes its
 // parent to, the nearer of the two repositories it comes from, else the one it routes its source
 // to. Each is routed as a request for it would be (upstreamGHConfigDir), so a configured rename
-// that moved it applies. Where neither routes, the error names repo, the parent and the source,
-// and why each did not route.
-func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (string, error) {
+// that moved it applies. route names repo, that directory and the repository that routed there,
+// as GitHub spells it: `the fork <repo> routes to <dir> through its parent <full name>`, or `its
+// source`. Where neither routes, the error names repo, the parent and the source, and why each
+// did not route.
+func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
 	tried := make([]string, 0, 2)
 	for _, upstream := range []struct {
 		role     string
@@ -199,13 +202,12 @@ func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (string, error
 			tried = append(tried, "GitHub names no "+upstream.role)
 			continue
 		}
-		dir, err := upstreamGHConfigDir(ownersDir, upstream.fullName)
-		if err == nil {
-			return dir, nil
+		if dir, err = upstreamGHConfigDir(ownersDir, upstream.fullName); err == nil {
+			return dir, fmt.Sprintf("the fork %s routes to %s through its %s %s", repo, dir, upstream.role, upstream.fullName), nil
 		}
 		tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
 	}
-	return "", fmt.Errorf("GitHub answers that %s is a fork, and neither repository it comes from routes to a directory of the bundle: %s",
+	return "", "", fmt.Errorf("GitHub answers that %s is a fork, and neither repository it comes from routes to a directory of the bundle: %s",
 		repo, strings.Join(tried, "; "))
 }
 

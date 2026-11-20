@@ -4,16 +4,31 @@ the headers and the body, with CRLF line ends). The credential helper's fork rea
 stand-in curl; gh_notfound_test.go serves not-found.http as the leak guard's curl read's 404.
 
 This repository is public, so no file here carries an outside person's login or the company's
-name, and this file names the captured repositories by what they are rather than by their names.
-Each capture was copied in with only these values replaced: each replaced account's login, its
-numeric id, its node_id and its avatar id, and the host of the repository's homepage.
+name, or any value that leads back to a captured account or repository: GitHub answers an
+anonymous `GET /repositories/<id>` with a repository's real name, and its search finds a
+repository by its name, description, topics, times, size or counts. This file names the
+captured repositories by what they are rather than by their names. Each capture was copied in
+with only these values replaced, in the repository itself and in its `parent`, `source`, `owner`
+and `organization`:
 
-  - the person whose fork is captured           -> outside-author (id 1000001)
-  - the owner of the fork of a fork             -> outside-author (id 1000001)
-  - the organization that fork was made from    -> outside-org (id 1000002)
-  - the organization of the repository no fork  -> Outside-Org (id 1000002), its case kept
-  - the organization the forks are made from    -> acme (id 1000003)
-  - the homepage's host                         -> acme.example
+  - each account's login, numeric id, node_id and avatar id:
+      the person whose fork is captured           -> outside-author (id 1000001)
+      the owner of the fork of a fork             -> outside-author (id 1000001)
+      the organization that fork was made from    -> outside-org (id 1000002)
+      the organization of the repository no fork  -> Outside-Org (id 1000002), its case kept
+      the organization the forks are made from    -> acme (id 1000003)
+  - each repository's name, numeric id and node_id:
+      the forks and the repository they are made from -> sample-project
+      the repository that is no fork                  -> sample-library
+      ids 2000001 to 2000005, and node_ids of the shape GitHub's legacy ids have
+        (base64 of `010:Repository<id>`)
+  - each repository's description -> "An invented repository of the fixture's own", and each
+    topic a repository listed -> one topic, "invented-topic";
+  - each repository's created_at, updated_at and pushed_at -> 2026-01-01T00:00:00Z, and its
+    size and each of its counts (stargazers, watchers, forks, open issues, network,
+    subscribers) -> 0;
+  - the host of the homepage -> acme.example;
+  - content-length, set to the body's length after these replacements.
 
 The captures were made on 2026-11-19 between 22:13:13Z and 22:13:36Z, in an INFRA issue pod, with
 this command and the implement App's installation token on curl's standard input:
@@ -25,12 +40,13 @@ this command and the implement App's installation token on curl's standard input
      -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/<repository>'
 
   fork-of-a-served-repository.http  a person's fork, whose parent and source are both the
-                                    repository it was made from (acme/oss-verify).
+                                    repository it was made from (acme/sample-project).
   fork-of-a-fork.http               a fork of an organization's fork, whose parent
-                                    (outside-org/oss-verify) and source (acme/oss-verify) differ.
+                                    (outside-org/sample-project) and source
+                                    (acme/sample-project) differ.
   not-a-fork.http                   an organization's repository that is no fork, asked for in
                                     lower case: its full_name differs from the name asked in case
-                                    alone (Outside-Org/libdiginet).
+                                    alone (Outside-Org/sample-library).
   not-found.http                    a repository of the same person that does not exist: 404.
   moved.http                        repos/sjawhar/legion, which GitHub moved to another owner: 301,
                                     which curl does not follow.

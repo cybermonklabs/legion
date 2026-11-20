@@ -298,6 +298,9 @@ func (g *Guard) curlMissing() error {
 //   - `--include` prints the status line and the headers, which CurlResponse reads apart from the
 //     body, and `--suppress-connect-headers` leaves out a proxy's answer to CONNECT, which would
 //     otherwise come first;
+//   - `--globoff` takes the URL as written: path is the caller's, and curl would otherwise read a
+//     `[...]` or `{...}` in it as a range or a set and send one request, each carrying the token,
+//     for every URL it expands to;
 //   - `--proto =https` allows no other protocol, and no redirect is followed;
 //   - `--max-time` is the time left before ctx's deadline, less curlMargin (curlTime).
 //
@@ -327,7 +330,7 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
 		argv: []string{g.curl, "-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
-			"--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
+			"--globoff", "--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
 			"--header", "@-", "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
 			gitHubAPI + "/" + path},
 		inherit: curlInherits,

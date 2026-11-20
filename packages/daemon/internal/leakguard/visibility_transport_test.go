@@ -368,11 +368,12 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 // The curl read carries the token on its standard input, as the one header `--header @-` reads,
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which
-// is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, and asks
-// GitHub's REST API for the repository with GitHub's media type. Of the caller's environment its
-// proxy reaches it, so a host that reaches GitHub through one reaches it the same way, and no trust
-// store and no TLS key log do: a proxy the caller names with a CA curl trusted would read the
-// token's header, where with the system's own CAs it sees only a TLS tunnel.
+// is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, reads no
+// range or set in the URL (--globoff), so one read is one request, and asks GitHub's REST API for
+// the repository with GitHub's media type. Of the caller's environment its proxy reaches it, so a
+// host that reaches GitHub through one reaches it the same way, and no trust store and no TLS key
+// log do: a proxy the caller names with a CA curl trusted would read the token's header, where
+// with the system's own CAs it sees only a TLS tunnel.
 func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -407,7 +408,7 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 				t.Errorf("curl ran as %q, want -q first and then --no-netrc", argv)
 			}
 			for _, want := range []string{
-				" --include --suppress-connect-headers ", " --proto =https ", " --max-time ", " --header @- ",
+				" --include --suppress-connect-headers ", " --globoff ", " --proto =https ", " --max-time ", " --header @- ",
 				" --header Accept: application/vnd.github+json ", " https://api.github.com/repos/" + theRepo,
 			} {
 				if !strings.Contains(" "+argv, want) {
