@@ -14,11 +14,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
@@ -53,6 +56,21 @@ func testTLSSite(stateDir, name string) tlsSite {
 // controlTLSSite is the control of testTLSSites, for a test that classifies one client's output and
 // needs only a site to name.
 var controlTLSSite = testTLSSite("", "control")
+
+// emSignTLSSite and aaaTLSSite are the fixture sites of testTLSSites, the compromised chains the
+// probe's server serves, for a test that runs a client at one of them.
+var (
+	emSignTLSSite = testTLSSite("", "emSign")
+	aaaTLSSite    = testTLSSite("", "AAA")
+)
+
+// compromisedTLSSites are the fixture sites of testTLSSites: the sites the positive controls reach
+// when they pass.
+func compromisedTLSSites() []tlsSite { return []tlsSite{emSignTLSSite, aaaTLSSite} }
+
+// servedTLSSites are the fixture sites and the control of testTLSSites, the sites every client is
+// held to.
+func servedTLSSites() []tlsSite { return []tlsSite{emSignTLSSite, aaaTLSSite, controlTLSSite} }
 
 // tlsSiteHosts is each testTLSSites site's host name, by site name, written out rather than derived
 // from its URL as the clients derive it.
@@ -97,7 +115,7 @@ type fakeTLSClient struct {
 
 func (c fakeTLSClient) name() string { return c.clientName }
 
-func (c fakeTLSClient) probe(_ context.Context, site tlsSite) tlsOutcome {
+func (c fakeTLSClient) probe(_ context.Context, site tlsSite, _ tlsRunTerms) tlsOutcome {
 	if site.seen != nil {
 		site.seen.Add(1)
 	}
@@ -126,7 +144,8 @@ func passingImageTLSClients(string, []string, string) []tlsClient {
 // error and the control accepted, and anything else fails the probe; at a vendored chain, a client
 // that got past the chain to the server's signature accepted it. At a public site only an
 // acceptance fails it: a refusal is recorded, and any other outcome is unknown and fails nothing,
-// as is a site no client asks.
+// as is a site no client asks. A public site that is down takes none of main's no-verdict exit: only
+// a run the probe's deadline ended has no verdict there, as at every site.
 func TestProbeTLSClientsDecisions(t *testing.T) {
 	refused := tlsOutcome{status: tlsCertificateRefused, detail: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"}
 	accepted := tlsOutcome{status: tlsConnectionAccepted, detail: "HTTP 200"}
@@ -144,10 +163,11 @@ func TestProbeTLSClientsDecisions(t *testing.T) {
 	}
 
 	for _, testCase := range []struct {
-		name     string
-		outcomes map[string]tlsOutcome
-		want     string
-		unknown  []string
+		name      string
+		outcomes  map[string]tlsOutcome
+		want      string
+		unknown   []string
+		noVerdict string
 	}{
 		{name: "both compromised chains refused and control reachable", outcomes: passing()},
 		{name: "compromised chain accepted", outcomes: with("emSign", accepted), want: "node accepts the emSign chain"},
@@ -157,10 +177,19 @@ func TestProbeTLSClientsDecisions(t *testing.T) {
 		{name: "vendored chain neither refused nor accepted", outcomes: with("vendored emSign", unavailable), want: "node cannot verify refusal of the vendored emSign chain"},
 		{name: "public chain accepted", outcomes: with("public AAA", accepted), want: "node accepts the public AAA chain: HTTP 200"},
 		{name: "public site unreachable", outcomes: with("public emSign", unavailable), unknown: []string{"public emSign"}},
-		{name: "public site past the probe's deadline", outcomes: with("public emSign", tlsOutcome{status: tlsNetworkUnavailable, detail: tlsProbeDeadline}), want: "node cannot verify refusal of the public emSign chain: probe deadline"},
+		{name: "public site whose host went down after its positive control", outcomes: with("public AAA", tlsOutcome{status: tlsNetworkUnavailable, detail: "its 20s limit ended it after 20.0s: connect timed out"}), unknown: []string{"public AAA"}},
+		{name: "public site past the probe's deadline", outcomes: with("public emSign", tlsOutcome{status: tlsNoVerdict, detail: "the probe's deadline ended it after 1.0s: signal: terminated"}), noVerdict: "node public emSign: the probe's deadline ended it after 1.0s: signal: terminated"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			observations, err := probeTLSClients(context.Background(), []tlsClient{fakeTLSClient{clientName: "node", outcomes: testCase.outcomes}}, sites)
+			observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{fakeTLSClient{clientName: "node", outcomes: testCase.outcomes}}, sites, nil)
+			if want := []string{}; testCase.noVerdict != "" {
+				want = []string{testCase.noVerdict}
+				if !slices.Equal(noVerdict, want) {
+					t.Fatalf("probeTLSClients() runs with no verdict = %q, want %q", noVerdict, want)
+				}
+			} else if len(noVerdict) > 0 {
+				t.Fatalf("probeTLSClients() runs with no verdict = %q, want none: a public site that gives no verdict is UNKNOWN, which takes no exit 75", noVerdict)
+			}
 			if testCase.want == "" && err != nil {
 				t.Fatalf("probeTLSClients() = %v, want success", err)
 			}
@@ -196,7 +225,7 @@ func TestProbeTLSClientsStopAskingAPublicSiteThatGaveNoVerdict(t *testing.T) {
 		client("curl", tlsOutcome{status: tlsConnectionAccepted, detail: "a site no client asks after bun"}),
 	}
 
-	observations, err := probeTLSClients(context.Background(), clients, sites)
+	observations, _, err := probeTLSClients(context.Background(), clients, sites, nil)
 	if err != nil {
 		t.Fatalf("probeTLSClients() = %v, want success", err)
 	}
@@ -223,9 +252,9 @@ type countingTLSClient struct {
 	asked map[string]int
 }
 
-func (c countingTLSClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
+func (c countingTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	c.asked[site.name]++
-	return c.fakeTLSClient.probe(ctx, site)
+	return c.fakeTLSClient.probe(ctx, site, terms)
 }
 
 // A verdict at a site the probe's server serves is the client's only where the server began a
@@ -239,12 +268,12 @@ func TestProbeTLSClientsCountAVerdictOnlyWhereTheServerSawTheClient(t *testing.T
 	outcomes := map[string]tlsOutcome{"emSign": {status: tlsCertificateRefused, detail: "CERT_REVOKED"}, "AAA": {status: tlsCertificateRefused}, "control": {status: tlsConnectionAccepted}}
 	bypassing := countingTLSClient{asked: map[string]int{}, fakeTLSClient: fakeTLSClient{clientName: "node", outcomes: outcomes}}
 
-	_, err := probeTLSClients(context.Background(), []tlsClient{bypassingTLSClient{bypassing}}, sites)
+	_, _, err := probeTLSClients(context.Background(), []tlsClient{bypassingTLSClient{bypassing}}, sites, nil)
 	want := "node cannot verify refusal of the emSign chain: never reached the probe's server, so the verdict is not the probe's chain's: CERT_REVOKED"
 	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "network unavailable: node cannot reach https://control.legion-tls-probe.test/") {
 		t.Fatalf("probeTLSClients() with a client that never reached the server = %v, want %q and the control unreachable", err, want)
 	}
-	if _, err := probeTLSClients(context.Background(), []tlsClient{fakeTLSClient{clientName: "node", outcomes: outcomes}}, sites); err != nil {
+	if _, _, err := probeTLSClients(context.Background(), []tlsClient{fakeTLSClient{clientName: "node", outcomes: outcomes}}, sites, nil); err != nil {
 		t.Fatalf("probeTLSClients() with a client that reached the server = %v, want success", err)
 	}
 }
@@ -252,7 +281,7 @@ func TestProbeTLSClientsCountAVerdictOnlyWhereTheServerSawTheClient(t *testing.T
 // bypassingTLSClient answers without reaching the probe's server.
 type bypassingTLSClient struct{ countingTLSClient }
 
-func (c bypassingTLSClient) probe(_ context.Context, site tlsSite) tlsOutcome {
+func (c bypassingTLSClient) probe(_ context.Context, site tlsSite, _ tlsRunTerms) tlsOutcome {
 	return c.outcomes[site.name]
 }
 
@@ -403,7 +432,7 @@ func TestTLSCommandClientClassifiesApplicationErrorBeforeTruncatingDetail(t *tes
 		},
 	}
 
-	outcome := client.probe(context.Background(), controlTLSSite)
+	outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 
 	if outcome.status != tlsConnectionAccepted {
 		t.Fatalf("client.probe() = %+v, want an accepted application response", outcome)
@@ -549,7 +578,7 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 				return "sh", []string{"-c", `printf %s "$1" >&2; exit "$2"`, "sh", testCase.stderr, testCase.exit}, nil
 			}
 
-			if outcome := client.probe(context.Background(), controlTLSSite); outcome.status != testCase.want {
+			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("%s probe = %+v, want status %q", testCase.client, outcome, testCase.want)
 			}
 		})
@@ -628,7 +657,7 @@ func TestImageTLSClientsReadAnHTTPErrorAfterTheHandshakeAsAnAcceptance(t *testin
 			if row.client == "chromium" {
 				client = tlsChromiumClient{tlsCommandClient: command}
 			}
-			if outcome := client.probe(context.Background(), publicEmSignTLSSite); outcome.status != row.want {
+			if outcome := client.probe(context.Background(), publicEmSignTLSSite, tlsRunTerms{}); outcome.status != row.want {
 				t.Fatalf("%s at the public emSign site = %+v, want status %q", row.client, outcome, row.want)
 			}
 		})
@@ -730,7 +759,7 @@ func TestImageTLSClientsRefuseTheFixtureChainAsThePublicSites(t *testing.T) {
 				client.command = func(tlsSite) (string, []string, []string) {
 					return "sh", []string{"-c", script, "sh", output, row.exit}, nil
 				}
-				if outcome := client.probe(context.Background(), controlTLSSite); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
+				if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
 					t.Fatalf("%s at the %s chain = %+v, want refused, no failed signature", row.client, site, outcome)
 				}
 			})
@@ -777,7 +806,7 @@ func TestImageTLSClientsAtTheVendoredChains(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", script, "sh", output, exit}, nil
 		}
-		outcome := client.probe(context.Background(), testTLSSite("", "vendored emSign"))
+		outcome := client.probe(context.Background(), testTLSSite("", "vendored emSign"), tlsRunTerms{})
 		switch {
 		case afterHandshake && outcome.status == tlsCertificateRefused:
 			t.Errorf("%s at the vendored chain = %+v, want no refusal: it is held to the public sites because it fails the server's signature first", row.client, outcome)
@@ -828,10 +857,10 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", output}, nil
 		}
-		if outcome := client.probe(context.Background(), emSign); !outcome.signatureFailed {
+		if outcome := client.probe(context.Background(), emSign, tlsRunTerms{}); !outcome.signatureFailed {
 			t.Errorf("%s at the emSign chain = %+v, want a failed signature read from its output", name, outcome)
 		}
-		_, err := probeTLSClients(context.Background(), []tlsClient{client}, sites[:1])
+		_, _, err := probeTLSClients(context.Background(), []tlsClient{client}, sites[:1], nil)
 		if want := name + " holds the emSign root"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("probeTLSClients() with %s's output = %v, want an error containing %q", name, err, want)
 		}
@@ -841,7 +870,7 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", output}, nil
 		}
-		if outcome := client.probe(context.Background(), emSign); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
+		if outcome := client.probe(context.Background(), emSign, tlsRunTerms{}); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
 			t.Errorf("%s at the emSign chain = %+v, want an ordinary refusal: the rule cannot read its output", name, outcome)
 		}
 	}
@@ -1282,13 +1311,13 @@ func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.
 			}
 
 			sites := testTLSSites(t.TempDir())
-			_, err := probeTLSClients(context.Background(), standIns(append(slices.Clone(pod), testCase.setting)), sites)
+			_, _, err := probeTLSClients(context.Background(), standIns(append(slices.Clone(pod), testCase.setting)), sites, nil)
 			for _, name := range testCase.clients {
 				if want := name + " accepts the emSign chain"; err == nil || !strings.Contains(err.Error(), want) {
 					t.Errorf("probeTLSClients() under a pod env with %s = %v, want an error containing %q", testCase.setting, err, want)
 				}
 			}
-			if _, err := probeTLSClients(context.Background(), standIns(pod), sites); err != nil {
+			if _, _, err := probeTLSClients(context.Background(), standIns(pod), sites, nil); err != nil {
 				t.Errorf("probeTLSClients() under a pod env without %s = %v, want success", testCase.setting, err)
 			}
 		})
@@ -1386,7 +1415,7 @@ func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 				return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; exit "$3"`, "sh", testCase.stdout, testCase.stderr, testCase.exit}, nil
 			}
 
-			if outcome := client.probe(context.Background(), controlTLSSite); outcome.status != testCase.want {
+			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("%s probe = %+v, want status %q", testCase.client, outcome, testCase.want)
 			}
 		})
@@ -1415,7 +1444,7 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 
 	sites := testTLSSites(t.TempDir())
 	for _, program := range []string{"legion-tls-probe-no-such-program", "legion-tls-dangling"} {
-		observations, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite(program)}, sites)
+		observations, _, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite(program)}, sites, nil)
 		if err != nil {
 			t.Errorf("probeTLSClients() with %s off PATH = %v, want success", program, err)
 		}
@@ -1429,7 +1458,7 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 		}
 	}
 
-	if _, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite("sh")}, sites); err == nil || !strings.Contains(err.Error(), "optional accepts the emSign chain") {
+	if _, _, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite("sh")}, sites, nil); err == nil || !strings.Contains(err.Error(), "optional accepts the emSign chain") {
 		t.Fatalf("probeTLSClients() with the program on PATH accepting every chain = %v, want the emSign acceptance named", err)
 	}
 
@@ -1437,7 +1466,7 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 	t.Setenv("PATH", bin)
 	for name, client := range optional {
 		for _, site := range sites {
-			if outcome := client.probe(context.Background(), site); outcome.status != tlsClientAbsent || outcome.detail != name+" is not on PATH" {
+			if outcome := client.probe(context.Background(), site, tlsRunTerms{}); outcome.status != tlsClientAbsent || outcome.detail != name+" is not on PATH" {
 				t.Errorf("%s at %s with no optional client on PATH = %+v, want absent (%s is not on PATH)", name, site.name, outcome, name)
 			}
 		}
@@ -1563,21 +1592,29 @@ func TestTLSSPKIHashIsTheControlRootsKey(t *testing.T) {
 
 // The positive controls hold the probe's own server to its chains: each compromised site's chain
 // must reach its fixture root, and the control's chain must be refused with that root alone. Either
-// failing fails the probe, the probe's own fault, before any client is held to a chain.
+// failing fails the probe, the probe's own fault, before any client is held to a chain. A run the
+// probe's deadline ended has no verdict, which fails nothing and is named apart from the failures.
 func TestTLSPositiveControlsRequireTheExpectedChain(t *testing.T) {
 	sites := testTLSSites(t.TempDir())[:len(servedTLSSiteNames)]
+	cut := tlsOutcome{status: tlsNoVerdict, detail: "the probe's deadline ended it after 0.2s: signal: terminated"}
 	for _, testCase := range []struct {
 		name, want         string
 		outcome, isolation tlsOutcome
+		noVerdict          []string
 	}{
 		{name: "accepts its root", outcome: tlsOutcome{status: tlsConnectionAccepted}, isolation: tlsOutcome{status: tlsCertificateRefused}},
 		{name: "refuses its root", outcome: tlsOutcome{status: tlsCertificateRefused, detail: "certificate verify failed"}, isolation: tlsOutcome{status: tlsCertificateRefused}, want: "emSign positive control at https://dv-g3b-emudhra.we-have-a-problem.com/ did not accept its root"},
 		{name: "cannot reach site", outcome: tlsOutcome{status: tlsNetworkUnavailable, detail: "network is unreachable"}, isolation: tlsOutcome{status: tlsCertificateRefused}, want: "emSign positive control"},
 		{name: "the control accepts the compromised root", outcome: tlsOutcome{status: tlsConnectionAccepted}, isolation: tlsOutcome{status: tlsConnectionAccepted}, want: "emSign positive control isolation at https://control.legion-tls-probe.test/ was accepted"},
+		{name: "cannot reach the control", outcome: tlsOutcome{status: tlsConnectionAccepted}, isolation: tlsOutcome{status: tlsNetworkUnavailable, detail: "network is unreachable"}, want: "positive control isolation at"},
+		{name: "the isolation cut by the probe's deadline", outcome: tlsOutcome{status: tlsConnectionAccepted}, isolation: cut, noVerdict: []string{
+			"emSign positive control isolation at https://" + tlsControlHost + "/: " + cut.detail,
+			"AAA positive control isolation at https://" + tlsControlHost + "/: " + cut.detail,
+		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			var isolationRoots []string
-			err := verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
+			noVerdict, err := verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
 				if site.kind == tlsControlSite {
 					if site.trust != "" {
 						t.Errorf("the isolation control at %s is given the trust file %s; want none, so only the compromised root is trusted", site.url, site.trust)
@@ -1594,6 +1631,9 @@ func TestTLSPositiveControlsRequireTheExpectedChain(t *testing.T) {
 			}
 			if want := []string{sites[0].root, sites[1].root}; !slices.Equal(isolationRoots, want) {
 				t.Errorf("the isolation control ran with the roots %q, want each compromised site's (%q)", isolationRoots, want)
+			}
+			if !slices.Equal(noVerdict, testCase.noVerdict) {
+				t.Errorf("verifyTLSPositiveControls() runs with no verdict = %q, want %q", noVerdict, testCase.noVerdict)
 			}
 		})
 	}
@@ -1745,8 +1785,12 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 	newPublicTLSSites = unaskedPublicTLSSites
 	newImageTLSClients = passingImageTLSClients
 	var stdout bytes.Buffer
-	if err := runTLSProbe(context.Background(), "omp", nil, &stdout); err != nil {
+	noVerdict, err := runTLSProbe(context.Background(), "omp", nil, &stdout)
+	if err != nil {
 		t.Fatalf("runTLSProbe() with the public hosts unreachable = %v, want success", err)
+	}
+	if len(noVerdict) > 0 {
+		t.Fatalf("runTLSProbe() with the public hosts unreachable has runs with no verdict %q, want none: an UNKNOWN public site takes no exit 75", noVerdict)
 	}
 	out := stdout.String()
 	afterHandshake := tlsChainAfterHandshakeClients()
@@ -1777,7 +1821,10 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 	}
 }
 
-func TestTLSCommandPastTheProbeDeadlineIsUnavailableAndFailsTheProbe(t *testing.T) {
+// A TLS run the probe's deadline (--probe-budget) ends has no verdict, wherever it ran and whatever
+// it printed: the probe reads no output of a run it did not let finish. It fails nothing and gets
+// no second run, since the deadline has passed.
+func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 	sites := testTLSSites(t.TempDir())[:2]
 	client := tlsCommandClient{
 		clientName: "curl",
@@ -1786,23 +1833,27 @@ func TestTLSCommandPastTheProbeDeadlineIsUnavailableAndFailsTheProbe(t *testing.
 			if site.name == "emSign" {
 				return "sh", []string{"-c", "echo certificate verify failed >&2; exit 1"}, nil
 			}
-			return "sh", []string{"-c", "exec sleep 1"}, nil
+			return "sh", []string{"-c", "exec sleep 30"}, nil
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	observations, err := probeTLSClients(ctx, []tlsClient{client}, sites)
+	observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{client}, sites, nil)
 	if len(observations) != 2 {
-		t.Fatalf("probeTLSClients() returned %d observations, want the client to reach both sites", len(observations))
+		t.Fatalf("probeTLSClients() returned %d observations, want one run at each site and no second run: %+v", len(observations), observations)
 	}
-	if got := observations[1]; got.status != tlsNetworkUnavailable || got.detail != "probe deadline" {
-		t.Fatalf("AAA outcome = %+v, want unavailable (probe deadline)", got.tlsOutcome)
+	if got := observations[1]; got.status != tlsNoVerdict || !strings.HasPrefix(got.detail, "the probe's deadline ended it after ") {
+		t.Errorf("AAA outcome = %+v, want no verdict, the probe's deadline named", got.tlsOutcome)
 	}
-	if err == nil || !strings.Contains(err.Error(), "curl cannot verify refusal of the AAA chain: probe deadline") {
-		t.Fatalf("probeTLSClients() = %v, want the deadline to name curl and AAA", err)
+	if err != nil {
+		t.Errorf("probeTLSClients() = %v, want no failure: a run the deadline ended fails nothing", err)
+	}
+	if len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "curl AAA: the probe's deadline ended it after ") {
+		t.Errorf("probeTLSClients() runs with no verdict = %q, want curl's AAA run alone, the deadline named", noVerdict)
 	}
 }
+
 func TestTLSPositiveControlsLineNamesEverySite(t *testing.T) {
 	sites := []tlsSite{{name: "first"}, {name: "second"}, {name: "third"}}
 	const want = "probe-image: TLS positive controls: first, second and third chains verified"
@@ -1830,7 +1881,7 @@ func TestTLSCommandClientClassifiesOutputStreams(t *testing.T) {
 				},
 			}
 
-			if outcome := client.probe(context.Background(), controlTLSSite); outcome.status != testCase.want {
+			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("client.probe() = %+v, want status %q", outcome, testCase.want)
 			}
 		})
@@ -1856,7 +1907,7 @@ func TestTLSChromiumClientClassifiesNavigationResult(t *testing.T) {
 				},
 			}}
 
-			outcome := client.probe(context.Background(), controlTLSSite)
+			outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 			if outcome.status != testCase.want {
 				t.Fatalf("client.probe() = %+v, want status %q", outcome, testCase.want)
 			}
@@ -1875,8 +1926,674 @@ func TestImageTLSChromiumClientHasColdStartHeadroom(t *testing.T) {
 		return "sh", []string{"-c", "exec sleep 21"}, nil
 	}
 
-	outcome := chromium.probe(context.Background(), controlTLSSite)
+	outcome := chromium.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 	if outcome.status != tlsConnectionAccepted {
 		t.Fatalf("Chromium probe after a 21s cold start = %+v, want accepted", outcome)
+	}
+}
+
+// What node and aws printed at the TLS sites in the probe pods, which the stand-in clients below
+// replay: node's refusal of a compromised chain (exit 1, on stderr), as INFRA's probe pod logged it
+// on 2026-11-19 with the probe's trim; aws's refusal (exit 255, on stderr), which names the site's
+// URL, and its answer at the control (exit 255), the page it could not parse, as BET's probe pod
+// logged them on 2026-11-17. node exits 0 with no output at the control.
+const (
+	nodeTLSRefusal   = `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch fail…:34) at TLSSocket.emit (node:events:514:28) at TLSSocket._finishInit (node:internal/tls/wrap:1216:8) at ssl.onhandshakedone (node:internal/tls/wrap:997:12) { code: 'CERT_REVOKED' } } Node.js v24.22.1`
+	awsTLSRefusal    = `aws: [ERROR]: SSL validation failed for %s [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082)`
+	awsControlAnswer = `aws: [ERROR]: Unable to parse response (syntax error: line 1, column 0), invalid XML received. Further retries may succeed: <!doctype html><html lang="en"><head><title>Example Domain</title>`
+)
+
+// nodeAnswer is what node prints at site, and the status it exits with.
+func nodeAnswer(site tlsSite) (string, int) {
+	if site.kind == tlsControlSite {
+		return "", 0
+	}
+	return nodeTLSRefusal, 1
+}
+
+// awsAnswer is what aws prints at site, and the status it exits with.
+func awsAnswer(site tlsSite) (string, int) {
+	if site.kind == tlsControlSite {
+		return awsControlAnswer, 255
+	}
+	return fmt.Sprintf(awsTLSRefusal, site.url), 255
+}
+
+// The scripts the stand-in clients run (shTLSClient). sh runs each with the client's name as $0,
+// the site's name as $1, a directory as $2, and what the client prints at the site and the status
+// it exits with there as $3 and $4. A script that must be stopped runs exec sleep, so that the stop
+// reaches the sleep itself, also where nothing stops a shell's children: the merge base's
+// exec.CommandContext killed the shell alone.
+const (
+	// tlsAnswers prints $3, where there is any, on stderr and exits $4.
+	tlsAnswers = `[ -z "$3" ] || printf '%s\n' "$3" >&2; exit "$4"`
+	// tlsFirstRunSleeps sleeps past the limit on the client's first run of all, which is at
+	// emSign, leaving a mark in $2, and answers on every later run.
+	tlsFirstRunSleeps = `if [ ! -e "$2/$0.ran" ]; then : >"$2/$0.ran"; exec sleep 30; fi; ` + tlsAnswers
+	// tlsSleepsAtEmSign sleeps past the limit on every run at emSign, and answers at every other
+	// site.
+	tlsSleepsAtEmSign = `[ "$1" != emSign ] || exec sleep 30; ` + tlsAnswers
+)
+
+// shTLSClient is a command client named name with a limit of one second whose run at a site is sh
+// running script, as the constants above say, answer giving what it prints there and the status it
+// exits with. Each run first appends "<name> <site>" to dir/runs.
+func shTLSClient(name, dir, script string, answer func(tlsSite) (string, int)) tlsCommandClient {
+	return tlsCommandClient{
+		clientName: name,
+		timeout:    time.Second,
+		command: func(site tlsSite) (string, []string, []string) {
+			output, status := answer(site)
+			return "sh", []string{"-c", `printf '%s %s\n' "$0" "$1" >>"$2/runs"; ` + script, name, site.name, dir, output, strconv.Itoa(status)}, nil
+		},
+	}
+}
+
+// tlsLines are stdout's TLS lines of client at site, in the order they were printed.
+func tlsLines(stdout, client, site string) []string {
+	prefix := "probe-image: TLS client " + client + " " + site + ": "
+	var lines []string
+	for line := range strings.Lines(stdout) {
+		if strings.HasPrefix(line, prefix) {
+			lines = append(lines, strings.TrimSuffix(line, "\n"))
+		}
+	}
+	return lines
+}
+
+// tlsRunsLogged are the runs the stand-in clients sharing dir logged, "<client> <site>" each, in
+// the order they started.
+func tlsRunsLogged(t *testing.T, dir string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+}
+
+// timedTLSClient is a client that sums the time its runs at each site took, by the site's name.
+type timedTLSClient struct {
+	tlsClient
+	spent map[string]time.Duration
+}
+
+func (c timedTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	started := time.Now()
+	defer func() { c.spent[site.name] += time.Since(started) }()
+	return c.tlsClient.probe(ctx, site, terms)
+}
+
+// Every client of the image's inventory, of each kind (workerTLSClients: command, optional and
+// Chromium clients), is slow on its first run at emSign, a site the positive controls reached: its
+// own limit ends that run, which has no verdict, and its one more run refuses the chain in that
+// client's own terms, so the probe passes. Each client is built as the probe builds it
+// (tlsClientSpec.build), from a copy of its spec whose program is a stand-in named by an absolute
+// path, so gh's and codegraph-node's own paths are replaced too, and whose limit is 300 ms. A
+// client whose shell waits on a child holding the output pipe returns within its limit, the stop's
+// grace and procgroup.WaitDelay, since its limit stops its whole process group. The positive
+// controls' curl gets no second run: its own limit fails the probe.
+func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing.T) {
+	const limit = 300 * time.Millisecond
+	stubs, stateDir := t.TempDir(), t.TempDir()
+	// standIn writes an executable stand-in that runs firstRun on its first run of all, then exits
+	// 0 at the control and prints refusal on stderr and exits 1 at every other site.
+	standIn := func(name, firstRun, refusal string) string {
+		path := filepath.Join(stubs, name)
+		script := "#!/bin/sh\n" +
+			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; " + firstRun + "; fi\n" +
+			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || exit 0\n" +
+			"echo '" + refusal + "' >&2\nexit 1\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	refusalOf := func(spec tlsClientSpec) string {
+		if spec.kind == tlsChromiumKind {
+			return "Page load failed: net::ERR_CERT_AUTHORITY_INVALID"
+		}
+		return "certificate verify failed"
+	}
+	clients := make([]tlsClient, 0, len(workerTLSClients))
+	for _, spec := range workerTLSClients {
+		spec.program, spec.timeout = standIn(spec.name, "exec sleep 30", refusalOf(spec)), limit
+		clients = append(clients, spec.build("omp", nil, stateDir))
+	}
+
+	observations, noVerdict, err := probeTLSClients(context.Background(), clients, servedTLSSites(), compromisedTLSSites())
+
+	if err != nil || len(noVerdict) != 0 {
+		t.Fatalf("probeTLSClients() = %v, runs with no verdict %q; want every client to pass on its second run at emSign", err, noVerdict)
+	}
+	for _, spec := range workerTLSClients {
+		var runs []tlsOutcome
+		for _, observation := range observations {
+			if observation.client == spec.name && observation.site.name == emSignTLSSite.name {
+				runs = append(runs, observation.tlsOutcome)
+			}
+		}
+		if len(runs) != 2 || runs[0].status != tlsNoVerdict || !strings.HasPrefix(runs[0].detail, "its 300ms limit ended it after ") || runs[1].status != tlsCertificateRefused {
+			t.Errorf("%s at emSign ran %+v, want a first run its 300ms limit ended with no verdict, then a refusal", spec.name, runs)
+		}
+	}
+
+	t.Run("a shell waiting on a child that holds the output pipe", func(t *testing.T) {
+		spec := workerTLSClients[0]
+		spec.program, spec.timeout = standIn("held", "sleep 30 & wait", refusalOf(spec)), limit
+		started := time.Now()
+		outcome := spec.build("omp", nil, stateDir).probe(context.Background(), emSignTLSSite, tlsRunTerms{reached: true})
+		if elapsed, bound := time.Since(started), limit+procgroup.StopGrace+procgroup.WaitDelay; outcome.status != tlsNoVerdict || elapsed >= bound {
+			t.Errorf("a run whose shell waits on a child holding its output = %+v after %s, want no verdict within %s", outcome, elapsed, bound)
+		}
+	})
+
+	t.Run("the positive controls get no second run", func(t *testing.T) {
+		path := filepath.Join(stubs, "positive-control")
+		script := "#!/bin/sh\n" +
+			"printf '%s\\n' \"$LEGION_TLS_URL\" >>'" + path + ".runs'\n" +
+			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; exec sleep 30; fi\n" +
+			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || { echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2; exit 60; }\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		previous := tlsPositiveControlSpec
+		t.Cleanup(func() { tlsPositiveControlSpec = previous })
+		tlsPositiveControlSpec.program, tlsPositiveControlSpec.timeout = path, limit
+
+		err := probeTLSPositiveControls(context.Background(), nil, t.TempDir(), servedTLSSites())
+
+		if want := "emSign positive control at " + emSignTLSSite.url + " did not accept its root: its 300ms limit ended it after "; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("probeTLSPositiveControls() = %v, want the failure %q", err, want)
+		}
+		raw, readErr := os.ReadFile(path + ".runs")
+		if got := strings.Count(string(raw), emSignTLSSite.url+"\n"); readErr != nil || got != 1 {
+			t.Errorf("the emSign positive control ran %d times (%v), want once: %q", got, readErr, raw)
+		}
+	})
+}
+
+// A public host that goes down after its positive control passed reads UNKNOWN, by name with its
+// host, and the probe passes with exit 0 and the OK line: an UNKNOWN public site takes none of the
+// no-verdict exit (bootprobe.NoVerdictExit), so a public host that is down never fails the image
+// build. That holds for a host that refuses at once (its name no longer resolves) and for one that
+// hangs until the client's own limit ends the run (a blackhole): a public site is never counted
+// reached, so that run is unknown rather than one with no verdict. The control is the path main's
+// no-verdict exit is for: a run the probe's deadline cuts at that same public host has no verdict,
+// and the probe exits 75 naming it.
+func TestProbeImagePassesWhenAPublicHostGoesDownAfterItsPositiveControl(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	askedPublic := func(context.Context, []string, string) []tlsSite { return slices.Clone(publicTLSSites) }
+	down := func(site tlsSite) (string, int) {
+		if site.kind == tlsPublicSite {
+			return "curl: (6) Could not resolve host: " + tlsSiteURL(site).Hostname(), 6
+		}
+		return nodeAnswer(site)
+	}
+
+	for _, tc := range []struct {
+		name, script, detail string
+	}{
+		{name: "a name that no longer resolves", script: tlsAnswers, detail: "exit status 6: curl: (6) Could not resolve host: "},
+		{name: "a host that hangs", script: `case "$1" in public*) exec sleep 30 ;; esac; ` + tlsAnswers, detail: "its 1s limit ended it after "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node := shTLSClient("node", t.TempDir(), tc.script, down)
+			code, stdout, stderr := probeImageAt(theseTLSClients(node), passingTLSPositiveControls, askedPublic, img.flags()...)
+			if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+				t.Fatalf("probe-image with the public hosts down = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+			}
+			if _, ok := bootprobe.NoVerdict(stderr); ok {
+				t.Errorf("stderr %q carries the no-verdict line: a public host that is down must not take exit %d", stderr, bootprobe.NoVerdictExit)
+			}
+			if !strings.Contains(stdout, "probe-image: TLS public emSign: chain verified\n") {
+				t.Errorf("stdout lacks the public emSign positive control's line:\n%s", stdout)
+			}
+			for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
+				if line := "probe-image: UNKNOWN: node against " + host + ": " + tc.detail; !strings.Contains(stdout, line) {
+					t.Errorf("stdout lacks %q:\n%s", line, stdout)
+				}
+			}
+		})
+	}
+
+	cut := shTLSClient("node", t.TempDir(), `[ "$1" != "public emSign" ] || exec sleep 30; `+tlsAnswers, down)
+	cut.timeout = time.Minute
+	code, stdout, stderr := probeImageAt(theseTLSClients(cut), passingTLSPositiveControls, askedPublic, img.flags("--probe-budget", shortProbeBudget)...)
+	detail, ok := bootprobe.NoVerdict(stderr)
+	if code != bootprobe.NoVerdictExit || !ok || !strings.Contains(detail, "node public emSign: the probe's deadline ended it after ") || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image with a run the deadline cut at a public host = %d, stdout %q, stderr %q; want exit %d naming that run", code, stdout, stderr, bootprobe.NoVerdictExit)
+	}
+}
+
+// c-slow-probe-passes case (1): node, the first client, is slow on its first run at emSign, where
+// only the positive control has reached the site. Its own limit ends that run with neither a
+// refusal nor an answer in its output, so the run has no verdict, and its one more run, at two
+// times the limit, refuses the chain: the probe passes. At the merge base the first run was
+// unavailable and failed the probe ("node cannot verify refusal of the emSign chain: signal:
+// killed"), as BET's and OSSV's probes failed on 2026-11-17.
+func TestTLSProbePassesTheFirstClientWhoseSlowFirstRunAtEmSignRefusesOnItsSecondRun(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	node := shTLSClient("node", t.TempDir(), tlsFirstRunSleeps, nodeAnswer)
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node), passingTLSPositiveControls, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+	}
+	lines := tlsLines(stdout, "node", emSignTLSSite.name)
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "probe-image: TLS client node emSign: no verdict (its 1s limit ended it after ") || !strings.HasPrefix(lines[1], "probe-image: TLS client node emSign: refused (") {
+		t.Errorf("node's emSign lines = %q, want a first run with no verdict naming its 1s limit, then a refusal", lines)
+	}
+}
+
+// c-slow-probe-passes case (2): the same for aws, a later client, at emSign after node refused the
+// chain there: aws's first run, which its own limit ends, has no verdict, and its second run
+// refuses the chain, so the probe passes. At the merge base it failed the probe ("aws cannot
+// verify refusal of the emSign chain: signal: killed").
+func TestTLSProbePassesALaterClientWhoseSlowFirstRunAtEmSignRefusesOnItsSecondRun(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	aws := shTLSClient("aws", dir, tlsFirstRunSleeps, awsAnswer)
+	aws.applicationSeen = awsResponseSeen
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node, aws), passingTLSPositiveControls, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+	}
+	if lines := tlsLines(stdout, "node", emSignTLSSite.name); len(lines) != 1 || !strings.HasPrefix(lines[0], "probe-image: TLS client node emSign: refused (") {
+		t.Errorf("node's emSign lines = %q, want one refusal", lines)
+	}
+	lines := tlsLines(stdout, "aws", emSignTLSSite.name)
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "probe-image: TLS client aws emSign: no verdict (its 1s limit ended it after ") || !strings.HasPrefix(lines[1], "probe-image: TLS client aws emSign: refused (") {
+		t.Errorf("aws's emSign lines = %q, want a first run with no verdict naming its 1s limit, then a refusal", lines)
+	}
+}
+
+// c-slow-probe-passes case (3): a client whose every run at emSign, a reached site, outlasts its
+// limit still has no verdict after its second run. Nothing failed, so `legion probe-image` exits
+// bootprobe.NoVerdictExit with the line the daemon reads, naming the client and the site, and
+// prints neither the OK line nor the failure's. The TLS run took its limit and two times its limit,
+// and less than that plus what the two stops can add (StopGrace and WaitDelay each).
+func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	node := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
+	timed := timedTLSClient{tlsClient: node, spent: map[string]time.Duration{}}
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(timed), passingTLSPositiveControls, img.flags()...)
+
+	detail, ok := bootprobe.NoVerdict(stderr)
+	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "node emSign: its 2s limit ended it after ") || strings.Contains(detail, ";") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and the no-verdict line naming node's emSign run alone", code, stdout, stderr, bootprobe.NoVerdictExit)
+	}
+	if strings.Contains(stderr, "worker TLS probe failed") || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Errorf("probe-image printed the failure's line or the OK line: stdout %q, stderr %q", stdout, stderr)
+	}
+	least := 3 * node.timeout
+	most := least + 2*(procgroup.StopGrace+procgroup.WaitDelay)
+	if spent := timed.spent[emSignTLSSite.name]; spent < least || spent >= most {
+		t.Errorf("node's emSign TLS run took %s, want at least %s and less than %s", spent, least, most)
+	}
+}
+
+// c-slow-probe-passes case (4), on the probe's own server: a run its own limit ends at a site no
+// earlier run reached fails the probe, since nothing shows the client could reach it. Every site
+// the server serves is one the positive controls reach when they pass, the control too, which their
+// isolation runs reach; so the site no run reached is one where those controls had no verdict, and
+// there the first client's run at the control fails. Where they passed, that run has no verdict and
+// runs once more, as at any reached site. A compromised site no run reached is the same, and an
+// earlier client's refusal there makes such a run one with no verdict. The run's own limit ended it
+// also where the probe's deadline passes while the limit's stop is still under way, since the run
+// records which of the two fired first when it fires: such a run is unavailable too, and never one
+// with no verdict.
+func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	node := shTLSClient("node", t.TempDir(), `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	controlsCut := func(context.Context, []string, string, []tlsSite) error {
+		return tlsNoVerdicts{"emSign positive control at " + emSignTLSSite.url + ": the probe's deadline ended it after 0.1s: signal: terminated"}
+	}
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node), controlsCut, img.flags()...)
+
+	want := "network unavailable: node cannot reach " + controlTLSSite.url + ": its 1s limit ended it after "
+	if code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 1 naming %q", code, stdout, stderr, want)
+	}
+	if _, ok := bootprobe.NoVerdict(stderr); ok {
+		t.Errorf("stderr %q carries the no-verdict line beside the failure", stderr)
+	}
+	if lines := tlsLines(stdout, "node", controlTLSSite.name); len(lines) != 1 {
+		t.Errorf("node's control lines = %q, want one run and no second", lines)
+	}
+
+	node = shTLSClient("node", t.TempDir(), `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	code, stdout, stderr = probeImageWith(theseTLSClients(node), passingTLSPositiveControls, img.flags()...)
+	detail, ok := bootprobe.NoVerdict(stderr)
+	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "node control: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
+		t.Fatalf("probe-image with the controls passed = %d, stdout %q, stderr %q; want exit %d naming node's control run alone, its second run's 2s limit", code, stdout, stderr, bootprobe.NoVerdictExit)
+	}
+	if lines := tlsLines(stdout, "node", controlTLSSite.name); len(lines) != 2 {
+		t.Errorf("node's control lines with the controls passed = %q, want a run and its second run", lines)
+	}
+
+	// A served copy of a public chain whose own positive control passed is reached too: aws, which
+	// is held to the copies, hangs at the emSign copy, and that run has no verdict, not a failure.
+	vendoredHang := shTLSClient("aws", t.TempDir(), `[ "$1" != "vendored emSign" ] || exec sleep 30; `+tlsAnswers, awsAnswer)
+	vendoredHang.applicationSeen = awsResponseSeen
+	code, stdout, stderr = probeImageWith(theseTLSClients(vendoredHang), passingTLSPositiveControls, img.flags()...)
+	detail, ok = bootprobe.NoVerdict(stderr)
+	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "aws vendored emSign: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
+		t.Fatalf("probe-image with aws hanging at the emSign copy = %d, stdout %q, stderr %q; want exit %d naming that run alone", code, stdout, stderr, bootprobe.NoVerdictExit)
+	}
+
+	dir := t.TempDir()
+	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
+	aws.applicationSeen = awsResponseSeen
+	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws}, servedTLSSites(), nil); err == nil || !strings.Contains(err.Error(), "aws cannot verify refusal of the emSign chain: its 1s limit ended it after ") || len(noVerdict) != 0 {
+		t.Errorf("probeTLSClients() with emSign unreached = %v, runs with no verdict %q; want aws's emSign run to fail", err, noVerdict)
+	}
+	node = shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, servedTLSSites(), nil); err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
+		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, noVerdict)
+	}
+
+	// A command at the control that answers its limit's SIGTERM, at 1 s, with an exit of its own
+	// 0.6 s later, inside procgroup.StopGrace, while the probe's deadline passes at 1.3 s, 0.3 s
+	// after the limit and 0.3 s before that exit.
+	stopped := shTLSClient("node", t.TempDir(), `trap '/bin/sleep 0.6; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
+	ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
+	defer cancel()
+	outcome := stopped.probe(ctx, controlTLSSite, tlsRunTerms{})
+	if ctx.Err() == nil {
+		t.Fatalf("the run returned %+v before the probe's deadline; the row needs the deadline to pass while the limit's stop is under way", outcome)
+	}
+	if outcome.status != tlsNetworkUnavailable || !strings.HasPrefix(outcome.detail, "its 1s limit ended it after ") || !strings.HasSuffix(outcome.detail, ": exit status 1") {
+		t.Errorf("a run its 1s limit stopped, which exited after the probe's deadline = %+v, want unavailable naming its 1s limit", outcome)
+	}
+}
+
+// c-slow-probe-passes case (5): the positive controls keep their rule, so a control its own limit
+// ends fails the probe at once, with no second run: a pod with no egress fails here.
+func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	runs := filepath.Join(t.TempDir(), "runs")
+	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs+"'\nexec sleep 30\n")
+	previous := tlsPositiveControlSpec.timeout
+	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
+	tlsPositiveControlSpec.timeout = time.Second
+
+	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags()...)
+
+	want := "worker TLS probe cannot verify test chains: emSign positive control at " + emSignTLSSite.url + " did not accept its root: its 1s limit ended it after "
+	if code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) || strings.Contains(stdout, "probe-image: TLS client ") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 1 naming %q before any client runs", code, stdout, stderr, want)
+	}
+	if _, ok := bootprobe.NoVerdict(stderr); ok {
+		t.Errorf("stderr %q carries the no-verdict line beside the failure", stderr)
+	}
+	raw, err := os.ReadFile(runs)
+	if got := strings.Count(string(raw), emSignTLSSite.url+"\n"); err != nil || got != 1 {
+		t.Errorf("the emSign positive control ran %d times (%v), want once: %q", got, err, raw)
+	}
+}
+
+// c-slow-probe-passes case (7): a failure fails the probe beside a TLS run with no verdict, and
+// decides it: a client that accepts the emSign chain on its second run, one that exits at emSign
+// with no certificate error before its limit, one a signal kills before its limit, one a signal
+// kills before its limit after it printed a certificate refusal, which the signal leaves
+// unavailable all the same, and one that prints `signal: killed` itself and exits 1, which is read
+// from the run's own record as an exit and never as a signal or a limit. Beside each, bun's runs at
+// emSign have no verdict, and no run exits 75.
+func TestTLSProbeFailsWhenAFailureStandsBesideARunWithNoVerdict(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	nodeAtEmSign := func(output string, status int) func(tlsSite) (string, int) {
+		return func(site tlsSite) (string, int) {
+			if site.name == emSignTLSSite.name {
+				return output, status
+			}
+			return nodeAnswer(site)
+		}
+	}
+	for _, tc := range []struct {
+		name, client, script string
+		answer               func(tlsSite) (string, int)
+		want                 string
+		line                 *regexp.Regexp
+	}{
+		{name: "accepts emSign", client: "aws", script: tlsFirstRunSleeps,
+			answer: func(tlsSite) (string, int) { return awsControlAnswer, 255 },
+			want:   "aws accepts the emSign chain: "},
+		{name: "exits at emSign with no certificate error", client: "node", script: tlsAnswers,
+			answer: nodeAtEmSign("TypeError: fetch failed [cause]: read ECONNRESET", 1),
+			want:   "node cannot verify refusal of the emSign chain: exit status 1: TypeError: fetch failed"},
+		{name: "killed by a signal", client: "node", script: `[ "$1" != emSign ] || kill -9 $$; ` + tlsAnswers, answer: nodeAnswer,
+			want: "node cannot verify refusal of the emSign chain: signal: killed ended it after ",
+			line: regexp.MustCompile(`^probe-image: TLS client node emSign: unavailable \(signal: killed ended it after [0-9]+\.[0-9]s, before its 1s limit: signal: killed\)$`)},
+		{name: "killed by a signal after it printed a certificate refusal", client: "node", script: `if [ "$1" = emSign ]; then printf '%s\n' "$3" >&2; kill -9 $$; fi; ` + tlsAnswers, answer: nodeAnswer,
+			want: "node cannot verify refusal of the emSign chain: signal: killed ended it after ",
+			line: regexp.MustCompile(`^probe-image: TLS client node emSign: unavailable \(signal: killed ended it after [0-9]+\.[0-9]s, before its 1s limit: signal: killed: node:internal/.*CERT_REVOKED.*\)$`)},
+		{name: "prints signal: killed itself and exits 1", client: "node", script: tlsAnswers, answer: nodeAtEmSign("signal: killed", 1),
+			want: "node cannot verify refusal of the emSign chain: exit status 1: signal: killed",
+			line: regexp.MustCompile(`^probe-image: TLS client node emSign: unavailable \(exit status 1: signal: killed\)$`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bun := shTLSClient("bun", dir, tlsSleepsAtEmSign, nodeAnswer)
+			failing := shTLSClient(tc.client, dir, tc.script, tc.answer)
+			if tc.client == "aws" {
+				failing.applicationSeen = awsResponseSeen
+			}
+
+			code, stdout, stderr := probeImageWith(theseTLSClients(bun, failing), passingTLSPositiveControls, img.flags()...)
+
+			if code != 1 || !strings.Contains(stderr, "legion probe-image: worker TLS probe failed: ") || !strings.Contains(stderr, tc.want) || strings.Contains(stdout, bootprobe.OKPrefix) {
+				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 1 naming %q", code, stdout, stderr, tc.want)
+			}
+			if detail, ok := bootprobe.NoVerdict(stderr); ok {
+				t.Errorf("stderr carries the no-verdict line %q beside the failure", detail)
+			}
+			if lines := tlsLines(stdout, "bun", emSignTLSSite.name); len(lines) != 2 || !strings.HasPrefix(lines[0], "probe-image: TLS client bun emSign: no verdict (") || !strings.HasPrefix(lines[1], "probe-image: TLS client bun emSign: no verdict (") {
+				t.Errorf("bun's emSign lines = %q, want two runs with no verdict", lines)
+			}
+			if tc.line != nil && !slices.ContainsFunc(tlsLines(stdout, tc.client, emSignTLSSite.name), tc.line.MatchString) {
+				t.Errorf("%s's emSign lines = %q, want one matching %s", tc.client, tlsLines(stdout, tc.client, emSignTLSSite.name), tc.line)
+			}
+		})
+	}
+}
+
+// c-slow-probe-passes case (8): a run its own limit ends whose output already shows a certificate
+// error is a refusal, decided by that output: its line says refused and names the limit, and it
+// gets no second run.
+func TestTLSProbeReadsAKilledRunThatPrintedACertificateErrorAsARefusal(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	node := shTLSClient("node", t.TempDir(), `if [ "$1" != control ]; then printf '%s\n' "$3" >&2; exec sleep 30; fi; `+tlsAnswers, nodeAnswer)
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node), passingTLSPositiveControls, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+	}
+	for _, site := range compromisedTLSSites() {
+		lines := tlsLines(stdout, "node", site.name)
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], "probe-image: TLS client node "+site.name+": refused (its 1s limit ended it after ") || !strings.Contains(lines[0], "CERT_REVOKED") {
+			t.Errorf("node's %s lines = %q, want one refusal naming its 1s limit and the certificate error", site.name, lines)
+		}
+	}
+}
+
+// The state table's row of a run its own limit ends whose output already shows an answer: node,
+// first, reaches the control, and aws, whose control run prints the page it could not parse and is
+// then slow, is accepted there, decided by that output: its line names the limit, and it gets no
+// second run. node cannot carry this row: its answer at the control is an exit 0 with no output,
+// and its client reads no answer marker, so a killed node run shows no answer.
+func TestTLSProbeReadsAKilledRunThatPrintedAnAnswerAsAccepted(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	aws := shTLSClient("aws", dir, `if [ "$1" = control ]; then printf '%s\n' "$3" >&2; exec sleep 30; fi; `+tlsAnswers, awsAnswer)
+	aws.applicationSeen = awsResponseSeen
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node, aws), passingTLSPositiveControls, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+	}
+	if lines := tlsLines(stdout, "aws", controlTLSSite.name); len(lines) != 1 || !strings.HasPrefix(lines[0], "probe-image: TLS client aws control: accepted (its 1s limit ended it after ") || !strings.Contains(lines[0], "invalid XML received") {
+		t.Errorf("aws's control lines = %q, want one acceptance naming its 1s limit and the page", lines)
+	}
+}
+
+// c-slow-probe-passes case (9): the TLS line of a run its own limit ended says so, with the limit,
+// the second run's two times the first, and how long the run took; the line of a run a signal
+// ended before its limit names the signal; a run that exited on its own keeps the detail it always
+// had. Each detail then carries what the run printed and its error.
+func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, tlsSleepsAtEmSign, nodeAnswer)
+	aws := shTLSClient("aws", dir, `[ "$1" != emSign ] || kill -9 $$; `+tlsAnswers, awsAnswer)
+	aws.applicationSeen = awsResponseSeen
+
+	_, stdout, stderr := probeImageWith(theseTLSClients(node, aws), passingTLSPositiveControls, img.flags()...)
+
+	seconds := func(line string, form *regexp.Regexp) (float64, bool) {
+		match := form.FindStringSubmatch(line)
+		if match == nil {
+			return 0, false
+		}
+		elapsed, err := strconv.ParseFloat(match[1], 64)
+		return elapsed, err == nil
+	}
+	bound := (procgroup.StopGrace + procgroup.WaitDelay).Seconds()
+	emSign := tlsLines(stdout, "node", emSignTLSSite.name)
+	if len(emSign) != 2 {
+		t.Fatalf("node's emSign lines = %q, want two; stdout %q, stderr %q", emSign, stdout, stderr)
+	}
+	for i, limit := range []float64{1, 2} {
+		form := regexp.MustCompile(`^probe-image: TLS client node emSign: no verdict \(its ` + strconv.FormatFloat(limit, 'f', -1, 64) + `s limit ended it after ([0-9]+\.[0-9])s: signal: terminated\)$`)
+		if elapsed, ok := seconds(emSign[i], form); !ok || elapsed < limit || elapsed >= limit+bound {
+			t.Errorf("node's emSign line %d = %q, want it to name its %gs limit and a time from %gs to less than %gs", i+1, emSign[i], limit, limit, limit+bound)
+		}
+	}
+	signal := regexp.MustCompile(`^probe-image: TLS client aws emSign: unavailable \(signal: killed ended it after ([0-9]+\.[0-9])s, before its 1s limit: signal: killed\)$`)
+	if lines := tlsLines(stdout, "aws", emSignTLSSite.name); len(lines) != 1 {
+		t.Errorf("aws's emSign lines = %q, want one", lines)
+	} else if elapsed, ok := seconds(lines[0], signal); !ok || elapsed >= 1 {
+		t.Errorf("aws's emSign line = %q, want it to name the signal and a time under its 1s limit", lines[0])
+	}
+	if lines := tlsLines(stdout, "node", aaaTLSSite.name); len(lines) != 1 || lines[0] != "probe-image: TLS client node AAA: refused ("+trimTLSDetail("exit status 1: "+nodeTLSRefusal)+")" {
+		t.Errorf("node's AAA lines = %q, want the refusal's detail as a run that exited has always had it", lines)
+	}
+}
+
+// One more run comes after every client's first run at every site, in the same order, with two
+// times the client's limit: the runs' log shows aws's second run at emSign after the last client's
+// control run, and its line names a 2s limit where the first named 1s. A run the probe's deadline
+// ended gets no second run, nor does any run after it, which never starts.
+func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *testing.T) {
+	dir := t.TempDir()
+	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
+	aws.applicationSeen = awsResponseSeen
+	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+
+	observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
+
+	want := []string{"aws emSign", "aws AAA", "aws control", "node emSign", "node AAA", "node control", "aws emSign"}
+	if got := tlsRunsLogged(t, dir); !slices.Equal(got, want) {
+		t.Errorf("the clients ran %q, want %q", got, want)
+	}
+	if len(observations) != len(want) {
+		t.Fatalf("probeTLSClients() observed %d runs, want %d: %+v", len(observations), len(want), observations)
+	}
+	first, second := observations[0], observations[len(observations)-1]
+	if first.client != "aws" || first.site.name != emSignTLSSite.name || first.status != tlsNoVerdict || !strings.HasPrefix(first.detail, "its 1s limit ended it after ") {
+		t.Errorf("first observation = %+v, want aws's emSign run with no verdict, its 1s limit named", first)
+	}
+	if second.client != "aws" || second.site.name != emSignTLSSite.name || second.status != tlsNoVerdict || !strings.HasPrefix(second.detail, "its 2s limit ended it after ") {
+		t.Errorf("last observation = %+v, want aws's second emSign run with no verdict, its 2s limit named", second)
+	}
+	if err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
+		t.Errorf("probeTLSClients() = %v, runs with no verdict %q; want no failure and aws's emSign run, as its second run left it", err, noVerdict)
+	}
+
+	t.Run("a run the probe's deadline ended", func(t *testing.T) {
+		dir := t.TempDir()
+		aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
+		node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+
+		observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
+
+		if got := tlsRunsLogged(t, dir); !slices.Equal(got, []string{"aws emSign"}) {
+			t.Errorf("the clients ran %q, want aws's emSign run alone", got)
+		}
+		if len(observations) != 2*len(servedTLSSites()) || len(noVerdict) != len(observations) || err != nil {
+			t.Fatalf("probeTLSClients() = %v, %d observations, runs with no verdict %q; want one run of each client at each site, each with no verdict", err, len(observations), noVerdict)
+		}
+		for _, observation := range observations {
+			if observation.status != tlsNoVerdict || !strings.HasPrefix(observation.detail, "the probe's deadline ended it after ") {
+				t.Errorf("%s at %s = %+v, want no verdict, the probe's deadline named", observation.client, observation.site.name, observation.tlsOutcome)
+			}
+		}
+	})
+}
+
+// A failure seen before the probe's deadline stands, also inside a step that returns after it: the
+// emSign positive control is refused at once, and the AAA control, slow, is cut by the deadline,
+// which leaves that run with no verdict and the emSign failure deciding the probe.
+func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	img.install(t, "curl", "#!/bin/sh\n[ \"$LEGION_TLS_URL\" != '"+aaaTLSSite.url+"' ] || exec sleep 30\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n")
+	previous := tlsPositiveControlSpec.timeout
+	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
+	tlsPositiveControlSpec.timeout = time.Minute
+
+	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", shortProbeBudget)...)
+
+	want := "emSign positive control at " + emSignTLSSite.url + " did not accept its root: exit status 60: curl: (60) SSL certificate problem"
+	if code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 1 naming %q", code, stdout, stderr, want)
+	}
+	if strings.Contains(stderr, "AAA positive control at "+aaaTLSSite.url+" did not accept") {
+		t.Errorf("stderr %q names the AAA control the deadline cut as a failure", stderr)
+	}
+	if _, ok := bootprobe.NoVerdict(stderr); ok {
+		t.Errorf("stderr %q carries the no-verdict line beside the failure", stderr)
+	}
+}
+
+// The third way a site is reached: node, first, is accepted at the control, so bun's first control
+// run, which its own limit ends with no answer in its output, has no verdict where it would fail
+// with no earlier run there, and bun's second run, which answers, is accepted.
+func TestTLSProbeRunsAgainALaterClientCutByItsLimitAtAControlAnEarlierClientReached(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	bun := shTLSClient("bun", dir, `if [ "$1" = control ] && [ ! -e "$2/$0.ran" ]; then : >"$2/$0.ran"; exec sleep 30; fi; `+tlsAnswers, nodeAnswer)
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(node, bun), passingTLSPositiveControls, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line", code, stdout, stderr)
+	}
+	lines := tlsLines(stdout, "bun", controlTLSSite.name)
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "probe-image: TLS client bun control: no verdict (its 1s limit ended it after ") || !strings.HasPrefix(lines[1], "probe-image: TLS client bun control: accepted (") {
+		t.Errorf("bun's control lines = %q, want a first run with no verdict naming its 1s limit, then an acceptance", lines)
 	}
 }

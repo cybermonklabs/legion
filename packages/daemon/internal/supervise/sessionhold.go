@@ -387,6 +387,23 @@ func RecordedHolds(session, sessionFile string) []Hold {
 	return holds
 }
 
+// byIDHolds is every name a resume of session by its id alone runs under (Machine.start, for a
+// claim that records a session and no file): the session id, and the id an Oh My Pi file
+// `<timestamp>_<id>.jsonl` gives (HoldFileID), since that resume continues the file whose name
+// ends in `_<id>.jsonl` — the newest such row of the launcher's session table, the newest such
+// file one folder below the tmux pane's sessions directory, or the file Oh My Pi's own
+// `--resume=<id>` finds. The file's base name is not known before the agent registers it, and
+// that registration holds it with the rest (register, RecordedHolds). RecordedHolds(session, "")
+// gives the session id alone, which is all its callers need: each acts on a registered process or
+// its session, and a claim with no file has no registered process. An empty session, or one past
+// claim.MaxSessionNameBytes, names nothing, as in RecordedHolds.
+func byIDHolds(session string) []Hold {
+	if session == "" || len(session) > claim.MaxSessionNameBytes {
+		return nil
+	}
+	return []Hold{{Kind: HoldSessionID, Name: session}, {Kind: HoldFileID, Name: session}}
+}
+
 // invalidName is one name of a session that no hold can cover, with what makes it one (why, as a
 // refusal's error and log line say it) and the refusal a registration of it answers.
 type invalidName struct {
@@ -475,6 +492,25 @@ func UnholdableNames(session, sessionFile string) []Hold {
 // errHoldUnanswered, which a launch tries again at the probe interval charging nothing
 // (launchNow), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
+	return m.holdNames(ctx, session, sessionFile, RecordedHolds(session, sessionFile))
+}
+
+// holdByID is holdRecorded for a resume of session by its id alone, under the same rule: it holds
+// the names that resume runs under (byIDHolds), the file-id name beside the session id. start asks
+// it before such a resume, which only an Oh My Pi claim makes: start sends a Claude Code claim with
+// a session and no file straight to the forget (startFresh) and asks no hold. resumeRefusal asks it
+// of every claim that records a session and no file, a Claude Code claim's included, which is
+// stricter than that claim's launch: an operator's resume of such a claim whose by-id names another
+// claim holds is refused, though its launch would forget the session rather than resume it.
+func (m *Machine) holdByID(ctx context.Context, session string) error {
+	return m.holdNames(ctx, session, "", byIDHolds(session))
+}
+
+// holdNames is the hold holdRecorded and holdByID make: names are the names of session and
+// sessionFile that the caller's resume or record runs under, and each is held to the claim, or the
+// call is refused, by the rule holdRecorded gives. The session and file it admits are the ones
+// HoldsItsSession and Admits read (Machine.admitted).
+func (m *Machine) holdNames(ctx context.Context, session, sessionFile string, names []Hold) error {
 	if invalid := invalidSessionNames(session, sessionFile); len(invalid) > 0 {
 		n := invalid[0]
 		what := "session id"
@@ -486,7 +522,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, what, n.why, claim.SessionNameUnheldRefusal(what))
 	}
 	var ask []Hold
-	for _, h := range RecordedHolds(session, sessionFile) {
+	for _, h := range names {
 		if !m.heldNames[h] {
 			ask = append(ask, h)
 		}

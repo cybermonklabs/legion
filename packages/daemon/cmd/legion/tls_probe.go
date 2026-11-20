@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
@@ -106,6 +107,10 @@ const (
 	tlsNetworkUnavailable tlsStatus = "unavailable"
 	tlsClientAbsent       tlsStatus = "absent"  // an optional client whose program is not on PATH (tlsOptionalClient)
 	tlsPublicUnknown      tlsStatus = "unknown" // a public site that gave no verdict, or that no client asks
+	// tlsNoVerdict is a run that says nothing of the client: the probe's deadline ended it, or its
+	// own limit ended it at a site an earlier run reached with neither a refusal nor an answer in
+	// its output (probeTLSClients says why). It fails nothing.
+	tlsNoVerdict tlsStatus = "no verdict"
 )
 
 type tlsOutcome struct {
@@ -120,7 +125,35 @@ type tlsOutcome struct {
 
 type tlsClient interface {
 	name() string
-	probe(context.Context, tlsSite) tlsOutcome
+	probe(context.Context, tlsSite, tlsRunTerms) tlsOutcome
+}
+
+// tlsRunTerms is how a client runs at a site: again for the one more run a TLS run with no verdict
+// gets, which runs within two times the client's limit, and reached when an earlier run of the
+// probe run reached the site, where a run its own limit ends with neither a refusal nor an answer
+// in its output has no verdict rather than being unavailable.
+type tlsRunTerms struct {
+	again, reached bool
+}
+
+// limit is the limit a run of a client whose own limit is timeout runs within on these terms.
+func (t tlsRunTerms) limit(timeout time.Duration) time.Duration {
+	if t.again {
+		return 2 * timeout
+	}
+	return timeout
+}
+
+// tlsNoVerdicts is the positive controls' runs that have no verdict, each "<site> positive control
+// at <url>: <detail>" or "<site> positive control isolation endpoint <url>: <detail>"
+// (verifyTLSPositiveControls), as their error where they have such runs and no failure.
+// probeTLSPositiveControls returns it, so that newTLSPositiveControls keeps one error result for
+// its failures and its runs with no verdict both, and runProbeImage tells the two apart with
+// errors.As.
+type tlsNoVerdicts []string
+
+func (n tlsNoVerdicts) Error() string {
+	return "worker TLS probe has no verdict: " + strings.Join(n, "; ")
 }
 
 type tlsObservation struct {
@@ -159,15 +192,22 @@ func tlsPositiveControlsLine(sites []tlsSite) string {
 // verifyTLSPositiveControls holds the probe's own server to the fixture chains it serves, before
 // any client is held to them: each fixture chain must reach its fixture root, so a refusal there is
 // a refusal of that root, and the control's chain must be refused with that root alone, so the
-// acceptance proves the root, not a client that accepts anything. A failure is the probe's own and
-// fails it. The vendored chains have positive controls of their own (probeVendoredTLSSites), which
-// mark a chain unasked rather than fail the probe, since a chain that has expired is no fault of the
-// image's.
-func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) error {
+// acceptance proves the root, not a client that accepts anything. Every other outcome fails, the
+// run's own limit included, since a positive control gets no second run: curl is small, and the
+// server is on the pod's own loopback. The one exception is a run the probe's deadline ended, which
+// has no verdict and fails nothing; noVerdict names each such run, "<control>: <detail>", apart
+// from err, which names every failure. The vendored chains have positive controls of their own
+// (probeVendoredTLSSites), which mark a chain unasked rather than fail the probe, since a chain
+// that has expired is no fault of the image's.
+func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) (noVerdict []string, err error) {
 	var failures []string
 	control := tlsControlIndex(sites)
 	for _, site := range fixtureTLSSites(sites) {
-		if outcome := probe(site); outcome.status != tlsConnectionAccepted {
+		switch outcome := probe(site); outcome.status {
+		case tlsConnectionAccepted:
+		case tlsNoVerdict:
+			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control at %s: %s", site.name, site.url, outcome.detail))
+		default:
 			failures = append(failures, fmt.Sprintf("%s positive control at %s did not accept its root: %s", site.name, site.url, outcome.detail))
 		}
 		if control < 0 {
@@ -176,14 +216,18 @@ func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) 
 		}
 		isolation := sites[control]
 		isolation.root, isolation.trust = site.root, ""
-		if outcome := probe(isolation); outcome.status != tlsCertificateRefused {
+		switch outcome := probe(isolation); outcome.status {
+		case tlsCertificateRefused:
+		case tlsNoVerdict:
+			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control isolation at %s: %s", site.name, isolation.url, outcome.detail))
+		default:
 			failures = append(failures, fmt.Sprintf("%s positive control isolation at %s was %s: %s", site.name, isolation.url, outcome.status, outcome.detail))
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
+		return noVerdict, fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
 	}
-	return nil
+	return noVerdict, nil
 }
 
 // tlsPositiveControlSpec is the positive controls' curl. It is built through tlsClientSpec.build,
@@ -196,12 +240,18 @@ var tlsPositiveControlSpec = tlsClientSpec{
 }
 
 // probeTLSPositiveControls runs verifyTLSPositiveControls over sites, the probe's server's, with
-// the positive controls' curl under env, its state in stateDir.
+// the positive controls' curl under env, its state in stateDir. Its error is their failures where
+// any control failed, else a tlsNoVerdicts naming the runs with no verdict where there are any,
+// else nil.
 func probeTLSPositiveControls(ctx context.Context, env []string, stateDir string, sites []tlsSite) error {
 	client := tlsPositiveControlSpec.build("", env, stateDir)
-	return verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
-		return client.probe(ctx, site)
+	noVerdict, err := verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
+		return client.probe(ctx, site, tlsRunTerms{})
 	})
+	if err == nil && len(noVerdict) > 0 {
+		return tlsNoVerdicts(noVerdict)
+	}
+	return err
 }
 
 var newTLSPositiveControls = probeTLSPositiveControls
@@ -220,12 +270,12 @@ func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, s
 		if site.kind != tlsVendoredSite {
 			continue
 		}
-		if outcome := client.probe(ctx, site); !outcome.signatureFailed {
+		if outcome := client.probe(ctx, site, tlsRunTerms{}); !outcome.signatureFailed {
 			site.unasked = fmt.Sprintf("its positive control was %s, where it must get past the chain to the server's signature: %s", outcome.status, outcome.detail)
 		} else if control >= 0 {
 			isolation := sites[control]
 			isolation.root, isolation.trust = site.root, ""
-			if outcome := client.probe(ctx, isolation); outcome.status != tlsCertificateRefused {
+			if outcome := client.probe(ctx, isolation, tlsRunTerms{}); outcome.status != tlsCertificateRefused {
 				site.unasked = fmt.Sprintf("its positive control's isolation at %s was %s: %s", isolation.url, outcome.status, outcome.detail)
 			}
 		}
@@ -244,7 +294,7 @@ func probePublicTLSSites(ctx context.Context, env []string, stateDir string) []t
 	client := tlsPositiveControlSpec.build("", env, stateDir)
 	sites := slices.Clone(publicTLSSites)
 	for index, site := range sites {
-		if outcome := client.probe(ctx, site); outcome.status != tlsConnectionAccepted {
+		if outcome := client.probe(ctx, site, tlsRunTerms{}); outcome.status != tlsConnectionAccepted {
 			sites[index].unasked = fmt.Sprintf("its positive control was %s: %s", outcome.status, outcome.detail)
 		}
 	}
@@ -270,26 +320,66 @@ func tlsUnknownLine(observation tlsObservation) string {
 }
 
 // probeTLSClients holds every TLS client the worker image carries to sites, each client only to the
-// sites that hold it (tlsSite.clients). At a fixture chain, a compromised chain is safe only where
-// its client refuses it for a certificate error that is no failed signature of a root it holds; at
-// a vendored chain, only where it refuses it before the server's signature, which the probe cannot
-// make; the control must be accepted; and any other outcome fails the probe. At a site the probe's
-// server serves, a verdict counts only where the server began a handshake for the site while the
-// client ran, so a client that reached the public host of that name instead, or answered without
-// reaching any, fails it. At a public site, an acceptance fails the probe and a refusal is
-// recorded; any other outcome is unknown, which fails nothing and is named (tlsUnknownLine), and no
-// later client asks that site, so an unreachable host costs one client's bound and no more. An
-// optional client the image does not carry is absent at each site, which is recorded and fails
-// nothing.
-func probeTLSClients(ctx context.Context, clients []tlsClient, sites []tlsSite) ([]tlsObservation, error) {
-	var observations []tlsObservation
-	var failures []string
+// sites that hold it (tlsSite.clients), and judges each run by its site's kind (tlsVerdict). At a
+// site the probe's server serves, a verdict counts only where the server began a handshake for the
+// site while the client ran (probeTLSSite), so a client that reached the public host of that name
+// instead, or answered without reaching any, fails it. At a public site, an acceptance fails the
+// probe and a refusal is recorded; any other outcome but a run with no verdict is unknown, which
+// fails nothing and is named (tlsUnknownLine), and no later client asks that site, so an
+// unreachable host costs one client's bound and no more. An optional client the image does not
+// carry is absent at each site, which is recorded and fails nothing.
+//
+// reached is the sites an earlier run of the probe reached: the server's sites once the positive
+// controls passed there, and each served copy of a public chain whose own positive control passed.
+// A client's refusal at a site the server serves reaches that site too, and its acceptance at the
+// control reaches the control. A run its own limit ends with neither a refusal nor an answer in its
+// output has no verdict at a reached site, since what the limit cut short is the client: GKE image
+// streaming loads an image's files at their first read, so a large client's first run on a node
+// where the image is new can outlast its limit. At a site the server serves that no run reached,
+// that run is unavailable and fails; a public site is never counted reached, so there it is
+// unknown. A run the probe's deadline ended has no verdict wherever it ran. After every client's
+// first run at every site, each run with no verdict runs once more, in the same order, within two
+// times its client's limit, unless the probe's deadline has passed, and that run decides it: one
+// TLS run gets three times its limit at most.
+//
+// observations is every run, the second ones included. err names every failure; noVerdict, each
+// "<client> <site>: <detail>", names the runs that still have no verdict, which fail nothing. Where
+// both are there, err decides the probe.
+func probeTLSClients(ctx context.Context, clients []tlsClient, sites, reached []tlsSite) (observations []tlsObservation, noVerdict []string, err error) {
+	reachedSites := map[string]bool{}
+	for _, site := range reached {
+		reachedSites[site.name] = true
+	}
 	unasked := map[string]string{}
 	for _, site := range sites {
 		if (site.kind == tlsPublicSite || site.kind == tlsVendoredSite) && site.unasked != "" {
 			unasked[site.name] = site.unasked
 		}
 	}
+	var failures []string
+	judge := func(observation *tlsObservation) {
+		client, site, outcome := observation.client, observation.site, observation.tlsOutcome
+		switch outcome.status {
+		case tlsClientAbsent, tlsPublicUnknown:
+			// Only a tlsOptionalClient is absent, and only where its program is not on PATH.
+		case tlsNoVerdict:
+			noVerdict = append(noVerdict, fmt.Sprintf("%s %s: %s", client, site.name, outcome.detail))
+		default:
+			failure, unknown := tlsVerdict(client, site, outcome)
+			if failure != "" {
+				failures = append(failures, failure)
+			}
+			if unknown {
+				observation.status = tlsPublicUnknown
+				unasked[site.name] = fmt.Sprintf("%s gave no verdict there: %s", client, outcome.detail)
+			}
+		}
+	}
+	type noVerdictRun struct {
+		client tlsClient
+		index  int // its first run's observation
+	}
+	var again []noVerdictRun
 	for _, client := range clients {
 		for _, site := range sites {
 			if site.clients != nil && !slices.Contains(site.clients, client.name()) || site.kind == tlsVendoredSite && site.unasked != "" {
@@ -299,33 +389,40 @@ func probeTLSClients(ctx context.Context, clients []tlsClient, sites []tlsSite) 
 			if reason := unasked[site.name]; site.kind == tlsPublicSite && reason != "" {
 				outcome = tlsOutcome{status: tlsPublicUnknown, detail: "not asked: " + reason}
 			} else {
-				outcome = probeTLSSite(ctx, client, site)
+				outcome = probeTLSSite(ctx, client, site, tlsRunTerms{reached: reachedSites[site.name]})
 			}
-			observation := tlsObservation{client: client.name(), site: site, tlsOutcome: outcome}
-			// Only a tlsOptionalClient is absent, and only where its program is not on PATH.
-			if outcome.status != tlsClientAbsent && outcome.status != tlsPublicUnknown {
-				failure, unknown := tlsVerdict(client.name(), site, outcome)
-				if failure != "" {
-					failures = append(failures, failure)
-				}
-				if unknown {
-					observation.status = tlsPublicUnknown
-					unasked[site.name] = fmt.Sprintf("%s gave no verdict there: %s", client.name(), outcome.detail)
-				}
+			observations = append(observations, tlsObservation{client: client.name(), site: site, tlsOutcome: outcome})
+			if outcome.status == tlsNoVerdict {
+				again = append(again, noVerdictRun{client: client, index: len(observations) - 1})
+				continue
 			}
-			observations = append(observations, observation)
+			if site.kind == tlsControlSite && outcome.status == tlsConnectionAccepted ||
+				(site.kind == tlsFixtureSite || site.kind == tlsVendoredSite) && outcome.status == tlsCertificateRefused {
+				reachedSites[site.name] = true
+			}
+			judge(&observations[len(observations)-1])
 		}
 	}
-	if len(failures) > 0 {
-		return observations, fmt.Errorf("worker TLS probe failed: %s", strings.Join(failures, "; "))
+	for _, run := range again {
+		observation := observations[run.index]
+		if ctx.Err() != nil {
+			judge(&observation)
+			continue
+		}
+		observation.tlsOutcome = probeTLSSite(ctx, run.client, observation.site, tlsRunTerms{again: true, reached: observation.site.kind != tlsPublicSite})
+		observations = append(observations, observation)
+		judge(&observations[len(observations)-1])
 	}
-	return observations, nil
+	if len(failures) > 0 {
+		return observations, noVerdict, fmt.Errorf("worker TLS probe failed: %s", strings.Join(failures, "; "))
+	}
+	return observations, noVerdict, nil
 }
 
 // tlsVerdict is what client's outcome at site means, by the site's kind: a failure of the probe,
 // or "" where the outcome is the one that kind needs; and unknown where a public site gave no
-// verdict, which fails nothing. The caller passes no outcome of an absent client or of a site no
-// client asked.
+// verdict, which fails nothing. The caller passes no outcome of an absent client, of a site no
+// client asked, or of a run with no verdict.
 func tlsVerdict(client string, site tlsSite, outcome tlsOutcome) (failure string, unknown bool) {
 	accepts := fmt.Sprintf("%s accepts the %s chain: %s", client, site.name, outcome.detail)
 	unverified := fmt.Sprintf("%s cannot verify refusal of the %s chain: %s", client, site.name, outcome.detail)
@@ -356,13 +453,10 @@ func tlsVerdict(client string, site tlsSite, outcome tlsOutcome) (failure string
 			return unverified, false
 		}
 	case tlsPublicSite:
-		switch {
-		case outcome.status == tlsConnectionAccepted:
+		switch outcome.status {
+		case tlsConnectionAccepted:
 			return accepts, false
-		case outcome.status == tlsCertificateRefused:
-		case outcome.detail == tlsProbeDeadline:
-			// The probe's own deadline is no answer of the host's, and fails the probe, closed.
-			return unverified, false
+		case tlsCertificateRefused:
 		default:
 			// A host the client could not reach, or that gave it no verdict.
 			return "", true
@@ -375,19 +469,15 @@ func tlsVerdict(client string, site tlsSite, outcome tlsOutcome) (failure string
 // without the server beginning a handshake for that site (probeTLSSite).
 const tlsNeverReached = "never reached the probe's server, so the verdict is not the probe's chain's: "
 
-// tlsProbeDeadline is the detail of a client the probe's own deadline stopped: no outcome of the
-// site's, so it fails the probe at every site, a public one too.
-const tlsProbeDeadline = "probe deadline"
-
-// probeTLSSite is client's outcome at site. At a site the probe's server serves, a verdict the
-// client gave without the server beginning a handshake for that site is no verdict of that site's:
-// the client reached some other host, or none.
-func probeTLSSite(ctx context.Context, client tlsClient, site tlsSite) tlsOutcome {
+// probeTLSSite is client's outcome at site on terms. At a site the probe's server serves, a verdict
+// the client gave without the server beginning a handshake for that site is no verdict of that
+// site's: the client reached some other host, or none.
+func probeTLSSite(ctx context.Context, client tlsClient, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	if site.seen == nil {
-		return client.probe(ctx, site)
+		return client.probe(ctx, site, terms)
 	}
 	before := site.seen.Load()
-	outcome := client.probe(ctx, site)
+	outcome := client.probe(ctx, site, terms)
 	if (outcome.status == tlsCertificateRefused || outcome.status == tlsConnectionAccepted) && site.seen.Load() == before {
 		return tlsOutcome{status: tlsNetworkUnavailable, detail: tlsNeverReached + outcome.detail}
 	}
@@ -408,30 +498,44 @@ func probeTLSSite(ctx context.Context, client tlsClient, site tlsSite) tlsOutcom
 //
 // It prints each line to stdout, an UNKNOWN line for each vendored or public site no client is held
 // to and for each client a public site gave no verdict for, and stops the server and removes the
-// state directory before it returns.
-func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io.Writer) error {
+// state directory before it returns. It returns the runs with no verdict, the positive controls'
+// included, which fail nothing (probeTLSClients), and an error naming every failure.
+func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io.Writer) (noVerdict []string, err error) {
 	stateDir, removeStateDir, err := newTLSStateDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer removeStateDir()
 	server, err := newTLSServer(stateDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer server.Close()
 	served := server.sites()
 	local := slices.DeleteFunc(slices.Clone(served), func(site tlsSite) bool { return site.kind == tlsVendoredSite })
-	if err := newTLSPositiveControls(ctx, env, stateDir, local); err != nil {
-		return err
+	// The sites the positive controls reached, where a client's run its own limit ends with no
+	// answer has no verdict (probeTLSClients): the server's own sites once those controls passed,
+	// and each served copy of a public chain whose own control passed.
+	var reached []tlsSite
+	var controlsNoVerdict tlsNoVerdicts
+	switch err := newTLSPositiveControls(ctx, env, stateDir, local); {
+	case errors.As(err, &controlsNoVerdict):
+		noVerdict = append(noVerdict, controlsNoVerdict...)
+	case err != nil:
+		return nil, err
+	default:
+		reached = slices.Clone(local)
+		fmt.Fprintln(stdout, tlsPositiveControlsLine(fixtureTLSSites(local)))
 	}
-	fmt.Fprintln(stdout, tlsPositiveControlsLine(fixtureTLSSites(local)))
 	afterHandshake := tlsChainAfterHandshakeClients()
 	duringHandshake := slices.DeleteFunc(workerTLSClientNames(), func(name string) bool { return slices.Contains(afterHandshake, name) })
 	vendored := newVendoredTLSSites(ctx, env, stateDir, served)
 	public := newPublicTLSSites(ctx, env, stateDir)
 	for index := range vendored {
 		vendored[index].clients = duringHandshake
+		if vendored[index].unasked == "" {
+			reached = append(reached, vendored[index])
+		}
 		fmt.Fprintln(stdout, tlsSiteLine(vendored[index]))
 	}
 	for index := range public {
@@ -443,7 +547,7 @@ func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io
 		}
 		fmt.Fprintln(stdout, tlsSiteLine(public[index]))
 	}
-	observations, err := probeTLSClients(ctx, newImageTLSClients(invocation, env, stateDir), slices.Concat(local, vendored, public))
+	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, env, stateDir), slices.Concat(local, vendored, public), reached)
 	for _, observation := range observations {
 		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
 			observation.client, observation.site.name, observation.status, observation.detail)
@@ -453,7 +557,7 @@ func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io
 			fmt.Fprintln(stdout, tlsUnknownLine(observation))
 		}
 	}
-	return err
+	return append(noVerdict, clientsNoVerdict...), err
 }
 
 type tlsCommandClient struct {
@@ -472,21 +576,24 @@ type tlsCommandClient struct {
 
 func (c tlsCommandClient) name() string { return c.clientName }
 
-func (c tlsCommandClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
-	output, err := c.run(ctx, site)
-	if tlsProbeDeadlineExceeded(ctx, err) {
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: tlsProbeDeadline}
+// probe runs c's command at site. A run the probe's deadline ended has no verdict, whatever it
+// printed, and a run a signal ended before its limit is unavailable, whatever it printed, since
+// what killed it is no answer of the site's and no limit of the probe's. Any other run is judged
+// by what it printed first, one its own limit ended included: an answer the site gave
+// (applicationSeen), or an exit 0, is an acceptance, and a certificate error a refusal. A run its
+// own limit ended with neither in its output has no verdict where terms say an earlier run reached
+// the site, and is unavailable where none did; every other run is unavailable. A refusal, or a run
+// that is unavailable, that failed a signature the chain should have carried says so
+// (tlsSignatureFailure).
+func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	r := c.run(ctx, site, terms.limit(c.timeout))
+	message := tlsCommandMessage(r.err, r.output)
+	accepted := r.err == nil || c.applicationSeen != nil && c.applicationSeen(message)
+	outcome := r.outcome(terms, accepted, tlsCertificateError(message), r.detail(trimTLSDetail(message)))
+	if outcome.status == tlsCertificateRefused || outcome.status == tlsNetworkUnavailable {
+		outcome.signatureFailed = tlsSignatureFailure(message)
 	}
-	message := tlsCommandMessage(err, output)
-	detail := trimTLSDetail(message)
-	switch {
-	case err == nil || c.applicationSeen != nil && c.applicationSeen(message):
-		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
-	case tlsCertificateError(message):
-		return tlsOutcome{status: tlsCertificateRefused, detail: detail, signatureFailed: tlsSignatureFailure(message)}
-	default:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail, signatureFailed: tlsSignatureFailure(message)}
-	}
+	return outcome
 }
 
 // commandLine is the program c runs at site, its arguments, and the environment it runs under:
@@ -497,10 +604,93 @@ func (c tlsCommandClient) commandLine(site tlsSite) (program string, args, env [
 	return program, args, tlsEnvironment(c.env, tlsKeptVariables, append(set, "LEGION_TLS_URL="+site.url))
 }
 
-// run returns the command's stderr, with its stdout interleaved when the client reads stdout.
-func (c tlsCommandClient) run(ctx context.Context, site tlsSite) (string, error) {
+// tlsEnding is what ended one run of a client's command (tlsCommandClient.run).
+type tlsEnding int
+
+const (
+	// tlsExited is a command that exited on its own, or that never started for a reason of its
+	// own.
+	tlsExited tlsEnding = iota
+	// tlsLimitEnded is a command the run's own limit stopped.
+	tlsLimitEnded
+	// tlsDeadlineEnded is a command the probe's deadline stopped, or one the deadline had passed
+	// before it could start.
+	tlsDeadlineEnded
+	// tlsSignalEnded is a command a signal ended that its limit did not send.
+	tlsSignalEnded
+)
+
+// errTLSRunLimit is the cause a run's own limit gives its command's context when it passes
+// (tlsCommandClient.run). The context keeps the cause of whichever end fired first, so the run
+// tells its limit from the probe's deadline by that record, and never by the text of an error.
+var errTLSRunLimit = errors.New("the TLS run's own limit passed")
+
+// tlsCommandRun is one run of a client's command: what it printed (run says which streams), the
+// run's error, how long it took, the limit it ran within, and what ended it.
+type tlsCommandRun struct {
+	output  string
+	err     error
+	elapsed time.Duration
+	limit   time.Duration
+	ending  tlsEnding
+}
+
+// detail is the TLS line's detail of the run: message, what the run printed and its error say,
+// after what ended the run and how long it ran, where its limit, the probe's deadline or a signal
+// ended it, and message alone otherwise.
+func (r tlsCommandRun) detail(message string) string {
+	elapsed := fmt.Sprintf("%.1fs", r.elapsed.Seconds())
+	switch r.ending {
+	case tlsLimitEnded:
+		return fmt.Sprintf("its %s limit ended it after %s: %s", r.limit, elapsed, message)
+	case tlsDeadlineEnded:
+		return fmt.Sprintf("the probe's deadline ended it after %s: %s", elapsed, message)
+	case tlsSignalEnded:
+		return fmt.Sprintf("%s ended it after %s, before its %s limit: %s", procgroup.Ended(r.err).Signal, elapsed, r.limit, message)
+	default:
+		return message
+	}
+}
+
+// outcome is the run's verdict on terms, with detail as its TLS line's detail. A run the probe's
+// deadline ended has no verdict and one a signal ended before its limit is unavailable, whatever
+// it printed. Any other run is accepted where the client read an acceptance in it, and refused
+// where it read a certificate refusal; a run its own limit ended with neither has no verdict where
+// terms say an earlier run reached the site, and every other run is unavailable.
+func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail string) tlsOutcome {
+	switch {
+	case r.ending == tlsDeadlineEnded:
+		return tlsOutcome{status: tlsNoVerdict, detail: detail}
+	case r.ending == tlsSignalEnded:
+		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+	case accepted:
+		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
+	case refused:
+		return tlsOutcome{status: tlsCertificateRefused, detail: detail}
+	case r.ending == tlsLimitEnded && terms.reached:
+		return tlsOutcome{status: tlsNoVerdict, detail: detail}
+	default:
+		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+	}
+}
+
+// run runs c's command at site within limit and records the run. Its output is the command's
+// stderr, with its stdout interleaved when the client reads stdout. The command runs in a process
+// group of its own (procgroup.Configure), so a stop reaches every process the client started, and
+// a child holding the output pipe does not hold the run open past the stop. What ended the run is
+// read from the run itself, never from the text of an error: whether the end of the command's
+// context signalled its group (killed), which end that context recorded as its cause when the end
+// fired (errTLSRunLimit for the run's own limit, context.DeadlineExceeded for the probe's
+// deadline), and how the command ended (procgroup.Ended). The cause is read, and not whether the
+// probe's ctx has ended by the time the command is gone, because a stop can take up to
+// procgroup.StopGrace and procgroup.WaitDelay after the end that sent it: a probe's deadline that
+// passes in that time does not make a run its own limit stopped one the deadline stopped. A
+// command that exited 0 while something it started still held its output past the stop answered
+// exec.ErrWaitDelay, and its exit is its answer.
+func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Duration) tlsCommandRun {
 	program, args, env := c.commandLine(site)
-	commandCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	started := time.Now()
+	commandCtx, cancel := context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, program, args...)
 	cmd.Env = env
@@ -511,12 +701,24 @@ func (c tlsCommandClient) run(ctx context.Context, site tlsSite) (string, error)
 		cmd.Stdout = &output
 	}
 	cmd.Stderr = &output
+	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
-	return output.String(), err
-}
-
-func tlsProbeDeadlineExceeded(ctx context.Context, err error) bool {
-	return err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
+	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
+	// own, context.Canceled.
+	cause := context.Cause(commandCtx)
+	r := tlsCommandRun{output: output.String(), elapsed: time.Since(started), limit: limit}
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		r.err = err
+	}
+	switch {
+	case killed() && errors.Is(cause, errTLSRunLimit):
+		r.ending = tlsLimitEnded
+	case errors.Is(cause, context.DeadlineExceeded) && (killed() || cmd.Process == nil):
+		r.ending = tlsDeadlineEnded
+	case procgroup.Ended(r.err).Signal != "":
+		r.ending = tlsSignalEnded
+	}
+	return r
 }
 
 // tlsOptionalClient is a command client for a program the image need not carry (workerTLSClients
@@ -529,40 +731,33 @@ type tlsOptionalClient struct {
 	program string
 }
 
-func (c tlsOptionalClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
+func (c tlsOptionalClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	if _, err := exec.LookPath(c.program); err != nil {
 		return tlsOutcome{status: tlsClientAbsent, detail: c.program + " is not on PATH"}
 	}
-	return c.tlsCommandClient.probe(ctx, site)
+	return c.tlsCommandClient.probe(ctx, site, terms)
 }
 
 // tlsChromiumClient reads Chromium's navigation result from stderr because its headless DOM dump
-// exits successfully after a failed navigation.
+// exits successfully after a failed navigation. It runs and is judged as a command client is
+// (tlsCommandRun.outcome), its navigation failure standing for the output: a certificate error
+// there is a refusal, and any other failure is no answer.
 type tlsChromiumClient struct {
 	tlsCommandClient
 }
 
-func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
-	stderr, err := c.run(ctx, site)
-	if tlsProbeDeadlineExceeded(ctx, err) {
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: tlsProbeDeadline}
+func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	r := c.run(ctx, site, terms.limit(c.timeout))
+	failure := chromiumNavigationFailure(r.output)
+	message := failure
+	if failure == "" {
+		message = tlsCommandMessage(r.err, r.output)
 	}
-	if failure := chromiumNavigationFailure(stderr); failure != "" {
-		detail := trimTLSDetail(failure)
-		if c.applicationSeen != nil && c.applicationSeen(failure) {
-			// A navigation that failed on the site's answer, past a handshake Chromium accepted.
-			return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
-		}
-		if tlsCertificateError(failure) {
-			return tlsOutcome{status: tlsCertificateRefused, detail: detail}
-		}
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
-	}
-	detail := trimTLSDetail(tlsCommandMessage(err, stderr))
-	if err == nil {
-		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
-	}
-	return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+	// A navigation that failed on the site's answer is past a handshake Chromium accepted.
+	answered := failure != "" && c.applicationSeen != nil && c.applicationSeen(failure)
+	accepted := failure == "" && r.err == nil || answered
+	refused := failure != "" && !answered && tlsCertificateError(failure)
+	return r.outcome(terms, accepted, refused, r.detail(trimTLSDetail(message)))
 }
 
 func chromiumNavigationFailure(stderr string) string {

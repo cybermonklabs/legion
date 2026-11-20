@@ -245,6 +245,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/store/**'
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
+  - 'packages/daemon/internal/tlsalert/*'
   - 'packages/daemon/internal/treelifecycle/*'
   - 'packages/daemon/internal/wait/*'
   - 'packages/daemon/internal/wakepace/*'
