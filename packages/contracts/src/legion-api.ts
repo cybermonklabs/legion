@@ -1199,7 +1199,7 @@ const LEGION_INTAKE_GIVE_UP_REASONS = [
   "consumer moved past",
 ] as const;
 
-/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 195): its `name`,
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 202): its `name`,
  * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
  * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. The
  * controller's `read_state` summary prints all three, so each is required (LEGION_ANSWER_READS). */
@@ -1229,7 +1229,7 @@ const legionIntakeGiveUp = z.object({
   lastError: z.string().optional(),
 });
 
-/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 195), the messages it gave up on
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 202), the messages it gave up on
  * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
  * `newest`, the newest of them, latest given up first, at most 50. The daemon writes both lists
  * on every body, never null and empty while nothing is open. The controller's summary reads
@@ -1363,10 +1363,10 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither. `intakeGiveUps` is the intake's open give-ups, the messages
  * it gave up on that no replay or discard has closed, counted by consumer and the newest of them
- * listed (contract 195). The daemon writes it on every body, its two lists empty while nothing is
+ * listed (contract 202). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
- * below 195, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 195 refuses the key whether its lists are empty or not. */
+ * below 202, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
+ * 202 refuses the key whether its lists are empty or not. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1948,7 +1948,7 @@ const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", 
 
 /** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
  * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
- * (contract 195): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * (contract 202): `replayed`, each record the replay took, in stream order, with its id, consumer,
  * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
  * error; and `remaining`, the open records of the selection left after it, which another call
  * takes. The controller's `replay_give_up` hands the daemon's answer to its agent whole
@@ -1973,7 +1973,7 @@ export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
 
 /** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
  * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
- * (contract 195): `discarded`, the id of each record it closed, in stream order. The controller's
+ * (contract 202): `discarded`, the id of each record it closed, in stream order. The controller's
  * `discard_give_up` hands it to its agent whole, so the field is optional, as the replay's are. */
 export const LegionIntakeDiscardResponse = z.object({
   discarded: z.array(z.number().int().positive()).optional(),
@@ -2375,9 +2375,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's lines on the intake's open give-ups (contract 195) print each consumer's
+    // The summary's lines on the intake's open give-ups (contract 202) print each consumer's
     // name, open count and newest sequence. `intakeGiveUps` stays optional: the daemon strips it
-    // for a caller below 195. The lag view of the state's `consumers` has a `name` too, and the
+    // for a caller below 202. The lag view of the state's `consumers` has a `name` too, and the
     // census matches a read by the field's name under its parent's, so the summary's read of a
     // give-up count's `name` is read as one of the lag view's as well, which is why this set
     // names `consumers[].name`; the lag view keeps the field optional all the same.

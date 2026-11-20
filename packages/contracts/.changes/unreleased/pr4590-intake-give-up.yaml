@@ -4,4 +4,4 @@ body: |-
   consumer and the newest open records. New schemas `LegionIntakeReplayRequest`,
   `LegionIntakeReplayResponse`, `LegionIntakeDiscardRequest` and `LegionIntakeDiscardResponse` are
   the bodies of the controller's `POST /legion/v1/intake/replay` and `POST
-  /legion/v1/intake/discard`. The daemon API contract is 195.
+  /legion/v1/intake/discard`. The daemon API contract is 202.

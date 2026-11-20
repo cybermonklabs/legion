@@ -17,6 +17,6 @@ body: |-
   fences, with the tables `cleared_pull_requests` and `pull_request_settled_heads`. A person's
   approval of a parked root's spec queues the root only when the issue's Dispatch event log shows
   no change of its status after the approval, which the daemon reads when it prepares that
-  approval. The daemon API contract is 195. Before a rollback to an earlier release, run the two
+  approval. The daemon API contract is 202. Before a rollback to an earlier release, run the two
   statements of the migration `20261120144241_intake_failures.up.sql` with the daemon stopped
   (docs/kubernetes.md, "Rolling back the release that gives up on intake messages").
