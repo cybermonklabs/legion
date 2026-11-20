@@ -6119,6 +6119,40 @@ func TestMemoryGuardKeepsAScanPanicThatTheNextScanFinishesAfter(t *testing.T) {
 	h.requireKilled()
 }
 
+// The reason a recovered panic gives (panicReason) names the function, the file and the line that
+// raised it, where the panic was raised two calls below the function that deferred the recover and
+// a helper stands between the deferred function and the walk of the stack (panicSite; INFRA-3531
+// R1, thread PRRT_kwDORFy7ds66JVWR of review round 4 of cybermonklabs/legion#4273). A panicSite
+// that skipped a fixed number of frames named the deferred function there.
+func TestMemoryGuardPanicReasonNamesTheLineThatPanickedTwoCallsDeep(t *testing.T) {
+	var reason string
+	var line int
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				reason = panicReason("panic", p)
+			}
+		}()
+		panicTwoCallsDeep(&line)
+	}()
+	t.Logf("the reason: %s", reason)
+	prefix := "panic: a test's panic two calls deep at "
+	suffix := fmt.Sprintf(".panicHere (memoryguard_test.go:%d)", line)
+	if !strings.HasPrefix(reason, prefix) || !strings.HasSuffix(reason, suffix) {
+		t.Fatalf("the reason is %q, want one starting %q and ending %q", reason, prefix, suffix)
+	}
+}
+
+// panicTwoCallsDeep panics one call below itself (panicHere), with the line of that panic in line.
+func panicTwoCallsDeep(line *int) { panicHere(line) }
+
+// panicHere panics, with the line of its panic in line.
+func panicHere(line *int) {
+	_, _, at, _ := runtime.Caller(0)
+	*line = at + 2
+	panic("a test's panic two calls deep")
+}
+
 // A panic while the guard reads the smaps of its processes lets go of a smaps buffer that a large
 // smaps grew past maxHeldFile, as the end of every read does (keepSmaps), so the guard, off for
 // good, does not hold that memory for the pod's life (INFRA-3531 R1): the loop's buffer, which a
@@ -6161,10 +6195,10 @@ func TestMemoryGuardLetsGoOfALargeSmapsBufferOnAPanic(t *testing.T) {
 	}
 }
 
-// A panic between an urgent reading's early kills and the end of its full read lets go of the
-// kills of the wait before them, which that full read would have let go of (closePrior), and
-// closes no handle twice: from endKnown's copy of the wait's kills until the early kill is sent,
-// those kills are the wait's own, which the end of the wait closes (INFRA-3531 R1). The pod is
+// A panic between an urgent reading's early kills and the end of its full read closes each handle
+// of the wait before them once: endKnown closes them once the early kill is sent, so a panic after
+// it finds them closed, and from endKnown's copy of the wait's kills until that kill is sent, they
+// are the wait's own, which the end of the wait closes (INFRA-3531 R1). The pod is
 // TestMemoryGuardEndsForUrgencyAfterTheEarlyKillsWhatTheReadsAgainDidNotReach's without pid 900:
 // the reading at the mark, 87%, ends pid 800, and at the next, 93%, at or above the urgent share,
 // pid 801 has grown since that kill, so the reads again end it before the full read lists the
@@ -6882,7 +6916,7 @@ func TestMemoryGuardLeavesOutAProcessThatExitsWhileItIsRead(t *testing.T) {
 			)
 			h := newHarness(t, pod, protect("tester", 100))
 			tc.exits(pod, h)
-			a, err := h.g.assess(h.clock.Now())
+			a, err := h.g.assess(h.clock.Now(), readAgain{})
 			if err != nil {
 				t.Fatal(err)
 			}

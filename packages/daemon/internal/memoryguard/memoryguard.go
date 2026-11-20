@@ -991,7 +991,7 @@ func (g *Guard) step(run func() bool) (on bool) {
 	defer func() {
 		if p := recover(); p != nil {
 			g.releaseSmaps()
-			g.diePanicked(fmt.Sprintf("panic: %v at %s", p, panicSite()))
+			g.diePanicked(panicReason("panic", p))
 			on = false
 		}
 	}()
@@ -1367,8 +1367,10 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 			// interval and past it while the reads at the mark read on (readOnNew).
 			inBudget := func() bool { return g.clock.Now().Before(half) || g.readOnNew(read, whole) }
 			take := func(*candidate) bool { return inBudget() }
+			// The search reads one process at a time once half the interval has passed.
+			pastHalf := func() bool { return !g.clock.Now().Before(half) }
 			g.readHeldNew(now, false, take, &read, &cache, nil)
-			g.startedSince(&search, now, half, inBudget, &read, &cache, nil)
+			g.startedSince(&search, now, pastHalf, inBudget, &read, &cache, nil)
 			g.readHeldNew(now, true, take, &read, &cache, nil)
 		}
 		reread := g.settleNew(now)
@@ -1592,30 +1594,33 @@ type startedSearch struct {
 // whose table the guard holds with the held processes (heldTable), into sr's found: each at its
 // smaps size, kept as its read at now, the reading at the mark (keepSize), and new to this stay,
 // since no reading of the stay read it, the newest first. Its reads before the kill are the listing
-// of the processes, the identities of the newest new ones and their smaps, these two within half,
-// half an interval from the reading at the mark: at f949e5ad two of seven latepool runs at 4 GiB
+// of the processes, the identities of the newest new ones and their smaps, these two within half an
+// interval from the reading at the mark: at f949e5ad two of seven latepool runs at 4 GiB
 // sent the first kill 196.3 and 128.2 ms after the reading at the mark, past one interval, their
 // growers with one band read at most and so found here, while it read the stat of every held pid
 // and the four identity files of every new one before the kill, each a read that can wait out a
 // stall of the pod's CPU throttle.
 //
 // It reads while goOn says so, asked before each read. For the reads of the decision (endHeld),
-// that is within half, and past it only while the guard reads on (readOnNew) with read, what the
-// reads at the mark have read of the processes new to the stay, and what it reads itself: where no
-// process new to the stay that the guard may end has been read, whatever the clock (INFRA-3531 R1
-// of spec version 32: "and at least one of them"), and where none read ranks above nothing, until
-// whole, one interval from the reading at the mark (spec version 34). For the read-on after the
-// kills of an urgent reading in a stay with history, it is until whole, whatever it has read
-// (readOn, spec version 43). Before half it reads in one round the identities of the new
-// processes, and then the smaps of those it may end; past half, and in the read-on, which passes
-// the reading's own time as half, it reads one process at a time, the newest first, its identity
-// and, where the guard may end it, its smaps, after any processes the round before placed and left
-// unread. It stops after the read in hand once goOn says no, and it reads nothing at all, the
-// listing included, where goOn says no before the first read. Each process it reads it discounts
-// as a fork (discountFork) with t and cache, and once it has read a process, each fork of it read
-// before, which started after it and so came first, ranks by its size less that read: the search
-// has read its parent in this stay (INFRA-3531 R1 of spec version 43), and a fork it so finds ranks
-// at nothing where its parent's size covers its own.
+// that is within half an interval from the reading at the mark, and past it only while the guard
+// reads on (readOnNew) with read, what the reads at the mark have read of the processes new to the
+// stay, and what it reads itself: where no process new to the stay that the guard may end has been
+// read, whatever the clock (INFRA-3531 R1 of spec version 32: "and at least one of them"), and
+// where none read ranks above nothing, until whole, one interval from the reading at the mark (spec
+// version 34). For the read-on after the kills of an urgent reading in a stay with history, it is
+// until whole, whatever it has read (readOn, spec version 43). A round reads the identities of the
+// new processes, and then the smaps of those it may end. Where oneAtATime says so, asked before
+// each identity read but the round's first, the round reads no more identities, so it reads one
+// process at a time, the newest first, its identity and, where the guard may end it, its smaps,
+// after any processes the round before placed and left unread: for the reads of the decision, once
+// half an interval from the reading at the mark has passed; for the read-on, always, so that each
+// of its kills goes as its process is read, before the next identity read (end). It stops after the
+// read in hand once goOn says no, and it reads nothing at all, the listing included, where goOn
+// says no before the first read. Each process it reads it discounts as a fork (discountFork) with t
+// and cache, and once it has read a process, each fork of it read before, which started after it
+// and so came first, ranks by its size less that read: the search has read its parent in this stay
+// (INFRA-3531 R1 of spec version 43), and a fork it so finds ranks at nothing where its parent's
+// size covers its own.
 //
 // Where end is set, the read-on's, it hands end each process it reads at once, before the next
 // read, but a fork of a process this round has placed, may end and has yet to read: that one waits
@@ -1640,7 +1645,7 @@ type startedSearch struct {
 // the classifier says which the guard may end. It reads the smaps of those it may end alone, the
 // newest by start time first; it reads no descriptor, and one whose smaps it cannot read is left
 // out. It finds none where none started, and asks the classifier nothing then.
-func (g *Guard) startedSince(sr *startedSearch, now, half time.Time, goOn func() bool, read *newRead, cache *argsCache, end func(c *candidate)) {
+func (g *Guard) startedSince(sr *startedSearch, now time.Time, oneAtATime, goOn func() bool, read *newRead, cache *argsCache, end func(c *candidate)) {
 	if !sr.listed {
 		if !goOn() {
 			return
@@ -1654,13 +1659,13 @@ func (g *Guard) startedSince(sr *startedSearch, now, half time.Time, goOn func()
 	}
 	defer g.releaseSmaps()
 	cmdline := g.cmdlineBuffer()
-	// One round reads the identities the budget allows, or the next one alone where half has
-	// passed, none where the round before left processes it placed unread, and then the smaps of
+	// One round reads the identities the budget allows, or the next one alone where oneAtATime
+	// says so, none where the round before left processes it placed unread, and then the smaps of
 	// those it may end.
 	for {
 		from := sr.next
 		for ; !sr.left && sr.next < len(sr.pids); sr.next++ {
-			if sr.next > from && !g.clock.Now().Before(half) || !goOn() {
+			if sr.next > from && oneAtATime() || !goOn() {
 				break
 			}
 			pid := sr.pids[sr.next]
@@ -2140,7 +2145,7 @@ func (g *Guard) watchUrgent(now time.Time, s Settings, reading, limit uint64, ex
 // readAgain is what the reads again of an urgent reading of the wait read before its full read
 // (endKnown): the smaps size of each process they read, by process, and the memfds those reads
 // found mapped. The full read of that reading takes each size in place of a read of its own, and
-// counts each of those memfds as counted already (assessTaking). They are that reading's own, made
+// counts each of those memfds as counted already (assess). They are that reading's own, made
 // at it and let go of after its full read (watchUrgent); every other assessment takes none, the
 // zero readAgain.
 type readAgain struct {
@@ -2279,12 +2284,12 @@ func urgentShare(limit uint64, act int) uint64 {
 	return mark + (limit-mark)/2
 }
 
-// assessAt is an assessment of the processes at the reading taken at now (assessTaking), which
+// assessAt is an assessment of the processes at the reading taken at now (assess), which
 // takes again, the reads made at that reading before its full read (readAgain), with the guard's
 // smaps buffer let go of once it has grown past maxHeldFile, and false where the guard cannot list
 // the processes, which turns it off for good.
 func (g *Guard) assessAt(now time.Time, again readAgain) (assessment, bool) {
-	a, err := g.assessTaking(now, again)
+	a, err := g.assess(now, again)
 	g.releaseSmaps()
 	if err != nil {
 		g.die(fmt.Sprintf("cannot list the processes in %s: %v", g.proc, err))
@@ -2564,7 +2569,10 @@ func (g *Guard) readOn(now, whole time.Time, sr *startedSearch, read *newRead, c
 		}
 	}
 	g.readHeldNew(now, false, take, read, cache, end)
-	g.startedSince(sr, now, now, before, read, cache, end)
+	// The read-on reads the processes started since one at a time from its first read, so that
+	// each of its kills goes as its process is read (startedSince).
+	oneAtATime := func() bool { return true }
+	g.startedSince(sr, now, oneAtATime, before, read, cache, end)
 	g.readHeldNew(now, true, take, read, cache, end)
 }
 
@@ -2903,12 +2911,8 @@ func (a *assessment) leaveOut(key procKey) {
 	}
 }
 
-// assess is the assessment of the processes at the reading taken at now where nothing was read
-// before its full read (assessTaking).
-func (g *Guard) assess(now time.Time) (assessment, error) { return g.assessTaking(now, readAgain{}) }
-
-// assessTaking scans the processes, asks the classifier, and reads the size of each process it may
-// end: one that is not protected, not the guard's own and not unread. A process whose smaps
+// assess scans the processes, asks the classifier, and reads the size of each process it may end
+// (mayEnd): one that is not protected, not the guard's own and not unread. A process whose smaps
 // cannot be read is unread too, since it cannot be ranked, unless it has ended since the scan
 // read its stat (endedSince): it is then left out of the processes it may end and of unread
 // alike. The processes it may end are the only ones whose files it reads, so they alone are the
@@ -2916,8 +2920,9 @@ func (g *Guard) assess(now time.Time) (assessment, error) { return g.assessTakin
 // kept as read at now, the time of the reading the assessment is made at, and its growth measured
 // from the reads kept before it (keepSizes). A process whose smaps the reads again before it at an
 // urgent reading of the wait read (again, endKnown) takes that read and is not read twice, the
-// memfds those reads found mapped counted already (readAgain); every other assessment takes none.
-func (g *Guard) assessTaking(now time.Time, again readAgain) (assessment, error) {
+// memfds those reads found mapped counted already (readAgain); every other assessment takes none,
+// the zero readAgain.
+func (g *Guard) assess(now time.Time, again readAgain) (assessment, error) {
 	t, err := scan(g.proc)
 	if err != nil {
 		return assessment{}, err
@@ -2928,7 +2933,7 @@ func (g *Guard) assessTaking(now time.Time, again readAgain) (assessment, error)
 	clear(g.memfds)
 	maps.Copy(g.memfds, again.memfds)
 	for _, p := range t.Processes() {
-		if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
+		if !g.mayEnd(t, classes, p.PID) {
 			continue
 		}
 		size, reread := again.sizes[procKey{pid: p.PID, start: p.StartTime}]
@@ -2954,9 +2959,7 @@ func (g *Guard) assessTaking(now time.Time, again readAgain) (assessment, error)
 	var cache argsCache
 	g.discountForks(now, a.endable, t, &cache)
 	rank(a.endable)
-	for _, c := range a.endable {
-		a.endableBytes += c.size
-	}
+	a.endableBytes = sizeSum(a.endable)
 	g.logUnread(t)
 	return a, nil
 }
@@ -3758,7 +3761,7 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	found := largestScan{window: start}
 	defer func() {
 		if p := recover(); p != nil {
-			found = largestScan{window: start, panicked: fmt.Sprintf("panic in the scan for the largest process: %v at %s", p, panicSite())}
+			found = largestScan{window: start, panicked: panicReason("panic in the scan for the largest process", p)}
 		}
 		g.scanSmaps = keepSmaps(g.scanSmaps)
 		g.scanMu.Lock()
@@ -3860,17 +3863,30 @@ func (g *Guard) diePanicked(reason string) {
 	g.die(reason)
 }
 
+// panicReason is the reason a recovered panic p gives, as the off line or the error that ends what
+// panicked: what, which names the panic, then p and where it was raised (panicSite). The deferred
+// function that recovered p calls it.
+func panicReason(what string, p any) string {
+	return fmt.Sprintf("%s: %v at %s", what, p, panicSite())
+}
+
 // panicSite is where the panic being recovered was raised, as the function and its file and line:
-// the first frame of the stack that is not the runtime's own. It is called from the function a
-// recover runs in, whose frames and the runtime's panic frames it passes over.
+// the first frame past runtime.gopanic, the runtime's panic, that is not the runtime's own, which
+// passes over the runtime's frames where the runtime raised the panic, as for a nil dereference.
+// It walks the stack down to runtime.gopanic rather than skipping a fixed number of frames, so the
+// function that panicked is found however many calls stand between the recover and panicSite, a
+// helper among them (panicReason; INFRA-3531 R1, thread PRRT_kwDORFy7ds66JVWR of review round 4 of
+// cybermonklabs/legion#4273).
 func panicSite() string {
 	var pcs [32]uintptr
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
+	pastPanic := false
 	for {
 		f, more := frames.Next()
-		if !strings.HasPrefix(f.Function, "runtime.") {
+		if pastPanic && !strings.HasPrefix(f.Function, "runtime.") {
 			return fmt.Sprintf("%s (%s:%d)", f.Function, filepath.Base(f.File), f.Line)
 		}
+		pastPanic = pastPanic || f.Function == "runtime.gopanic"
 		if !more {
 			return "an unknown place"
 		}

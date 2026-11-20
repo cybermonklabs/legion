@@ -437,7 +437,7 @@ func (g *Guest) Run(ctx context.Context) {
 func (g *Guest) step(run func()) (on bool) {
 	defer func() {
 		if p := recover(); p != nil {
-			g.logf(guestOffLine, fmt.Sprintf("panic: %v at %s", p, panicSite()))
+			g.logf(guestOffLine, panicReason("panic", p))
 			g.stopWake()
 			on = false
 		}

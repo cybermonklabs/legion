@@ -133,9 +133,10 @@ const (
 // at the mark, those the read-on after the first kill reads up to one interval from the reading
 // (readOn, spec version 43; `4g-t4latepool-r3`). At such a reading after a kill the guard also ends
 // by this rule, as it reads them again before the full read, the processes it read at the reading
-// before that grew since that kill, and after the first of those kills each of the sets of the
-// stay, but the first of its kills, whose line names its own tier (endKnown, spec versions 43 and
-// 46; the tester's run r17 at 41d4f45b). And where, at such a reading, those sets are the one
+// before that grew since that kill, and after the first of those kills each process it reads that
+// the urgent rule ends (urgentEnds), but the first of its kills, whose line names its own tier
+// (endKnown, spec versions 43 and 46; the tester's run r17 at 41d4f45b). And where, at such a
+// reading, those sets are the one
 // reason to act, the first kill goes to the first process in the order that the urgent rule ends at
 // that reading, one that grew over the window or one of those sets, and not to a process the rule
 // does not end, as a pool's parent flat since before the stay's first kill; its line names this

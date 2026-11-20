@@ -4,6 +4,7 @@ package memoryguard
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,7 +48,7 @@ func readModified(file io.Reader, modified chan<- struct{}, w *fileWatch) {
 	defer close(modified)
 	defer func() {
 		if p := recover(); p != nil {
-			w.err = fmt.Errorf("panic: %v at %s", p, panicSite())
+			w.err = errors.New(panicReason("panic", p))
 		}
 	}()
 	// One buffer for every read: room for many events, each of which is at most
