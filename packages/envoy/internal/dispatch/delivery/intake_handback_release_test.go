@@ -3,7 +3,6 @@ package delivery
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +11,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -106,11 +104,11 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
 
-	row.sequences = append(row.sequences, publishRowMessage(t, publisher, inFlight))
+	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
-	row.sequences = append(row.sequences, publishRowMessage(t, publisher, inFlight))
+	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	awaitAckPending(t, publisher, 2)
 
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and on a loaded
@@ -170,20 +168,6 @@ type heldHandBack struct {
 	conn      *natsgo.Conn
 	delivery  *intakeDelivery
 	sequences []uint64
-}
-
-// publishRowMessage publishes the merge of acme/widgets pull request number
-// (publishMergedPullRequest) and answers the stream sequence the stream stored it at: the last
-// message on its subject, since the publish waits for JetStream's acknowledgement and nothing
-// else publishes on that subject during the row.
-func publishRowMessage(t *testing.T, publisher *bus.Client, number int) uint64 {
-	t.Helper()
-	publishMergedPullRequest(t, publisher, number)
-	stored, err := publisher.JS().GetLastMsg(bus.Stream, contracts.GithubResourceSubject("acme", "widgets", "pr", strconv.Itoa(number)))
-	if err != nil {
-		t.Fatalf("read the stream sequence of pull request %d's message: %v", number, err)
-	}
-	return stored.Sequence
 }
 
 // handBackPending reports whether a hand-back publish of the stopped delivery is still waiting for
