@@ -17,6 +17,7 @@ import {
   deviceLoginFile,
   deviceLoginHost,
   finishDeviceLogin,
+  readDeviceLogin,
   startDeviceLogin,
 } from "@legion/broker-client/device-login";
 import {
@@ -139,6 +140,12 @@ export async function loginCommand(
     return refuse(messageFor(error), USAGE);
   }
   const host = deviceLoginHost(hostname());
+  // The login this one replaces, where the machine holds one it can read: its credential stays
+  // live at the broker until it lapses or is revoked, so the person is told which to revoke.
+  const earlier = await readDeviceLogin(path).then(
+    (login) => login.credentialId,
+    () => ""
+  );
   try {
     const started = await startDeviceLogin({
       brokerUrl,
@@ -158,6 +165,11 @@ export async function loginCommand(
     const lines = [
       `dispatch login: approved. This machine's device login is kept in ${DEVICE_LOGIN_FILE_NAMED}; its launcher credential ${login.credentialId} lasts until ${login.expiresAt.toISOString()}, and each refresh moves that on.`,
     ];
+    if (earlier !== "" && earlier !== login.credentialId) {
+      lines.push(
+        `dispatch login: the earlier login of this machine, launcher credential ${earlier}, stays live until it lapses or is revoked, and a copy of its file still works; revoke it in Machine logins on ${started.verificationUri}.`
+      );
+    }
     if ((env[IDENTITY_VAR] ?? "").trim() !== IDENTITY_DEVICE_LOGIN) {
       lines.push(
         `dispatch login: set ${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN} in the environment of this machine's sessions, so they trade this login.`

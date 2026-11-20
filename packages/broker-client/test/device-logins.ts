@@ -23,8 +23,15 @@ export interface DeviceLoginRequest {
   readonly proofThumbprint: string;
 }
 
-/** How the stand-in answers one poll of a device code. */
-export type PollAnswer = "pending" | "slow_down" | "approve" | "deny" | "expired";
+/** How the stand-in answers one poll of a device code: `invalid_client` is an OAuth refusal the
+ *  poll does not expect, which the broker answers a client it does not know. */
+export type PollAnswer =
+  | "pending"
+  | "slow_down"
+  | "approve"
+  | "deny"
+  | "expired"
+  | "invalid_client";
 
 /** What the stand-in is told to do. */
 export interface DeviceLoginBrokerOptions {
@@ -37,6 +44,14 @@ export interface DeviceLoginBrokerOptions {
    * time running out can show that: so this is a real wait, which a row that passes pays once.
    */
   readonly refreshOverlapMs?: number;
+  /**
+   * Hold each exchange's answer until a refresh arrives, or this many milliseconds pass, so a
+   * refresh made while a trade is still in flight lands before that trade is answered. A trade
+   * whose subject token that refresh revoked is then refused, as the broker refuses it. Where the
+   * lock covers the trade, no refresh comes, and only the time running out shows that: a real
+   * wait, which a row that passes pays once per trade.
+   */
+  readonly tradeHoldMs?: number;
   /** How long an access token the stand-in mints lasts. Default 900 s, the broker's own. */
   readonly accessSeconds?: number;
   /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended. */
@@ -60,6 +75,8 @@ export interface DeviceLoginBroker {
   readonly loginTokens: string[];
   /** Each access token the exchange minted, in order. */
   readonly tradeTokens: string[];
+  /** Each exchange refused because a refresh had revoked its subject token. */
+  readonly revokedTrades: DeviceLoginRequest[];
   stop(): void;
 }
 
@@ -102,7 +119,10 @@ function oauthError(error: string, status = 400): Response {
  * code as `polls` says, a refresh by minting a new refresh token and a new access token (or
  * `invalid_grant` under `refuseRefresh`), and an RFC 8693 exchange with a DPoP-bound access
  * token. The device code grant and a refresh carry the credential's id and expiry, as the
- * broker's token hooks add them (`machine.Service.TokenHooks`).
+ * broker's token hooks add them (`machine.Service.TokenHooks`). A refresh revokes every access
+ * token of the login but the one it answers, as the broker's `RotateRefreshToken` does, so an
+ * exchange presenting any other after a refresh is refused `invalid_grant`. Before the first
+ * refresh, any subject token is taken, so a test may keep an access token of its own in the file.
  */
 export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): DeviceLoginBroker {
   const polls = options.polls ?? ["approve"];
@@ -113,9 +133,21 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
   const trades: DeviceLoginRequest[] = [];
   const loginTokens: string[] = [];
   const tradeTokens: string[] = [];
+  const revokedTrades: DeviceLoginRequest[] = [];
   const deviceCode = fixtureSecret("device");
-  // The refreshes holding their answers for the next one to arrive (`refreshOverlapMs`).
+  // The refreshes holding their answers for the next one to arrive (`refreshOverlapMs`), and the
+  // exchanges holding theirs for a refresh (`tradeHoldMs`).
   const holding: (() => void)[] = [];
+  const trading: (() => void)[] = [];
+  // The one access token the last refresh answered: every other is revoked from then on.
+  let live: string | undefined;
+  const hold = async (into: (() => void)[], ms: number): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    into.push(resolve);
+    const timer = setTimeout(resolve, ms);
+    await promise;
+    clearTimeout(timer);
+  };
   const loginAnswer = (): Response => {
     const access = fixtureSecret("login");
     loginTokens.push(access);
@@ -164,6 +196,8 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
               return oauthError("access_denied");
             case "expired":
               return oauthError("expired_token");
+            case "invalid_client":
+              return oauthError("invalid_client", 401);
             default:
               return loginAnswer();
           }
@@ -171,18 +205,20 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
         case "refresh_token": {
           refreshes.push(seen);
           for (const release of holding.splice(0)) release();
-          if (options.refreshOverlapMs !== undefined) {
-            const { promise, resolve } = Promise.withResolvers<void>();
-            holding.push(resolve);
-            const timer = setTimeout(resolve, options.refreshOverlapMs);
-            await promise;
-            clearTimeout(timer);
-          }
+          if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
           if (options.refuseRefresh === true) return oauthError("invalid_grant");
-          return loginAnswer();
+          const answer = loginAnswer();
+          live = loginTokens.at(-1);
+          for (const release of trading.splice(0)) release();
+          return answer;
         }
         case "urn:ietf:params:oauth:grant-type:token-exchange": {
           trades.push(seen);
+          if (options.tradeHoldMs !== undefined) await hold(trading, options.tradeHoldMs);
+          if (live !== undefined && seen.form.get("subject_token") !== live) {
+            revokedTrades.push(seen);
+            return oauthError("invalid_grant");
+          }
           const token = fixtureSecret("traded");
           tradeTokens.push(token);
           return Response.json({
@@ -205,6 +241,7 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
     trades,
     loginTokens,
     tradeTokens,
+    revokedTrades,
     stop: () => server.stop(true),
   };
 }

@@ -29,14 +29,26 @@
 // spend one refresh token, and none may refresh while another is still trading the access token
 // that refresh would end. Each trade therefore runs under the lock file beside the login
 // (`withDeviceLoginLock`): exclusive create, its holder touching it while it holds it, and a lock
-// untouched for 30 s taken as one whose holder died. Under it a process reads the file, refreshes
+// untouched for 30 s taken as one whose holder died, by one caller alone (`takeStale`, under a
+// take-over lock of its own). Under it a process reads the file, refreshes
 // only where the access token kept there has under a minute left, keeps what the refresh answered
 // before it trades, and trades. The access token is kept in the file for the same reason: every
 // `dispatch` command is a process of its own, and a refresh for each would rotate the login's
 // refresh token at every command.
 
 import { createPrivateKey, generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, utimes } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import {
+  type FileHandle,
+  link,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  utimes,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -335,32 +347,106 @@ export interface DeviceLoginLockOptions {
   readonly signal?: AbortSignal | undefined;
   /** Waits between two tries of a held lock; a timer unless a test replaces it. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+  /** Runs after this caller finds the lock stale and before it takes it over: the window in
+   *  which another caller can take the same stale lock. Only a test holds a caller there. */
+  readonly foundStale?: (() => Promise<void>) | undefined;
 }
 
-/** Takes the lock at `lock` where its holder has not touched it for
- *  {@link DEVICE_LOGIN_STALE_LOCK_MS}, and says whether the caller should try it again at once:
- *  true where it took it or it was already gone. It moves the lock aside before removing it, so
- *  of two processes taking one stale lock only one moves it, and the other finds it gone. */
-async function takeStale(lock: string): Promise<boolean> {
-  let touched: number;
+/** How long a take-over's own lock (`<lock>.steal`) may stand before it is one whose taker
+ *  died: a take-over is a look, a rename and a removal, so this is far longer than one takes. */
+const STEAL_STALE_MS = 5_000;
+
+/** `path`'s status, or null where nothing is there. */
+async function statOrNone(path: string): Promise<Stats | null> {
   try {
-    touched = (await stat(lock)).mtimeMs;
+    return await stat(path);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return true;
+    if (codeOf(error) === "ENOENT") return null;
     throw new Error(`read the lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
-  if (Date.now() - touched <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
-  const moved = `${lock}.stale-${randomUUID()}`;
+}
+
+/** Creates `path` exclusively, 0600, holding `value`, and says whether it did: false where a
+ *  file is already there. */
+async function createOwn(path: string, value: string): Promise<boolean> {
+  let handle: FileHandle;
   try {
-    await rename(lock, moved);
+    handle = await open(path, "wx", 0o600);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return true;
-    throw new Error(
-      `take the stale lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`
-    );
+    if (codeOf(error) === "EEXIST") return false;
+    throw new Error(`take the lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
-  await rm(moved, { force: true });
+  try {
+    await handle.writeFile(value);
+  } finally {
+    await handle.close();
+  }
   return true;
+}
+
+/** Removes `path` where it still holds `value`, the one its creator wrote, and leaves it where
+ *  another caller's file has taken its place. */
+async function removeOwn(path: string, value: string): Promise<void> {
+  const held = await readFile(path, "utf8").catch(() => "");
+  if (held === value) await rm(path, { force: true });
+}
+
+/**
+ * Takes the lock at `lock` where its holder has not touched it for
+ * {@link DEVICE_LOGIN_STALE_LOCK_MS}, and says whether the caller should try to create it again
+ * at once: true where it took it or it was gone. A look and a take-over are two steps, so two
+ * callers that both find one lock stale could otherwise both take it: the second would take the
+ * first's fresh lock in the gap. So only the caller that creates the take-over's own lock,
+ * `<lock>.steal`, takes over, and it looks at the lock again under it first: a caller that comes
+ * second finds the first's fresh lock and waits for it. A steal lock left by a caller that died
+ * taking over is removed once it is {@link STEAL_STALE_MS} old. Where two callers share that
+ * window too, the lock's inode says whether what one moved is the stale lock it looked at; where
+ * it is not, the moved lock is linked back in place. Only a third caller creating a lock in the
+ * instant between that move and that link, after a caller died inside a take-over, can still
+ * leave two holders.
+ */
+async function takeStale(
+  lock: string,
+  mine: string,
+  options: DeviceLoginLockOptions
+): Promise<boolean> {
+  const found = await statOrNone(lock);
+  if (found === null) return true;
+  if (Date.now() - found.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
+  await options.foundStale?.();
+  const steal = `${lock}.steal`;
+  if (!(await createOwn(steal, mine))) {
+    const taking = await statOrNone(steal);
+    if (taking !== null && Date.now() - taking.mtimeMs > STEAL_STALE_MS) {
+      await rm(steal, { force: true });
+    }
+    return false;
+  }
+  try {
+    const again = await statOrNone(lock);
+    if (again === null) return true;
+    if (Date.now() - again.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
+    const moved = `${lock}.stale-${randomUUID()}`;
+    try {
+      await rename(lock, moved);
+    } catch (error) {
+      if (codeOf(error) === "ENOENT") return true;
+      throw new Error(
+        `take the stale lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`
+      );
+    }
+    const took = await stat(moved);
+    if (took.ino !== again.ino || took.dev !== again.dev) {
+      // Another caller's fresh lock, moved in the gap: put back, unless a lock is there again.
+      await link(moved, lock).catch(() => {});
+      await rm(moved, { force: true });
+      return false;
+    }
+    await rm(moved, { force: true });
+    return true;
+  } finally {
+    await removeOwn(steal, mine);
+  }
 }
 
 /**
@@ -368,9 +454,9 @@ async function takeStale(lock: string): Promise<boolean> {
  * lock is taken by creating the file exclusively, naming this process and a value of this call's
  * own; a lock another process holds is tried again every 100 ms until it is free, `signal` ends
  * (rejecting with its reason, `work` never run), or it is stale: untouched for
- * {@link DEVICE_LOGIN_STALE_LOCK_MS}, its holder gone, and taken. The holder touches the lock
- * every 10 s while `work` runs, so a holder that is slow is never taken for dead, and removes it
- * when `work` settles, only while it still holds its own value.
+ * {@link DEVICE_LOGIN_STALE_LOCK_MS}, its holder gone, and taken by one caller alone (`takeStale`).
+ * The holder touches the lock every 10 s while `work` runs, so a holder that is slow is never
+ * taken for dead, and removes it when `work` settles, only while it still holds its own value.
  */
 export async function withDeviceLoginLock<T>(
   path: string,
@@ -387,20 +473,8 @@ export async function withDeviceLoginLock<T>(
   }
   while (true) {
     options.signal?.throwIfAborted();
-    try {
-      const handle = await open(lock, "wx", 0o600);
-      try {
-        await handle.writeFile(mine);
-      } finally {
-        await handle.close();
-      }
-      break;
-    } catch (error) {
-      if (codeOf(error) !== "EEXIST") {
-        throw new Error(`take the lock beside ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-      }
-    }
-    if (await takeStale(lock)) continue;
+    if (await createOwn(lock, mine)) break;
+    if (await takeStale(lock, mine, options)) continue;
     await sleep(LOCK_RETRY_MS, options.signal);
   }
   const beat = setInterval(() => {
@@ -413,8 +487,7 @@ export async function withDeviceLoginLock<T>(
     return await work();
   } finally {
     clearInterval(beat);
-    const held = await readFile(lock, "utf8").catch(() => "");
-    if (held === mine) await rm(lock, { force: true });
+    await removeOwn(lock, mine);
   }
 }
 
@@ -610,11 +683,13 @@ export async function startDeviceLogin(options: {
  * Polls the device code `started` answered until the person decides, and keeps the login an
  * approval issues at `path` ({@link saveDeviceLogin}, under {@link withDeviceLoginLock}), answering
  * it. Each poll waits the broker's interval first (RFC 8628 Section 3.5), five seconds longer after
- * each `slow_down`, and proves the login's key. `authorization_pending`, an answer of no OAuth
- * error and a poll that reached no broker poll again, as the Go helper's `pollLogin` does;
+ * each `slow_down`, and proves the login's key. `authorization_pending`, a poll that reached no
+ * broker, the broker's 429 and a 5xx poll again, as the Go helper's `pollLogin` does;
  * `access_denied` is a denial, and `expired_token`, `invalid_grant` (a code the broker no longer
- * knows) or the code's own lifetime passing is an expiry, each refused naming
- * {@link DEVICE_LOGIN_COMMAND}, with no file written. `signal` ends the wait.
+ * knows) or the code's own lifetime passing is an expiry. Any other OAuth refusal of a 4xx is
+ * one no later poll answers differently, so it stops the poll at once, naming the broker's code,
+ * rather than polling until the code lapses and saying it expired. Each refusal names
+ * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. `signal` ends the wait.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -653,6 +728,15 @@ export async function finishDeviceLogin(
           );
         }
         if (error.error === "expired_token" || error.error === "invalid_grant") throw expired;
+        const pending = error.error === "authorization_pending" || error.error === "slow_down";
+        if (!pending && error.status !== 429 && error.status < 500) {
+          const failure = brokerFailure(
+            "poll the secrets broker for this machine's device login",
+            started.brokerUrl + TOKEN_PATH,
+            error
+          );
+          throw new Error(`${failure.message}; ask again with: ${DEVICE_LOGIN_COMMAND}`);
+        }
       }
       continue;
     }
