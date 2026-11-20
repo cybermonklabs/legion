@@ -694,9 +694,11 @@ func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 
 // writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether
 // Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
-// whether err was one: 503 projectaccess.UncheckableCode naming the person and why in fixed
-// words, with the failure itself, which can name Dispatch's address, in the log alone. what is
-// the thing refused, as the log line names it.
+// whether err was one: 503 MEMBER_KIND_UNCHECKABLE naming the person and why in fixed words, with
+// the failure itself, which can name Dispatch's address, in the log alone. what is the thing
+// refused, as the log line names it. The code is projectaccess.UncheckableCode, spelled out here
+// because the broker's generated HTTP reference (cmd/broker-refgen) reads each refusal's code
+// from a literal; TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
 func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
 	var uncheckable *projectaccess.MemberKindUncheckable
 	if !errors.As(err, &uncheckable) {
@@ -704,7 +706,7 @@ func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) b
 	}
 	slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
 		"person", uncheckable.Person, "error", uncheckable.Err)
-	writeError(w, http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error())
+	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
 	return true
 }
 
