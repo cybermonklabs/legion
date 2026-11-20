@@ -750,9 +750,9 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {
 				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, tc.code)
 			}
-			detail, unjudged := bootprobe.NoVerdict(stderr)
-			if unjudged != (len(tc.noVerdict) > 0) {
-				t.Errorf("stderr %q carries the no-verdict line: %t, want %t", stderr, unjudged, len(tc.noVerdict) > 0)
+			detail, hasNoVerdict := bootprobe.NoVerdict(stderr)
+			if hasNoVerdict != (len(tc.noVerdict) > 0) {
+				t.Errorf("stderr %q carries the no-verdict line: %t, want %t", stderr, hasNoVerdict, len(tc.noVerdict) > 0)
 			}
 			for _, want := range tc.noVerdict {
 				if !strings.Contains(detail, want) {

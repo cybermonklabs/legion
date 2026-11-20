@@ -152,13 +152,12 @@ const (
 var storeOpenRetry = bootprobe.Retry{Initial: time.Second, Max: 16 * time.Second, Attempts: 10}
 
 // storeOpenLongest is the longest the store's attempts take under retry: every attempt at its
-// limit (storeOpenAttempt), and every wait between two of them as bootprobe.Run waits it.
+// limit (storeOpenAttempt), and every wait between two of them as bootprobe.Run waits it
+// (bootprobe.Retry.Delay).
 func storeOpenLongest(retry bootprobe.Retry) time.Duration {
 	longest := time.Duration(retry.Attempts) * storeOpenAttempt
-	wait := min(retry.Initial, retry.Max)
-	for range retry.Attempts - 1 {
-		longest += wait
-		wait = min(2*wait, retry.Max)
+	for transients := range retry.Attempts - 1 {
+		longest += retry.Delay(transients)
 	}
 	return longest
 }
@@ -338,17 +337,16 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 
-	// The boot's first budget starts once the plugin gate has passed, which no budget bounds
-	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
-	// other (store.ForConcurrentWorker).
-	boot, cancelBoot := bootBudget(ctx)
-	defer cancelBoot()
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
 	// reconcile: Agent Sandbox must be installed, and no per-claim Sandbox of the layout before issue
 	// pods may remain. The claims' half of that layout fence runs once the store opens, before it
-	// migrates.
+	// migrates. The check has a budget of its own (bootTimeout), which starts once the plugin gate
+	// has passed, since no budget bounds the gate, and ends with the check.
 	if plan.clusterCheck != nil {
-		if err := plan.clusterCheck(boot); err != nil {
+		check, cancelCheck := bootBudget(ctx)
+		err := plan.clusterCheck(check)
+		cancelCheck()
+		if err != nil {
 			return err
 		}
 	}
@@ -382,9 +380,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		return err
 	}
-	var cancelAfterOpen context.CancelFunc
-	boot, cancelAfterOpen = bootBudget(ctx)
-	defer cancelAfterOpen()
+	// The boot's budget for the steps after the open. The loops the boot starts take marks of their
+	// own, since they run beside each other (store.ForConcurrentWorker).
+	boot, cancelBoot := bootBudget(ctx)
+	defer cancelBoot()
 	if plan.claimsCheck != nil {
 		if err := plan.claimsCheck(boot, st); err != nil {
 			st.Close()

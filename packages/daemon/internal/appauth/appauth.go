@@ -98,23 +98,19 @@ func (e *AnswerError) Error() string { return e.Err.Error() }
 func (e *AnswerError) Unwrap() error { return e.Err }
 
 // answered is err, the failure of a call GitHub answered with response, whose body is body,
-// carrying that answer (AnswerError), its path the request's under the Manager's base URL.
+// carrying that answer (AnswerError), its path the request's under the Manager's base URL
+// (githubrest.PathUnder).
 func (m *Manager) answered(response *http.Response, body []byte, err error) *AnswerError {
-	path := response.Request.URL.Path
-	if base, parsed := url.Parse(m.baseURL); parsed == nil {
-		if rest, found := strings.CutPrefix(path, base.Path); found && strings.HasPrefix(rest, "/") {
-			path = rest
-		}
-	}
+	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
 	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
 }
 
 // transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (githubrest.RateLimited, which reads the body for a secondary limit GitHub
-// names there alone). Either way err carries GitHub's answer (answered).
+// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
+// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, body []byte, err error) error {
 	refused := m.answered(response, body, err)
-	if response.StatusCode >= http.StatusInternalServerError || githubrest.RateLimited(response, body) {
+	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused

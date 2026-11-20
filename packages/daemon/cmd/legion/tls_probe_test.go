@@ -1013,7 +1013,7 @@ func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	observations, unjudged, err := probeTLSClients(ctx, []tlsClient{client}, compromisedTLSSites())
+	observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{client}, compromisedTLSSites())
 	if len(observations) != 2 {
 		t.Fatalf("probeTLSClients() returned %d observations, want one run at each site and no second run: %+v", len(observations), observations)
 	}
@@ -1023,8 +1023,8 @@ func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 	if err != nil {
 		t.Errorf("probeTLSClients() = %v, want no failure: a run the deadline ended fails nothing", err)
 	}
-	if len(unjudged) != 1 || !strings.HasPrefix(unjudged[0], "curl AAA: the probe's deadline ended it after ") {
-		t.Errorf("probeTLSClients() runs with no verdict = %q, want curl's AAA run alone, the deadline named", unjudged)
+	if len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "curl AAA: the probe's deadline ended it after ") {
+		t.Errorf("probeTLSClients() runs with no verdict = %q, want curl's AAA run alone, the deadline named", noVerdict)
 	}
 }
 
@@ -1235,10 +1235,10 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 		clients = append(clients, spec.build("omp", nil, stateDir))
 	}
 
-	observations, unjudged, err := probeTLSClients(context.Background(), clients, compromisedTLSSites())
+	observations, noVerdict, err := probeTLSClients(context.Background(), clients, compromisedTLSSites())
 
-	if err != nil || len(unjudged) != 0 {
-		t.Fatalf("probeTLSClients() = %v, runs with no verdict %q; want every client to pass on its second run at emSign", err, unjudged)
+	if err != nil || len(noVerdict) != 0 {
+		t.Fatalf("probeTLSClients() = %v, runs with no verdict %q; want every client to pass on its second run at emSign", err, noVerdict)
 	}
 	for _, spec := range workerTLSClients {
 		var runs []tlsOutcome
@@ -1387,12 +1387,12 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	dir := t.TempDir()
 	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 	aws.applicationSeen = awsResponseSeen
-	if _, unjudged, err := probeTLSClients(context.Background(), []tlsClient{aws}, nil); err == nil || !strings.Contains(err.Error(), "aws cannot verify refusal of the emSign chain: its 1s limit ended it after ") || len(unjudged) != 0 {
-		t.Errorf("probeTLSClients() with emSign unreached = %v, runs with no verdict %q; want aws's emSign run to fail", err, unjudged)
+	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws}, nil); err == nil || !strings.Contains(err.Error(), "aws cannot verify refusal of the emSign chain: its 1s limit ended it after ") || len(noVerdict) != 0 {
+		t.Errorf("probeTLSClients() with emSign unreached = %v, runs with no verdict %q; want aws's emSign run to fail", err, noVerdict)
 	}
 	node = shTLSClient("node", dir, tlsAnswers, nodeAnswer)
-	if _, unjudged, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, nil); err != nil || len(unjudged) != 1 || !strings.HasPrefix(unjudged[0], "aws emSign: its 2s limit ended it after ") {
-		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, unjudged)
+	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, nil); err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
+		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, noVerdict)
 	}
 }
 
@@ -1586,7 +1586,7 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 	aws.applicationSeen = awsResponseSeen
 	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
 
-	observations, unjudged, err := probeTLSClients(context.Background(), []tlsClient{aws, node}, compromisedTLSSites())
+	observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws, node}, compromisedTLSSites())
 
 	want := []string{"aws emSign", "aws AAA", "aws control", "node emSign", "node AAA", "node control", "aws emSign"}
 	if got := tlsRunsLogged(t, dir); !slices.Equal(got, want) {
@@ -1602,8 +1602,8 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 	if second.client != "aws" || second.site.name != emSignTLSSite.name || second.status != tlsNoVerdict || !strings.HasPrefix(second.detail, "its 2s limit ended it after ") {
 		t.Errorf("last observation = %+v, want aws's second emSign run with no verdict, its 2s limit named", second)
 	}
-	if err != nil || len(unjudged) != 1 || !strings.HasPrefix(unjudged[0], "aws emSign: its 2s limit ended it after ") {
-		t.Errorf("probeTLSClients() = %v, runs with no verdict %q; want no failure and aws's emSign run, as its second run left it", err, unjudged)
+	if err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
+		t.Errorf("probeTLSClients() = %v, runs with no verdict %q; want no failure and aws's emSign run, as its second run left it", err, noVerdict)
 	}
 
 	t.Run("a run the probe's deadline ended", func(t *testing.T) {
@@ -1613,13 +1613,13 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 
-		observations, unjudged, err := probeTLSClients(ctx, []tlsClient{aws, node}, compromisedTLSSites())
+		observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{aws, node}, compromisedTLSSites())
 
 		if got := tlsRunsLogged(t, dir); !slices.Equal(got, []string{"aws emSign"}) {
 			t.Errorf("the clients ran %q, want aws's emSign run alone", got)
 		}
-		if len(observations) != 2*len(tlsSites) || len(unjudged) != len(observations) || err != nil {
-			t.Fatalf("probeTLSClients() = %v, %d observations, runs with no verdict %q; want one run of each client at each site, each with no verdict", err, len(observations), unjudged)
+		if len(observations) != 2*len(tlsSites) || len(noVerdict) != len(observations) || err != nil {
+			t.Fatalf("probeTLSClients() = %v, %d observations, runs with no verdict %q; want one run of each client at each site, each with no verdict", err, len(observations), noVerdict)
 		}
 		for _, observation := range observations {
 			if observation.status != tlsNoVerdict || !strings.HasPrefix(observation.detail, "the probe's deadline ended it after ") {

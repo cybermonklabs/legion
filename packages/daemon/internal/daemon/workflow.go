@@ -317,57 +317,53 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: passed,
-// refused, pending when a token_command is still running past the bound
-// (appauth.ErrCommandPending, most often a grant that waits on a person's approval), a wait for
-// GitHub's rate limit (limitOutcome, on the start's waits), or transient (appTransient). A pending
-// attempt spends no retry: the command goes on, and the next attempt joins it, so the boot waits
-// for the grant with one request and never kills it. A rate limit spends none either: it says
-// nothing about the App, and the start waits until the time GitHub names, within the start's
+// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: pending when a
+// token_command is still running past the bound (appauth.ErrCommandPending, most often a grant
+// that waits on a person's approval), and otherwise startOutcome's, appTransient its transient. A
+// pending attempt spends no retry: the command goes on, and the next attempt joins it, so the boot
+// waits for the grant with one request and never kills it. A rate limit spends none either: it
+// says nothing about the App, and the start waits until the time GitHub names, within the start's
 // bound on such waits.
-func appAttempt(call string, waits *startWaits, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
+func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
-		if err == nil {
-			return bootprobe.Outcome{Passed: true}
-		}
 		if errors.Is(err, appauth.ErrCommandPending) {
 			return bootprobe.Outcome{Pending: err.Error()}
 		}
-		if outcome, limited := limitOutcome(err, waits, call); limited {
-			return outcome
-		}
-		if appTransient(err) {
-			return bootprobe.Outcome{Detail: err.Error()}
-		}
-		return bootprobe.Outcome{Refusal: err}
+		return startOutcome(err, appTransient, waits, call)
 	}
 }
 
 // boundedAttempt is readinessAttempt for an attempt of the start, call, that mints App tokens on
-// its way: GitHub's rate limit on such a mint is waited out on the start's waits (limitOutcome)
-// before transient is asked, as appAttempt waits it out. The start's repository reads
-// (nameMapping) are such attempts: each read mints the implement App's token
-// (defaultBranches.fetch), whose failure no reading of the read's own rate limit
-// (defaultBranchLimit) finds, since appauth's errors hide GitHub's answer from it.
+// its way: GitHub's rate limit on such a mint is waited out on the start's waits before transient
+// is asked (startOutcome), as appAttempt waits it out. The start's repository reads (nameMapping)
+// are such attempts: each read mints the implement App's token (defaultBranches.fetch), whose
+// failure no reading of the read's own rate limit (defaultBranchLimit) finds, since appauth's
+// errors hide GitHub's answer from it.
 func boundedAttempt(attempt func(context.Context) error, bound time.Duration, transient func(error) bool, waits *startWaits, call string) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, bound)
 		defer cancel()
-		err := attempt(bounded)
-		if err == nil {
-			return bootprobe.Outcome{Passed: true}
-		}
-		if outcome, limited := limitOutcome(err, waits, call); limited {
-			return outcome
-		}
-		if transient(err) {
-			return bootprobe.Outcome{Detail: err.Error()}
-		}
-		return bootprobe.Outcome{Refusal: err}
+		return startOutcome(attempt(bounded), transient, waits, call)
 	}
+}
+
+// startOutcome is the outcome of an attempt at the start's call that returned err: passed on nil;
+// a wait for GitHub's rate limit on the start's waits, or the refusal once they have ended
+// (limitOutcome); transient when transient recognizes err; refused otherwise.
+func startOutcome(err error, transient func(error) bool, waits *startWaits, call string) bootprobe.Outcome {
+	if err == nil {
+		return bootprobe.Outcome{Passed: true}
+	}
+	if outcome, limited := limitOutcome(err, waits, call); limited {
+		return outcome
+	}
+	if transient(err) {
+		return bootprobe.Outcome{Detail: err.Error()}
+	}
+	return bootprobe.Outcome{Refusal: err}
 }
 
 // limitOutcome is the outcome of an attempt at the start's call that failed with err, when err is
@@ -383,7 +379,7 @@ func limitOutcome(err error, waits *startWaits, call string) (outcome bootprobe.
 	until, waited, ended := waits.wait(call, answer, githubWait)
 	if ended {
 		return bootprobe.Outcome{Refusal: fmt.Errorf("the %s waited %s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: GitHub answered %s %s with %s: %s: %w",
-			call, shownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
+			call, bootprobe.ShownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
 	}
 	return bootprobe.Outcome{RateLimit: limitSummary(answer), Until: until, Waited: waited, Detail: err.Error()}, true
 }
@@ -409,7 +405,7 @@ func limitSummary(answer *githubrest.Answer) string {
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
 	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(call, waits, func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			login, err := apps.AppLogin(ctx, role)
 			if err != nil {
@@ -440,7 +436,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 // limit lasting past the start's end of such waits.
 func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, waits *startWaits, log *slog.Logger) error {
 	const call = "GitHub App tokens mint"
-	return bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(call, waits, func(ctx context.Context) error {
+	return bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, err := tokens.Token(ctx, role, owner); err != nil {
 				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)

@@ -796,14 +796,14 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 // line names, with the log after them: what the operator reads of a probe that never reached a
 // verdict.
 func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
-	const unjudged = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
+	const noVerdict = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
 		"chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated; " +
 		"role overlays: implementer: signal: terminated"
 	g := newProbeRig(t, nil)
 	g.with(func() {
 		g.log = "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: killed)\n" +
 			"probe-image: TLS client aws emSign: no verdict (its 40s limit ended it after 40.0s: signal: killed)\n" +
-			bootprobe.NoVerdictPrefix + unjudged + "\n"
+			bootprobe.NoVerdictPrefix + noVerdict + "\n"
 	})
 	g.finishes(func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
@@ -816,7 +816,7 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 	err := g.probe(p)
 
 	wantContains(t, err, "the worker image probe never completed within its retry budget (6 attempts): pod "+probeSandboxName+
-		" exited 75 with no verdict: "+unjudged+" — log tail: probe-image: TLS client aws emSign: no verdict")
+		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: TLS client aws emSign: no verdict")
 	if n := g.creates.Load(); n != 6 {
 		t.Errorf("ran the probe %d times, want the retry's 6", n)
 	}

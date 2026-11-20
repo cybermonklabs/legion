@@ -24,6 +24,16 @@ type Retry struct {
 	Attempts     int
 }
 
+// Delay is the wait after a transient failure that transients others came before: Initial,
+// doubled once for each of them while it is below Max, and at most Max.
+func (r Retry) Delay(transients int) time.Duration {
+	delay := r.Initial
+	for n := 0; n < transients && delay < r.Max; n++ {
+		delay *= 2
+	}
+	return min(delay, r.Max)
+}
+
 // Daemon is a daemon's policy (DAEMON_PROBE_RETRY, boot-probes.ts:38-51): 10 s doubling to 5
 // min, unbounded. A transient failure is Oh My Pi dying under host load, or an attempt cut off
 // before it answered; neither says anything about what is probed, so the daemon waits the load
@@ -93,8 +103,8 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 		case outcome.RateLimit != "":
 			delay = time.Until(outcome.Until)
 			log.Warn("boot probe waits out GitHub's rate limit; it runs again at the time GitHub names",
-				"probe", name, "until", outcome.Until.UTC().Format(time.RFC3339), "wait", delay.Round(rateLimitShown).String(),
-				"waited", outcome.Waited.Round(rateLimitShown).String(), "limit", outcome.RateLimit, "detail", outcome.Detail)
+				"probe", name, "until", outcome.Until.UTC().Format(time.RFC3339), "wait", ShownWait(delay),
+				"waited", ShownWait(outcome.Waited), "limit", outcome.RateLimit, "detail", outcome.Detail)
 		case outcome.Passed:
 			return nil
 		case outcome.Refusal != nil:
@@ -114,11 +124,7 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			}
 			return errors.New(message)
 		default:
-			delay = retry.Initial
-			for n := 0; n < transients && delay < retry.Max; n++ {
-				delay *= 2
-			}
-			delay = min(delay, retry.Max)
+			delay = retry.Delay(transients)
 			transients++
 			label := strconv.Itoa(transients)
 			if retry.Attempts > 0 {
@@ -137,9 +143,10 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 	}
 }
 
-// rateLimitShown is how finely a rate-limit wait's line gives the wait and the total waited: a
-// tenth of a second, so a wait decided as a minute an instant before the line reads 1m0s.
-const rateLimitShown = 100 * time.Millisecond
+// ShownWait is d, a wait for GitHub's rate limit or the start's total of them, as a line or an
+// error gives it: to a tenth of a second, so a wait decided as a minute an instant before the line
+// reads 1m0s.
+func ShownWait(d time.Duration) string { return d.Round(100 * time.Millisecond).String() }
 
 func abandoned(name string, err error) error {
 	return fmt.Errorf("the %s probe was abandoned: it was stopped while it ran or waited to run again: %w", name, err)
@@ -390,6 +397,12 @@ const NoVerdictExit = 75
 // NoVerdictPrefix begins the line `legion probe-image` prints before it exits NoVerdictExit; the
 // rest of the line names each TLS run and check with no verdict, joined by "; ".
 const NoVerdictPrefix = "legion probe-image: worker probe has no verdict: "
+
+// NoVerdictLine is that line naming entries, each TLS run and check with no verdict, joined by "; "
+// with every run of white space in them turned to one space, so the line carries the whole of each.
+func NoVerdictLine(entries []string) string {
+	return NoVerdictPrefix + strings.Join(strings.Fields(strings.Join(entries, "; ")), " ")
+}
 
 // noVerdict is a no-verdict line.
 var noVerdict = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(NoVerdictPrefix) + `(.*)$`)

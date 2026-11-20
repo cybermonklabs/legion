@@ -70,8 +70,8 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
 // check the deadline cut, a capability row among them (capabilities.StatusUnanswered), and a TLS
 // run with no verdict (probeTLSClients) have no verdict, which ends nothing, so the later checks
-// still run. Where nothing failed and something has no verdict, it prints a
-// bootprobe.NoVerdictPrefix line naming each to stderr and exits bootprobe.NoVerdictExit, which
+// still run. Where nothing failed and something has no verdict, it prints
+// bootprobe.NoVerdictLine, naming each, to stderr and exits bootprobe.NoVerdictExit, which
 // asks the daemon's probe Sandbox for another attempt rather than refusing the image. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
@@ -295,16 +295,16 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// The sites the positive controls reached, where a TLS client's run its own limit ends with no
 	// answer has no verdict (probeTLSClients): every compromised site once the controls passed.
 	var reached []tlsSite
-	var controlsUnjudged tlsNoVerdicts
+	var controlsNoVerdict tlsNoVerdicts
 	switch err := newTLSPositiveControls(ctx, environ); {
-	case errors.As(err, &controlsUnjudged):
-		noVerdict = append(noVerdict, controlsUnjudged...)
+	case errors.As(err, &controlsNoVerdict):
+		noVerdict = append(noVerdict, controlsNoVerdict...)
 	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	default:
-		fmt.Fprintln(stdout, tlsPositiveControlsLine(compromisedTLSSites()))
 		reached = compromisedTLSSites()
+		fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
 	}
 	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
 	if err != nil {
@@ -312,7 +312,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		return 1
 	}
 	defer removeTLSStateDir()
-	observations, clientsUnjudged, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
+	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
 	for _, observation := range observations {
 		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
 			observation.client, observation.site.name, observation.status, observation.detail)
@@ -321,7 +321,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
-	noVerdict = append(noVerdict, clientsUnjudged...)
+	noVerdict = append(noVerdict, clientsNoVerdict...)
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
@@ -330,16 +330,16 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
-	code, overlaysUnjudged := checkRoleOverlays(ctx, f.roleOverlays, func(value, alone []string) (string, error) {
+	code, overlaysNoVerdict := checkRoleOverlays(ctx, f.roleOverlays, func(value, alone []string) (string, error) {
 		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), value...)
 		return capabilities.CheckOverlays(ctx, roleImage, overlays, alone)
 	}, stderr)
 	if code != 0 {
 		return code
 	}
-	noVerdict = append(noVerdict, overlaysUnjudged...)
+	noVerdict = append(noVerdict, overlaysNoVerdict...)
 	if len(noVerdict) > 0 {
-		fmt.Fprintln(stderr, bootprobe.NoVerdictPrefix+strings.Join(strings.Fields(strings.Join(noVerdict, "; ")), " "))
+		fmt.Fprintln(stderr, bootprobe.NoVerdictLine(noVerdict))
 		return bootprobe.NoVerdictExit
 	}
 	agentModels := bootprobe.AgentModelsResolved

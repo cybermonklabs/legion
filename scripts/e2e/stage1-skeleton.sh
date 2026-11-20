@@ -375,9 +375,13 @@ proxy_pid=$!
 read_port_file "$work/proxy.port" "$proxy_pid" proxy_port ||
   fail "the proxy exited or held no port within ${port_file_seconds}s; see $work/logs/proxy.log"
 mkdir -p "$work/retry-state"
-sed -e "s#^project: .*#project: ${project}R#" -e "s#^port: .*#port: $retry_port#" \
-  -e "s#^postgres_dsn: .*#postgres_dsn: postgres://$pg_login@127.0.0.1:$proxy_port/$pg_database?sslmode=disable#" \
-  -e "s#^state_dir: .*#state_dir: $work/retry-state#" "$work/legion.yaml" >"$work/retry.yaml"
+# sed takes its script on stdin, so the password in the DSN reaches no command's arguments.
+sed -f /dev/stdin "$work/legion.yaml" >"$work/retry.yaml" <<EOF
+s#^project: .*#project: ${project}R#
+s#^port: .*#port: $retry_port#
+s#^postgres_dsn: .*#postgres_dsn: postgres://$pg_login@127.0.0.1:$proxy_port/$pg_database?sslmode=disable#
+s#^state_dir: .*#state_dir: $work/retry-state#
+EOF
 start_kept retry_daemon retry_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/retry.yaml"
 pid=$retry_daemon_pid
 # The two helpers read the daemon's port from $port; the assignment before each call names this
@@ -396,6 +400,10 @@ stop_daemon SIGTERM
 kill -TERM "$proxy_pid"
 wait "$proxy_pid"
 proxy_pid=
+# The daemon's keeper is the step's own too, and exits 0 on SIGTERM (lib/held-port.py keep).
+kill -TERM "$retry_keeper_pid"
+wait "$retry_keeper_pid"
+retry_keeper_pid=
 
 # 3. starts, answers, restarts against the same store
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"

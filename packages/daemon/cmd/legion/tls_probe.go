@@ -82,10 +82,12 @@ func (t tlsRunTerms) limit(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-// tlsNoVerdicts is the TLS runs of a check that have no verdict, each "<client> <site>: <detail>",
-// as the error of a check that has such runs and no failure. probeTLSPositiveControls returns it,
-// so that newTLSPositiveControls keeps one error result for its failures and its runs with no
-// verdict both, and runProbeImage tells the two apart with errors.As.
+// tlsNoVerdicts is the positive controls' runs that have no verdict, each "<site> positive control
+// at <url>: <detail>" or "<site> positive control isolation endpoint <url>: <detail>"
+// (verifyTLSPositiveControls), as their error where they have such runs and no failure.
+// probeTLSPositiveControls returns it, so that newTLSPositiveControls keeps one error result for
+// its failures and its runs with no verdict both, and runProbeImage tells the two apart with
+// errors.As.
 type tlsNoVerdicts []string
 
 func (n tlsNoVerdicts) Error() string {
@@ -233,18 +235,18 @@ func probeTLSClients(ctx context.Context, clients []tlsClient, reached []tlsSite
 			failures = append(failures, fmt.Sprintf("%s cannot verify refusal of the %s chain: %s", client, site.name, outcome.detail))
 		}
 	}
-	type unjudged struct {
+	type noVerdictRun struct {
 		client      tlsClient
 		observation tlsObservation
 	}
-	var again []unjudged
+	var again []noVerdictRun
 	for _, client := range clients {
 		for _, site := range tlsSites {
 			outcome := client.probe(ctx, site, tlsRunTerms{reached: reachedSites[site.name]})
 			observation := tlsObservation{client: client.name(), site: site, tlsOutcome: outcome}
 			observations = append(observations, observation)
 			if outcome.status == tlsNoVerdict {
-				again = append(again, unjudged{client: client, observation: observation})
+				again = append(again, noVerdictRun{client: client, observation: observation})
 				continue
 			}
 			if site.control && outcome.status == tlsConnectionAccepted || !site.control && outcome.status == tlsCertificateRefused {
@@ -293,21 +295,8 @@ func (c tlsCommandClient) name() string { return c.clientName }
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	r := c.run(ctx, site, terms.limit(c.timeout))
 	message := tlsCommandMessage(r.err, r.output)
-	detail := r.detail(trimTLSDetail(message))
-	switch {
-	case r.ending == tlsDeadlineEnded:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	case r.ending == tlsSignalEnded:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
-	case r.err == nil || c.applicationSeen != nil && c.applicationSeen(message):
-		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
-	case tlsCertificateError(message):
-		return tlsOutcome{status: tlsCertificateRefused, detail: detail}
-	case r.ending == tlsLimitEnded && terms.reached:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	default:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
-	}
+	accepted := r.err == nil || c.applicationSeen != nil && c.applicationSeen(message)
+	return r.outcome(terms, accepted, tlsCertificateError(message), r.detail(trimTLSDetail(message)))
 }
 
 // commandLine is the program c runs at site, its arguments, and the environment it runs under:
@@ -358,6 +347,28 @@ func (r tlsCommandRun) detail(message string) string {
 		return fmt.Sprintf("%s ended it after %s, before its %s limit: %s", procgroup.Ended(r.err).Signal, elapsed, r.limit, message)
 	default:
 		return message
+	}
+}
+
+// outcome is the run's verdict on terms, with detail as its TLS line's detail. A run the probe's
+// deadline ended has no verdict and one a signal ended before its limit is unavailable, whatever
+// it printed. Any other run is accepted where the client read an acceptance in it, and refused
+// where it read a certificate refusal; a run its own limit ended with neither has no verdict where
+// terms say an earlier run reached the site, and every other run is unavailable.
+func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail string) tlsOutcome {
+	switch {
+	case r.ending == tlsDeadlineEnded:
+		return tlsOutcome{status: tlsNoVerdict, detail: detail}
+	case r.ending == tlsSignalEnded:
+		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+	case accepted:
+		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
+	case refused:
+		return tlsOutcome{status: tlsCertificateRefused, detail: detail}
+	case r.ending == tlsLimitEnded && terms.reached:
+		return tlsOutcome{status: tlsNoVerdict, detail: detail}
+	default:
+		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
 	}
 }
 
@@ -419,7 +430,7 @@ func (c tlsOptionalClient) probe(ctx context.Context, site tlsSite, terms tlsRun
 
 // tlsChromiumClient reads Chromium's navigation result from stderr because its headless DOM dump
 // exits successfully after a failed navigation. It runs and is judged as a command client is
-// (tlsCommandClient.probe), its navigation failure standing for the output: a certificate error
+// (tlsCommandRun.outcome), its navigation failure standing for the output: a certificate error
 // there is a refusal, and any other failure is no answer.
 type tlsChromiumClient struct {
 	tlsCommandClient
@@ -432,21 +443,9 @@ func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite, terms tlsRun
 	if failure == "" {
 		message = tlsCommandMessage(r.err, r.output)
 	}
-	detail := r.detail(trimTLSDetail(message))
-	switch {
-	case r.ending == tlsDeadlineEnded:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	case r.ending == tlsSignalEnded:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
-	case failure != "" && tlsCertificateError(failure):
-		return tlsOutcome{status: tlsCertificateRefused, detail: detail}
-	case failure == "" && r.err == nil:
-		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
-	case r.ending == tlsLimitEnded && terms.reached:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	default:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
-	}
+	accepted := failure == "" && r.err == nil
+	refused := failure != "" && tlsCertificateError(failure)
+	return r.outcome(terms, accepted, refused, r.detail(trimTLSDetail(message)))
 }
 
 func chromiumNavigationFailure(stderr string) string {

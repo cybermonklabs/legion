@@ -585,7 +585,7 @@ Everything the run takes is its own, so two runs on one box
   the proxied daemon has a port and a keeper of its own, and the proxy a port the kernel chose;
   and on the devbox path the container `legion-e2e-pg-<pid>`.
 
-After each healthy start the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
+After each of the main daemon's two healthy starts, the first and the restart, the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
 the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 

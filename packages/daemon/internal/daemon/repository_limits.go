@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -227,10 +228,6 @@ func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
 // (backfillRead).
 func backfillWait(wait time.Duration) time.Duration { return min(wait, startRateLimits.Max) }
 
-// shownWait is d, a wait for GitHub's rate limit or the start's total of them, as a line or an
-// error gives it: to a tenth of a second, as bootprobe.Run gives the start's App waits.
-func shownWait(d time.Duration) string { return d.Round(100 * time.Millisecond).String() }
-
 // answeredRefusal is whether err, a read of a default branch that failed, is GitHub's answer about
 // the repository, which no later read is expected to change: a 404, or any other answer below 500
 // that is no rate limit (defaultBranchLimit). Every other failure is a read GitHub did not answer:
@@ -378,7 +375,7 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 			taken := read
 			taken.wait = until.Sub(read.until.Add(-read.wait))
 			w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch and the daemon holds none for it, so the boot waits as long as GitHub asks and reads it once more",
-				append([]any{"repo", read.mapped.Repo.String(), "waitUntil", until.UTC().Format(time.RFC3339), "waited", shownWait(waited)}, limitAttributes(taken)...)...)
+				append([]any{"repo", read.mapped.Repo.String(), "waitUntil", until.UTC().Format(time.RFC3339), "waited", bootprobe.ShownWait(waited)}, limitAttributes(taken)...)...)
 			select {
 			case <-waiting.Done():
 				return waiting.Err()

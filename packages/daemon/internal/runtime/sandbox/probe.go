@@ -1204,8 +1204,8 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 			}
 		}
 		if exit == bootprobe.NoVerdictExit {
-			unjudged, _ := bootprobe.NoVerdict(logTail)
-			return bootprobe.Outcome{Detail: fmt.Sprintf("pod %s exited %d with no verdict: %s — log tail: %s", name, exit, unjudged, logTail)}
+			noVerdict, _ := bootprobe.NoVerdict(logTail)
+			return bootprobe.Outcome{Detail: fmt.Sprintf("pod %s exited %d with no verdict: %s — log tail: %s", name, exit, noVerdict, logTail)}
 		}
 		if flag := undefinedFlag.FindStringSubmatch(logTail); flag != nil {
 			return imageRefusal(digest, "pod %s Failed%s: its legion CLI has no %s, a flag this daemon's probe passes: build the image from this daemon's commit — log tail: %s",

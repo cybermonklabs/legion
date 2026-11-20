@@ -210,11 +210,15 @@ func AnswerOf(method, path string, response *http.Response, body []byte) *Answer
 	return refused
 }
 
-// answerPath is the path an Answer names for target, its query left out: the path under the
-// client's API, or GitHub's whole path for a URL outside it, such as a later page GitHub names
-// under /repositories/<id>/.
-func (c Client) answerPath(target *url.URL) string {
-	if base, err := url.Parse(c.API); err == nil {
+// answerPath is the path an Answer names for target under the client's API (PathUnder).
+func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, target) }
+
+// PathUnder is the path an Answer names for target, its query left out: the path under api, or
+// GitHub's whole path for a URL outside it, such as a later page GitHub names under
+// /repositories/<id>/. Client names its answers' paths so (answerPath), and appauth names those its
+// errors carry so under its own base URL (appauth.AnswerError).
+func PathUnder(api string, target *url.URL) string {
+	if base, err := url.Parse(api); err == nil {
 		if rest, found := strings.CutPrefix(target.Path, base.Path); found && strings.HasPrefix(rest, "/") {
 			return rest
 		}
