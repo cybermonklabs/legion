@@ -981,11 +981,11 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	if !recorded {
 		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
 			"event_id", decoded.EventID)
-		// A checks settlement dropped here is named at INFO, once for each settlement
-		// (NoRecordedPullRequestLine): a pull request whose opened event the daemon never applied
-		// gets no CI message for any head, and this line is what says why (dispatch://INFRA-4135
-		// R6). The line above stays at DEBUG for the reviews and settlements of every other pull
-		// request of a mapped repository.
+		// Each checks settlement of a pull request the daemon does not record is named once at
+		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
+		// request no Legion issue runs, or one whose opened event never reached the daemon — so a
+		// reader can tell such a drop from a lost settlement (dispatch://INFRA-4135 R6). The
+		// DEBUG line above is written for every event of such a pull request.
 		if checks, ok := decoded.Fact.(PullRequestChecks); ok {
 			if identity := checks.Identity(); dropped.unrecorded.Add(identity) {
 				logMessage(spec.Logger, slog.LevelInfo, NoRecordedPullRequestLine, message, identity.Attributes()...)

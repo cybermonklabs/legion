@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,18 +232,27 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // since the head did not pass every check. With no failed status the text is the one it was before
 // the daemon read statuses.
 //
-// A check whose run GitHub skipped (record.RunSkipped: a run of fact.CheckRuns the settlement's
-// skipped group named and that neither Failing nor Cancelled names) is named skipped, in name
-// order, with the sentence that a skipped check ran nothing on this head, after the failed or the
-// cancelled checks and before the failed statuses. Where the settlement names no check failed or
+// A check whose run GitHub skipped is named skipped, in name order, with the sentence that a
+// skipped check ran nothing on this head, after the failed or the cancelled checks and before the
+// failed statuses. A run of fact.CheckRuns that neither Failing nor Cancelled names is skipped
+// when its conclusion is skipped (record.RunSkipped: the settlement's skipped group named it) or
+// when GitHub's word for it is skipped (record.AttemptRun.GitHubConclusion): a settlement whose
+// skipped group the decoder could not read carries the word and no skipped conclusion, and the CI
+// message the roles are told names such a run by its word (settledChecks, shownAs), so the task
+// names it skipped too and the two texts agree. Where the settlement names no check failed or
 // cancelled the text then says the head had none, and never that it passed every check or every
 // check run: a skipped check ran nothing, and a woken role that read it as a pass would believe a
 // suite held back for the merge queue passed on a head where it never ran (dispatch://INFRA-4135
-// R1). A settlement with no skipped run gives the text it gave before the daemon read the skipped
-// group, whatever word GitHub gave each run: the task names each check by the daemon's conclusion,
-// never by GitHub's word, and the word of a check that passed (success or neutral, which R1 counts
-// as passed) adds nothing to `passed every check`. The CI message the roles are told
-// (settledChecks) is where each check is named by its word.
+// R1).
+//
+// Each skipped name is quoted as a Go string (strconv.Quote), as the CI message quotes every
+// check name: a check run's name is whoever wrote the workflow's text, and this task is read into
+// an agent's prompt, so the quotes bound it, and a quote or a newline inside it is escaped rather
+// than closing the one around it. The failed and cancelled names stay unquoted, as they were
+// before the daemon read the skipped group, so a settlement with no skipped run gives the task it
+// gave before, word for word (dispatch://INFRA-4135 R3), whatever other word GitHub gave each
+// run: the word of a check that passed (success or neutral, which R1 counts as passed) adds
+// nothing to `passed every check`, and the CI message is where each check is named by its word.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
@@ -257,11 +267,15 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 	slices.Sort(failed)
 	var skipped []string
 	for _, run := range fact.CheckRuns {
-		if run.Conclusion == record.RunSkipped && !slices.Contains(fact.Failing, run.Name) && !slices.Contains(fact.Cancelled, run.Name) {
+		ranNothing := run.Conclusion == record.RunSkipped || run.GitHubConclusion == string(record.RunSkipped)
+		if ranNothing && !slices.Contains(fact.Failing, run.Name) && !slices.Contains(fact.Cancelled, run.Name) {
 			skipped = append(skipped, run.Name)
 		}
 	}
 	slices.Sort(skipped)
+	for i, name := range skipped {
+		skipped[i] = strconv.Quote(name)
+	}
 	var detail string
 	switch {
 	case len(fact.Failing) > 0:

@@ -295,13 +295,16 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 }
 
 // A released worker woken by a settlement whose only checks that did not pass are skipped is told
-// they were skipped, in name order, and that a skipped check ran nothing on this head, and never
-// that the head passed every check (dispatch://INFRA-4135 R1). With a check failed or cancelled,
-// or a failed commit status, the skipped checks follow the failed or cancelled ones and come
+// they were skipped, each name quoted, in name order, and that a skipped check ran nothing on this
+// head, and never that the head passed every check (dispatch://INFRA-4135 R1). A run is skipped by
+// its conclusion or by GitHub's word: a settlement whose skipped group the decoder could not read
+// gives runs with the word skipped and no skipped conclusion, which the CI message names skipped,
+// and the task names them skipped too. With a check failed or cancelled, or a failed commit
+// status, the skipped checks follow the failed or cancelled ones, which stay unquoted, and come
 // before the statuses. A skipped run the settlement names failed or cancelled is that and not
 // skipped, which no listener sends, and a settlement with no skipped run gives the text it gave
-// before, whatever word GitHub gave each run; one with no word either wakes the worker with the
-// task it gave before, word for word.
+// before, whatever other word GitHub gave each run; one with no word either wakes the worker with
+// the task it gave before, word for word.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	const woken = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. " +
@@ -312,7 +315,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		return fact
 	}
 	onlySkipped := checks([]record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("envoy-go", 2), skippedRun("envoy-go-race", 3)}, nil, nil)
-	const onlySkippedDetail = "head1 had no failed or cancelled check; skipped envoy-go, envoy-go-race: " + skippedSaid
+	const onlySkippedDetail = `head1 had no failed or cancelled check; skipped "envoy-go", "envoy-go-race": ` + skippedSaid
 	for _, shape := range []struct {
 		name   string
 		fact   intake.PullRequestChecks
@@ -320,14 +323,17 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	}{
 		{"only skipped checks did not pass", onlySkipped, onlySkippedDetail},
 		{"in name order", checks([]record.AttemptRun{skippedRun("envoy-smoke", 3), skippedRun("dispatch-memory", 2), wordedRun("build", 1, "success")}, nil, nil),
-			"head1 had no failed or cancelled check; skipped dispatch-memory, envoy-smoke: " + skippedSaid},
+			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-smoke": ` + skippedSaid},
+		{"a skipped group the decoder could not read", checks([]record.AttemptRun{wordedRun("build", 1, "success"),
+			wordedRun("envoy-go", 2, "skipped"), wordedRun("dispatch-memory", 3, "skipped")}, nil, nil),
+			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-go": ` + skippedSaid},
 		{"a failed check run", checks([]record.AttemptRun{skippedRun("envoy-go", 2), wordedRun("unit", 3, "failure")}, []string{"unit"}, nil),
-			"head1 failed unit; skipped envoy-go: " + skippedSaid},
+			`head1 failed unit; skipped "envoy-go": ` + skippedSaid},
 		{"a cancelled check run", checks([]record.AttemptRun{wordedRun("e2e", 1, "cancelled"), skippedRun("envoy-go", 2)}, nil, []string{"e2e"}),
-			"head1 had e2e cancelled; skipped envoy-go: " + skippedSaid},
+			`head1 had e2e cancelled; skipped "envoy-go": ` + skippedSaid},
 		{"a failed commit status", checks([]record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("envoy-go", 2)}, nil, nil,
 			status("deploy", "success", 1), status("ci", "failure", 1)),
-			"head1 had no failed or cancelled check; skipped envoy-go: " + skippedSaid + "; failed commit status ci"},
+			`head1 had no failed or cancelled check; skipped "envoy-go": ` + skippedSaid + "; failed commit status ci"},
 	} {
 		got := settlementDetail(shape.fact)
 		if got != shape.detail {
