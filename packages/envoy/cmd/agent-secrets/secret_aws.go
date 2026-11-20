@@ -26,6 +26,7 @@ import (
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/logging"
 	"github.com/aws/smithy-go/middleware"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -69,9 +70,12 @@ var (
 // instance role among them - while the profile was the caller's choice. Where the sign-in is the
 // web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, the file is read here first, and the
 // SDK reads it through webIdentityToken every time after, so a file that cannot be read is refused
-// naming the variable, never the path the SDK's own error quotes. Tests replace it.
+// naming the variable, never the path the SDK's own error quotes. The SDK's own log lines go
+// nowhere (logging.Nop): it writes them to the process's stderr with no redaction - a response's
+// Date header it cannot parse, quoted whole, which whoever answers at the store's or STS's address
+// writes, among them - as gcpClientDial discards Secret Manager's. Tests replace it.
 var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-	options := []func(*config.LoadOptions) error{config.WithRegion(region)}
+	options := []func(*config.LoadOptions) error{config.WithRegion(region), config.WithLogger(logging.Nop{})}
 	if file := awsWebIdentityTokenFile(); file != "" {
 		if _, err := file.GetIdentityToken(); err != nil {
 			return nil, nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
