@@ -824,6 +824,8 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/listener/single_node_compose_test.go": reads(
+        (f"{ENVOY}/deploy/compose/single-node.compose.yml", "cmd/listener/single_node_compose_test.go:17")),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
          "cmd/spec-check/cifiles_test.go:641 reads that one fragment under ../..")),

@@ -2024,6 +2024,7 @@ listener_server_change:
   - 'packages/envoy/infra/README.md'
   - 'packages/envoy/infra/docs/nats-hub.md'
   - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
+  - 'packages/envoy/deploy/compose/single-node.compose.yml'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipherclient/**'
