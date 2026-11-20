@@ -8,13 +8,36 @@ Current scope:
 
 - envelope schema and subject helpers
 - the Dispatch specs the `dispatch` command is built from, over `zodSchemaApi(hostZod)`
-- Go generation: `scripts/gen-go.ts`
-- generated Go output: `packages/envoy/listenerwire/envelope_generated.go` (the envelope) and
-  `packages/envoy/internal/contracts/generated.go` (the shared constants)
+- Go and TypeScript generation (below)
 
 This package has no release of its own, so nothing renders its changelog entries: each stays
 readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the
 history before that and stops where the fragments begin.
+
+## Commands
+
+Run each from this directory.
+
+- `bun test`; one file: `bun test src/dispatch-tools.test.ts`.
+- `bun run typecheck` and `bun run lint`.
+- `bun run gen:go` rewrites the files `scripts/gen-go.ts` generates; `bun run check:go` names a
+  stale one and writes nothing.
+- `bun run gen:api` rewrites `src/dispatch-api.generated.ts`; `bun run check:api` compares it and
+  writes nothing.
+
+## Generated files
+
+Change the source and regenerate; never edit these by hand.
+
+- `scripts/gen-go.ts` writes, in `packages/envoy`, `listenerwire/envelope_generated.go` (the
+  envelope), `internal/contracts/generated.go` (its aliases and every shared constant),
+  `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`) and
+  `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`), and
+  here `src/block-schema.generated.ts`.
+- `schemas/dispatch-openapi.json` is reflected from Dispatch's Go route table. In
+  `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
+  prints the command that rewrites it.
+- `src/dispatch-api.generated.ts` is rendered from that document by `bun run gen:api`.
 
 ## GitHub Topic Hierarchy
 

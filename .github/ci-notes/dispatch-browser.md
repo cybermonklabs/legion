@@ -1091,7 +1091,7 @@ is ever created. upload-artifact takes the archive root from the least common
 ancestor of its patterns' search paths, so this `${{ runner.temp }}` pattern is what
 keeps that root at the runner's work directory and the repository path inside the
 archive. That path is the one e2e/visual-run.sh prints on a failed run, and the one
-packages/dispatch/AGENTS.md ("Accessibility and visual review") sends a reader to.
+its header sends a reader to who takes a baseline from this artifact.
 Delete it as unused and `test-results` moves to the top of the archive, off that path.
 
 ## What the merge job reports, and why it is never skipped

@@ -26,7 +26,7 @@ import { inVisualOrder, visualOrder } from "./visual-order";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone` (or the
 // `@phone-only` below it), `@webkit` and `@firefox`, written at the end of the test's title.
-// Which tests take `@phone` is in `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine
+// Which tests take `@phone` is in `packages/dispatch/README.md`, "Projects"; an engine
 // tag names a row for one of two reasons, and a comment above the row says which. Either the
 // row exercises one engine behaviour the comment above those projects lists - the usual reason
 // - or every measured failure of that row was in that engine, so the row is kept where its
@@ -77,7 +77,7 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
 // annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
 // database before every row and signs the default context in: a stubbed row left among them would
-// pay that fixture for nothing (packages/dispatch/AGENTS.md, "The stubbed layer").
+// pay that fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which

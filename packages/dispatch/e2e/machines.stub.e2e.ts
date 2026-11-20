@@ -2,7 +2,7 @@
  *  seeded tmux layout, the lines the page writes when it has nothing to draw, the addresses a
  *  window pick writes, and the reads the page makes. Every row here asserts the drawing and
  *  nothing the server decides, so each runs against a recording of `GET /api/v1/agents` rather
- *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *
  *  What is not here is what the clock decides: a pane's state and a drawing's age are read from
  *  `Date.now()` against the `last_seen` the registry reported, so a recording of either answers

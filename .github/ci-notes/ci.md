@@ -1319,7 +1319,9 @@ it reads any other output, and no job's `if:` knows about the label. The label i
 from the pull request the run's own event carries, so it takes effect at the next push,
 reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
 trigger, which would start a run that joins this workflow's concurrency group and cancels the
-pull request's run in progress.
+pull request's run in progress. Take the label off once the run it was added for passes,
+since every later push would run the slow suites again, unless a `ci_check` of the issue
+names one of them, which reads `skipped` on a pull request without the label.
 
 ## Why envoy-go's fast half comes back on every push
 
@@ -2038,9 +2040,9 @@ GitHub refuses a run whose calling job grants less than the called workflow's jo
 whatever their `if:`: its workflow-level block (the build's packages: write, and the
 actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
 and attestations: write. That `attest` job runs whenever the build pushed, whatever the
-event, a pull request's run included, because the two-push order AGENTS.md describes has
-a pull request's run push the image the rows then pin (browser-image.yaml's `attest` job
-says why).
+event, a pull request's run included, because the two-push order .github/ci-images.yaml's
+header describes has a pull request's run push the image the rows then pin
+(browser-image.yaml's `attest` job says why).
 
 ## The pr-title job: what it checks, and why it posts nothing
 
