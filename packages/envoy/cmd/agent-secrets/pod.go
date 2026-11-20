@@ -20,10 +20,8 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -375,39 +373,15 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// outKeyFile is how a message of enroll --pod names the session key it keeps: by the flag that
-// names its directory, since the key's path is the path of a file that holds a credential.
+// outKeyFile is how every message names the session key in the directory keygen's and enroll
+// --pod's --out names: by the flag that names its directory, since the key's path is the path of
+// a file that holds a credential. main.go's loadKey reads it under this name, keygen and
+// enrollSessionKey write it under it, and outDir names the directory itself.
 const outKeyFile = "key.pem in " + outDir
 
-// outDir is the key directory as a message names it.
+// outDir is the directory keygen's and enroll --pod's --out (or AGENT_SECRETS_KEY_DIR) names, as
+// a message names it.
 const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
-
-// loadOutKey is loadKey for the key.pem in the directory --out names, saying outKeyFile where
-// loadKey says the key's path: the system's reason it cannot be read prints through redact.File,
-// and content that is no PEM file, no PKCS#8 key or no ECDSA key is refused in this function's
-// own fixed text, never in the parser's words about the key's bytes. It parses the key itself
-// rather than through main.go's parseKeyPEM, so what it prints depends on no other function's
-// wrapping. It merges with main.go's loadKey once the open agent-secrets stack, which owns
-// main.go, has landed.
-func loadOutKey(path string) (*ecdsa.PrivateKey, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", outKeyFile, redact.File(err))
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, errors.New(outKeyFile + ": not a PEM file")
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New(outKeyFile + ": not a PKCS#8 private key")
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, errors.New(outKeyFile + ": not an ECDSA private key")
-	}
-	return key, nil
-}
 
 // enrollLockFile is the lock a pod's self-enrollment is serialized on, in the key dir it writes.
 // A pod can run `enroll --pod` more than once over one directory, so two runs can overlap;

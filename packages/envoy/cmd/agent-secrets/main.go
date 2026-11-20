@@ -796,10 +796,10 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
 		return 1
 	}
-	// The directory and the key are named by the flag and the variable, never by their path:
-	// key.pem holds the session key (outKeyFile).
+	// The directory and the key are named by the flag and the variable, never by their path
+	// (outDir, outKeyFile): key.pem holds the session key.
 	if err := os.MkdirAll(*out, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets keygen: make the directory --out (or AGENT_SECRETS_KEY_DIR) names: %v\n", redact.File(err))
+		fmt.Fprintf(stderr, "agent-secrets keygen: make %s: %v\n", outDir, redact.File(err))
 		return 1
 	}
 	if err := writeFileAtomic(filepath.Join(*out, keyFile), pemBytes, 0o600); err != nil {
