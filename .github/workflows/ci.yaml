@@ -1748,23 +1748,23 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :40 loads the script by path, and the script imports the engine, which imports
+              # :42 loads the script by path, and the script imports the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # One case reads the two step lines the reader exists for, out of the files that
-              # hold them.
-              - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
-              - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
-              # Another reads the two steps that run database-skips.sh, each with its own arguments.
-              - '.github/workflows/ci-job-envoy-go.yaml'
-              - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+              # Its cases read every workflow a job of ci.yaml calls.
+              - '.github/workflows/ci-job-*.yaml'
+              - '.github/workflows/browser-image.yaml'
+              - '.github/workflows/dispatch-browser.yaml'
+              - '.github/workflows/docs-site.yaml'
+              - '.github/workflows/worker-image.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
               # edits one runs it and is told to read the script again, and it imports
               # ci_job_reads.py to hold each such script to this gate's declared reads.
               - 'packages/envoy/scripts/database-skips.sh'
+              - 'packages/envoy/scripts/backend-count.sh'
               - '.github/scripts/ci_job_reads.py'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
