@@ -35,6 +35,7 @@ fail() {
 canary='s@cret-canary'
 # up_with LINE [VAR=value...] runs up-dispatch.sh with compose/.env holding the settings the compose
 # file requires and LINE, with no identity setting in the environment unless a VAR=value names it.
+# test_path, when set, is the PATH the script sees: the missing-python row uses it to hide python3.
 up_with() {
   local line=$1
   shift
@@ -47,7 +48,7 @@ $line
 EOF
   : >"$log"
   env -u ENVOY_ACCOUNT_GOOGLE_AUDIENCE -u ENVOY_ACCOUNT_TOKEN_FILE -u UP_DISPATCH_TEST_UNSET "$@" \
-    PATH="$root/bin:$PATH" UP_DISPATCH_TEST_LOG="$log" UP_DISPATCH_TEST_REAL_DOCKER="${test_real_docker:-$real_docker}" \
+    PATH="${test_path:-$root/bin:$PATH}" UP_DISPATCH_TEST_LOG="$log" UP_DISPATCH_TEST_REAL_DOCKER="${test_real_docker:-$real_docker}" \
     bash "$root/deploy/scripts/up-dispatch.sh" 2>&1
 }
 started='compose -f compose/dispatch.compose.yml up -d --build'
@@ -106,6 +107,29 @@ if output=$(test_real_docker=/bin/false up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=e
 fi
 [[ "$output" == *"docker compose cannot run"* && ! -s "$log" ]] ||
   fail "did not refuse by name when docker compose cannot run"
+
+# `python3` first has to be on PATH, then has to read Compose's JSON. Both refusals stop before up.
+mkdir "$root/no-python"
+ln -s "$(command -v bash)" "$root/no-python/bash"
+ln -s "$(command -v dirname)" "$root/no-python/dirname"
+test_path="$root/bin:$root/no-python"
+if output=$(up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener"); then
+  fail 'started Dispatch without python3 on PATH'
+fi
+[[ "$output" == *"python3 is not on PATH"* && ! -s "$log" ]] ||
+  fail 'did not refuse by name without python3 on PATH'
+unset test_path
+cat >"$root/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 3
+EOF
+chmod +x "$root/bin/python3"
+if output=$(up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener"); then
+  fail 'started Dispatch when python3 failed to read Compose JSON'
+fi
+[[ "$output" == *"could not read the dispatch service's environment from docker compose config"* && ! -s "$log" ]] ||
+  fail 'did not refuse by name when python3 failed to read Compose JSON'
+rm "$root/bin/python3"
 
 # The script reads only through `docker compose config --format json`, so it runs on Compose
 # releases that lack `config --environment` (before 2.28): it starts Dispatch through Compose 2.12.2,

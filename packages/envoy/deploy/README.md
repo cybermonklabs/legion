@@ -93,8 +93,10 @@ only the `dispatch` service. It retains the ten newest pre-deploy dumps. Its
 defaults target the devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run
 against another checkout, Compose project, or dump directory.
 
-It needs, on the host it runs on, Docker with the Compose plugin (`docker compose version` must
-succeed) and `python3`, as does `scripts/up-dispatch.sh`. Both read `compose/.env` only through
+It needs, on the host it runs on, a running Docker daemon, Docker with the Compose plugin (`docker
+compose version` must succeed), and `python3`, as does `scripts/up-dispatch.sh`. The tests need the
+same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where they take Compose
+2.12.2 from the repository's digest-pinned copy. Both scripts read `compose/.env` only through
 Compose's own resolution, and only through `docker compose config --format json`, so a setting
 counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
 run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and

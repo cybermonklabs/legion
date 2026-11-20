@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A daemon-launched controller whose session changes is refused at registration before it claims an
+  Envoy role, then exits and is relaunched on the session the daemon recorded. The daemon's
+  registration-deadline warning keeps its `launchFailure` count and `limit`, so an operator can
+  tell which launch failed and the configured limit. A typed controller claim retries its own role
+  claim five times and stays up after it gives up; an automatic daemon startup claim retries a
+  listener `503` while supervision keeps the controller alive.
+time: 2026-11-20T03:25:32.148444962Z
+custom:
+    Issue: pr4387

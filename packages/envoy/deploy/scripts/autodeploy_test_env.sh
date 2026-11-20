@@ -318,10 +318,32 @@ if [[ "$output" == *"main has a newer published image"* || -s "$log" ]] || grep 
   fail 'a deployer started with ENVOY_IMAGE_TAG exported deployed the same image again on its next pass'
 fi
 
+# The writer stages beside the env file, mode 0600, and gives the replacement its target's mode.
+# A symlink's own mode is normally 777; the target's 0600 is what must reach the replacement.
+fresh_env
+target="$root/.env.target"
+mv "$compose/.env" "$target"
+chmod 600 "$target"
+ln -s "$target" "$compose/.env"
+good_deploy 'a .env symlink whose 0600 target keeps the replacement private'
+[[ ! -L "$compose/.env" && "$(stat -c %a "$compose/.env")" == 600 && "$(stat -c %a "$target")" == 600 ]] ||
+  fail "the 0600 target of a symlinked .env did not keep its replacement private: .env=$(stat -c %a "$compose/.env"), target=$(stat -c %a "$target")"
+
+# A sweep leaves a stage file a live writer may still append, then deletes the one a SIGKILL left
+# over a minute ago. The old sweep deletes the fresh file, so this row fails there.
+fresh_env
+running="$compose/.env.stage.running"
+printf 'keep\n' >"$running"
+deploy_once >/dev/null 2>&1 || true
+[[ -f "$running" ]] || fail 'the start swept a fresh staging file a concurrent writer may still use'
+touch -d '2 minutes ago' "$running"
+deploy_once >/dev/null 2>&1 || true
+[[ ! -e "$running" ]] || fail 'the start did not sweep a staging file older than one minute'
+
 # The env file is written through a staging file beside it, `.env.stage.XXXXXX`, mode 0600, renamed
 # over it. A deployer killed there by SIGKILL, which no trap sees, leaves that file: git ignores
-# exactly that name (packages/envoy/.gitignore), and the next start removes it, and nothing else in
-# the directory. One stopped there by TERM removes it itself (its trap).
+# exactly that name (packages/envoy/.gitignore), and the next start removes it after a minute, and
+# nothing else in the directory. A TERM exits the deployer and its EXIT trap removes the file.
 repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 fresh_env
 AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
@@ -339,6 +361,7 @@ fi
 printf 'keep\n' >"$compose/env.stage.keep"
 printf 'keep\n' >"$compose/.env.staged"
 mkdir -p "$compose/.env.stage.dir"
+touch -d '2 minutes ago' "$staged"
 deploy_once >/dev/null 2>&1 || true
 [[ ! -e "$staged" ]] || fail "the next start did not remove the staging file a killed deployer left: $staged"
 [[ -f "$compose/env.stage.keep" && -f "$compose/.env.staged" && -d "$compose/.env.stage.dir" ]] ||
@@ -373,15 +396,27 @@ while ((SECONDS < deadline)); do
   sleep 0.1
 done
 if [[ -z "$poll_sleep" ]]; then
-  # The deployer is the job's child: stop it, and anything it started, before the job itself.
-  for pid in $(pgrep -P "$job" || true); do
+  # Stop every descendant, deepest first, before the wrapper: a stalled command substitution can
+  # be deeper than the deployer itself.
+  tree=()
+  descendants() {
+    local pid=$1 child
     for child in $(pgrep -P "$pid" || true); do
-      kill "$child" 2>/dev/null || true
+      descendants "$child"
+      tree+=("$child")
     done
+  }
+  descendants "$job"
+  for pid in "${tree[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
   kill "$job" 2>/dev/null || true
   wait "$job" || true
+  alive=()
+  for pid in "${tree[@]}"; do
+    kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+  done
+  ((${#alive[@]} == 0)) || fail "UNKNOWN: the give-up left process(es) ${alive[*]} running"
   fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged: $(<"$root/poll.out")"
 fi
 deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')

@@ -41,11 +41,9 @@ mkdir -p "$BACKUPS"
 unset ENVOY_IMAGE_TAG
 
 # env_stage is the staging file a write of the env file holds while it runs (env_file set): it
-# holds the file's settings, secrets among them, so it is removed when the deployer exits, and on
-# INT or TERM while the write runs, which env_file set turns into an exit for that write alone: a
-# trap left set would make bash wait for its running child, a 300 s poll or a 900 s pull, before
-# it stopped. A SIGKILL, which no trap sees, can leave it: its name is git-ignored
-# (packages/envoy/.gitignore), and the next start removes it (env_file sweep, below).
+# holds the file's settings, secrets among them, so the EXIT trap removes it when the deployer
+# exits. A SIGKILL, which no trap sees, can leave it: its name is git-ignored
+# (packages/envoy/.gitignore), and a later start removes it (env_file sweep, below).
 env_stage=
 trap 'rm -f -- "${env_stage:-}"' EXIT
 
@@ -171,8 +169,9 @@ deployed_tag() {
 # env_file is the one function that names the compose env file's path.
 #
 # `env_file sweep` removes every regular file the deployer's user owns in COMPOSE_DIR whose name
-# begins `.env.stage.`: a staging file a deployer killed by a signal no trap sees left (below).
-# Nothing else in the directory is touched.
+# begins `.env.stage.` and is older than one minute: a staging file a deployer killed by a signal
+# no trap sees left, but never a staging file a concurrent writer just opened. Nothing else in the
+# directory is touched.
 #
 # `env_file set NAME VALUE` makes VALUE the value Compose reads for NAME from the env file: every
 # `NAME=` line, with blanks before it or around `=` or an `export` prefix, is removed and
@@ -181,18 +180,17 @@ deployed_tag() {
 # record, which needs no quoting. The new file is written to a staging file beside the env file,
 # `.env.stage.XXXXXX`, mode 0600 (mktemp's), which env_stage names so the EXIT trap above removes
 # it, and renamed over the env file, which on one filesystem cannot fail for a reason the write did
-# not already meet; the env file then gets back the mode it had. While the write runs, INT and TERM
-# exit, which runs that trap; after it, they are as the deployer started with them.
+# not already meet; the env file then gets back the target's mode, following an env-file symlink
+# before the rename replaces that link.
 env_file() {
   local env_path="$COMPOSE_DIR/.env" stage_prefix=".env.stage." mode status=0
   case $1 in
     sweep)
-      find "$COMPOSE_DIR" -maxdepth 1 -type f -user "$(id -u)" -name "$stage_prefix*" -delete
+      find "$COMPOSE_DIR" -maxdepth 1 -type f -user "$(id -u)" -name "$stage_prefix*" -mmin +1 -delete
       ;;
     set)
-      mode=$(stat -c %a "$env_path") || return 1
-      trap 'exit 130' INT
-      trap 'exit 143' TERM
+      # Follow a symlink so the replacement receives the target's private mode, not the link's 777.
+      mode=$(stat -L -c %a "$env_path") || return 1
       if env_stage=$(mktemp "$COMPOSE_DIR/${stage_prefix}XXXXXX"); then
         grep -vE "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*=" "$env_path" >"$env_stage" || status=$?
         if ((status > 1)) || ! printf '%s=%s\n' "$2" "$3" >>"$env_stage" || ! mv -f "$env_stage" "$env_path"; then
@@ -203,7 +201,6 @@ env_file() {
         status=2
       fi
       env_stage=
-      trap - INT TERM
       ((status < 2)) || return 1
       chmod "$mode" "$env_path" || log "wrote $2 to the env file in $COMPOSE_DIR, and could not give it back its mode $mode; it is 0600"
       ;;
