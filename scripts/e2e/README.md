@@ -103,6 +103,22 @@ Each item below names a script, then what it proves.
   `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
   Legion pod only
 
+- `pack-memory-job.sh`
+
+  git and jj stay within memory in a large workspace under gVisor, measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role", for the checks `c-git-rows`, `c-jj-snapshot-memory`, `c-handoff-head-read-memory` and `c-shim-adoption-memory`:
+  the image's own `legion workspace-init cache`, `fetch` and `provision` make the clone and the jj workspace on the Job's disk volume, as an issue pod's are made, with each jj command of provisioning measured through a measuring `jj` first on `PATH`;
+  under the role's own `GIT_CONFIG` block, which the harness builds from its checkout (`go run ./internal/runtime/sandbox/rolegitconfig` in `packages/daemon`), the four pack settings read at command scope, beside the image's and the clone's values;
+  `git log --first-parent -- <file>`, `git status`, a push of a new commit and a fetch of git/git's history, each with the role's settings and with git's defaults forced, the push and the fetch through a `git daemon` outside every measured process tree;
+  and on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and pushed with `git push`, `handoff-record.ts`'s `STANDING` read, and the shim's `describedArgs` and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy.
+  Each measured command runs under GNU time and `lib/pack-memory-peak.py`, which samples its process tree's `smaps` every 0.1 s and prints its largest total with that same sample's pack `Rss` and anonymous memory;
+  a row of the image's jj or of the role's settings holds under 2 GiB by both figures, and a control that does not reach its bound, 2 GiB for git and the pack's size for jj, is marked void.
+  The probe the Job runs is `pack-memory-probe.sh` beside the harness, which writes it and the sampler into the Job's command, since a Job holds no checkout to read them from, so the three files are one recipe and none is changed without the others;
+  the harness refuses to run when `packages/daemon/internal/shim/commands.go` or `packages/pi-shared/src/handoff-record.ts` no longer builds a command the probe copies.
+  Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `go` and a checkout of the head measured, the image to measure by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`), whose values are in that deployment's own declaration and in no file of this repository.
+  `--repo` and `--walk-file` name another public repository and file than firefox's;
+  `--dry-run` renders the manifest and has the server admit it without creating anything.
+  Legion pod only
+
 - `controller-start-tmux.sh`
 
   the operator-launched controller on the Go daemon under tmux:
