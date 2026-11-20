@@ -82,10 +82,13 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
  * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
  * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
  * another row's control, and the next Space or Enter would press it - Discard, first in a row
- * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched: on
- * a touch screen the browser moves the focus only once the finger lifts, on the `mousedown` it
- * sends after the `pointerup`, which can come well after the press began. A key pressed in
- * between ends it, so the focus the keyboard moves is noted even after a press no `click` ended.
+ * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched, or
+ * it is cancelled: on a touch screen the browser moves the focus only once the finger lifts, on
+ * the `mousedown` it sends after the `pointerup`, which can come well after the press began; and a
+ * touch that scrolls the panel's list ends in a `pointercancel` and no `click`, after which a press
+ * still under way would forget every focus that enters the panel, the hand-off's own too. A key
+ * pressed in between ends it as well, so the focus the keyboard moves is noted even after a press
+ * no `click` ended.
  * Returns the panel's ref.
  */
 function usePanelFocusReturn(): RefObject<HTMLElement | null> {
@@ -106,8 +109,8 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     const inPanel = (target: EventTarget | null): target is Node =>
       target instanceof Node && panel.current?.contains(target) === true;
     // Where the pointer press under way began - in the panel or elsewhere - from its
-    // `pointerdown` until its `click` has been dispatched, or until a key is pressed; null
-    // between presses.
+    // `pointerdown` until its `click` has been dispatched, until it is cancelled, or until a key
+    // is pressed; null between presses.
     let press: "panel" | "elsewhere" | null = null;
     const focused = (event: FocusEvent) => {
       const { relatedTarget, target } = event;
@@ -138,18 +141,20 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
         if (ended === "elsewhere" && !inPanel(document.activeElement)) forget();
       });
     };
-    const keyed = () => {
+    const endPress = () => {
       press = null;
     };
     document.addEventListener("focusin", focused, true);
     document.addEventListener("pointerdown", pressed, true);
     document.addEventListener("click", clicked, true);
-    document.addEventListener("keydown", keyed, true);
+    document.addEventListener("pointercancel", endPress, true);
+    document.addEventListener("keydown", endPress, true);
     return () => {
       document.removeEventListener("focusin", focused, true);
       document.removeEventListener("pointerdown", pressed, true);
       document.removeEventListener("click", clicked, true);
-      document.removeEventListener("keydown", keyed, true);
+      document.removeEventListener("pointercancel", endPress, true);
+      document.removeEventListener("keydown", endPress, true);
     };
   }, [forget]);
   // React sends no blur for an element it takes off the page, and the browser moves the focus

@@ -6,8 +6,9 @@ import { RefusableButton } from "../../components/RefusableButton";
  *  title where the surface raises tooltips. */
 const STOPPING_REASON = "The attempt already sent is still out.";
 
-/** Stop trying, for a late write - a composer's send, a broadcast, or any other write - busy while
- *  the reader has stopped it and its last attempt is still out (`stopping`). */
+/** Stop trying, for a late write - a composer's send, a broadcast, or any other write. Once the
+ *  reader has stopped it, and while its last attempt is still out (`stopping`), it reads Stopping…
+ *  and is refused (`aria-disabled`): it takes no press and keeps its place in the tab order. */
 export function StopTrying({
   onStop,
   stopping,

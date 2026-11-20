@@ -1,4 +1,5 @@
 import { askProject } from "../features/inbox/list-row";
+import * as routes from "../features/refs/routes";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
@@ -1178,8 +1179,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // An issue's decisions.md sends this event alone on its first upload, no version, and the
       // outline and the margin beside the spec read the decisions under events alone
       // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
-      // that document by its role, which it writes as it creates the row.
-      if (event.payload.artifact.role === "decisions") {
+      // that document by its role, which it writes as it creates the row; a server built before
+      // roles sends none, and names it by its slug alone.
+      const { role, slug } = event.payload.artifact;
+      if (role === "decisions" || (role === undefined && slug === routes.DECISIONS_DOCUMENT_SLUG)) {
         targets.push({ exact: true, queryKey: ["decisions", key] });
       }
     }

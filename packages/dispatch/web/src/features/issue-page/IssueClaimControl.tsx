@@ -1,11 +1,11 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
-import { stoppedNote } from "../writes/useKeyedWrite";
+import { stoppedNote, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -51,16 +51,13 @@ export function IssueClaimControl({
   // The claim the newest press of Release or Retry was made on; until one, the claim the row is
   // first drawn with.
   const [pressedOn, setPressedOn] = useState(held);
-  // A failure of a release pressed on a claim the issue no longer holds is said by no line, and
-  // the write forgets it, so the line a press on the new claim draws while it is out is never the
-  // old one (`useSaidFailure` keeps a line while the same press is out again).
-  const forgotten = releaseClaim.isError && pressedOn !== held;
-  const { reset } = releaseClaim;
-  useEffect(() => {
-    if (forgotten) reset();
-  }, [forgotten, reset]);
+  // A failure of a release pressed on a claim the issue no longer holds is said by no line,
+  // whatever the write's state, since `useSaidFailure` keeps the line while its Retry is out. The
+  // write forgets such a failure once it stands, so a press on the new claim never draws it.
+  const onHeld = pressedOn === held;
+  useRefusalOfSubject(releaseClaim, () => onHeld);
   const said = useSaidFailure(releaseClaim);
-  const failure = forgotten ? null : said;
+  const failure = onHeld ? said : null;
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
   const retryLeft = useFocusHandOff(() => releaseControl.current);

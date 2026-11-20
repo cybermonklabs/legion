@@ -99,11 +99,12 @@ function closedStoppedNote(
 
 /** What a row of Details says where a names read of the issues it lists failed, as it draws those
  *  issues by their keys alone: Blocked by's and Blocks' alike. */
-const TITLES_READ_FAILED = "Could not read the titles of these issues.";
+export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
 
-/** The title a names read (`referenceTargetsQuery`) answered for the issue `key`: undefined while
- *  that read has not answered, where it failed holding no answer, and where it names nothing at
- *  the issue's address. */
+/** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
+ *  has not answered, an issue the set before held too keeps the title the read of that set
+ *  answered (`keptUntilFailed`), and any other is undefined; undefined too where the read failed
+ *  holding no answer, and where it names nothing at the issue's address. */
 function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets?.find((target) => target.ref === reference)?.name;

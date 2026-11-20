@@ -59,7 +59,7 @@ import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-mor
 import { blockedByControlName, referencedByControlName } from "./details-names";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
-import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
+import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
 import { narrowIssue, patchAnswer } from "./issue-fixtures";
 import {
   DETAILS_ATTRIBUTE,
@@ -294,15 +294,22 @@ function waitingEdge(key: string, excerpt: string): GraphEdge {
   };
 }
 
-/** The event of `key` starting to wait on CORE-1 (`blocked_by`), as the feed hands it to the
- *  refresh: the payload as the server writes it - the issue after the write, flat, with what the
- *  write moved - in the shape the feed's own test builds it (`event-feed.test.ts`'s `issue`). */
-function startsWaiting(key: string, title: string): DispatchEvent {
+/** The `issue.updated` event of `key`, which waits on CORE-1 (`blocked_by`), titled `title`, that
+ *  moved the fields `changed`, at `seq` in the feed, as the feed hands it to the refresh: the
+ *  payload as the server writes it - the issue after the write, flat, with what the write moved,
+ *  and CORE-1 named in `references_changed`, since the edge into it moved - in the shape the
+ *  feed's own test builds it (`event-feed.test.ts`'s `issue`). */
+function waiterUpdated(
+  key: string,
+  title: string,
+  changed: readonly string[],
+  seq: number
+): DispatchEvent {
   const payload: Record<string, unknown> = {
     ancestors: [],
     assignee: null,
     blocked_by: ["CORE-1"],
-    changed: ["blocked_by"],
+    changed,
     closed_at: null,
     key,
     parent: null,
@@ -319,7 +326,7 @@ function startsWaiting(key: string, title: string): DispatchEvent {
     notify: true,
     payload,
     project: "CORE",
-    seq: 4,
+    seq,
     type: "issue.updated",
   } as DispatchEvent;
 }
@@ -1174,7 +1181,7 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     edges = [waitingEdge("CORE-5", "Ship the release")];
     refreshQueries(
       queryClient,
-      eventRefreshTargets(startsWaiting("CORE-5", "Ship the release"), "alice")
+      eventRefreshTargets(waiterUpdated("CORE-5", "Ship the release", ["blocked_by"], 4), "alice")
     );
 
     await waitFor(() =>
@@ -1226,31 +1233,10 @@ test("Details' Blocks draws the new title of an issue that waits on this one onc
     // moved, and the issues it waits on named in `references_changed`, since the excerpt of
     // each edge into them moved (`issueEdgeChanges`).
     title = "Ship the second release";
-    const payload: Record<string, unknown> = {
-      ancestors: [],
-      assignee: null,
-      blocked_by: ["CORE-1"],
-      changed: ["title"],
-      closed_at: null,
-      key: "CORE-5",
-      parent: null,
-      project: "CORE",
-      references_changed: [{ id: "CORE-1", kind: "issue" }],
-      status: "todo",
-      title,
-    };
-    const renamed = {
-      actor: { id: "planner", kind: "session" },
-      created_at: "2026-10-27T00:00:00Z",
-      id: 13,
-      issue_key: "CORE-5",
-      notify: true,
-      payload,
-      project: "CORE",
-      seq: 5,
-      type: "issue.updated",
-    } as DispatchEvent;
-    refreshQueries(queryClient, eventRefreshTargets(renamed, "alice"));
+    refreshQueries(
+      queryClient,
+      eventRefreshTargets(waiterUpdated("CORE-5", title, ["title"], 5), "alice")
+    );
 
     await waitFor(() =>
       expect(row, "Blocks keeps the old title of CORE-5 after its rename").toHaveTextContent(
@@ -1297,7 +1283,7 @@ test("Details' Blocks keeps the titles it drew while the names read of a changed
     edges = [...edges, waitingEdge("CORE-6", "Write the notes")];
     refreshQueries(
       queryClient,
-      eventRefreshTargets(startsWaiting("CORE-6", "Write the notes"), "alice")
+      eventRefreshTargets(waiterUpdated("CORE-6", "Write the notes", ["blocked_by"], 4), "alice")
     );
     await blocksRow().findByRole("link", { name: "CORE-6" });
     await waitFor(() => expect(titleReads(titles, newcomer)).toBe(1));
@@ -1310,9 +1296,7 @@ test("Details' Blocks keeps the titles it drew while the names read of a changed
       held.reject(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
     );
     const retry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
-    expect(blocksRow().getByRole("alert")).toHaveTextContent(
-      "Could not read the titles of these issues."
-    );
+    expect(blocksRow().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED);
     expect(
       detailsRow(PROPERTY_LABELS.blocks),
       "Blocks drew a title its failed read holds no answer for"
@@ -1541,7 +1525,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
     );
 
     const failedAgain = blockedBy().getByRole("alert");
-    expect(failedAgain).toHaveTextContent("Could not read the titles of these issues.");
+    expect(failedAgain).toHaveTextContent(TITLES_READ_FAILED);
     expect(
       failedAgain,
       "the second failure was not drawn afresh, so a screen reader would not say it"
@@ -1712,9 +1696,7 @@ test("Blocks says the titles it could not read, and its Retry draws them and han
     const retry = await waitFor(() =>
       blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
     );
-    expect(blocksRow().getByRole("alert")).toHaveTextContent(
-      "Could not read the titles of these issues."
-    );
+    expect(blocksRow().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED);
     expect(
       blocksRow().getByRole("link", { name: "CORE-5" }),
       "Blocks drew no issue whose title it could not read"

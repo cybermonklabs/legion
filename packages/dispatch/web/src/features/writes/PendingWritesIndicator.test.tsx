@@ -219,7 +219,10 @@ test("a Stop trying pressed by keyboard keeps the focus while it stops, and give
     await user.keyboard("{Enter}");
     await settle();
     expect(stop).toHaveTextContent("Stopping…");
-    expect(stop).toHaveAttribute("aria-disabled", "true");
+    expect(
+      stop,
+      "Stopping… does not refuse a press while its write's last attempt is out"
+    ).toHaveAttribute("aria-disabled", "true");
     expect(stop, "Stop trying lost the focus while its write's last attempt is out").toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
@@ -343,6 +346,21 @@ test("a press that leaves the indicator drawn keeps the focus in it, in the same
   }
 });
 
+/** Presses two writes Dispatch refuses; answers the indicator and the second write's Discard. */
+async function twoRefusedWrites(
+  writes: Writes
+): Promise<{ discard: HTMLElement; indicator: HTMLElement }> {
+  indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+  indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => Promise.reject(verdict));
+  await settle();
+  const indicator = screen.getByTestId("pending-writes");
+  const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
+  const discard = within(line.closest("li") as HTMLElement).getByRole("button", {
+    name: "Discard",
+  });
+  return { discard, indicator };
+}
+
 // A focus a pointer press put in the indicator is not handed on: Chromium focuses a pressed
 // button and draws it no focus ring, so moving that focus onto the other row's control would put
 // it, unseen, where the next Space or Enter presses that control. A Discard pressed by pointer
@@ -351,14 +369,7 @@ test("a Discard pressed by pointer that takes its row away moves the focus to no
   const user = userEvent.setup();
   const { unmount, writes } = mountOnPage();
   try {
-    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
-    indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => Promise.reject(verdict));
-    await settle();
-    const indicator = await screen.findByTestId("pending-writes");
-    const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
-    const discard = within(line.closest("li") as HTMLElement).getByRole("button", {
-      name: "Discard",
-    });
+    const { discard, indicator } = await twoRefusedWrites(writes);
 
     await user.click(discard);
     await settle();
@@ -398,14 +409,7 @@ test("a Discard tapped on a touch screen that takes its row away moves the focus
   jest.useFakeTimers();
   const { unmount, writes } = mountOnPage();
   try {
-    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
-    indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => Promise.reject(verdict));
-    await settle();
-    const indicator = screen.getByTestId("pending-writes");
-    const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
-    const discard = within(line.closest("li") as HTMLElement).getByRole("button", {
-      name: "Discard",
-    });
+    const { discard, indicator } = await twoRefusedWrites(writes);
 
     await tap(discard);
     await settle();
@@ -472,6 +476,53 @@ test("a key after a pointer press no click ended lets the indicator note where t
     await jump(30 * 60_000);
     expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
+  } finally {
+    unmount();
+    stopBlurring();
+    realClock();
+  }
+});
+
+// A touch that scrolls the indicator's list ends in a `pointercancel` and no `click`, which ends
+// the press as a key does: the focus a Stop trying pressed by keyboard hands to its row's Retry,
+// once its write is refused, is noted as the focus coming in, so the Discard the reader then
+// presses gives the focus back to where it came from as the indicator goes.
+test("a touch press on the indicator that the browser cancels lets it note the focus it hands on", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const stopBlurring = emulateChromiumFocusFixup();
+  const attempt = Promise.withResolvers<never>();
+  const { unmount, writes } = mountOnPage();
+  try {
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => attempt.promise);
+    await settle();
+    await jump(SEND_DEADLINE_MS);
+    const indicator = screen.getByTestId("pending-writes");
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    await user.tab();
+    expect(within(indicator).getByRole("button", { name: "Stop trying" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await settle();
+    const list = within(indicator).getByRole("list");
+    act(() => {
+      for (const type of ["pointerdown", "pointercancel"]) {
+        list.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: "touch" }));
+      }
+    });
+
+    attempt.reject(refusal);
+    await jump(30 * 60_000);
+    expect(within(indicator).getByRole("button", { name: "Retry" })).toHaveFocus();
+    await user.tab();
+    expect(within(indicator).getByRole("button", { name: "Discard" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await settle();
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(
+      elsewhere,
+      "the focus Retry took from the Stop trying it replaced was not noted as coming from Elsewhere"
+    ).toHaveFocus();
   } finally {
     unmount();
     stopBlurring();

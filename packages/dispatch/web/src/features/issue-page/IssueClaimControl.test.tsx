@@ -40,7 +40,9 @@ function ClaimWrites({ issue }: { issue: IssueDetails }): ReactNode {
 
 /**
  * The claim's row of Details around one issue. `liveness` is what the issue read says of the
- * claim's holder, which outranks the agent list.
+ * claim's holder, which outranks the agent list. Answers, with the row's client and user, its
+ * `drawClaim`, which puts another claim, or none, on the cached issue the row is drawn on, as a
+ * read of the issue that found it so would.
  *
  * `tooltips` is the surface the chip is drawn on. The issue page raises no tooltip at all
  * (`components/tooltips.tsx`), which is this helper's default and what decides whether each
@@ -51,7 +53,12 @@ function claimRow(
   issue: Issue,
   liveness: ClaimHolderLiveness = {},
   { tooltips = false }: { tooltips?: boolean } = {}
-): { client: QueryClient; unmount: () => void; user: UserEvent } {
+): {
+  client: QueryClient;
+  drawClaim: (next: IssueClaim | null) => void;
+  unmount: () => void;
+  user: UserEvent;
+} {
   const details: IssueDetails = {
     route_status: null,
     route_holder: null,
@@ -81,6 +88,11 @@ function claimRow(
   const view = render(<ClaimRow issueKey={details.key} />, { wrapper });
   return {
     client,
+    drawClaim: (next) => {
+      const read = client.getQueryData<IssueDetails>(issueQuery(details.key).queryKey);
+      if (read === undefined) throw new Error("the row reads no cached issue");
+      act(() => client.setQueryData(issueQuery(details.key).queryKey, { ...read, claim: next }));
+    },
     unmount: () => view.unmount(),
     user,
   };
@@ -449,9 +461,7 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
       "the release landed with no answer, and the focus fell to the page rather than to Release"
     ).toBe(control);
 
-    const read = view.client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
-    if (read === undefined) throw new Error("the row reads no cached issue");
-    act(() => view.client.setQueryData(issueQuery("CORE-1").queryKey, { ...read, claim: null }));
+    view.drawClaim(null);
     const none = await screen.findByText(CONTROL_LABELS.none);
     expect(
       document.activeElement,
@@ -466,6 +476,12 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
   }
 });
 
+/** A claim of the issue by another session than `claim`'s, made after it. */
+const reviewerClaim: IssueClaim = {
+  actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
+  at: "2026-09-24T07:00:00Z",
+};
+
 // Dispatch releases whichever claim the issue holds, so a release is about the claim it was
 // pressed on. After a release that failed, the claim released elsewhere and the issue claimed
 // again by another session, the row drew the old failure beside the new claim, with a Retry that
@@ -479,23 +495,15 @@ test("a failed release is forgotten once its claim is gone, so a new claim reads
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
   const view = claimRow({ ...base, claim });
-  const drawClaim = (next: IssueClaim | null) => {
-    const read = view.client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
-    if (read === undefined) throw new Error("the row reads no cached issue");
-    act(() => view.client.setQueryData(issueQuery("CORE-1").queryKey, { ...read, claim: next }));
-  };
   try {
     await view.user.click(
       await screen.findByRole("button", { name: "Release the claim on CORE-1" })
     );
     await screen.findByRole("alert");
 
-    drawClaim(null);
+    view.drawClaim(null);
     await screen.findByText(CONTROL_LABELS.none);
-    drawClaim({
-      actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
-      at: "2026-09-24T07:00:00Z",
-    });
+    view.drawClaim(reviewerClaim);
     const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     expect(
       screen.queryByRole("alert"),
@@ -516,6 +524,87 @@ test("a failed release is forgotten once its claim is gone, so a new claim reads
     ).toBeNull();
     await act(async () => out.resolve({ ...base, claim: null }));
     expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
+  } finally {
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The failure's line stays while the release its Retry sent again is out (`useSaidFailure`), and
+// the write reports no failure then, so a failure was forgotten only once it stood: the claim
+// released elsewhere and the issue claimed again while that Retry was out, the row drew the old
+// failure beside the new claim, with a Retry that would release it. The line goes with its claim
+// whatever the write's state.
+test("a failed release whose Retry is out draws no failure beside a new claim", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+    runningAgent({ session_id: "session-two", title: "Reviewer" }),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const view = claimRow({ ...base, claim });
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    await screen.findByRole("alert");
+    const retried = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => retried.promise);
+    await view.user.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+
+    view.drawClaim(null);
+    await screen.findByText(CONTROL_LABELS.none);
+    view.drawClaim(reviewerClaim);
+    await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    expect(
+      screen.queryByRole("alert"),
+      "the new claim reads the failure of the release of the claim before it while its Retry is out"
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the new claim offers a Retry that would release it"
+    ).toBeNull();
+
+    await act(async () => retried.reject(new Error("network error again")));
+    expect(
+      screen.queryByRole("alert"),
+      "the failure of the Retry of the claim before it is said beside the new claim"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A release is about the claim it was pressed on, which need not be the one the row was first
+// drawn with: once the issue is claimed again while the row is drawn, a Release of the new claim
+// that fails says so beside it.
+test("a release that fails on a claim drawn after the row was says so beside it", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+    runningAgent({ session_id: "session-two", title: "Reviewer" }),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const view = claimRow({ ...base, claim });
+  try {
+    await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    view.drawClaim(reviewerClaim);
+    await waitFor(() => expect(screen.getByTestId("issue-claim")).toHaveTextContent("Reviewer"));
+    await view.user.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert"),
+        "a failed release of the claim drawn after the row was says nothing"
+      ).not.toBeNull()
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not release this claim.");
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBeDefined();
   } finally {
     view.unmount();
     release.mockRestore();
