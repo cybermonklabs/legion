@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // signInTimeout bounds a whole sign-in, the person's walk to another device included. The device
@@ -89,7 +90,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "To sign in, open %s and type the code %s\n", authorization.VerificationURI, authorization.UserCode)
+	fmt.Fprintln(stderr, signInPrompt(authorization.VerificationURI, authorization.UserCode))
 	signedIn, err := flow.Wait(ctx, authorization)
 	if err != nil {
 		return err
@@ -129,6 +130,15 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	// identity token names.
 	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, base.Words(record.EnrollmentID))
 	return nil
+}
+
+// signInPrompt is the line that tells a person where to sign in and what to type there: the
+// issuer's verification page and user code, both the issuer's text. The page prints as
+// internal/redact's URL prints it - whole where it is a plain http(s) URL, redact.NotPrinted
+// otherwise, so a page that carries a user, a password or a query does not print - and the code
+// on one line (redact.OneLine), so a line break in it cannot start a line of its own.
+func signInPrompt(page, code string) string {
+	return "To sign in, open " + redact.URL(page) + " and type the code " + redact.OneLine(code)
 }
 
 // keyPEM is a key as the bytes a record keeps, failing nothing: a key this process just made
