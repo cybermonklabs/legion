@@ -862,8 +862,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 
 // GitHubCredentialHelper is the `credential.helper` every shared clone gets: `legion
 // git-credential`, which answers git from the hosts.yml of the owner the repository's path names
-// (the owner's directory of LEGION_GH_OWNERS_DIR, and nothing else; ghconfig.HostsFile), since
-// every shared clone also sets credential.useHttpPath so git passes that path. The `legion` in it
+// (the owner's directory of LEGION_GH_OWNERS_DIR; ghconfig.HostsFile), since every shared clone
+// also sets credential.useHttpPath so git passes that path. For a repository of an owner with no
+// such directory it reads the repository from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's owner, or else of its source's owner, where the bundle
+// holds that directory (cmd/legion's forkUpstreamDir). The `legion` in it
 // is resolved on PATH when git runs it, so the one it reaches is the process's own (a pane's
 // launcher directory, the image's /opt/legion/bin), and the value names no path of this machine's
 // that the clone would carry to another.

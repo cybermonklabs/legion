@@ -367,7 +367,8 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the round
 							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered and no turn runs, or at the round's bound
+							// answered, no turn runs and no claim's activity report holds it
+							// (internal/daemon's roundEnd.holding), or at the round's bound
 							// (pod_update_grace_minutes) whatever the roles answered, an operator's
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod

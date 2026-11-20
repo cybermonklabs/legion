@@ -683,13 +683,14 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
 	names := &issueNames{}
+	dropped := newDroppedSettlements()
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		metadata, err := message.Metadata()
 		if err != nil {
 			metadata = nil
 		}
 		lag.observe(message, metadata)
-		run := consumerRun{spec: c.spec, repositories: c.repositories(), pool: c.pool, maxAge: c.maxAge, names: names, remade: c.remade}
+		run := consumerRun{spec: c.spec, repositories: c.repositories(), pool: c.pool, maxAge: c.maxAge, names: names, remade: c.remade, dropped: dropped}
 		if consumeMessage(ctx, message, metadata, run, handlers) {
 			progress.handle(c.spec.Now())
 		}
@@ -737,6 +738,94 @@ func (n *issueNames) legacyRead(now time.Time) (uint64, bool) {
 		return count, false
 	}
 	return count, n.legacyLogged.CompareAndSwap(last, now.UnixNano())
+}
+
+// DroppedSettlementsKept is how many checks settlements each line that names a dropped settlement
+// remembers having logged (RecentKeys): the consumer's for the decoder's refusals, by event id,
+// and for a settlement of a pull request the daemon does not record, by identity, and the
+// workflow engine's for the settlements it does not apply. One settlement delivered many times
+// writes one line, and a settlement forgotten past this bound, or after a restart, one more
+// (dispatch://INFRA-4135 R6).
+const DroppedSettlementsKept = 4096
+
+// NoRecordedPullRequestLine is the line that names a checks settlement dropped because no pull
+// request the daemon records matches its repository and number. One cause has one message text,
+// whichever layer finds it, so a reader matches the line without knowing which did: the consumer
+// finds it before any transaction (handleMessage, recordedPullRequest), which is where nearly
+// every such settlement ends, and workflow's checks finds a record gone by the time the fact is
+// applied. Hence the workflow prefix on a line intake writes too: it is the workflow's verdict
+// that the settlement has no pull request to apply to, read early.
+const NoRecordedPullRequestLine = "workflow: a checks settlement was dropped: no pull request is recorded for it"
+
+// SettlementIdentity is a checks settlement as the lines that name its drop key it: its pull
+// request, and the head, generation and snapshot the listener's line that published it names.
+type SettlementIdentity struct {
+	Repo       string
+	Number     int
+	Head       string
+	Generation int64
+	Snapshot   string
+}
+
+// Identity is the settlement's identity.
+func (c PullRequestChecks) Identity() SettlementIdentity {
+	return SettlementIdentity{Repo: c.Repo, Number: c.Number, Head: c.HeadSHA, Generation: c.Generation, Snapshot: c.Snapshot}
+}
+
+// Attributes is the identity as the log attributes every drop line begins with.
+func (s SettlementIdentity) Attributes() []any {
+	return []any{"repo", s.Repo, "number", s.Number, "head", s.Head, "generation", s.Generation, "snapshot", s.Snapshot}
+}
+
+// RecentKeys is a set of the last keys added to it, at most its bound, the oldest forgotten first,
+// and safe for use by several goroutines at once. A line written once per key remembers its keys
+// in one, so what the line costs stays at the bound however many keys come: a key forgotten, or a
+// set made again when its process starts, writes its line once more.
+type RecentKeys[K comparable] struct {
+	mu    sync.Mutex
+	bound int
+	held  map[K]struct{}
+	// order is the keys held in the order they were added; once it holds bound keys it is a ring
+	// whose oldest key is at next.
+	order []K
+	next  int
+}
+
+// NewRecentKeys is an empty set of at most bound keys, and of one at the least.
+func NewRecentKeys[K comparable](bound int) *RecentKeys[K] {
+	return &RecentKeys[K]{bound: max(bound, 1), held: map[K]struct{}{}}
+}
+
+// Add holds key and reports whether it was not held already. A key added to a full set takes the
+// place of the oldest one held.
+func (r *RecentKeys[K]) Add(key K) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, held := r.held[key]; held {
+		return false
+	}
+	if len(r.order) < r.bound {
+		r.order = append(r.order, key)
+	} else {
+		delete(r.held, r.order[r.next])
+		r.order[r.next] = key
+		r.next = (r.next + 1) % r.bound
+	}
+	r.held[key] = struct{}{}
+	return true
+}
+
+// droppedSettlements is what one durable consumer remembers of the checks settlements whose drop
+// it logged: the event ids of those the decoder refused (decodedMessage.Refused), and the
+// identities of those of a pull request the daemon does not record (handleMessage). An event id
+// and an identity are keys of two kinds, so each has a set of its own.
+type droppedSettlements struct {
+	refused    *RecentKeys[string]
+	unrecorded *RecentKeys[SettlementIdentity]
+}
+
+func newDroppedSettlements() *droppedSettlements {
+	return &droppedSettlements{refused: NewRecentKeys[string](DroppedSettlementsKept), unrecorded: NewRecentKeys[SettlementIdentity](DroppedSettlementsKept)}
 }
 
 const (
@@ -825,7 +914,8 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 // length of the hang.
 //
 // run.names counts the issue events this consumer read named in the old form, and the ones named
-// in neither form, which do not decode (issueNames).
+// in neither form, which do not decode (issueNames). run.dropped is what it remembers of the
+// checks settlements whose drop it logged (droppedSettlements).
 func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, handlers []Handler) bool {
 	spec := run.spec
 	decoded, err := decodeMessage(message.Subject(), spec.Project, run.repositories, message.Data())
@@ -834,6 +924,15 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	}
 	for _, field := range decoded.Unread {
 		logMessage(spec.Logger, slog.LevelWarn, "unreadable field taken as absent", message, "event_id", decoded.EventID, "field", field)
+	}
+	// A checks settlement the decoder refused decodes to no fact and is acknowledged below as every
+	// such message is, so this line is all that is left of it (dispatch://INFRA-4135 R6): the
+	// field refused, and the head, generation and snapshot its payload gives, by which the
+	// listener's line that published the settlement is found. It is written once for each event
+	// id, so the same settlement delivered again writes no second line.
+	if decoded.Refused != nil && run.dropped.refused.Add(decoded.EventID) {
+		attributes := append([]any{"event_id", decoded.EventID, "reason", decoded.Refused.reason}, decoded.Refused.settlement.attributes()...)
+		logMessage(spec.Logger, slog.LevelWarn, "intake: a checks settlement was dropped: the decoder refused it", message, attributes...)
 	}
 	if decoded.LegacyName {
 		if count, due := run.names.legacyRead(spec.Now()); due {
@@ -872,7 +971,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 		logMessage(spec.Logger, level, line, message, attributes...)
 	}
 	started := time.Now()
-	outcome := handleMessage(work, log, run.position(metadata, mayHaveFailed), spec, run.pool, decoded, handlers)
+	outcome := handleMessage(work, log, run.position(metadata, mayHaveFailed), spec, run.pool, decoded, handlers, run.dropped)
 	took := time.Since(started)
 	stop()
 
@@ -978,8 +1077,9 @@ type messageLog func(level slog.Level, line string, attributes ...any)
 // and terminates nothing, and reads nothing of a jetstream.Msg: log writes its lines, and a
 // replay runs it with no message and no position (nil). Each read keeps its own AckWait bound,
 // nested under work, so one dependency that is slow to answer is cut while the handling as a
-// whole runs to HandlerLimit.
-func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
+// whole runs to HandlerLimit. dropped is the memory of the checks settlements whose drop was
+// logged (droppedSettlements): the consumer's for a delivery, the replay's own for a replay.
+func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under, and a replay answers such a message no fact.
 	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
@@ -995,6 +1095,16 @@ func handleMessage(work context.Context, log messageLog, position *streamPositio
 	if !recorded {
 		log(slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction",
 			"event_id", decoded.EventID)
+		// Each checks settlement of a pull request the daemon does not record is named once at
+		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
+		// request no Legion issue runs, or one whose opened event never reached the daemon — so a
+		// reader can tell such a drop from a lost settlement (dispatch://INFRA-4135 R6). The
+		// DEBUG line above is written for each review and checks settlement of such a pull request.
+		if checks, ok := decoded.Fact.(PullRequestChecks); ok {
+			if identity := checks.Identity(); dropped.unrecorded.Add(identity) {
+				log(slog.LevelInfo, NoRecordedPullRequestLine, identity.Attributes()...)
+			}
+		}
 		return ackOutcome()
 	}
 	prepared, err := prepareRepository(work, spec, decoded.Fact)

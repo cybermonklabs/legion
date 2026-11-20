@@ -119,10 +119,12 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to push its work and answer (api's
-	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
-	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted.
+	// non-empty answer: the round asks each role of that place to do the steps of its update
+	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
+	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
+	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -220,21 +222,50 @@ type LaunchSessionNamer interface {
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
-// with everything it owns — the role Secrets holding each launcher's token and credentials — and
-// the call returns once the cluster no longer has it; a Sandbox already gone is success, so a
-// retried close finishes. Nothing durable is kept by keeping it: an issue pod's disk is the pod's
-// own and went with the pod, so the issue's next launch makes the Sandbox again.
+// with everything it owns — the role Secrets holding each launcher's token and credentials, and a
+// kept volume (IssueReleaser) — and the call returns once the cluster no longer has it; a Sandbox
+// already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
+// the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
 // Process-only runtimes have no shared issue resources to suspend.
 type IssueSuspender interface {
 	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
 }
 
+// IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
+// idle release, and the release of a pod no claim of the issue can use. It is named apart from
+// Runtime.Release, which ends one claim's process. It stops the pod once authorize, called under
+// the runtime's issue launch lock, says the release still stands (false finishes the release
+// without acting). Then it keeps what the issue's next pod can use: a Sandbox that owns the
+// issue's kept volume stays, Suspended, with that volume, and the Secrets that the next launch
+// writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
+// already gone is success, so a retried release finishes. Process-only runtimes have no pod to
+// release.
+type IssueReleaser interface {
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+}
+
+// IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
+// since and that the issue's next launch keeps: the runtime's stored Sandbox of the issue owns a
+// kept volume, was made before since, carries no reset mark, and has the disk shape that the
+// configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
+// which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
+// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
+// its update round is over, with the time the round opened, to tell the issue whether the work its
+// roles did not push is still on the volume. A runtime whose pods keep no volume implements
+// nothing here, and the daemon then reads no kept volume.
+type IssueVolumeReader interface {
+	IssueKeepsVolume(issue string, since time.Time) bool
+}
+
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. The role named must be one whose process runs: the shim builds the
-// bundle with the jj and git of the workspace it already works in. A runtime whose processes
-// share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
+// (IssueReleaser), and the pod after the release takes no saved work that volume holds
+// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
+// the save is then the one copy of the unpushed work. The role named must be one whose process
+// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
+// runtime whose processes share no workspace implements nothing here, and the release of such a
+// pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
@@ -280,6 +311,22 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // its confirmation named a release the store no longer holds, stays in the daemon's database for
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
+
+// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
+// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
+// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
+// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
+// than the save. It would then log a notice that the work was lost, and the bundle would hold the
+// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
+// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
+// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
+// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
+// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
+// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
+// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
+// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
+// rule cannot order against the save.
+type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own

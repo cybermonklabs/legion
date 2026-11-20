@@ -44,12 +44,15 @@ type Records struct {
 // GiveUps replays and discards a project's give-ups, the messages the intake gave up and keeps
 // whole (record.IntakeFailure). A replay applies the stored message through the handling a live
 // delivery takes, with the handlers a live delivery runs, and publishes nothing to the stream, so
-// GiveUps needs no NATS.
+// GiveUps needs no NATS. dropped is the replay's own memory of the checks settlements whose drop
+// it logged (droppedSettlements), as a consumer keeps one, so a settlement replayed again names
+// its drop once.
 type GiveUps struct {
 	pool         Pool
 	spec         ConsumerSpec
 	repositories func() []ghrepo.Repository
 	handlers     []Handler
+	dropped      *droppedSettlements
 }
 
 // NewGiveUps is the replay and the discard of the give-ups of records' project, a replay applying
@@ -66,7 +69,7 @@ func NewGiveUps(records Records, handlers ...Handler) (*GiveUps, error) {
 	if repositories == nil {
 		repositories = func() []ghrepo.Repository { return spec.Repositories }
 	}
-	return &GiveUps{pool: records.Pool, spec: spec, repositories: repositories, handlers: handlers}, nil
+	return &GiveUps{pool: records.Pool, spec: spec, repositories: repositories, handlers: handlers, dropped: newDroppedSettlements()}, nil
 }
 
 // RequestError is a replay or a discard refused for what it asks, before any statement: a
@@ -170,7 +173,7 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 	work, cancel := context.WithTimeout(withReplayClose(ctx, replayClose{project: g.spec.Project, id: given.ID, by: caller, now: g.spec.Now}),
 		g.spec.HandlerLimit)
 	defer cancel()
-	outcome := handleMessage(work, log, nil, g.spec, g.pool, decoded, g.handlers)
+	outcome := handleMessage(work, log, nil, g.spec, g.pool, decoded, g.handlers, g.dropped)
 	switch {
 	case outcome.nak:
 		return g.failed(ctx, replayed, outcome.err)

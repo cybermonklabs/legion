@@ -129,6 +129,8 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_JJ_LOG":         v.jjLog,
 		"WINIT_CREDENTIAL_LOG": v.credentialLog,
 		"WINIT_CLONE_FAILURES": "",
+		"WINIT_FETCH_FAILURE":  "",
+		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
 		"WINIT_CHECKOUT_DELAY": "",
@@ -299,7 +301,8 @@ func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name,
 // Every refusal `provision` makes happens before anything touches the volume or runs a tool
 // (cmdWorkspaceInit's flag and token checks, workspace-init.ts): an init container refused on its
 // input leaves the issue volume as it found it. It refuses to run pointed at the provisioning
-// token, which `fetch` alone holds; and the command refuses no subcommand, or another.
+// token, which `fetch` alone holds; and the command refuses no subcommand, or another. A refusal
+// of its input exits 3, a cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -329,13 +332,13 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 		{
 			name: "no --issue",
 			args: func(v *issueVolume) []string { return append([]string{"provision"}, v.args("LEGION-42")[3:]...) },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--issue must be a Dispatch issue key like LEGION-1 (got "")` },
 		},
 		{
 			name: "an --issue that is not an issue key",
 			args: func(v *issueVolume) []string { return v.args("nope") },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--issue must be a Dispatch issue key like LEGION-1 (got "nope")` },
 		},
 		{
@@ -343,7 +346,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			args: func(v *issueVolume) []string {
 				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
 			},
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--repo must be "owner/name" (got "acme")` },
 		},
 		{
@@ -351,7 +354,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			args: func(v *issueVolume) []string {
 				return []string{"provision", "--issue", "LEGION-42", "--repo", "../x", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
 			},
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--repo "../x" has a ".." segment` },
 		},
 		{
@@ -359,7 +362,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			args: func(v *issueVolume) []string {
 				return []string{"provision", "--issue", "LEGION-42", "--repo", "acme/wid gets", "--root", v.root, "--credential-helper", "x", "--feed", v.feed}
 			},
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--repo "acme/wid gets" holds whitespace` },
 		},
 		{
@@ -369,13 +372,13 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 				return []string{"provision", "--issue", "nope", "--repo", "../..", "--root", "legion-root", "--feed", "feed"}
 			},
 			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token) },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--repo "../.." has a ".." segment` },
 		},
 		{
 			name: "no --credential-helper",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:7] },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return "--credential-helper is required" },
 		},
 		{
@@ -383,28 +386,34 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			args: func(v *issueVolume) []string {
 				return []string{"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", "legion-root", "--credential-helper", "x", "--feed", v.feed}
 			},
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--root must be an absolute path (got "legion-root")` },
 		},
 		{
 			name: "no --feed",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:9] },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return `--feed must be an absolute path (got "")` },
 		},
 		{
 			name: "no --default-branch",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[:11] },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return "--default-branch is required" },
 		},
 		{
 			name: "pointed at the provisioning token",
 			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token) },
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string {
 				return "LEGION_PROVISION_TOKEN_FILE is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds"
 			},
+		},
+		{
+			name: "no git on PATH",
+			env:  func(t *testing.T, _ *issueVolume) { t.Setenv("PATH", t.TempDir()) },
+			code: 3,
+			says: func(*issueVolume) string { return "git is not on PATH" },
 		},
 		{
 			name: "no jj on PATH",
@@ -419,7 +428,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 				}
 				t.Setenv("PATH", bin)
 			},
-			code: 1,
+			code: 3,
 			says: func(*issueVolume) string { return "jj is not on PATH" },
 		},
 		{
@@ -780,7 +789,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 }
 
 // A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named.
+// with the failed command named, and exits 1: its cause is on the issue's volume.
 func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
 	v := newIssueVolume(t)
 	v.setenv(t)
@@ -1053,7 +1062,8 @@ func killProcessesRunning(t *testing.T, path string) []string {
 // reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
 // --cache-url with its user name and its query: each line keeps the cache's host and path, and
-// neither the user name nor the query reaches the init log.
+// neither the user name nor the query reaches the init log. A cache that is never ready is a cause
+// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v := newIssueVolume(t)
 	// A port nothing listens on, so every ask of the cache fails at its dial.
@@ -1068,8 +1078,8 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
-	if want := "the repository cache " + shown + " was not ready within "; code != 1 || !strings.Contains(stderr, want) {
-		t.Errorf("exit %d, stderr %q; want 1 naming %q", code, stderr, want)
+	if want := "the repository cache " + shown + " was not ready within "; code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
+		t.Errorf("exit %d, stderr %q; want %d naming %q", code, stderr, workspace.InitExitOutsideVolume, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-7"} {
 		if strings.Contains(stdout+stderr, credential) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -211,17 +212,31 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // issue's pull request, which is R2. It runs before the settlement is applied, so the woken role
 // is told of the settlement the same transaction records.
 //
+// A settlement wakes only where it is the settlement checks applies for the record's head: the
+// wake builds the candidate checks applies (settlementCandidate) and asks the apply step itself
+// (classify.ApplyCheckSettlement), and wakes only when that applies it and leaves the record with
+// the settlement's head as its head and as the head its checks stand at. The second half is not
+// implied by the first while a head run is open, where applied says only that the replay with the
+// settlement changed the judgement. The answer is read and dropped here: checks applies the
+// settlement and stores it in this same transaction. So a settlement of another head wakes
+// nobody, whether an old head's or one of a head the record has not reached yet (its synchronize
+// has not arrived), and checks' drop line names it (logUnappliedSettlement); and a redelivery of a
+// settlement already applied wakes nobody either, since it applies nothing (dispatch://INFRA-4135
+// R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
+// issue's pull request).
+//
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
 // of its checks finishes wakes the pod no second time, because the role's resume is still open.
 //
-// A settlement wakes nobody where the record will not take it for the pull request's head now
-// (dispatch://INFRA-1575 R1): one of a head the pull request has left, or one of its head that is
-// older than a settlement the record applied (classify.SettlementStale). It is weighed against the
+// Asking the apply step also keeps a settlement delivered late, or replayed from a message the
+// intake gave up on, however late, from waking anyone where the record will not take it for the
+// pull request's head now (dispatch://INFRA-1575 R1): one of a head the pull request has left, or
+// one of its head older than what the record already took. The apply step weighs it against the
 // fence the record would apply it to (classify.SettlementFor), which is the one the record
 // remembers for the head when its fence was reset, so it is stale exactly where it is with the
-// fence standing. Such a settlement arrives late, or replayed from a message the intake gave up
-// on, however late, and the woken worker's task would name a verdict that is no longer the head's.
+// fence standing, and the woken worker's task would otherwise name a verdict that is no longer
+// the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -230,8 +245,8 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || pr == nil {
 		return "", err
 	}
-	candidate := settlementCandidate(fact)
-	if stood, stands := classify.SettlementFor(*pr, candidate); !stands || classify.ClassifySettlement(stood, candidate) == classify.SettlementStale {
+	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); !applied ||
+		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
 		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -273,6 +288,28 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // nor a cancelled check run says the head passed every check run and then names the statuses,
 // since the head did not pass every check. With no failed status the text is the one it was before
 // the daemon read statuses.
+//
+// A check whose run GitHub skipped is named skipped, in name order, with the sentence that a
+// skipped check ran nothing on this head, after the failed or the cancelled checks and before the
+// failed statuses. A run of fact.CheckRuns that neither Failing nor Cancelled names is skipped
+// when its conclusion is skipped (record.RunSkipped: the settlement's skipped group named it) or
+// when GitHub's word for it is skipped (record.AttemptRun.GitHubConclusion): a settlement whose
+// skipped group the decoder could not read carries the word and no skipped conclusion, and the CI
+// message the roles are told names such a run by its word (settledChecks, shownAs), so the task
+// names it skipped too and the two texts agree. Where the settlement names no check failed or
+// cancelled the text then says the head had none, and never that it passed every check or every
+// check run: a skipped check ran nothing, and a woken role that read it as a pass would believe a
+// suite held back for the merge queue passed on a head where it never ran (dispatch://INFRA-4135
+// R1).
+//
+// Each skipped name is quoted as a Go string (strconv.Quote), as the CI message quotes every
+// check name: a check run's name is whoever wrote the workflow's text, and this task is read into
+// an agent's prompt, so the quotes bound it, and a quote or a newline inside it is escaped rather
+// than closing the one around it. The failed and cancelled names stay unquoted, as they were
+// before the daemon read the skipped group, so a settlement with no skipped run gives the task it
+// gave before, word for word (dispatch://INFRA-4135 R3), whatever other word GitHub gave each
+// run: the word of a check that passed (success or neutral, which R1 counts as passed) adds
+// nothing to `passed every check`, and the CI message is where each check is named by its word.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
@@ -285,16 +322,32 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 		}
 	}
 	slices.Sort(failed)
+	var skipped []string
+	for _, run := range fact.CheckRuns {
+		ranNothing := run.Conclusion == record.RunSkipped || run.GitHubConclusion == string(record.RunSkipped)
+		if ranNothing && !slices.Contains(fact.Failing, run.Name) && !slices.Contains(fact.Cancelled, run.Name) {
+			skipped = append(skipped, run.Name)
+		}
+	}
+	slices.Sort(skipped)
+	for i, name := range skipped {
+		skipped[i] = strconv.Quote(name)
+	}
 	var detail string
 	switch {
 	case len(fact.Failing) > 0:
 		detail = head + " failed " + strings.Join(fact.Failing, ", ")
 	case len(fact.Cancelled) > 0:
 		detail = head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+	case len(skipped) > 0:
+		detail = head + " had no failed or cancelled check"
 	case len(failed) > 0:
 		detail = head + " passed every check run"
 	default:
 		return head + " passed every check"
+	}
+	if len(skipped) > 0 {
+		detail += "; skipped " + strings.Join(skipped, ", ") + ": " + skippedRanNothing
 	}
 	switch len(failed) {
 	case 0:

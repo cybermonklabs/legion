@@ -591,10 +591,10 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 	}
 }
 
-// A line the daemon's side sends before its hello_ack is logged cut to its first 80 bytes
-// ("ignoring a frame received before hello_ack") before the URL rule reads it. When that cut falls
-// inside a URL's userinfo, before its "@", the rule finds no userinfo in what is left and keeps the
-// start of the user name and the password as the URL's host. The shim writes no part of either.
+// A line the daemon's side sends before its hello_ack is logged cut to 80 runes ("ignoring a frame
+// received before hello_ack"). A cut made before the URL rule would stop inside a URL's userinfo,
+// before its "@", where the rule finds no userinfo in what is left and keeps the start of the user
+// name and the password as the URL's host. The shim writes no part of either.
 func TestWorkerShimWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
 	// Built as the other tests of this package build one, so the pre-push leak check reads no
 	// credential in the source. The line's first 80 bytes end inside the password, before the "@".

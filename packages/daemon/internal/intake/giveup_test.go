@@ -123,7 +123,8 @@ func productionRun(t *testing.T, pool Pool, logs *lockedBuffer, now func() time.
 	if err != nil {
 		t.Fatalf("normalizedSpec: %v", err)
 	}
-	return consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: notificationStreamMaxAge, names: &issueNames{}}
+	return consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: notificationStreamMaxAge, names: &issueNames{},
+		dropped: newDroppedSettlements()}
 }
 
 // notificationStreamMaxAge is how long production's notification stream keeps a message, its

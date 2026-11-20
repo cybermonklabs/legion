@@ -34,6 +34,22 @@ import (
 // names nothing after the flag, so it matches nothing.
 var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?(?:(?:authorization:\s*(?:bearer|token|basic)\s+|[\w-]*(?:api-key|-token)\s*:\s*)(?:\\?["'])*\\?[$<]|\\?\$\{?\w*(?:auth|token|bearer|credential))`)
 
+// actionsCredential is a GitHub Actions credential expression, which workflowCredential finds
+// given to a command as an argument. Actions writes its value into the command as a shell writes a
+// variable's, so tokenValue and passwordWord take it as a flag's value where they take a variable.
+const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
+
+// workflowCredential matches a GitHub Actions credential expression, `${{ github.token }}` or
+// `${{ secrets.<name> }}`, given to a command as an argument: on a `run:` line after a word, quoted
+// or not (`run: .github/scripts/read.sh "${{ github.token }}"`), or quoted after a word on any line,
+// as in a `run: |` body (`gh-read.sh --token "${{ github.token }}"`). Actions writes the expression's
+// value into the command, so it is in that process's command line. The forms that put it in a
+// process's environment or in an action's input name a key or a variable before it - a step's
+// `env:` key (`GH_TOKEN: ${{ github.token }}`), a `with:` input, `export GH_TOKEN="${{ … }}"` - and
+// match nothing, and so does prose that writes the expression unquoted. A credential flag's value,
+// unquoted or after `=` (`--token=${{ github.token }}`), is credentialFlag's to find.
+var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])` + actionsCredential)
+
 // credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
 // request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
 // itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
@@ -41,11 +57,14 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\
 // other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token|--oauth2-bearer)(?:=|[ \t]+)`)
 
-// passwordWord matches a `-u` word whose password is a variable, a token file read into it or a
-// placeholder (`"$user:$token"`, `"ada:$(cat …)"`, `"ada:<password>"`), or a variable named for a
-// credential (`"$credential"`). A `--user "$(id -u):$(id -g)"` of docker's names no password, and
-// `env -u "$name"` unsets a variable, so neither matches.
-var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<)|\$\{?\w*(?:token|credentials?)\b`)
+// passwordWord matches a `-u` word whose password is a variable, a token file read into it, a
+// placeholder or an Actions credential expression, a value like a variable (`"$user:$token"`,
+// `"ada:$(cat …)"`, `"ada:<password>"`, `"ci:${{ secrets.REGISTRY_PASSWORD }}"`), or a variable
+// named for a credential (`"$credential"`). shellWord cuts an unquoted expression at its first
+// blank, so a word that ends at an expression's `${{` after the `:` matches too. A
+// `--user "$(id -u):$(id -g)"` of docker's names no password, and `env -u "$name"` unsets a
+// variable, so neither matches.
+var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<|` + actionsCredential + `|\$\{\{$)|\$\{?\w*(?:token|credentials?)\b`)
 
 // tokenWord matches a body word that carries a token: a form field `token=$…` or `token=<…>`, a
 // JSON field `"…token": "$…"`, a variable named for one (`$agent_token`, but not
@@ -53,11 +72,11 @@ var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:c
 var tokenWord = regexp.MustCompile(`(?i)token\\?["']?\s*[=:]\s*\\?["']?\\?[$<]|\$\{?\w*token\b|\$\(\s*(?:cat\s|<)[^)]*token`)
 
 // tokenValue matches a `--token` or `--oauth2-bearer` value that is one variable, one command
-// substitution or one placeholder, quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`. A
-// value that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file
-// and no token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither
-// matches.
-var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
+// substitution, one placeholder or one Actions credential expression, a value like a variable,
+// quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`, `${{ secrets.ADMIN_PAT }}`. A value
+// that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file and no
+// token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither matches.
+var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>|` + actionsCredential + `)\\?["']?(?:[\s;|&)]|$)`)
 
 // shellWord is the shell word s starts with: up to the first blank, `|`, `;`, `&`, `<`, `>` or `)`
 // that stands outside quotes and outside a `$(…)`, so a quoted body with blanks in it, or with a
@@ -109,7 +128,7 @@ func shellWord(s string) string {
 
 // credentialArgument says whether a line gives a command a credential as an argument.
 func credentialArgument(line string) bool {
-	if credentialHeader.MatchString(line) {
+	if credentialHeader.MatchString(line) || workflowCredential.MatchString(line) {
 		return true
 	}
 	for _, at := range credentialFlag.FindAllStringSubmatchIndex(line, -1) {
@@ -243,6 +262,16 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4`,
 		`curl -H "$auth_header" "$url"`,
 		`curl --header "${AUTHORIZATION}" "$url"`,
+		`        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"`,
+		`        run: .github/scripts/publish.sh ${{ secrets.DEPLOY_KEY }}`,
+		`          gh-read.sh --token "${{ github.token }}" jobs`,
+		// An Actions expression is the value of a credential flag as much as a shell variable is:
+		// after --token, -u's password or a body flag, with or without `=`, quoted or not.
+		`          gh api --token ${{ secrets.ADMIN_PAT }} /user`,
+		`          gh-read.sh --token="${{ github.token }}" jobs`,
+		`        run: gh-read.sh --token=${{ github.token }} jobs`,
+		`          curl -u "ci:${{ secrets.REGISTRY_PASSWORD }}" https://registry.internal.example/v2/`,
+		`          curl -d "token=${{ secrets.DISPATCH_TOKEN }}" https://dispatch.internal.example/api`,
 	} {
 		if !credentialArgument(line) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -278,6 +307,13 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl -H @"$auth_header_file" "$url"`,
 		`printf 'X-Api-Key: %s' "$KEY" | curl -H @- "$url"`,
 		`curl --oauth2-bearer fixture-token "$url"`,
+		`          GH_TOKEN: ${{ github.token }}`,
+		`          password: ${{ secrets.GITHUB_TOKEN }}`,
+		`            github_token=${{ secrets.GITHUB_TOKEN }}`,
+		`          export GH_TOKEN="${{ github.token }}"`,
+		`        run: echo "${{ steps.download-blobs.conclusion }}"`,
+		`  * its step's token is ${{ github.token }}, and its time limit is short: the act is a`,
+		`mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' $'        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n'`,
 	} {
 		if credentialArgument(line) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

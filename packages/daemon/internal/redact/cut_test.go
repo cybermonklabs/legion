@@ -1,8 +1,13 @@
 package redact
 
 import (
+	"errors"
+	"fmt"
+	"io"
+	"math/rand/v2"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // plantedUser and plantedQuery are what the cut tests write into a URL as its user name and its
@@ -89,7 +94,8 @@ func TestRunesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 
 // A URL the bound of Bytes falls inside leaves no part of its user name or its query, and a text
 // the rule leaves alone is cut as it was before the rule: at the rune start at or below the bound,
-// with no ellipsis, and cut says whether it was.
+// with no ellipsis, and cut says whether it was. A run of bytes that start no character is cut at
+// the bound, not stepped back over to the text's start.
 func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 	for _, tc := range []struct {
 		name, text string
@@ -119,6 +125,13 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("é", 25),
 			n:       41,
 			want:    strings.Repeat("é", 20),
+			wantCut: true,
+		},
+		{
+			name:    "a bound inside a run of bytes that start no character",
+			text:    strings.Repeat("\x80", 10),
+			n:       9,
+			want:    strings.Repeat("\x80", 9),
 			wantCut: true,
 		},
 		{
@@ -209,9 +222,11 @@ func TestTailKeepsTheEndOfWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 }
 
 // A read its bound stopped inside a URL, before its user name's "@" or inside its query, keeps
-// no part of either: Read drops the run the bound stopped inside, which the rule alone reads as a
-// URL with no userinfo. A read the bound did not cut is kept whole, through the rule, and so is
-// one the bound cut just after a byte that ends a URL.
+// no part of either: Read drops the run the bound stopped inside, which holds the URL's "://" and
+// which the rule alone reads as a URL with no userinfo. A read the bound did not cut is kept
+// whole, through the rule, and so is one the bound cut just after a byte that ends a URL, and one
+// whose last run, after its last byte that ends a URL or with none, holds no "://": no URL's
+// userinfo or query lies in such a run.
 func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 	for _, tc := range []struct {
 		name, text string
@@ -234,8 +249,20 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			want:    "moved to ",
 		},
 		{
-			name: "a read that stopped inside a run with no end",
+			name: "a read that stopped inside a run with no end and no \"://\"",
 			text: "unfinished",
+			cut:  true,
+			want: "unfinished",
+		},
+		{
+			name: "a read that stopped inside a run with no \"://\" after a URL",
+			text: "moved to " + plantedURL + " unfinish",
+			cut:  true,
+			want: "moved to https://h.example/p unfinish",
+		},
+		{
+			name: "a read that stopped inside a run with no end that holds \"://\"",
+			text: "https://h.example/unfinished",
 			cut:  true,
 			want: "",
 		},
@@ -266,6 +293,86 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("Read(%q, %t) = %q, want %q", tc.text, tc.cut, got, tc.want)
+			}
+		})
+	}
+}
+
+// Read of a text cut at any point, as a read its bound cut there, keeps no part of a user name or
+// a query that the URL rule removes from the whole text, and of a text the rule leaves alone it
+// keeps a start of that text: for 2000 texts built under a fixed seed from words, white space,
+// quotes, "https://", a bare "://", "@", "?", a URL's user name, host, path, query and fragment
+// with and without an "https://" before it, and bytes that start no character, at each of their
+// cut points. The rule alone after such a cut keeps the start of a user name as a host, or the end
+// of a query as a path, and the test fails where no cut of the texts meets that.
+func TestReadOfAnyCutKeepsNoPartOfWhatTheURLRuleRemovesFromTheWholeText(t *testing.T) {
+	random := rand.New(rand.NewPCG(4193, 4463))
+	leaks := 0
+	for n := range 2000 {
+		query := fmt.Sprintf("token=planted-query-token-%d", n)
+		rest := plantedUser + "@h.example/p?" + query + "#frag"
+		pieces := []string{"moved", "to", " ", "\n", "\u00a0", `"`, "'", "<", ">", "https://", "://", "@", "?",
+			"é", "\xff", "\x80", rest, "https://" + rest, "https://" + rest}
+		var text strings.Builder
+		for range 1 + random.IntN(12) {
+			text.WriteString(pieces[random.IntN(len(pieces))])
+		}
+		whole := text.String()
+		ruled := URLCredentials(whole)
+		var removed []string
+		for _, planted := range []string{plantedUser, query} {
+			if partOf(ruled, planted) == "" {
+				removed = append(removed, planted)
+			}
+		}
+		for c := range len(whole) + 1 {
+			got := Read(whole[:c], true)
+			if ruled == whole && !strings.HasPrefix(whole, got) {
+				t.Fatalf("Read(%q, true) = %q, want a start of %q, which the rule leaves alone", whole[:c], got, whole)
+			}
+			if len(removed) == 0 {
+				continue
+			}
+			alone := URLCredentials(whole[:c])
+			for _, planted := range removed {
+				if part := partOf(got, planted); part != "" {
+					t.Fatalf("Read(%q, true) = %q, which holds %q of %q, which the rule removes from %q", whole[:c], got, part, planted, whole)
+				}
+				if partOf(alone, planted) != "" {
+					leaks++
+				}
+			}
+		}
+	}
+	if leaks == 0 {
+		t.Fatal("the rule alone keeps a part of what it removes from the whole text after no cut of the texts: the test tests nothing")
+	}
+}
+
+// ReadBounded answers the first limit bytes of a read and whether its bound cut them: cut where
+// there was more to read than limit, kept whole and not cut at limit bytes or fewer, and cut where
+// the read ended on an error, which it answers with what came before the error.
+func TestReadBoundedTellsAReadItsBoundCutFromOneReadWhole(t *testing.T) {
+	reset := errors.New("connection reset mid-body")
+	for _, tc := range []struct {
+		name    string
+		r       io.Reader
+		want    string
+		wantCut bool
+		wantErr error
+	}{
+		{name: "a body longer than the limit", r: strings.NewReader("0123456789"), want: "01234567", wantCut: true},
+		{name: "a body of exactly the limit", r: strings.NewReader("01234567"), want: "01234567"},
+		{name: "a body shorter than the limit", r: strings.NewReader("0123"), want: "0123"},
+		{
+			name: "a read that ended on an error", r: io.MultiReader(strings.NewReader("0123"), iotest.ErrReader(reset)),
+			want: "0123", wantCut: true, wantErr: reset,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kept, cut, err := ReadBounded(tc.r, 8)
+			if string(kept) != tc.want || cut != tc.wantCut || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ReadBounded = %q, %t, %v; want %q, %t, %v", kept, cut, err, tc.want, tc.wantCut, tc.wantErr)
 			}
 		})
 	}

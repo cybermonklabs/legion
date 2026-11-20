@@ -261,7 +261,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if keep && response.StatusCode == http.StatusAccepted {
 		return true, nil
 	}
-	answered, cut, readErr := readBody(response.Body, refusalBodyLimit)
+	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
@@ -402,7 +402,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	case http.StatusNotFound:
 		return SessionRegistration{}, nil
 	}
-	body, cut, _ := readBody(response.Body, refusalBodyLimit)
+	body, cut, _ := redact.ReadBounded(response.Body, refusalBodyLimit)
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
 		session, response.Status, excerpt(body, cut))
 }
@@ -443,7 +443,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
 	}
 	if response.StatusCode == http.StatusOK {
-		body, cut, readErr := readBody(response.Body, answerBodyLimit)
+		body, cut, readErr := redact.ReadBounded(response.Body, answerBodyLimit)
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
@@ -453,7 +453,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
-	body, cut, readErr := readBody(response.Body, refusalBodyLimit)
+	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
@@ -491,22 +491,12 @@ func (e *RoleLookupRefused) Error() string {
 	return fmt.Sprintf("the Envoy listener refuses the role lookup (status %d): %s", e.Status, e.Reason)
 }
 
-// readBody reads body to its end or to limit bytes, and one byte more, so a body its bound cut is
-// told from one read whole: it answers the first limit bytes, whether they are cut, and the read's
-// error. A read that ended on an error is cut as well, where the error came: that can be inside a
-// URL before its "@", as the bound can, so a caller that quotes the body and drops the error still
-// gives the body to redact.Read as cut (excerpt).
-func readBody(body io.Reader, limit int) (read []byte, cut bool, err error) {
-	read, err = io.ReadAll(io.LimitReader(body, int64(limit)+1))
-	cut = len(read) > limit || err != nil
-	return read[:min(len(read), limit)], cut, err
-}
-
-// excerpt is body as an error names it, where cut says whether its read was cut (readBody):
-// trimmed, and no longer than refusalBodyLimit. The body is the listener's, so it is cut only once
-// the URL rule has read it: redact.Read drops the run a read that was cut stopped inside, which
-// can be a URL whose "@" was never read, and redact.Bytes cuts what the rule leaves where that is
-// longer than refusalBodyLimit, as only a 200's body read to answerBodyLimit can be.
+// excerpt is body as an error names it, where cut says whether its read was cut
+// (redact.ReadBounded): trimmed, and no longer than refusalBodyLimit. The body is the listener's,
+// so it is cut only once the URL rule has read it: redact.Read drops the run a read that was cut
+// stopped inside where it holds a "://", as a URL whose "@" was never read does, and redact.Bytes
+// cuts what the rule leaves where that is longer than refusalBodyLimit, as only a 200's body read
+// to answerBodyLimit can be.
 func excerpt(body []byte, cut bool) string {
 	text := redact.Read(string(body), cut)
 	if len(text) > refusalBodyLimit {
@@ -613,6 +603,6 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	case http.StatusNoContent, http.StatusNotFound:
 		return SessionDeleted{Deleted: true}, nil
 	}
-	body, cut, _ := readBody(response.Body, refusalBodyLimit)
+	body, cut, _ := redact.ReadBounded(response.Body, refusalBodyLimit)
 	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, excerpt(body, cut))
 }

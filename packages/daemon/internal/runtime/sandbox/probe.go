@@ -1097,7 +1097,7 @@ func (r *Runtime) unstarted(ctx context.Context, name string, uid types.UID, bud
 // (lastBytes), so a refusal's quote reaches the OK line whatever a line's length. The read stops at
 // probeLogReadBytes, and one byte more read past it tells a read its bound stopped from one that
 // reached the log's end: such a read can stop inside a URL, before its "@", and redact.Read drops
-// the run it stopped inside before the URL rule reads the rest.
+// the run it stopped inside, when that run holds "://", before the URL rule reads the rest.
 func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -1107,6 +1107,9 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	defer stream.Close()
+	// The read keeps its own form rather than redact.ReadBounded's, which holds the head of the
+	// read, probeLogReadBytes of it, in memory: a refusal quotes the log's end, and tailBytes holds
+	// only that end (three times probeLogBytes at most), however long the log is.
 	text, err := lastBytes(io.LimitReader(stream, probeLogReadBytes), probeLogBytes)
 	if err != nil {
 		return "", err

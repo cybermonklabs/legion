@@ -179,8 +179,9 @@ func readRemadeFailures(ctx context.Context, pool Pool, project, consumer string
 
 // consumerRun is what consumeMessage reads beside the message: the consumers' spec, the
 // repositories GitHub intake hears now, the pool, how long the stream keeps a message (its
-// MaxAge, 0 for ever), the issue names the consumer read (issueNames), and the open failures of
-// the consumers made again in this boot (remadeFailures).
+// MaxAge, 0 for ever), the issue names the consumer read (issueNames), the open failures of the
+// consumers made again in this boot (remadeFailures), and the checks settlements whose drop the
+// consumer logged (droppedSettlements).
 type consumerRun struct {
 	spec         ConsumerSpec
 	repositories []ghrepo.Repository
@@ -188,6 +189,7 @@ type consumerRun struct {
 	maxAge       time.Duration
 	names        *issueNames
 	remade       *remadeFailures
+	dropped      *droppedSettlements
 }
 
 // intakeMessage is the message of a delivery whose metadata parsed as the record keeps it, with

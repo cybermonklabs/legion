@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The sweep's deletions, made by a removal that follows no symbolic link, where they see no more
@@ -284,7 +286,8 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	case "failed":
 		if cut {
 			// Its closing quote was not kept, so it cannot be unquoted: it is the refusal as
-			// the deleter wrote it, as far as it was kept, and the mark that says it was cut.
+			// redact.Read kept it of what the deleter wrote (readReply), and the mark that says
+			// it was cut.
 			return errors.New(refusal + volumeDeleteReplyCut)
 		}
 		said, err := strconv.Unquote(refusal)
@@ -319,9 +322,9 @@ func newDeleterReplies(replies io.Reader) *bufio.Reader {
 // than volumeDeleteReplyBytes. A longer one is kept to that many bytes and the rest of it read
 // and dropped up to its newline, so the reply after it is read from its own start. replies is a
 // reader made by newDeleterReplies, or one with a larger buffer: a smaller one would cut a reply
-// within the bound. The deleter is legion's own volume-trim-delete, whose replies are about the
-// paths it removes, and a path joined from a directory walk holds no "://", so the cut is made
-// here rather than by redact.Read, which would drop a long run that holds no byte ending a URL.
+// within the bound. The cut reply is a child's text its bound cut, so it is kept as redact.Read
+// keeps a bounded read: the URL rule reads it, and a cut that stopped inside a URL drops the run
+// it stopped in.
 func readReply(replies *bufio.Reader) (string, bool, error) {
 	chunk, err := replies.ReadSlice('\n')
 	if err == nil && len(chunk) <= volumeDeleteReplyBytes+1 {
@@ -330,7 +333,7 @@ func readReply(replies *bufio.Reader) (string, bool, error) {
 	if err != nil && err != bufio.ErrBufferFull {
 		return "", false, err
 	}
-	kept := string(chunk[:min(len(chunk), volumeDeleteReplyBytes)])
+	kept := redact.Read(string(chunk[:min(len(chunk), volumeDeleteReplyBytes)]), true)
 	for err == bufio.ErrBufferFull {
 		_, err = replies.ReadSlice('\n')
 	}
@@ -508,10 +511,9 @@ const volumeDeleteFirstFD = 3
 // (trailing): what it keeps goes into errRemoverGone's text, and from there into the sweep's
 // stop reason and a line of the pod's log, so its size is this package's to choose rather than
 // the child's. The first bytes are the ones kept because they are the ones that say why: the
-// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. The
-// child is legion's own volume-trim-delete, whose words are about the paths it removes, and a path
-// joined from a directory walk holds no "://", so the cut is made here rather than by redact.Read,
-// which would drop a long run that holds no byte ending a URL.
+// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. What it
+// kept is a child's text its bound may have cut, so trailing quotes it as redact.Read keeps a
+// bounded read.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -541,11 +543,14 @@ func (b *saidBuffer) Write(p []byte) (int, error) {
 }
 
 // trailing is what the child has said so far, as one parenthesised line for an error to carry,
-// and "" when it has said nothing.
+// and "" when it has said nothing: through the URL rule, with the run its end stopped inside
+// dropped when it holds "://" (redact.Read). Every text is given to Read as cut, not only one the
+// bound cut: ended can read it while exec's copy is still writing what the child says, so what it
+// holds can end anywhere.
 func (b *saidBuffer) trailing() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	said := strings.TrimSpace(b.buf.String())
+	said := strings.TrimSpace(redact.Read(b.buf.String(), true))
 	if b.cut {
 		said += volumeDeleteSaidCut
 	}

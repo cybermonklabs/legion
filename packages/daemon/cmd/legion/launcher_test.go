@@ -404,10 +404,10 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	}
 }
 
-// A line the launcher quotes is cut to its first 80 runes (shimwire.Decode's refusal of a line
-// that is no frame) before the URL rule reads it. When that cut falls inside a URL's userinfo,
-// before its "@", the rule finds no userinfo in what is left and keeps the start of the user name
-// and the password as the URL's host. The launcher writes no part of either.
+// A line the launcher quotes is cut to 80 runes (shimwire.Decode's refusal of a line that is no
+// frame). A cut made before the URL rule would stop inside a URL's userinfo, before its "@", where
+// the rule finds no userinfo in what is left and keeps the start of the user name and the password
+// as the URL's host. The launcher writes no part of either.
 func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
 	// The user name and the password go into the URL as the other tests of this package build one,
 	// so the pre-push leak check reads no credential in the source. The line's first 80 runes end

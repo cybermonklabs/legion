@@ -62,7 +62,7 @@ func TestARefusedRequestNamesTheSecretAndTheRuleOnBothRoutes(t *testing.T) {
 	listed.Tags[policy.TagRequesters] = listedRequester
 	listed.Tags[policy.TagMaxGrant] = policytest.FixtureMaxGrant
 	ts.Secrets.Put(listed)
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/GCLOUD_DEMO/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "GCLOUD_DEMO"); status != http.StatusOK {
 		t.Fatalf("reread GCLOUD_DEMO = %d: %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)

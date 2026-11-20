@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -328,7 +329,18 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
           </span>
         )}
       </div>
-      {references.data === undefined ? null : <References references={references.data} />}
+      {/* A references read that fails - a walk cut at the server's bound among them, which the
+          shared retry policy leaves to this Retry - says so rather than hiding the section. */}
+      {references.isError ? (
+        <QueryError
+          error={references.error}
+          message={`References unavailable: ${apiErrorMessage(references.error, "the read failed")}`}
+          onRetry={() => void references.refetch()}
+          retrying={references.isFetching}
+        />
+      ) : references.data === undefined ? null : (
+        <References references={references.data} />
+      )}
       <ArtifactDropZone upload={upload}>
         {visibleArtifacts.length === 0 ? (
           <p className={`text-sm ${textMutedOnSurface}`}>

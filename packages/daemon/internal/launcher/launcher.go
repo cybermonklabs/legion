@@ -1156,11 +1156,8 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // launcher's lines for a role and each generation of its child are written through writers of
 // their own, and none is ever joined to another's unfinished line. stdout and stderr are the
 // container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
-// reads it whole, a child's lines among them however its pipe was read. A line of which
-// maxLogLine bytes are held with no newline reaches them in writes of their own, each cut just
-// after a byte that ends a URL for the rule (logLineCut), so the rule reads each URL of it whole
-// too; only a run of maxLogLine bytes with no such byte after its first, which one URL can be, is
-// cut inside it.
+// reads it whole, a child's lines among them however its pipe was read, but for a line longer than
+// maxLogLine, which reaches them where logLineCut cuts it.
 type roleLog struct {
 	mu             sync.Mutex
 	stdout, stderr io.Writer
@@ -1190,9 +1187,8 @@ func (l *roleLog) linef(format string, args ...any) {
 }
 
 // maxLogLine bounds how much of one unfinished line a role can make PID 1 hold: a longer line is
-// written out as lines of their own, each at most that length and cut just after its last byte
-// that ends a URL for the URL rule (logLineCut), and the rest follows behind the prefix again.
-// A run of that length with no such byte after its first is cut at that length.
+// written out as lines of their own, each at most that length and cut where logLineCut says, and
+// the rest follows behind the prefix again.
 const maxLogLine = 64 * 1024
 
 // prefixWriter holds back a partial line until its newline arrives, so a prefix only ever
@@ -1204,10 +1200,6 @@ type prefixWriter struct {
 	out     io.Writer
 	prefix  string
 	partial []byte
-	// scanned is how much of partial is known to hold no newline, so a line written in many small
-	// writes is searched once, byte by byte, rather than again from its start at every write: the
-	// search runs under the role log's one lock, which every role's lines wait on.
-	scanned int
 	// line is the buffer each prefixed line is built in, reused from one line to the next.
 	line []byte
 }
@@ -1215,8 +1207,9 @@ type prefixWriter struct {
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.log.mu.Lock()
 	defer w.log.mu.Unlock()
+	// What partial holds from earlier writes holds no newline, so the search starts after it.
+	start, scanned := 0, len(w.partial)
 	w.partial = append(w.partial, p...)
-	start, scanned := 0, w.scanned
 	for {
 		rest := w.partial[start:]
 		end := bytes.IndexByte(rest[scanned:], '\n')
@@ -1232,7 +1225,6 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 			start, scanned = start+cut, len(rest)-cut
 		default:
 			w.partial = w.partial[:copy(w.partial, rest)]
-			w.scanned = len(rest)
 			return len(p), nil
 		}
 	}
@@ -1249,12 +1241,15 @@ func (w *prefixWriter) emit(line []byte, cut bool) {
 }
 
 // logLineCut is where prefixWriter cuts run, a line's first maxLogLine bytes with no newline in
-// them: just after its last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL
-// of the part before the cut then ends inside it, and each of the rest starts after it, so the
-// rule of the container's log reads each whole, in one write, and removes from the two writes what
-// it would remove from the line whole. A run whose only such byte is its first, or that holds
-// none, is cut at its end. The search reads back from the run's end to the cut, and the bytes it
-// read past hold no such byte, so a line's cuts read each of its bytes twice at most.
+// them, so that a line longer than maxLogLine reaches the container's log in writes of its own:
+// just after run's last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL of
+// the part before the cut then ends inside it, and each of the rest starts after it, so the rule
+// of the container's log (redact.Writer) reads each whole, in one write, and removes from the two
+// writes what it would remove from the line whole. A run whose only such byte is its first, or
+// that holds none, is cut at its end: one URL can be such a run, and that cut is the one cut of
+// the role log that can fall inside a URL. The search reads back from the run's end to the cut,
+// and the bytes it read past hold no such byte, so a line's cuts read each of its bytes twice at
+// most.
 func logLineCut(run []byte) int {
 	for i := len(run) - 1; i > 0; i-- {
 		if redact.EndsURLByte(run[i]) {
@@ -1272,7 +1267,7 @@ func (w *prefixWriter) flush() {
 	defer w.log.mu.Unlock()
 	if len(w.partial) > 0 {
 		w.emit(w.partial, true)
-		w.partial, w.scanned = w.partial[:0], 0
+		w.partial = w.partial[:0]
 	}
 }
 

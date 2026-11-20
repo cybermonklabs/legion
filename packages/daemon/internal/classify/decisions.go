@@ -1354,17 +1354,22 @@ func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []str
 }
 
 // GreenContexts is every context green on the pull request's current head, each once and sorted:
-// the name of each check run GitHub reported on that head that concluded succeeded (HeadRuns,
-// record.RunSucceeded), and, while a settlement stands for the head (Settled), the context of each
-// commit status the record keeps for the head (record.CommitStatus.StampedWith) whose state is
-// success. A required context is matched by its name alone, as a check run's name or a status's
-// context; GitHub's integration id is not compared. A status counts only on a settled head, since
-// the record keeps the statuses of its checked head, and a status kept for another head says
-// nothing of this one.
+// the name of each check run GitHub reported on that head that concluded succeeded or skipped
+// (HeadRuns, record.RunSucceeded, record.RunSkipped), and, while a settlement stands for the head
+// (Settled), the context of each commit status the record keeps for the head
+// (record.CommitStatus.StampedWith) whose state is success. A required context is matched by its
+// name alone, as a check run's name or a status's context; GitHub's integration id is not
+// compared. A status counts only on a settled head, since the record keeps the statuses of its
+// checked head, and a status kept for another head says nothing of this one.
+//
+// A skipped run is green as a succeeded one is, since GitHub's branch protection takes a skipped
+// required check as passing: so ConflictNeedsMerge answers for a skipped run exactly as for a
+// succeeded one (dispatch://INFRA-4135 R2), and a required check whose run skipped does not by
+// itself make the daemon merge the base forward at once (record.ConflictCheckNotGreen).
 func GreenContexts(pr record.PullRequest) []string {
 	var green []string
 	for _, run := range HeadRuns(pr) {
-		if run.Conclusion == record.RunSucceeded {
+		if run.Conclusion == record.RunSucceeded || run.Conclusion == record.RunSkipped {
 			green = append(green, run.Name)
 		}
 	}

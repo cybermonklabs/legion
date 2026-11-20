@@ -27,7 +27,9 @@ advertise_host: legion-daemon-widgets.legion.svc
 daemon_url: http://legion-daemon-widgets.legion.svc:13370
 admission_cap: 4                       # issues running at once, roots and children alike
 pod_update_max_open_rounds: 2          # issues holding an open pod-update round at once; a round asks every
-                                       # worker of its issue to push and wait. Leave the key out for no limit
+                                       # worker of its issue to push its work, let its subagents and background
+                                       # jobs finish or stop them, push what they made and wait. Leave the key
+                                       # out for no limit
 pod_update_rounds_per_minute: 1        # pod-update rounds one sweep of the daemon opens; a sweep within 50
                                        # seconds of the last opening opens none. Leave the key out for no limit
 controller: operator                   # who runs the controller: operator (legion controller start,
@@ -378,6 +380,8 @@ runtime:
     #                                  # issue.
     #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
     #                                  # The default is storage_class above.
+    #     keep_volume: false           # true: a microVM issue pod's volume outlives the pod.
+    #                                  # docs/kubernetes.md, A kept volume on a microVM pod.
     #     metadata:                    # optional: a microVM pod's launcher serves the metadata
     #                                  # server's paths inside the pod. The pod then gets its
     #                                  # Google credential without the node's own address.

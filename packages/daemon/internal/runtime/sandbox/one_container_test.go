@@ -917,13 +917,13 @@ func TestTheBootCensusPassesBothIssuePodLayouts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, containers...)).Resource(sandboxGVR).Namespace(testNamespace)
-			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err != nil {
+			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err != nil {
 				t.Fatalf("census = %v, want none", err)
 			}
 		})
 	}
 	sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, "roles", "tester")).Resource(sandboxGVR).Namespace(testNamespace)
-	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
+	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
 		t.Fatalf("census of an issue pod running roles and a role container = %v, want it refused by name", err)
 	}
 }

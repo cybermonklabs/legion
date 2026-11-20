@@ -1,5 +1,5 @@
 {
-  "about": "GitHub's check runs and commit statuses on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, failed and cancelled grouped by conclusion, a tester or architect run counted only from the reviewer App, and each status in success, failure or error named with its state and GitHub's created_at in statuses, in context order. A status is an entry of its own kind: check_runs, failed and cancelled hold check runs alone, so the status test failing beside the passed check run test leaves test out of failed, and the pending status is not recorded. The check runs arrive through the listener's webhook handler; the statuses arrive through the CI reconcile's writer (cistore.Writer.RecordStatus), which records what Dispatch reads from GitHub, and never through a webhook, since the listener drops each status event. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) is tested against it; the daemon keeps each check's highest-id run the same way (packages/daemon/internal/classify, mergeAttemptSets), and reads each status with its created_at (packages/daemon/internal/intake, decodeChecks). A name is a string, or {repeat, times, then}: repeat written times over, then then. A status is in the shape GitHub's REST answer for a commit's combined status lists it in.",
+  "about": "GitHub's check runs and commit statuses on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, each check_runs entry carrying that run's conclusion word as GitHub gave it (future's a_conclusion_github_adds_later, a word GitHub may add later, passed on as it is and grouped failed), failed, cancelled and skipped grouped by conclusion, the skipped group naming the skipped checks, a tester or architect run counted only from the reviewer App, and each status in success, failure or error named with its state and GitHub's created_at in statuses, in context order. A status is an entry of its own kind: check_runs, failed, cancelled and skipped hold check runs alone, so the status test failing beside the passed check run test leaves test out of failed, and the pending status is not recorded. The check runs arrive through the listener's webhook handler; the statuses arrive through the CI reconcile's writer (cistore.Writer.RecordStatus), which records what Dispatch reads from GitHub, and never through a webhook, since the listener drops each status event. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) is tested against it; the daemon keeps each check's highest-id run the same way (packages/daemon/internal/classify, mergeAttemptSets), and reads each status with its created_at (packages/daemon/internal/intake, decodeChecks). A name is a string, or {repeat, times, then}: repeat written times over, then then. A status is in the shape GitHub's REST answer for a commit's combined status lists it in.",
   "reviewerAppId": "271000",
   "checkRuns": [
     {
@@ -179,20 +179,28 @@
   ],
   "settlement": {
     "check_runs": [
-      { "name": "advice", "id": 118 },
-      { "name": "approval", "id": 112 },
-      { "name": "boot", "id": 113 },
-      { "name": "docs", "id": 117 },
-      { "name": "future", "id": 115 },
-      { "name": "image", "id": 116 },
-      { "name": "lint", "id": 110 },
-      { "name": { "repeat": "l", "times": 2048, "then": "… 2cb82fd4c05ae526" }, "id": 131 },
-      { "name": { "repeat": "l", "times": 2048, "then": "… 6f53cbb6f837dbcc" }, "id": 130 },
-      { "name": "old", "id": 114 },
-      { "name": "retry", "id": 140 },
-      { "name": "test", "id": 102 },
-      { "name": "tester", "id": 120 },
-      { "name": "timeout", "id": 111 }
+      { "name": "advice", "id": 118, "conclusion": "neutral" },
+      { "name": "approval", "id": 112, "conclusion": "action_required" },
+      { "name": "boot", "id": 113, "conclusion": "startup_failure" },
+      { "name": "docs", "id": 117, "conclusion": "skipped" },
+      { "name": "future", "id": 115, "conclusion": "a_conclusion_github_adds_later" },
+      { "name": "image", "id": 116, "conclusion": "cancelled" },
+      { "name": "lint", "id": 110, "conclusion": "failure" },
+      {
+        "name": { "repeat": "l", "times": 2048, "then": "… 2cb82fd4c05ae526" },
+        "id": 131,
+        "conclusion": "success"
+      },
+      {
+        "name": { "repeat": "l", "times": 2048, "then": "… 6f53cbb6f837dbcc" },
+        "id": 130,
+        "conclusion": "failure"
+      },
+      { "name": "old", "id": 114, "conclusion": "stale" },
+      { "name": "retry", "id": 140, "conclusion": "failure" },
+      { "name": "test", "id": 102, "conclusion": "success" },
+      { "name": "tester", "id": 120, "conclusion": "success" },
+      { "name": "timeout", "id": 111, "conclusion": "timed_out" }
     ],
     "failed": [
       "approval",
@@ -205,6 +213,7 @@
       "timeout"
     ],
     "cancelled": ["image"],
+    "skipped": ["docs"],
     "statuses": [
       { "context": "ci/license", "state": "error", "created_at": "2026-10-28T09:02:00Z" },
       { "context": "ci/preview", "state": "success", "created_at": "2026-10-28T09:00:00Z" },
