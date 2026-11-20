@@ -700,8 +700,9 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	// session is stuck. A confirming renew of an inherited id needs no credential at all and
 	// may still be in flight, or still to be retried, when this answers — a register that
 	// asked for no wait sees exactly that — and the session becomes enrolled on its own when
-	// one lands.
-	if resp.State != "enrolled" && !credential {
+	// one lands. A refused session is answered its refusal whatever the helper holds: no login
+	// enrolls it (Session.refuse), so the missing credential is not what it waits for.
+	if resp.State != "enrolled" && resp.State != "refused" && !credential {
 		resp.Code, resp.Error = CodeNoCredential, s.Broker.noCredentialText()
 	}
 	return resp
@@ -710,17 +711,19 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 // notEnrolled answers sign or sign-request for a registered session with no enrollment yet: it is
 // enrolling (NOT_ENROLLED) while the helper holds a launcher credential, and without one the
 // helper enrolls no one until a human logs it in, so the session has no broker identity
-// (NO_CREDENTIAL). NOT_ENROLLED names the last attempt's failure when there is one: an enroll
-// error, or a lapse's refused renew (markLapsed). st is the snapshot the caller found unenrolled,
-// so the failure named is the one that goes with that answer.
+// (NO_CREDENTIAL). A session the broker refused for good (Session.refuse) is NOT_ENROLLED naming
+// the refusal either way, since no login mends it. NOT_ENROLLED names the last attempt's failure
+// when there is one: an enroll error, or a lapse's refused renew (markLapsed). st is the snapshot
+// the caller found unenrolled, so the failure named is the one that goes with that answer.
 func (s *Server) notEnrolled(st enrollmentState) Response {
+	if st.State == "refused" {
+		return Response{Code: CodeNotEnrolled, Error: "the broker refuses to enroll this session, and the helper asks no more: " + st.LastError}
+	}
 	if !s.Broker.HasCredential() {
 		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	msg := "this session is not enrolled with the broker yet"
-	if st.State == "refused" {
-		msg = "the broker refuses to enroll this session, and the helper asks no more: " + st.LastError
-	} else if st.LastError != "" {
+	if st.LastError != "" {
 		msg += "; last attempt: " + st.LastError
 	}
 	return Response{Code: CodeNotEnrolled, Error: msg}

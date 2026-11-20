@@ -22,7 +22,8 @@ import (
 // and that answer is about the person, so no retry mends it. The helper's enroll loop makes ONE
 // call for the session and returns: the session reads "refused" with the broker's refusal as its
 // last error, a sign answers NOT_ENROLLED naming it, and a `register --wait` is answered at the
-// refusal rather than when its wait runs out.
+// refusal rather than when its wait runs out. Once the helper holds no launcher credential, the
+// register and the sign still name the refusal, never the missing login: no login mends it.
 //
 // No clock decides it. The session's wake is set before the loop starts, so a loop that went on
 // retrying after the refusal would read that wake at once and make its second call without
@@ -109,5 +110,18 @@ func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
 		}
 	case <-time.After(stalled):
 		t.Fatalf("a register given an hour's wait was not answered in %s: it waits for an enrollment that cannot come, not for the refusal", stalled)
+	}
+
+	// The credential the refusal came under goes (the broker refuses it, say). The session stays
+	// refused, so both answers still name the refusal rather than the login it lacks.
+	if !srv.Broker.drop(srv.Broker.cred.Load(), dropRefused, "code", "LAUNCHER_INVALID") {
+		t.Fatal("drop the helper's launcher credential")
+	}
+	if reg := srv.registerReply(sess, 0); !reg.OK || reg.State != "refused" || reg.Code == CodeNoCredential ||
+		!strings.Contains(reg.Error, "RESTRICTED_MEMBER_ENROLLS_NOTHING") {
+		t.Fatalf("register of the refused session with no launcher credential held: %+v; want state refused naming RESTRICTED_MEMBER_ENROLLS_NOTHING", reg)
+	}
+	if signed := srv.notEnrolled(sess.snapshot()); signed.Code != CodeNotEnrolled || !strings.Contains(signed.Error, "RESTRICTED_MEMBER_ENROLLS_NOTHING") {
+		t.Fatalf("sign of the refused session with no launcher credential held: %+v; want NOT_ENROLLED naming the refusal", signed)
 	}
 }
