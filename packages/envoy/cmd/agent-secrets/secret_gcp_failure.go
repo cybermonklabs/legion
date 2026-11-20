@@ -2,14 +2,16 @@
 //
 // How the GCP forms word a Secret Manager call that failed: one gRPC interceptor every call goes
 // through, which names the call and the code Secret Manager answered, and the permission it says is
-// missing, never the rest of its message, which whoever answers writes; and the token source the
-// client signs with, which keeps its last failure for an Unauthenticated it caused.
+// missing, never the rest of its message, which whoever answers writes, or the class of the
+// failure of a call that did not reach Secret Manager; and the token source the client signs with,
+// which keeps its last failure for an Unauthenticated it caused.
 package main
 
 import (
 	"context"
 	"path"
 	"regexp"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -30,15 +32,16 @@ func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, r
 
 // storeFailure is err, the failure of the Secret Manager call method, as a message prints it: the
 // call and the gRPC code Secret Manager answered, and the permission its message says is missing,
-// where it names one in the shape Google writes it (gcpMissingPermission), never the rest of its
-// message, which the server writes what it likes in, an echo of what the call sent among it; and a
-// failure that is no answer of Secret Manager's by its class (redact.Class). An Unauthenticated
-// whose cause was this client's own token source failing prints that failure (storeTokens): gRPC
-// writes it into the status message, and its words are this program's own (redactedTokens,
-// gcloudToken, googleidentity). An answer's failure is a storeRefusal, whose status holds the
-// call's code and these words alone, so status.Code, isAccessDenied, gcpDefiniteRefusal and
-// gax's retries still read the code, and gax, which builds its APIError from that status and
-// prints the status's details beside its text, prints none of the server's.
+// where it names one this client's calls need (gcpMissingPermission), never the rest of its
+// message, which the server writes what it likes in, an echo of what the call sent among it; a
+// call that did not reach Secret Manager by the class of gRPC's own failure (storeUnreached); and a
+// failure that is no status at all by its class (redact.Class). An Unauthenticated whose cause was
+// this client's own token source failing prints that failure (storeTokens): gRPC writes it into
+// the status message, and its words are this program's own (redactedTokens, gcloudToken,
+// googleidentity). A failure with a status is a storeRefusal, whose status holds the call's code
+// and these words alone, so status.Code, isAccessDenied, gcpDefiniteRefusal and gax's retries still
+// read the code, and gax, which builds its APIError from that status and prints the status's
+// details beside its text, prints none of the server's.
 func (b *gcpBackend) storeFailure(method string, err error) error {
 	if err == nil {
 		return nil
@@ -49,7 +52,9 @@ func (b *gcpBackend) storeFailure(method string, err error) error {
 		return redact.Masked(err, call+" failed: "+redact.Class(err).Error())
 	}
 	words := call + " answered " + answer.Code().String() + " (its message is not printed)"
-	if answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil {
+	if class, unreached := storeUnreached(answer); unreached {
+		words = call + " failed: it did not reach Secret Manager (" + class + ")"
+	} else if answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil {
 		words = call + " answered Unauthenticated: " + b.tokens.failure().Error()
 	} else if permission := gcpMissingPermission(answer.Message()); permission != "" {
 		words = call + " answered " + answer.Code().String() + " (missing permission: " + permission + "; its message is not printed)"
@@ -57,7 +62,41 @@ func (b *gcpBackend) storeFailure(method string, err error) error {
 	return &storeRefusal{words: words, status: status.New(answer.Code(), words), err: err}
 }
 
-// storeRefusal is Secret Manager's refusal of a call as storeFailure words it: Error is the words,
+// x509UnknownAuthority is the x509 package's words for a certificate no root this machine trusts
+// signed. gax stops retrying a call whose error says them (gax-go's invoke), since a CA missing
+// here does not appear by waiting, so a call that failed so keeps them in its words.
+const x509UnknownAuthority = "x509: certificate signed by unknown authority"
+
+// storeUnreached is the class of a call's failure where the status is gRPC's own, Unavailable for
+// a call that never reached Secret Manager, and whether it is one: gRPC words a failed connection
+// "connection error: desc = ...", and a name its resolver could not turn into an address "name
+// resolver error: ...". Its text names the address it dialed and the system's reason, so it prints
+// as fixed words: a TLS handshake that failed (with x509UnknownAuthority where the text says it), a
+// name that did not resolve, a connection that could not be made, or any other connection that
+// failed. A status Secret Manager answered has text of its own and is no class here.
+func storeUnreached(answer *status.Status) (string, bool) {
+	text := answer.Message()
+	switch {
+	case answer.Code() != codes.Unavailable:
+		return "", false
+	case strings.HasPrefix(text, "name resolver error: "):
+		return "the name did not resolve", true
+	case !strings.HasPrefix(text, "connection error: desc = "):
+		return "", false
+	case strings.Contains(text, "transport: authentication handshake failed"):
+		if strings.Contains(text, x509UnknownAuthority) {
+			return "the TLS handshake failed: " + x509UnknownAuthority, true
+		}
+		return "the TLS handshake failed", true
+	case strings.Contains(text, "no such host"):
+		return "the name did not resolve", true
+	case strings.Contains(text, "transport: Error while dialing"):
+		return "could not connect", true
+	}
+	return "the connection failed", true
+}
+
+// storeRefusal is a Secret Manager call's failure as storeFailure words it: Error is the words,
 // GRPCStatus a status of the call's code and those words with no details, and Unwrap the
 // refusal itself.
 type storeRefusal struct {
