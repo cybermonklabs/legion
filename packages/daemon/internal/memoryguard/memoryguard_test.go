@@ -7201,12 +7201,18 @@ func TestMemoryGuardEndsForUrgencyNoForkThatRanksAtNothingInAStayWithHistory(t *
 // The tester's probe run r17 at 41d4f45b under gVisor at 4 GiB (r17.log, the controller pod's
 // latepool shape): an agent, protected, a parent of a 2.4 GB block read across the band, three
 // sleeping forks of it and six growers. Its kills at 86.60% and 89.96% each ended one grower; its
-// next two readings, 90.92%, showed nothing grown since the kill; and at the next, 95.16%, at or
-// above the urgent share, the guard read every process for 205 ms before it ended the four growers
-// left, and the reading came 12.3 MiB from the 4 GiB kill point. At an urgent reading after a kill
-// every process the guard already knows grew since the previous kill ends before the guard reads
-// the other processes for that reading (INFRA-3531 R1 of spec version 43, verification version
-// 36). Here every smaps read at the urgent reading takes 25 ms, and a fork of the parent started
+// next two readings, 90.92%, showed that run's guard nothing grown since the kill; and at the next,
+// 95.16%, at or above the urgent share, the guard read every process for 205 ms before it ended the
+// four growers left, and the reading came 12.3 MiB from the 4 GiB kill point. At an urgent reading
+// after a kill every process the guard already knows grew since the previous kill ends before the
+// guard reads the other processes for that reading (INFRA-3531 R1 of spec version 43, verification
+// version 36). The replay keeps r17's readings and steps. A process's size as of a kill is the
+// lowest of its reads from its last read before the kill's reading up to the decision's read
+// (INFRA-3368's architect's decision of 2026-11-20), and the growers step after their reads at
+// 86.60% and before the reading at 89.96%: at the first reading at 90.92% they have grown since
+// that kill, and the guard goes on and ends a third grower; the second shows nothing grown since.
+// The three growers left then step, so the urgent reading at 95.16% holds three growers the guard
+// knows. Here every smaps read at the urgent reading takes 25 ms, and a fork of the parent started
 // since the reading before is listed there: the guard reads again first the processes it read at
 // the reading before, in the order that reading ranked them, the growers first, and sends each
 // grower's kill right after its own read, before it reads the parent or a fork and before it lists
@@ -7270,11 +7276,12 @@ func TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItB
 	pod.setAnon(at(8996))
 	h.tick()
 	h.requireKilled(805, 804)
-	for range 2 {
-		pod.setAnon(at(9092))
-		h.tick()
-	}
-	h.requireKilled(805, 804)
+	pod.setAnon(at(9092))
+	h.tick()
+	h.requireKilled(805, 804, 803)
+	pod.setAnon(at(9092))
+	h.tick()
+	h.requireKilled(805, 804, 803)
 	step()
 	pod.add(fakeProcess{pid: 704, ppid: 700, start: 7000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
 	pod.setAnon(at(9516))
@@ -7305,7 +7312,7 @@ func TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItB
 		ended = append(ended, k.PID)
 	}
 	slices.Sort(ended)
-	if want := []int{800, 801, 802, 803}; !slices.Equal(ended, want) {
+	if want := []int{800, 801, 802}; !slices.Equal(ended, want) {
 		t.Fatalf("at the urgent reading the guard ended %v, want %v, every grower alive at it; the log:\n%s", ended, want, log)
 	}
 	// done is how many kills the guard has sent once every grower's kill at the urgent reading is.
@@ -7339,8 +7346,8 @@ func TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItB
 		}
 	}
 	want := []endedChoice{
-		{805, "new", "search", 0}, {804, "grew", "reading", 0},
-		{803, "grew", "reading", 0}, {802, "urgent", "reading", 0}, {801, "urgent", "reading", 0}, {800, "urgent", "reading", 0},
+		{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
+		{802, "grew", "reading", 0}, {801, "urgent", "reading", 0}, {800, "urgent", "reading", 0},
 	}
 	if got := endedChoices(h); !slices.Equal(got, want) {
 		t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, want, log)
@@ -7506,8 +7513,12 @@ func TestMemoryGuardEndsNoKnownGrowerAtAnUrgentReadingOfTheWaitUnderTheFloor(t *
 // kills the urgent rule adds. The pod is r17's at 41d4f45b, as in
 // TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItBeforeTheFullRead: an
 // agent, a parent of a 2.4 GB block, three sleeping forks of it and six growers; the kills at
-// 86.60% and 89.96% end two growers, two readings at 90.92% show nothing grown since, and at the
-// urgent reading, 95.16%, the four growers left have taken a step. No smaps is read twice there.
+// 86.60% and 89.96% end two growers. A process's size as of a kill is the lowest of its reads from
+// its last read before the kill's reading up to the decision's read (INFRA-3368's architect's
+// decision of 2026-11-20), so the growers' step after their reads at 86.60% and before the reading
+// at 89.96% is growth since that kill: the first reading at 90.92% ends a third grower, and the
+// second shows nothing grown since. At the urgent reading, 95.16%, the three growers left have
+// taken a step, and the reads again end each before the full read. No smaps is read twice there.
 func TestMemoryGuardReadsEachProcessOnceAtAnUrgentReadingOfTheWait(t *testing.T) {
 	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
 	pod := newFakePod(t)
@@ -7552,11 +7563,12 @@ func TestMemoryGuardReadsEachProcessOnceAtAnUrgentReadingOfTheWait(t *testing.T)
 	step()
 	pod.setAnon(at(8996))
 	h.tick()
-	for range 2 {
-		pod.setAnon(at(9092))
-		h.tick()
-	}
-	h.requireKilled(805, 804)
+	pod.setAnon(at(9092))
+	h.tick()
+	h.requireKilled(805, 804, 803)
+	pod.setAnon(at(9092))
+	h.tick()
+	h.requireKilled(805, 804, 803)
 	step()
 	pod.setAnon(at(9516))
 	urgentAt := h.clock.Now().Add(h.pending.d)
@@ -7618,14 +7630,20 @@ func TestMemoryGuardEndsNothingInTheWaitForANewForkThatRanksAtNothing(t *testing
 }
 
 // The early kills of an urgent reading of the wait start the wait afresh, and growth since them is
-// measured from that reading's sizes alone: a process that reading could not read takes its first
-// read after the kills, not its size as of the kill before them (INFRA-3531 R1: "less its first
-// size read after the kill for a process the guard first read then"). Three growers, pids 300 to
-// 302, and pid 303, python3 worker.py of 500 MiB, run beside the agent. The reading at the mark,
-// 86%, ends pid 302, the largest grower. Pid 303 then grows 50 MiB and its smaps cannot be read at
-// the next reading, 93%, at or above the urgent share, whose reads again end pids 301 and 300. At
-// the reading after, 93.5%, pid 303 reads again at the size it grew to and has not grown since
-// those kills: the guard ends nothing.
+// measured from each process's size as of them alone, not as of the kill before them: the lowest
+// of its reads from its last read before their reading up to the decision's read, so a process
+// that reading could not read keeps its last read before it (INFRA-3531 R1 of spec version 43, by
+// INFRA-3368's architect's decision of 2026-11-20). Three growers, pids 300 to 302, pid 303,
+// python3 worker.py of 500 MiB, and pid 304, python3 cache.py of 450 MiB, run beside the agent.
+// The reading at the mark, 86%, ends pid 302, the largest grower, on the band's reads. Pid 304
+// stepped 40 MiB before that reading and after the band's last one: its size as of that kill is
+// 450 MiB, and its read after the kill is 490 MiB. Pid 303 then grows 50 MiB, and neither pid
+// 303's smaps nor pid 304's can be read at the next reading, 93%, at or above the urgent share,
+// whose reads again end pids 301 and 300. At 93.3%, pid 304 reads again at 490 MiB, its last read
+// before the early kills' reading: it has not grown since them, and the guard ends nothing, where
+// sizes kept as of the kill at the mark would end it. At 93.5%, pid 303 reads again at 550 MiB,
+// 50 MiB above its last read before the early kills' reading: it has grown since them, and the
+// guard ends it, and not pid 304, which has not.
 func TestMemoryGuardMeasuresGrowthSinceEarlyKillsFromTheirReadingAlone(t *testing.T) {
 	pod := newFakePod(t)
 	growers := []*fakeProcess{
@@ -7634,7 +7652,8 @@ func TestMemoryGuardMeasuresGrowthSinceEarlyKillsFromTheirReadingAlone(t *testin
 		{pid: 302, ppid: 100, start: 5200, args: []string{"python3", "grow.py"}, anon: 300 * mib},
 	}
 	worker := fakeProcess{pid: 303, ppid: 100, start: 5300, args: []string{"python3", "worker.py"}, anon: 500 * mib}
-	pod.add(agent(2*gib), *growers[0], *growers[1], *growers[2], worker)
+	cache := fakeProcess{pid: 304, ppid: 100, start: 5400, args: []string{"python3", "cache.py"}, anon: 450 * mib}
+	pod.add(agent(2*gib), *growers[0], *growers[1], *growers[2], worker, cache)
 	pod.setAnon(3100 * mib)
 	h := newHarness(t, pod, protect("tester", 100))
 	h.signal.onKill = exitFreeing(pod, 0)
@@ -7654,27 +7673,36 @@ func TestMemoryGuardMeasuresGrowthSinceEarlyKillsFromTheirReadingAlone(t *testin
 	}
 	h.requireKilled()
 	grow(10)
+	pod.resize(&cache, cache.anon+40*mib)
 	pod.setAnon(3523 * mib)
 	h.tick()
 	h.requireKilled(302)
 	grow(20)
 	pod.resize(&worker, worker.anon+50*mib)
-	smaps := filepath.Join(pod.proc, "303", "smaps")
-	if err := os.Chmod(smaps, 0); err != nil {
-		t.Fatal(err)
+	// chmod sets the mode of pid's smaps, which the guard cannot read at mode 0.
+	chmod := func(pid int, mode os.FileMode) {
+		if err := os.Chmod(filepath.Join(pod.proc, strconv.Itoa(pid), "smaps"), mode); err != nil {
+			t.Fatal(err)
+		}
 	}
+	chmod(303, 0)
+	chmod(304, 0)
 	pod.setAnon(3810 * mib)
 	h.tick()
 	if got := h.signal.kills(); len(got) != 3 || !slices.Contains(got, 300) || !slices.Contains(got, 301) {
 		t.Fatalf("at the urgent reading of the wait the guard killed %v, want 302 then 301 and 300; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
 	}
-	if err := os.Chmod(smaps, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pod.setAnon(3830 * mib)
+	chmod(304, 0o644)
+	pod.setAnon(3820 * mib)
 	h.tick()
 	if got := h.signal.kills(); len(got) != 3 {
-		t.Fatalf("after the early kills the guard killed %v, want no more: pid 303 has not grown since them; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+		t.Fatalf("after the early kills the guard killed %v, want no more: pid 304 has not grown since its last read before their reading; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+	chmod(303, 0o644)
+	pod.setAnon(3830 * mib)
+	h.tick()
+	if got := h.signal.kills(); !slices.Equal(got[3:], []int{303}) {
+		t.Fatalf("after the early kills the guard killed %v, want 303 alone after them: pid 303 has grown 50 MiB since them, and pid 304 has not grown; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
 	}
 }
 
