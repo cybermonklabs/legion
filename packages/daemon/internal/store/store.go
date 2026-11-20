@@ -30,10 +30,9 @@ const migrateLock int64 = 1208001
 
 // sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
 // of the connection's session, and the close of a connection whose reset failed
-// (releaseMigrationConn). Five seconds, as for the state route's rollback (internal/api,
-// stateRollbackBound). Each step is one or two round trips to a server that has just answered. So
-// the bound stops only a wait for a server that no longer answers, and a longer bound would only
-// hold the boot.
+// (releaseMigrationConn). Five seconds. Each step is one or two round trips to a server that has
+// just answered. So the bound stops only a wait for a server that no longer answers, and a longer
+// bound would only hold the boot.
 const sessionResetBound = 5 * time.Second
 
 // idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open

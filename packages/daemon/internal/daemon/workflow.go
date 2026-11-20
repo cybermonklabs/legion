@@ -678,7 +678,7 @@ func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Cl
 
 // enqueueRoleHolders queues the publication of issue's role sessions in tx
 // (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
-// scope of ctx (intake.WithCommitHooks), which both callers open. An issue of another project
+// scope of ctx (store.Transact), which both callers open. An issue of another project
 // queues nothing and wakes nothing, since only that project's daemon runs a row keyed by its issue
 // (claim.KeyOfProject). That is an ordinary path, not a fault: every ready of the operator's spawn
 // of such an issue takes it, so it is passed over here, before the store, and logs nothing. The

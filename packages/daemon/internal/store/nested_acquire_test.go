@@ -30,13 +30,12 @@ const refusalBound = 10 * time.Second
 const refusalLine = "second pooled connection requested while one is held"
 
 // A caller holding one connection of the pool is refused a second, by name and at once, whichever
-// of the pool's two holders holds it: a transaction, asked for a second one the way the daemon
-// opens its transactions (pgx.BeginFunc, which Store.Tx is), and an open cursor, asked for a
-// query while the caller's loop over its rows has not ended. Each refusal is logged with the
-// stack of the site that asked. The hold ends where the connection is given back — a transaction
-// that commits, a cursor that Next drained or Close closed — and the same caller's next call is
-// served. A caller that holds no connection of the pool is served: the guard refuses a second
-// connection, never a first.
+// of the pool's two holders holds it: a transaction, asked for a second one straight on the pool
+// (BeginTx), and an open cursor, asked for a query while the caller's loop over its rows has not
+// ended. Each refusal is logged with the stack of the site that asked. The hold ends where the
+// connection is given back — a transaction that commits, a cursor that Next drained or Close
+// closed — and the same caller's next call is served. A caller that holds no connection of the
+// pool is served: the guard refuses a second connection, never a first.
 //
 // One connection in the pool, so a connection the caller holds is the only one there is: a
 // request the guard did not refuse would have nothing to be served with and would wait, and so

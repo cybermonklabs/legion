@@ -2910,7 +2910,7 @@ type source struct {
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
+// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
