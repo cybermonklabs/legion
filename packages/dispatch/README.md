@@ -742,6 +742,17 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
   the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
   the end refuses the run.
 
+Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
+`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
+`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a whole number of seconds from 2 to
+999999, in digits; any other value refuses the run, naming the setting. A curl built with the
+synchronous resolver (neither threaded nor c-ares) gives up before it resolves a name, 127.0.0.1
+included, with under 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed;
+curl reads 0 as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+bits. They do not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules
+count on. The script's tests set both to twice their longest row's timeout, so a fake Dispatch that
+a loaded host keeps off the CPU makes a read late, never a verdict wrong.
+
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
   bash outside-path-reach.sh
