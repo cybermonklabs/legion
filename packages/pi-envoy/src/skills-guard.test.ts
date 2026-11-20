@@ -171,8 +171,12 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
 // two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
-// before set and adding none.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+// before set and adding none. R5 of dispatch://INFRA-904, which its owner approved, puts one sentence
+// in `dispatch-first` beside the rule on recording a request: once a person approved an issue's spec,
+// their later request becomes a spec version they approve, not another issue. That line's old
+// alternative contradicted R5, so the rule cannot live elsewhere. The sentence is 19 words, the
+// three skills stand at 2,337 + 19 = 2,356, and the bound moves by those 19 to 2,357.
+test("the three Dispatch skills total fewer than 2,357 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -182,7 +186,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_357);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {
