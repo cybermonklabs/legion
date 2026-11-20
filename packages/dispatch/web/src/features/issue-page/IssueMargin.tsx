@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, UserState } from "../../api/types";
+import type { Artifact, IssueDetails, ReferenceTarget, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -90,6 +90,16 @@ function closedStoppedNote(what: string, field: string): string {
   });
 }
 
+/** The title a names read (`referenceTargetsQuery`) answered for the issue `key`: undefined while
+ *  that read has not answered, where it failed, and where it names nothing at the issue's address. */
+function issueTitleIn(
+  read: { readonly targets: readonly ReferenceTarget[] } | undefined,
+  key: string
+): string | undefined {
+  const reference = buildDispatchReference({ key, kind: "issue" });
+  return read?.targets.find((target) => target.ref === reference)?.name;
+}
+
 /**
  * The margin's own side of the issue page's panel: the margin's cards, and - where the margin
  * keeps a column for that panel - the host the panel is moved into, under them.
@@ -156,9 +166,10 @@ export function IssueMarginCards({
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
- * on, what waits on it and its links on GitHub it reads only while Details and its Development
- * are open, and what references the issue only while Details and its References are open with
- * its Referenced by list, so a load that leaves Details shut costs no request for any of them.
+ * on, what waits on it and the titles of those, and its links on GitHub it reads only while
+ * Details and its Development are open, and what references the issue only while Details and its
+ * References are open with its Referenced by list, so a load that leaves Details shut costs no
+ * request for any of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -241,47 +252,58 @@ export function IssueMarginPanel({
     )
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // Four reads Details makes beyond the issue - the titles of the issues this one waits on, what
-  // waits on it, its links on GitHub, and what references it - are made only while the drawer is
-  // open, so a load that leaves it shut costs no request for them.
+  // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
+  // waits on it and the titles of those, its links on GitHub, and what references it - are made
+  // only while the drawer is open, so a load that leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
   // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
-  // only while its own section is open too - the first three are of rows in Development, where a
-  // link reads GitHub as it is drawn, and the fourth is the References row's list: a reader who
+  // only while its own section is open too - all but the last are of rows in Development, where a
+  // link reads GitHub as it is drawn, and the last is the References row's list: a reader who
   // keeps a section closed costs none of its reads, nor any of them again on an event. Each
   // section's other rows make their own reads, as they do while Details itself is closed.
   const readingDevelopment = reading && sections.isOpen("development");
   const readingReferences = reading && sections.isOpen("references");
   const blockers = issue.blocked_by ?? [];
-  // Read again by the event of an issue whose title changes (`api/event-refresh.ts`'s names
-  // reads), so never by its age, and by a window focus only while its last read failed
-  // (`EVENT_FRESH`).
+  // The titles of the issues this one waits on, and below them those of the issues that wait on
+  // it, are each a names read of the issues' addresses. The event of an issue whose title changes
+  // (`issue.updated` naming `title` among its changes, or naming none, as an older server sends
+  // it) reads again every names read whose key holds that issue's address
+  // (`api/event-refresh.ts`'s `namesReadsNaming`), so neither is read again by its age, and a
+  // window focus reads one again only while its last read failed (`EVENT_FRESH`).
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
     ...EVENT_FRESH,
     enabled: readingDevelopment && blockers.length > 0,
   });
-  const titleOf = (key: string) => {
-    const reference = buildDispatchReference({ key, kind: "issue" });
-    return blockerTitles.data?.targets.find((target) => target.ref === reference)?.name;
-  };
-  // What waits on this issue is the other direction of `blocked_by`: the references of that
-  // kind that point at it, each issue's title the head of its text that the edge carries as its
-  // excerpt (the issue's node itself carries no text). It is kept under the backlink panels'
-  // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
-  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`), its age never
-  // does, and a window focus does only while its last read failed (`EVENT_FRESH`).
+  const titleOf = (key: string) => issueTitleIn(blockerTitles.data, key);
+  // What waits on this issue is the other direction of `blocked_by`: the references of that kind
+  // that point at it. It is kept under the backlink panels' `["references", "to", <reference>]`,
+  // so the event that starts or stops an issue waiting on this one reads it again
+  // (`api/event-refresh.ts`'s rule for `blocked_by`, which reaches every panel under that
+  // prefix), its age never does, and a window focus does only while its last read failed
+  // (`EVENT_FRESH`). It says which issues wait and not what they are called: the rename of one
+  // of them moves no `blocked_by`, and the panel the server names for it (`references_changed`)
+  // is read again by its exact key, which is not this one, so the title an edge carries here
+  // would stay the old one.
   const blocking = useQuery({
     enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
     queryKey: ["references", "to", issueReference, "blocked_by"],
     ...EVENT_FRESH,
   });
-  const blocks = (blocking.data?.edges ?? []).flatMap((edge) =>
-    edge.kind !== "blocked_by" || edge.node.issue_key === undefined
-      ? []
-      : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
+  const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
+    edge.kind !== "blocked_by" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
   );
+  const waitingTitles = useQuery({
+    ...referenceTargetsQuery(waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    ...EVENT_FRESH,
+    enabled: readingDevelopment && waiting.length > 0,
+  });
+  // A waiting issue whose title is not read is drawn by its key alone, as Blocked by draws one.
+  const blocks = waiting.map((key) => ({
+    key,
+    title: issueTitleIn(waitingTitles.data, key) ?? "",
+  }));
   // The line of a read that failed goes once the read answers, and the focus its Retry held goes
   // on in the row rather than to the page. In Blocked by it goes to the row's control, found by
   // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
@@ -289,8 +311,11 @@ export function IssueMarginPanel({
   // it waits on none while the editor is open, as another session's write can leave it, to the
   // editor's box. Each passes over a control that takes no press (`usableControl`), and where the
   // row holds none that takes it, the focus goes to Development's heading, the button that opens
-  // and closes the section the row is in. In Blocks, which has no control, it goes to the first
-  // issue the answer drew, or else to the None it says.
+  // and closes the section the row is in. In Blocks, which has no control, the focus of either
+  // line's Retry - what waits on the issue, or the titles of those - goes to the first issue the
+  // row draws, or else to the None it says, or else to the other line's Retry, which a refetch
+  // that fails as the first line goes leaves drawn, and where it draws none of these to
+  // Development's heading.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetryLeft = useFocusHandOff(() =>
     firstUsable(
@@ -305,7 +330,13 @@ export function IssueMarginPanel({
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
   const blocksRetryLeft = useFocusHandOff(
-    () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
+    () =>
+      blocksValue.current?.querySelector<HTMLElement>("a[href]") ??
+      blocksNone.current ??
+      firstUsable(
+        blocksValue.current?.querySelector<HTMLElement>("button"),
+        developmentHeading.current
+      )
   );
   // Details draws the priority's line in one of two places: beside Add while the issue advances
   // none, and in the Advances row once it advances one. The first priority added and the last one
@@ -555,8 +586,10 @@ export function IssueMarginPanel({
         </Row>
         {/* What this issue blocks: drawn whenever the panel is, with None where the answer holds
             nothing that waits on it, nothing while that answer is still out, and the failure
-            where the read failed, as every other row of the panel says what it holds. This
-            row's None takes the focus of the failure's Retry when it replaces that line. */}
+            where the read failed, as every other row of the panel says what it holds. The issues
+            are drawn by their keys where their titles could not be read, and the row says so, as
+            Blocked by does. This row's None takes the focus of the failure's Retry when it
+            replaces that line. */}
         <Row glyph={CIRCLED_DOT} label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
           {readFailed(blocking) ? (
             <DetailsErrorLine
@@ -577,7 +610,19 @@ export function IssueMarginPanel({
               {CONTROL_LABELS.none}
             </span>
           ) : (
-            <IssueList issues={blocks} />
+            <>
+              <IssueList issues={blocks} />
+              {readFailed(waitingTitles) ? (
+                <DetailsErrorLine
+                  error={waitingTitles.error}
+                  failure={waitingTitles.errorUpdateCount}
+                  message="Could not read the titles of these issues."
+                  onRetry={retryRead(waitingTitles)}
+                  retryRef={blocksRetryLeft}
+                  retrying={waitingTitles.isFetching}
+                />
+              ) : null}
+            </>
           )}
         </Row>
         <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>

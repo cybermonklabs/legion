@@ -260,6 +260,20 @@ function titleReads(titles: Mock<typeof api.getReferenceTargets>, blocker: strin
   return titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
 }
 
+/** The names read's answer (`getReferenceTargets`) for `refs`: each issue `titles` holds a title
+ *  for, by key, named by that title where `refs` names its address, and nothing else. */
+function issueNames(
+  refs: readonly string[],
+  titles: Readonly<Record<string, string>>
+): ReferenceTargets {
+  return {
+    targets: Object.entries(titles).flatMap(([key, name]) => {
+      const ref = buildDispatchReference({ key, kind: "issue" });
+      return refs.includes(ref) ? [{ gone: false, kind: "issue", name, ref }] : [];
+    }),
+  };
+}
+
 /** Every Escape that reaches the window from now on, by whether a control marked it taken: the
  *  page's keys pass over a taken press (`shell/keymap.ts`), and the phone's Details sheet closes
  *  on an Escape no control took (`shell/useDialog.ts`). */
@@ -1094,6 +1108,9 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     edges,
     node,
   }));
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
+    issueNames(refs, { "CORE-5": "Ship the release" })
+  );
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
@@ -1158,9 +1175,92 @@ test("Details' Blocks is read again when another issue starts waiting on this on
       await within(row).findByRole("link", { name: "CORE-5" }),
       "Blocks does not draw the issue that started waiting on CORE-1"
     ).toHaveAttribute("href", "/issues/CORE-5");
-    expect(row).toHaveTextContent("Ship the release");
+    await waitFor(() => expect(row).toHaveTextContent("Ship the release"));
   } finally {
     unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Blocks draws each title from a names read of the waiting issues' addresses, as Blocked by
+// draws its own, so the rename of an issue that waits on this one reads that title again
+// (`api/event-refresh.ts`'s `namesReadsNaming`). The title an edge of what waits on the issue
+// carries is not read again by a rename, which moves no `blocked_by`: the backlink panel the
+// rename names (`references_changed`) is refreshed by its exact key, and this read's is longer.
+test("Details' Blocks draws the new title of an issue that waits on this one once it is renamed", async () => {
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  // The server's title of CORE-5, in each read that carries it: the excerpt of the edge into
+  // CORE-1, and the name the names read gives its address.
+  let title = "Ship the release";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async () => ({
+    edges: [
+      {
+        created_at: "2026-10-26T00:00:00Z",
+        direction: "in",
+        excerpt: { text: title },
+        kind: "blocked_by",
+        node: graphNode({
+          id: "CORE-5",
+          issue_key: "CORE-5",
+          kind: "issue",
+          ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
+        }),
+        source_seq: 4,
+      },
+    ],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  }));
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
+    issueNames(refs, { "CORE-5": title })
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.blocks));
+    await within(row).findByRole("link", { name: "CORE-5" });
+    await waitFor(() => expect(row).toHaveTextContent("Ship the release"));
+
+    // CORE-5 is renamed. The payload is the server's: the issue after the write, with what it
+    // moved, and the issues it waits on named in `references_changed`, since the excerpt of
+    // each edge into them moved (`issueEdgeChanges`).
+    title = "Ship the second release";
+    const payload: Record<string, unknown> = {
+      ancestors: [],
+      assignee: null,
+      blocked_by: ["CORE-1"],
+      changed: ["title"],
+      closed_at: null,
+      key: "CORE-5",
+      parent: null,
+      project: "CORE",
+      references_changed: [{ id: "CORE-1", kind: "issue" }],
+      status: "todo",
+      title,
+    };
+    const renamed = {
+      actor: { id: "planner", kind: "session" },
+      created_at: "2026-10-27T00:00:00Z",
+      id: 13,
+      issue_key: "CORE-5",
+      notify: true,
+      payload,
+      project: "CORE",
+      seq: 5,
+      type: "issue.updated",
+    } as DispatchEvent;
+    refreshQueries(queryClient, eventRefreshTargets(renamed, "alice"));
+
+    await waitFor(() =>
+      expect(row, "Blocks keeps the old title of CORE-5 after its rename").toHaveTextContent(
+        "Ship the second release"
+      )
+    );
+  } finally {
+    unmount();
+    titles.mockRestore();
     getReferences.mockRestore();
     restore();
   }
@@ -1462,6 +1562,74 @@ test("Blocks hands the focus of its Retry to its None when the read answers with
     ).toBe(none);
   } finally {
     unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Where the titles of the issues that wait on this one could not be read, Blocks draws each by its
+// key and says so, with Retry, as Blocked by says its own; once the titles answer the line goes,
+// and the focus its Retry held goes to the first issue the row draws rather than to the page.
+test("Blocks says the titles it could not read, and its Retry draws them and hands the focus to the first issue", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const waiter = buildDispatchReference({ key: "CORE-5", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [
+      {
+        created_at: "2026-10-26T00:00:00Z",
+        direction: "in",
+        excerpt: { text: "Ship the release" },
+        kind: "blocked_by",
+        node: graphNode({ id: "CORE-5", issue_key: "CORE-5", kind: "issue", ref: waiter }),
+        source_seq: 4,
+      },
+    ],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const answered = Promise.withResolvers<ReferenceTargets>();
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    expect(blocksRow().getByRole("alert")).toHaveTextContent(
+      "Could not read the titles of these issues."
+    );
+    expect(
+      blocksRow().getByRole("link", { name: "CORE-5" }),
+      "Blocks drew no issue whose title it could not read"
+    ).toHaveAttribute("href", "/issues/CORE-5");
+    expect(
+      detailsRow(PROPERTY_LABELS.blocks),
+      "Blocks drew a title it could not read"
+    ).not.toHaveTextContent("Ship the release");
+
+    titles.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titleReads(titles, waiter)).toBe(2));
+    await act(async () => answered.resolve(issueNames([waiter], { "CORE-5": "Ship the release" })));
+    await waitFor(() =>
+      expect(
+        blocksRow().queryByRole("alert"),
+        "the titles answered, but Blocks still says they failed"
+      ).toBeNull()
+    );
+    expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release");
+    expect(
+      document.activeElement,
+      "the titles answered, and the focus fell to the page rather than to the first issue Blocks draws"
+    ).toBe(blocksRow().getByRole("link", { name: "CORE-5" }));
+  } finally {
+    unmount();
+    titles.mockRestore();
     getReferences.mockRestore();
     restore();
   }
