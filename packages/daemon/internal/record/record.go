@@ -1616,7 +1616,8 @@ type OutboxRow struct {
 	ID   int64
 	Kind OutboxKind
 	// Issue is the issue the effect belongs to. A project-level row carries the bare project key
-	// instead — the deployment's gated-steps publish, which belongs to no issue — and the same
+	// instead — the deployment's gated-steps publish, which belongs to no issue, and a project
+	// pause's stop of a claim of another project's issue (SuperviseRequest.Issue) — and the same
 	// split_part(issue, '-', 1) that scopes an issue's row to its own daemon answers that key
 	// itself, since a project key holds no hyphen.
 	Issue      string
@@ -1627,6 +1628,12 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// HeldByPause is the id of the project pause that held the row, and 0 for a row no pause
+	// held. The resume writes it, in its own transaction, on every row the pause it ends holds
+	// (Postgres.MarkPauseHeldRows), whatever the row's kind or due time, and nothing else writes it:
+	// a row that runs after the resume carries it, so the wake the row takes of a released role
+	// is that pause's held wake (internal/daemon's wakeForDelivery, store.Store.TakePodWake).
+	HeldByPause int64
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
@@ -2441,10 +2448,12 @@ type RoleClaim struct {
 	GivenEntry int64
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
-	// writes it, a relaunch's included (supervise's ready). Its reader is the first stall arm
-	// (admit's architectTookNothing): a task a let-go took back from a turn waits for the
-	// relaunched agent, so the arm counts that task from the later of its queueing and this
-	// moment.
+	// writes it, a relaunch's included (supervise's ready). Its readers are the first stall arm
+	// (admit's architectTookNothing): a task waits for an agent that is up to take it, so while
+	// the claim is ready, working or idle the arm counts the task from the later of its entry's
+	// first queueing and this moment; and a production check's look bound after a project's
+	// pause (internal/daemon's lookBoundAfterPause), which counts from no earlier than this moment
+	// where it is after the pause's end.
 	LastReady time.Time
 	// Handshake is the claim's handshake of the last entry it was queued a task of
 	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
@@ -2452,9 +2461,13 @@ type RoleClaim struct {
 	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
 	// at the first queue of an entry and keeps it through every later task of the same entry and
 	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
-	// queued), where the task's own QueuedAt is that later task's. Its reader is the first stall
-	// arm (admit's architectTookNothing), which counts the task of an entry from when that entry
-	// was first queued, as R7 says (dispatch://INFRA-2614).
+	// queued), where the task's own QueuedAt is that later task's, and it keeps the first
+	// confirmation through every later relaunch, but for one a refusal or a let-go says no turn
+	// of the worker made (supervise's EntryHandshake unconfirmed). Its readers are the first
+	// stall arm (admit's architectTookNothing), which counts the task of an entry from when that
+	// entry was first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
+	// architectSlowBeforeGate), which counts its bound from no earlier than that first
+	// confirmation where there is one.
 	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
 }

@@ -75,6 +75,10 @@ const (
 	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
+	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
+	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
+	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
+	ReleaseCausePaused
 )
 
 // String is the cause's name in a log line or a test's message. The hold the daemon records for
@@ -85,6 +89,8 @@ func (c ReleaseCause) String() string {
 		return "overtaken"
 	case ReleaseCauseUnauthorized:
 		return "unauthorized"
+	case ReleaseCausePaused:
+		return "paused"
 	}
 	return "none"
 }
@@ -296,6 +302,16 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 // does write the issue's one stored bundle, and a save of a finished release must not replace the
 // bundle the live one stored.
 //
+// A save that finds the project paused cancels the release (ReleaseCausePaused): the pause saves
+// no workspace and deletes no pod, so a release whose save had not run when the pause began is
+// cancelled and keeps its pod, whatever reached its roles first (decision 12 and departure 4 of
+// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken,
+// which says why). No production row reaches a save for another project's issue: the save runs
+// from the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows
+// of its own project's keys (record's DueRows). A release that saved before the pause finishes
+// as it does while the project runs: its role stops and its teardown read no pause. The open
+// pause is the one fact this reads of it, in this transaction.
+//
 // The decision carries the release's id, which the save puts on the bundle it stores
 // (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release
 // whose work it put back, so a late report deletes no newer release's bundle.
@@ -312,6 +328,13 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		}
 		decision.Act, decision.Release = ReleaseActs, mark.id
 		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
+		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
+		if err != nil {
+			return err
+		}
+		if paused {
+			decision.Act, decision.Cause = ReleaseCancel, ReleaseCausePaused
+		}
 		return nil
 	})
 	if err != nil {
