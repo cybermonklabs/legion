@@ -51,6 +51,19 @@ interface Attempt {
   /** Whether the attempt presented the JWT-shaped bearer rather than the stack's own token. */
   readonly service: boolean;
   readonly status: number;
+  /** The error code of a refusal's JSON body, read from a copy so the client reads its own; null
+   *  for an answer that is no refusal, or whose body carries no code. */
+  readonly code: string | null;
+}
+
+/** A refusal's `code`, where its body is JSON that carries one as a string. */
+async function refusalCode(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { code?: unknown };
+    return typeof body.code === "string" ? body.code : null;
+  } catch {
+    return null;
+  }
 }
 
 // Reserved at the file's module scope: the file's own `afterAll` removes it once the `describe`
@@ -121,6 +134,7 @@ describe.skipIf(!dispatchStackEnabled)(
           key: headers.get("Idempotency-Key"),
           service: headers.get("Authorization") === `Bearer ${SERVICE_TOKEN}`,
           status: response.status,
+          code: response.ok ? null : await refusalCode(response.clone()),
         });
         return response;
       }) as typeof fetch;
@@ -143,9 +157,10 @@ describe.skipIf(!dispatchStackEnabled)(
       await stack?.stop();
     }, 60_000);
 
-    // The case: one call of the client. Its first attempt is refused 503 by the server's caller
-    // lookup, which stores nothing; the client sends the same write again under the same key, and
-    // the issue holds the comment once.
+    // The case: one call of the client. Its first attempt is refused 503 OIDC_ISSUER_UNAVAILABLE by
+    // the server's caller lookup, which stores nothing; the client sends the same write again under
+    // the same key, and the issue holds the comment once. The code is asserted beside the status,
+    // since a 503 of any other cause would show the same two statuses.
     test("case: the refused attempt stores nothing, and the resend under its key lands once", async () => {
       const issue = await issueOfItsOwn("The refused attempt");
       const { client, made } = clientPresenting(true);
@@ -158,6 +173,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const keys = new Set(made.map((attempt) => attempt.key));
       expect({
         statuses: made.map((attempt) => attempt.status),
+        codes: made.map((attempt) => attempt.code),
         keyed: made.every((attempt) => attempt.key !== null),
         keys: keys.size,
         presented: made.map((attempt) => attempt.service),
@@ -165,6 +181,7 @@ describe.skipIf(!dispatchStackEnabled)(
         written: written.id !== undefined,
       }).toEqual({
         statuses: [503, 201],
+        codes: ["OIDC_ISSUER_UNAVAILABLE", null],
         keyed: true,
         keys: 1,
         presented: [true, false],
