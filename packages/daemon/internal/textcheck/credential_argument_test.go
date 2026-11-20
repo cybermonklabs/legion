@@ -36,20 +36,7 @@ import (
 // reads with `-H @…` names nothing after the flag, so it matches nothing.
 var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header|--proxy-header)(?:=|\s*)\\?["']?(?:(?:(?:proxy-)?authorization:\s*(?:bearer|token|basic)\s+|[\w-]*(?:api-key|-token)\s*:\s*)(?:\\?["'])*\\?[$<]|\\?\$\{?\w*(?:auth|token|bearer|credential|placeholder|password|passwd|secret|key))`)
 
-// credentialFlag finds the flags whose next word can carry a credential, as curl's manual (curl
-// 8.5) names them: a user's password (`-u`, `--user`, and curl's `-U` and `--proxy-user` for the
-// proxy's), a request's body or query (`-d`, the `--data` family, `--json`, wget's `--post-data`,
-// `-F`, `--form`, `--form-string`, `--url-query`, and a `--variable` curl expands into one), a
-// token itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`), one of curl's other
-// passwords (`--pass`, `--proxy-pass`, `--tlspassword`, `--proxy-tlspassword`, `--ftp-account`,
-// and the `:password` of a client certificate given to `-E`, `--cert` or `--proxy-cert`), a
-// session's cookie (`-b`, `--cookie`), a proxy URL with its user's password in it or one of the
-// proxy variables agent-secrets puts that URL in (`-x`, `--proxy`, `--preproxy`, `--proxy1.0`,
-// `--socks4`, `--socks4a`, `--socks5`, `--socks5-hostname`), or a whole header
-// (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
-// `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
-// other flags too, and match nothing.
-//
+// actionsCredential is a GitHub Actions credential expression, which workflowCredential finds
 // given to a command as an argument. Actions writes its value into the command as a shell writes a
 // variable's, so tokenValue and passwordWord take it as a flag's value where they take a variable.
 const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
@@ -65,6 +52,19 @@ const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
 // unquoted or after `=` (`--token=${{ github.token }}`), is credentialFlag's to find.
 var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])` + actionsCredential)
 
+// credentialFlag finds the flags whose next word can carry a credential, as curl's manual (curl
+// 8.5) names them: a user's password (`-u`, `--user`, and curl's `-U` and `--proxy-user` for the
+// proxy's), a request's body or query (`-d`, the `--data` family, `--json`, wget's `--post-data`,
+// `-F`, `--form`, `--form-string`, `--url-query`, and a `--variable` curl expands into one), a
+// token itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`), one of curl's other
+// passwords (`--pass`, `--proxy-pass`, `--tlspassword`, `--proxy-tlspassword`, `--ftp-account`,
+// and the `:password` of a client certificate given to `-E`, `--cert` or `--proxy-cert`), a
+// session's cookie (`-b`, `--cookie`), a proxy URL with its user's password in it or one of the
+// proxy variables agent-secrets puts that URL in (`-x`, `--proxy`, `--preproxy`, `--proxy1.0`,
+// `--socks4`, `--socks4a`, `--socks5`, `--socks5-hostname`), or a whole header
+// (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
+// `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
+// other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|--proxy1\.0|--socks4|--socks4a|--socks5|--socks5-hostname|-H|--header|--proxy-header)(?:=|[ \t]+)`)
 
 // curlCommand matches a line that runs curl, the one command whose `-E` is a client certificate
@@ -215,7 +215,7 @@ func heldCredentials(lines []string) held {
 				continue
 			}
 			value := shellWord(m[2])
-			if credentialSource.MatchString(value) || h.expands(value) {
+			if credentialSource.MatchString(value) || h.expands(value) || proxyPassword(value) {
 				h[m[1]] = true
 				grew = true
 			}
@@ -693,6 +693,14 @@ func TestTheCredentialMatcherReadsWhereTheScriptReadTheCredential(t *testing.T) 
 				`"$STANDS_BIN" load gap --proxy-file <(proxy_for "$addr") --header-file <(printf '%s' "$PLACEHOLDER") --gap 8 \`,
 				`printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS -K <(printf 'proxy = "%s"\n' "$(proxy_for "$addr")") -H @- "$url"`,
 			},
+		},
+		{
+			name: "a proxy variable copied into another variable first",
+			script: []string{
+				`other="$HTTPS_PROXY"`,
+				`curl --proxy "$other" "$url"`,
+			},
+			caught: []int{2},
 		},
 	} {
 		got := credentialLines(strings.Join(tc.script, "\n"))
