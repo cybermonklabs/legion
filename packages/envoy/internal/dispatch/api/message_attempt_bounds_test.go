@@ -9,7 +9,7 @@ import (
 // column, so a number above its range names no attempt any message has. The accept route answers
 // it as it answers any attempt that does not exist, 404 MESSAGE_NOT_FOUND, and never 500, which
 // reads as a fault of the server. It is the class dispatch://INFRA-175 closed for a version number
-// on GET …/versions/{number}, GET …/changes and the read mark (artifacts.go versionNumberInRange).
+// on GET …/versions/{number}, GET …/changes and the read mark (artifacts.go fitsIntegerColumn).
 // The control is the largest number the column holds, which the route already answers 404.
 func TestAnAttemptNumberAboveTheColumnsRangeIsNotFoundNotAFault(t *testing.T) {
 	handler, _, root, _, _ := directConversationFrom(t, "alice")

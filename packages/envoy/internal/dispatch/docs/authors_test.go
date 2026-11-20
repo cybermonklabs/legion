@@ -828,8 +828,8 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 		t.Errorf("the copy's ask.opened names %#v, want the session", opener)
 	}
 	// The settlement forgets the author after the transaction that opened the ask has committed
-	// (consumeAskAuthors, which runs after commitSettlement), so the open ask above can be read
-	// before the room has let the author go.
+	// (consumeAskAuthorsLocked, which runs after commitSettlement), so the open ask above can be
+	// read before the room has let the author go.
 	waitFor(t, 10*time.Second, "the copy's room to forget the block's author once its ask has opened", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()

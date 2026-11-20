@@ -1,11 +1,18 @@
 // A typed block's opening line, read as the Dispatch server reads it: pmdoc's
 // ParseTypedDirectiveOpen and unsupportedDirectiveReason
-// (packages/envoy/internal/dispatch/pmdoc/directive.go), the attributes read by
-// directive-attributes.ts. The ask gate (askgate-new-asks.ts) opens an ask block only where the
-// server opens one, and names it by the id the server reads, so each rule here is the server's: a
-// line the server refuses opens nothing.
+// (packages/envoy/internal/dispatch/pmdoc/directive.go). This module is this package's one reader
+// of the frame of that line (the fence, the name, the `{` and the `}` that ends the line), and
+// directive-attributes.ts its one reader of the attributes between the two braces. The ask gate
+// (askgate-new-asks.ts) reads a line here to open an ask block only where the server opens one,
+// and to name it by the id the server reads. The stored-spelling check
+// (dispatch-commands/stored-spelling.ts) reads a line here to find each attribute as written. So
+// each rule here is the server's, and a line the server refuses opens nothing.
 
-import { directiveAttributes, directiveNameChar } from "./directive-attributes";
+import {
+  type DirectiveAttributes,
+  directiveAttributes,
+  directiveNameChar,
+} from "./directive-attributes";
 
 /** How many times `char` stands in a row in `text` from `index`. */
 export function runOf(text: string, index: number, char: string): number {
@@ -14,24 +21,45 @@ export function runOf(text: string, index: number, char: string): number {
   return end - index;
 }
 
+/** A typed block's opening line as the server reads it (typedOpenerAt): the count of its fence's
+ *  colons, the block's name, and the attributes between its `{` and the `}` that ends the line. */
+export interface TypedOpener extends DirectiveAttributes {
+  readonly name: string;
+  readonly colons: number;
+}
+
 /**
- * directive.go's `ParseTypedDirectiveOpen`: three colons or more, a name, then `{` at once, and
- * the line ends with `}`, the attributes between them read as the server reads them
- * (directiveAttributes). Undefined for any other line, and for one whose attributes the server
- * refuses.
+ * The index of the `{` of a typed block's fence that stands at index `at` of `text`: three colons
+ * or more, a name of directive.go's name characters (directiveNameChar), then `{` at once. -1
+ * where no such fence stands at `at`. It reads no more than the colons and the name.
  */
-export function typedOpener(
-  text: string
-): { name: string; id: string | undefined; colons: number } | undefined {
-  const colons = runOf(text, 0, ":");
-  if (colons < 3) return undefined;
-  const rest = text.slice(colons);
-  let nameEnd = 0;
-  while (nameEnd < rest.length && directiveNameChar(rest.charAt(nameEnd))) nameEnd++;
-  if (nameEnd === 0 || rest.charAt(nameEnd) !== "{" || !rest.endsWith("}")) return undefined;
-  const attributes = directiveAttributes(rest.slice(nameEnd + 1, -1));
+export function typedFenceBrace(text: string, at: number): number {
+  const nameStart = at + runOf(text, at, ":");
+  if (nameStart - at < 3) return -1;
+  let brace = nameStart;
+  while (directiveNameChar(text.charAt(brace))) brace++;
+  return brace > nameStart && text.charAt(brace) === "{" ? brace : -1;
+}
+
+/**
+ * directive.go's `ParseTypedDirectiveOpen`, read from index `at` of `text`: the fence there
+ * (typedFenceBrace), and the line ends with `}`, the attributes between the `{` and that `}` read
+ * as the server reads them (directiveAttributes). Undefined where no fence stands at `at`, where
+ * the line does not end with `}`, and where the server refuses the attributes.
+ */
+export function typedOpenerAt(text: string, at: number): TypedOpener | undefined {
+  const brace = typedFenceBrace(text, at);
+  // The `{` is no `}`, so the `}` that ends the line stands after it.
+  if (brace === -1 || !text.endsWith("}")) return undefined;
+  const attributes = directiveAttributes(text.slice(brace + 1, -1));
   if (attributes === undefined) return undefined;
-  return { name: rest.slice(0, nameEnd), id: attributes.id, colons };
+  const colons = runOf(text, at, ":");
+  return { ...attributes, name: text.slice(at + colons, brace), colons };
+}
+
+/** `text` read as a typed block's opening line from its start (typedOpenerAt). */
+export function typedOpener(text: string): TypedOpener | undefined {
+  return typedOpenerAt(text, 0);
 }
 
 /** directive.go's `unsupportedDirectiveReason`: a line of directive syntax the server refuses. */

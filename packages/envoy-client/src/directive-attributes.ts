@@ -1,10 +1,10 @@
 // The attributes of a typed block's opening line, the text between its `{` and the `}` that ends
 // the line, read as the Dispatch server reads them: pmdoc's parseDirectiveAttributes and
 // quotedTypedBlockID (packages/envoy/internal/dispatch/pmdoc/directive.go). The server keeps one
-// reader of this grammar, and this module is this package's one copy of it: the ask gate
-// (askgate-typed-opener.ts) reads an ask's id with it, and the stored-spelling check
-// (dispatch-commands/stored-spelling.ts) reads each attribute as written with it, so the two read
-// a line alike, and alike with the server.
+// reader of this grammar, and this module is this package's one copy of it. The one reader of the
+// frame around them, askgate-typed-opener.ts, reads them with it, for the ask gate
+// (askgate-new-asks.ts) and the stored-spelling check (dispatch-commands/stored-spelling.ts)
+// alike, so the two read a line alike, and alike with the server.
 
 import { TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
 

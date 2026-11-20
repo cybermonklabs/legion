@@ -1,50 +1,32 @@
 import { PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
-import {
-  type DirectiveAttribute,
-  type DirectiveAttributes,
-  directiveAttributes,
-  directiveNameChar,
-} from "../directive-attributes";
+import { runOf, type TypedOpener, typedFenceBrace, typedOpenerAt } from "../askgate-typed-opener";
+import type { DirectiveAttribute } from "../directive-attributes";
 
 /**
- * A typed block's opening line, cut where the attribute-order check and the refusal read it:
- * `head` up to and with its `{` (a quote or list marker before the fence, the fence, the type),
- * then the attributes before the `}` that ends the line as Dispatch reads them
- * (directiveAttributes): each as written, the whitespace around them, and the block's id.
+ * A typed block's opening line as Dispatch reads it (TypedOpener), cut where the attribute-order
+ * check and the refusal read it: `head` up to and with its `{` (a quote or list marker before the
+ * fence, the fence, the name), then the attributes before the `}` that ends the line: each as
+ * written, the whitespace around them, and the block's id.
  */
-interface TypedOpener extends DirectiveAttributes {
+interface HeadedOpener extends TypedOpener {
   readonly head: string;
-  readonly type: string;
 }
 
-/** `line` read as a typed block's opening line, or undefined for any other line and for one
- *  whose attributes Dispatch refuses (directiveAttributes). The line is three colons or more,
- *  the type, then its attributes between `{` and the `}` that ends the line
- *  (`renderTypedAttributes` in pmdoc's schema.go writes it), and its head is the shortest start
- *  of the line that ends in such a fence, type and `{`. Each character of the line is read once,
- *  so no line costs more than its length. */
-function typedOpener(line: string): TypedOpener | undefined {
-  if (!line.endsWith("}")) return undefined;
-  // The `{` after the first run of three colons or more that a type and a `{` follow. A run of
-  // colons, a type or any other character is passed once, so the scan is linear.
-  let open = -1;
-  let typeStart = 0;
-  for (let at = 0; at < line.length && open === -1; ) {
-    const colons = at;
-    while (at < line.length && line.charAt(at) === ":") at += 1;
-    if (at - colons < 3) {
-      if (at === colons) at += 1;
-      continue;
-    }
-    typeStart = at;
-    while (at < line.length && directiveNameChar(line.charAt(at))) at += 1;
-    if (at > typeStart && line.charAt(at) === "{") open = at;
+/** `line` read as a typed block's opening line (typedOpenerAt, which reads the frame and its
+ *  attributes as Dispatch does; `renderTypedAttributes` in pmdoc's schema.go writes such a line)
+ *  from its first fence: the first run of three colons or more that a name and a `{` follow
+ *  (typedFenceBrace). Its head is the line up to and with that `{`, the shortest start of the
+ *  line that ends in such a fence. Undefined for a line that holds no fence, and for one that is
+ *  no opener from its first fence: the scan does not go on to a later one. A run of colons is
+ *  passed whole and any other character once, so no line costs more than its length. */
+function typedOpener(line: string): HeadedOpener | undefined {
+  for (let at = 0; at < line.length; at += Math.max(1, runOf(line, at, ":"))) {
+    const brace = typedFenceBrace(line, at);
+    if (brace === -1) continue;
+    const opener = typedOpenerAt(line, at);
+    return opener === undefined ? undefined : { ...opener, head: line.slice(0, brace + 1) };
   }
-  if (open === -1) return undefined;
-  // The `{` is no `}`, so it stands before the `}` that ends the line.
-  const attributes = directiveAttributes(line.slice(open + 1, -1));
-  if (attributes === undefined) return undefined;
-  return { ...attributes, head: line.slice(0, open + 1), type: line.slice(typeStart, open) };
+  return undefined;
 }
 
 /** The names of `attributes` as a map to each one's written text, or undefined when a name
@@ -62,7 +44,7 @@ function attributesByName(
  * the same names, each once. The order is the one Dispatch's render wrote, read off its own line,
  * so no copy of that order is kept here.
  */
-function inStoredOrder(given: TypedOpener, stored: TypedOpener): string | undefined {
+function inStoredOrder(given: HeadedOpener, stored: HeadedOpener): string | undefined {
   const written = attributesByName(given.attributes);
   if (
     written === undefined ||
@@ -85,18 +67,19 @@ function inStoredOrder(given: TypedOpener, stored: TypedOpener): string | undefi
  *  order is `held`. False when either line is no typed block's opening line (typedOpener, which
  *  gives undefined). The upload and the refusal both pass over such a line by this rule. */
 function onlyReordered(
-  given: TypedOpener | undefined,
+  given: HeadedOpener | undefined,
   held: string,
-  stored: TypedOpener | undefined
+  stored: HeadedOpener | undefined
 ): boolean {
   return given !== undefined && stored !== undefined && inStoredOrder(given, stored) === held;
 }
 
 /** What the answer of an upload says of a block whose attributes it put in Dispatch's order, read
- *  off `opener`, its opening line as Dispatch stores it: the block by its type and its id as
- *  Dispatch reads it (directiveAttributes), its line (counted from 1), and that order. */
-function reorderedBlockLine(line: number, opener: TypedOpener): string {
-  const named = `${opener.type} block${opener.id === undefined ? "" : ` ${opener.id}`}`;
+ *  off `opener`, its opening line as Dispatch stores it: the block by its name, which is its type,
+ *  and its id as Dispatch reads it (directiveAttributes), its line (counted from 1), and that
+ *  order. */
+function reorderedBlockLine(line: number, opener: HeadedOpener): string {
+  const named = `${opener.name} block${opener.id === undefined ? "" : ` ${opener.id}`}`;
   const order = opener.attributes.map((attribute) => attribute.name).join(", ");
   return `This upload put the attributes of ${named} (line ${line}) in the order Dispatch stores: ${order}.`;
 }
@@ -162,7 +145,7 @@ interface LineWord {
 
 /** `line` cut into its words, `opener` being that line read as a typed block's opening line
  *  (typedOpener), undefined for any other line. The words joined are the line. */
-function lineWords(line: string, opener: TypedOpener | undefined): LineWord[] {
+function lineWords(line: string, opener: HeadedOpener | undefined): LineWord[] {
   const plain = (text: string): LineWord[] =>
     (text.match(/\s+|\S+/g) ?? []).map((word) => ({ text: word, attribute: false }));
   if (opener === undefined) return plain(line);
@@ -238,8 +221,8 @@ function wordDifference(written: readonly LineWord[], holds: readonly LineWord[]
  *  in both, and when the given line names one attribute twice. */
 function attributeDifference(
   line: number,
-  given: TypedOpener,
-  stored: TypedOpener
+  given: HeadedOpener,
+  stored: HeadedOpener
 ): string | undefined {
   const written = attributesByName(given.attributes);
   if (written === undefined) return undefined;
@@ -265,9 +248,9 @@ function attributeDifference(
 function lineDifference(
   line: number,
   wrote: string,
-  given: TypedOpener | undefined,
+  given: HeadedOpener | undefined,
   held: string,
-  stored: TypedOpener | undefined
+  stored: HeadedOpener | undefined
 ): string {
   if (given === undefined || stored === undefined) {
     return `line ${line} ${wordDifference(lineWords(wrote, undefined), lineWords(held, undefined))}`;

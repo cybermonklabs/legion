@@ -70,8 +70,8 @@ export function sourcedLibraries(...paths: string[]): string[] {
  * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
  * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
  * the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
- * extracts from. `missingHelpers` reads those lines out of a run's output for the harness to fail
- * on.
+ * extracts from. `expectNoMissingHelpers` reads those lines out of a run's output for the
+ * harness to fail on.
  */
 export function nameMissingHelpers(...paths: string[]): string {
   const names = new Set<string>();
