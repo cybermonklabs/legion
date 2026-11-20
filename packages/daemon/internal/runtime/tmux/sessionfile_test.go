@@ -124,8 +124,10 @@ func TestSessionFileOfFindsAClaudeSessionByItsName(t *testing.T) {
 }
 
 // A session found nowhere is no file and no error, with every sessions directory searched, each
-// once; a recorded name holding a glob character is searched for nowhere, and a sessions directory
-// holding one is skipped, since either would match other sessions.
+// once. Every directory and name is matched as written: a pane sessions directory whose name holds
+// glob characters is searched as it is, a sibling directory that name would match as a pattern is
+// not searched, and a recorded name whose session id holds `*`, or a Claude Code name `*.jsonl`,
+// matches no other session's file.
 func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testing.T) {
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
@@ -142,15 +144,26 @@ func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testi
 		t.Errorf("the recorded sessions directory as the pane's is searched %v, want once", searched)
 	}
 
-	globbed := filepath.Join(sessions, "--legion-workspace--", "*_ses-xyz.jsonl")
-	writeSession(t, filepath.Join(pane, "--pane-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
-	if got, _, err := sessionFileOf(globbed, paneAt(pane)); err != nil || got != "" {
-		t.Fatalf("sessionFileOf of a name holding a glob = %q, %v; want nothing", got, err)
+	starred := filepath.Join(t.TempDir(), "pane*[sessions")
+	inStarred := filepath.Join(starred, "--pane-work--", filepath.Base(recorded))
+	writeSession(t, inStarred, time.Now())
+	if got, _, err := sessionFileOf(recorded, paneAt(starred)); err != nil || got != inStarred {
+		t.Fatalf("sessionFileOf in the pane sessions directory %s = %q, %v; want %s", starred, got, err, inStarred)
 	}
-	starred := filepath.Join(t.TempDir(), "pane*sessions")
-	writeSession(t, filepath.Join(starred, "--pane-work--", filepath.Base(recorded)), time.Now())
-	if got, _, err := sessionFileOf(recorded, paneAt(starred)); err != nil || got != "" {
-		t.Fatalf("sessionFileOf in a pane sessions directory holding a glob = %q, %v; want nothing", got, err)
+	beside := t.TempDir()
+	patterned := filepath.Join(beside, "pane*sessions")
+	writeSession(t, filepath.Join(beside, "paneXsessions", "--pane-work--", filepath.Base(recorded)), time.Now())
+	if got, searched, err := sessionFileOf(recorded, paneAt(patterned)); err != nil || got != "" || !slices.Equal(searched, []string{sessions, patterned}) {
+		t.Fatalf("sessionFileOf in the pane sessions directory %s, beside paneXsessions, which holds the session = %q, %v, %v; want nothing found in %s and %s",
+			patterned, got, searched, err, sessions, patterned)
+	}
+
+	writeSession(t, filepath.Join(pane, "--pane-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
+	writeSession(t, filepath.Join(pane, "--pane-work--", "ses-xyz.jsonl"), time.Now())
+	for _, name := range []string{"2026-10-20T10-00-00-000Z_ses*.jsonl", "*.jsonl"} {
+		if got, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane)); err != nil || got != "" {
+			t.Errorf("sessionFileOf of the recorded name %s, beside the files of session ses-xyz = %q, %v; want nothing", name, got, err)
+		}
 	}
 }
 

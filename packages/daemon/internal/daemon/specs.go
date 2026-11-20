@@ -503,7 +503,9 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // its workspace may have been recreated: that launcher reads no row of the session, so its word
 // that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). The guidance is
 // that of the plugin's own notice of a recreated workspace
-// (packages/pi-shared/src/workspace-recreated.ts).
+// (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
+// as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
+// agent's registration chose, and the quotes bound it in a text the agent reads.
 func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
@@ -522,18 +524,18 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	switch c.SessionLost {
 	case "":
 	case supervise.SessionLossNotResumedByID:
-		fragment += fmt.Sprintf(" The pod's launcher, which is older than this release, could not look the session %s this claim recorded up by its id, "+
+		fragment += fmt.Sprintf(" The pod's launcher, which is older than this release, could not look the session %q this claim recorded up by its id, "+
 			"and Oh My Pi did not resume it by that id, so this is a new session: the turns, tool calls and subagents of your earlier work are not in it, "+
 			"and only what you pushed and committed reaches you. ", c.Abandoned.Session) + readFirst
 	case supervise.SessionLossClaudeNoFile:
-		fragment += fmt.Sprintf(" This Claude Code claim recorded the session %s with no transcript file, so the launch could not resume it and this is a new session: "+
+		fragment += fmt.Sprintf(" This Claude Code claim recorded the session %q with no transcript file, so the launch could not resume it and this is a new session: "+
 			"the turns, tool calls and subagents of your earlier work are not in it, and only what you pushed and committed survives. ", c.Abandoned.Session) + readFirst
 	default:
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " + readFirst
 	}
 	if c.AgentResumeGeneration != 0 && c.AgentResumeGeneration == c.Generation {
-		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %s by its id itself. The pod's launcher is older than this release and did not read "+
+		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
 			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
 			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
 			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+

@@ -1305,14 +1305,18 @@ type Machine struct {
 	// answer is.
 	sessionFrom uint64
 	// lostCause is the cause of the forget the launch made last (startFresh), kept from that
-	// forget until the claim's first ready after it (ready), and "" at every other moment. Every
-	// launch until that ready is built with it (spawnSpec reads it into Claim.SessionLost): the
-	// retry of a fresh spawn that failed, and a relaunch of the fresh agent before its ready, such
-	// as the stale-plugin relaunch that resumes its new file, so the agent that comes up is told
-	// in its own prompt that it does not continue the session the claim forgot. The session is
-	// not forgotten again: the claim records none by then, or the fresh agent's own. It is memory
-	// only: a restart loses it and the prompt's sentence with it, and the reason the claim stores
-	// with the abandoned session (Claim.Abandoned) still tells the fresh agent at its first task.
+	// forget until the claim's first ready after it (ready) or until any other forget, which
+	// clears it (forgetSession), and "" at every other moment. Every launch until then is built
+	// with it (spawnSpec reads it into Claim.SessionLost): the retry of a fresh spawn that failed,
+	// and a relaunch of the fresh agent before its ready, such as the stale-plugin relaunch that
+	// resumes its new file, so the agent that comes up is told in its own prompt that it does not
+	// continue the session the claim forgot. The session is not forgotten again: the claim records
+	// none by then, or the fresh agent's own. An operator's forget-session, or a retry in a new
+	// session, that drops the fresh agent's own session before its ready is another forget, whose
+	// next launch follows it rather than the launch's: the cause kept past it would tell the agent
+	// that comes up something false about the session it replaces. It is memory only: a restart
+	// loses it and the prompt's sentence with it, and the reason the claim stores with the
+	// abandoned session (Claim.Abandoned) still tells the fresh agent at its first task.
 	lostCause SessionLoss
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
@@ -2627,11 +2631,13 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 }
 
 // launch starts a process for the claim at a new generation with a new boot token: the same
-// agent resumed from its session file when the claim has one, or from its session id when the
-// claim records a session and no file (start, resumeByID) — after the process the claim last ran
-// is gone — and a fresh spawn when it records no session. A process the claim still records is let
-// go first, so it is the one waited out. The boot token's hash is persisted before the process
-// starts, so the shim's first hello resolves. A launch the runtime or the spec refuses is a launch
+// agent resumed from its session file when the claim has one, or, for an Oh My Pi claim, from its
+// session id when the claim records a session and no file (start, resumeByID) — after the process
+// the claim last ran is gone — and a fresh spawn when it records no session. A Claude Code claim
+// that records a session and no file forgets the session and spawns a fresh agent in the same try
+// (start, startFresh). A process the claim still records is let go first, so it is the one waited
+// out. The boot token's hash is persisted before the process starts, so the shim's first hello
+// resolves. A launch the runtime or the spec refuses is a launch
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
@@ -3174,10 +3180,10 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // The workflow is told once, at the forget and before the spawn: a fresh spawn that fails is a
 // launch failure the caller charges, and its retry finds no session to forget, so a report made
 // only after a spawn that succeeded would never be made at all. The cause is kept on the machine
-// until the claim's first ready (Machine.lostCause), so every launch until then — that retry, and
-// a relaunch of the fresh agent before its ready — is built for a claim that knows its session was
-// forgotten, and the agent that comes up is told in its own prompt rather than left to infer it
-// from an empty transcript.
+// until the claim's first ready, or until another forget drops the fresh agent's session
+// (Machine.lostCause), so every launch until then — that retry, and a relaunch of the fresh agent
+// before its ready — is built for a claim that knows its session was forgotten, and the agent
+// that comes up is told in its own prompt rather than left to infer it from an empty transcript.
 func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, error) {
 	line, why, detail := forgetWords(cause, m.claim.Session, answer)
 	m.log.Warn(line, "session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", answer)
@@ -3202,7 +3208,9 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLos
 // session the pod's launcher could not look up, neither text says that the session was lost or
 // that no store holds it, and neither carries the runtime's answer, which could: nothing of the
 // session was deleted, and a store may still hold it. The line carries that answer, which names
-// the pod.
+// the pod. For a Claude Code claim's session with no file (SessionLossClaudeNoFile), both texts
+// say that the claim recorded the session with no transcript file, and the line carries no
+// runtime answer: the runtime was asked nothing, and answer is nil.
 func forgetWords(cause SessionLoss, session string, answer error) (line, why, detail string) {
 	switch cause {
 	case SessionLossNotResumedByID:
@@ -3513,7 +3521,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // needs a new session; and the operator's forget-session (forgetSession, the table's), which
 // `legion claims retry --fresh-session` and the controller's fresh_session run (api's
 // freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
-// (Claim.AgentResumeGeneration).
+// (Claim.AgentResumeGeneration), and the cause of an earlier forget the machine keeps for the
+// fresh agent's launches (Machine.lostCause), so the launch after this forget is built for no
+// cause but the one startFresh sets for its own.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -3543,6 +3553,8 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // claim that was told once would never be told again until a turn of it ended with no error at
 // all.
 func (m *Machine) forgetSession(why string) {
+	// startFresh sets the cause of its own forget after this call (Machine.lostCause).
+	m.lostCause = ""
 	if m.claim.Session != "" {
 		m.claim.Abandoned = AbandonedSession{
 			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: why, At: m.deps.Clock.Now(),

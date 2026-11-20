@@ -1557,7 +1557,8 @@ func missingList(list []record.VolumeMissing) string {
 // read into an agent's prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it,
 // and a quote or a newline inside it is escaped rather than closing the one around it.
 // sessionStoreFault quotes its own detail for the same reason. The words of a forgotten session
-// carry no detail; they name the session the claim forgot (intake.SessionLost.Session).
+// carry no detail; they name the session the claim forgot (intake.SessionLost.Session), which the
+// agent's registration chose, quoted the same way.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1572,7 +1573,7 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 		kind = "session-forgotten"
 		told = fmt.Sprintf("The %s of %s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
 			"The daemon deleted nothing of that session. The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
-			fact.Role, issue.Key, fact.Session, fact.Role)
+			fact.Role, issue.Key, strconv.Quote(fact.Session), fact.Role)
 		line = "workflow: a worker forgot its recorded session, which its pod's launcher could not look up and Oh My Pi did not resume by its id"
 		fields = []any{"issue", issue.Key, "role", fact.Role, "session", fact.Session, "cause", fact.Cause, "detail", fact.Detail}
 	}

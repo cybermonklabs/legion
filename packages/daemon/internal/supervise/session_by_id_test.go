@@ -553,6 +553,45 @@ func TestAForgottenSessionIsReportedOnceWhenTheFirstFreshSpawnFails(t *testing.T
 	r.wantBudgets(Budgets{LaunchFailures: 1})
 }
 
+// The cause of a forget is kept for the fresh agent's launches until its first ready, and no
+// longer than the next forget: an operator who forgets the fresh agent's own session before that
+// ready (`legion claims forget-session`) leaves a claim whose next launch follows that forget, not
+// the launch's. So the spawn after it is built with no cause, and the agent it starts is told
+// nothing of the first forget's cause, which says something of a session that is no longer the
+// one it replaces.
+func TestAnOperatorForgetBeforeTheFreshAgentIsReadyClearsTheForgetsCause(t *testing.T) {
+	r := newByIDRig(t, byIDClaim(StateRetired, 3), nil)
+	r.rt.ScriptResume(fake.SpawnResult{Err: noSuchSession()})
+	r.must(RequestRetry{Claim: testToken})
+	if built := r.specs.last(t); built.SessionLost != SessionLossGone {
+		t.Fatalf("the fresh spawn after the forget was built with SessionLost %q; want %q", built.SessionLost, SessionLossGone)
+	}
+	r.connect()
+	if err := r.registerAs(newSession, newSessionFile, r.deps.PluginContract); err != nil {
+		t.Fatalf("the fresh agent's registration as %s = %v; want it accepted", newSession, err)
+	}
+	r.wantState(StateRegistered)
+
+	r.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+	r.must(RequestForgetSession{Claim: testToken, Session: newSession})
+	if c := r.claim(); c.Abandoned.Session != newSession || c.Session != "" || c.SessionFile != "" {
+		t.Fatalf("the claim abandoned %q and records session %q and file %q after the operator's forget; want %s abandoned and no session",
+			c.Abandoned.Session, c.Session, c.SessionFile, newSession)
+	}
+	from := len(r.rt.Calls())
+	r.must(RequestResume{Claim: testToken})
+
+	starts := r.starts(from)
+	if len(starts) != 1 || starts[0].Method != "Spawn" {
+		t.Fatalf("the resume after the operator's forget made %s; want one Spawn", startsText(starts))
+	}
+	if built := r.specs.last(t); built.Generation != starts[0].Spec.Generation || built.SessionLost != "" {
+		t.Errorf("the spawn after the operator's forget was built at generation %d with SessionLost %q; want the spawn's, at %d, with no cause",
+			built.Generation, built.SessionLost, starts[0].Spec.Generation)
+	}
+	r.wantLost(SessionLossGone)
+}
+
 // A Claude Code claim that records a session and no file has no transcript to resume, and the
 // launch asks for no lookup by the id (the architect's answer D1): it forgets the session at once,
 // with the cause claude-no-file, spawns one fresh agent told so in its own prompt, tells the

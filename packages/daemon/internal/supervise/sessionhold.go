@@ -497,10 +497,11 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 
 // holdByID is holdRecorded for a resume of session by its id alone, under the same rule: it holds
 // the names that resume runs under (byIDHolds), the file-id name beside the session id. start asks
-// it before such a resume, and resumeRefusal asks it of a claim that records no file, as start
-// will for an Oh My Pi claim, so an operator's resume is refused where the launch would be; start
-// sends a Claude Code claim with a session and no file straight to the forget (startFresh) and
-// asks no hold.
+// it before such a resume, which only an Oh My Pi claim makes: start sends a Claude Code claim with
+// a session and no file straight to the forget (startFresh) and asks no hold. resumeRefusal asks it
+// of every claim that records a session and no file, a Claude Code claim's included, which is
+// stricter than that claim's launch: an operator's resume of such a claim whose by-id names another
+// claim holds is refused, though its launch would forget the session rather than resume it.
 func (m *Machine) holdByID(ctx context.Context, session string) error {
 	return m.holdNames(ctx, session, "", byIDHolds(session))
 }

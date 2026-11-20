@@ -514,13 +514,13 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // by its id alone (ResumeSession), the newest file of that id one folder below the pane's sessions
 // directory (Launcher.SessionsDir, sessionFileByID), searched on the daemon's own host; it never
 // searches by an empty recorded path. The file found by the id becomes the spec's
-// ResumeSessionFile, and the launch goes on as the resume of a recorded file. A session found in
-// no folder it searched is runtime.ErrSessionFileMissing, naming what it searched for and where,
-// and opens no pane, whatever the claim recorded and whether or not the operator's takeover is on
-// (takingOverSession): the search is the same search either way, and a session nothing holds is
-// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
-// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
-// session gets, since nothing tells it from this host's own (sessionfile.go).
+// ResumeSessionFile in place of the id, and the launch goes on as the resume of a recorded file.
+// A session found in no folder it searched is runtime.ErrSessionFileMissing, naming what it
+// searched for and where, and opens no pane, whatever the claim recorded and whether or not the
+// operator's takeover is on (takingOverSession): the search is the same search either way, and a
+// session nothing holds is the same fact however the daemon is configured. The caller starts a
+// fresh agent in its place, charged nothing and reported (supervise's start), which is also what a
+// taken-over runtime's session gets, since nothing tells it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
@@ -569,17 +569,16 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		if err != nil {
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 		}
-		found, err := sessionFileByID(sessions, spec.ResumeSession)
-		switch {
-		case err != nil:
-			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		case found == "":
+		found := sessionFileByID(sessions, spec.ResumeSession)
+		if found == "" {
 			return runtime.Locator{}, fmt.Errorf("resume %s: %w: no folder of the pane's %s sessions directory %s holds a file of session %s",
 				spec.Claim, runtime.ErrSessionFileMissing, harness, sessions, spec.ResumeSession)
 		}
-		spec.ResumeSessionFile = found
 		r.log.Info("tmux runtime: resuming a "+harness+" session the claim recorded no file of, from the file found by its id",
-			"claim", spec.Claim, "backend", backend, "session", spec.ResumeSession, "sessionFile", spec.ResumeSessionFile)
+			"claim", spec.Claim, "backend", backend, "session", spec.ResumeSession, "sessionFile", found)
+		// From here the spec has the one shape runtime.SpawnSpec gives a resume of a file: the file,
+		// and no id.
+		spec.ResumeSessionFile, spec.ResumeSession = found, ""
 	}
 	if err := makePaneHome(r.stateDir); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)

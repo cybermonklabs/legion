@@ -113,6 +113,23 @@ func TestAResumeOfASessionNamedByItsIDAloneFindsItsFile(t *testing.T) {
 	})
 }
 
+// The lookup by the id matches the sessions directory and the id as written (sessionFileByID): a
+// sessions directory whose path holds glob characters is searched as it is, and finds the session
+// by its id, and an id holding `*` finds no other session's file.
+func TestTheLookupByIDMatchesTheSessionsDirectoryAndTheIDAsWritten(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "home*[legion?", ".omp", "agent", "sessions")
+	file := filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl")
+	writeSession(t, file, time.Now())
+	if got := sessionFileByID(sessions, resumeSessionID); got != file {
+		t.Errorf("sessionFileByID in %s of session %s = %q; want %s", sessions, resumeSessionID, got, file)
+	}
+	for _, id := range []string{resumeSessionID[:9] + "*", "*"} {
+		if got := sessionFileByID(sessions, id); got != "" {
+			t.Errorf("sessionFileByID of the id %s, beside the file of session %s = %q; want nothing", id, resumeSessionID, got)
+		}
+	}
+}
+
 // A fresh agent names no session: a Spawn naming one by its id, or asking the agent's own command
 // to resolve one, is refused as one naming a session file is, and opens no pane.
 func TestTmuxSpawnRefusesAResumeSession(t *testing.T) {
