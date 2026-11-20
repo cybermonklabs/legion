@@ -65,6 +65,11 @@ class IdleNats implements ChannelConnection {
   }
 
   async *status(): AsyncGenerator<ChannelConnectionStatus> {}
+
+  /** Never closed for good. */
+  closed(): Promise<Error | undefined> {
+    return new Promise(() => undefined)
+  }
 }
 
 const notifier: ChannelNotifier = {

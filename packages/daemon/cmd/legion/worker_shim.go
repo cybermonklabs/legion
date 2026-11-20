@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -22,8 +23,10 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
-// go to stdout, which is what the pane shows; its exit status is OMP's. With --pod-safety, which
-// the Sandbox runtime passes and a tmux pane never does, OMP starts on the pod's baseline
+// go to stdout, which is what the pane shows, through the URL rule (redact.Writer), and so do its
+// refusals of a configuration on stderr (printRefusal); its exit status is OMP's. With
+// --pod-safety, which the Sandbox runtime passes and a tmux pane never does, OMP starts on the
+// pod's baseline
 // (podsafety.Apply: the two variables that place a pod's sessions, each set where the pod leaves
 // it unset, and nothing else — Legion writes no settings overlay of its own, so PI_CONFIG_FILES
 // rides through as the runtime composed it and nothing of a repository's settings is held off),
@@ -49,12 +52,14 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 //
 // Before the wrapped process is started, and before any frame the daemon sends is read, the shim
 // reads the pod's shared public leak check where its own environment carries the pin the worker
-// image sets (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to
-// the pod's launcher, which installs it once for the pod before any role starts; the shim installs
+// image sets and the deployment's checker the runtime tells a role of a deployment that runs one
+// (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to the pod's
+// launcher, which installs it once for the pod before any role starts; the shim installs
 // nothing. The runtime tells every role of the pod that installed check as PUBLIC_LEAK_CHECK, and
 // where the environment names none the shim names the install itself. A role whose install is
 // absent or of another tag fails its launch rather than running an agent whose every write path
-// would refuse. On a tmux pane there is no pin and nothing is read.
+// would refuse. On a tmux pane there is no pin, and under a deployment that runs no shared leak
+// check no checker, and nothing is read.
 func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "worker-shim [flags] -- <omp argv…>",
@@ -79,6 +84,10 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlags, podSafety bool, args []string, stdout, stderr io.Writer) int {
+	// The shim's own lines pass the URL rule (podLogs here, cfg.Log below). Oh My Pi's stderr
+	// and agent-secrets' output go to this process's own os.Stderr, which internal/shim hands
+	// them itself, outside the rule: Oh My Pi's stderr stays the pane's file.
+	defer podLogs(stderr)()
 	// SIGHUP stops this shim as SIGTERM does: tmux's kill-pane gives every process of the pane
 	// the hangup, and it is the only signal this process gets under that runtime — the daemon
 	// ends a pane with its shutdown frame and then kills the pane, never signalling the shim
@@ -104,13 +113,13 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 		cfg.Env, err = podSafeEnvironment(cfg.Env)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
+		printRefusal(stderr, "legion worker-shim", err)
 		return 1
 	}
-	cfg.Log = stdout
+	cfg.Log = redact.Writer(stdout)
 	code, err := shim.Run(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
+		printRefusal(stderr, "legion worker-shim", err)
 		return 1
 	}
 	return code
