@@ -6,15 +6,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 
 	"authelia.com/provider/oauth2"
 	"github.com/go-jose/go-jose/v4"
-	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -193,18 +192,19 @@ func edgeGrant(form url.Values) bool {
 
 // refuseWorkspaceLogin writes 400 invalid_request EDGE_WORKSPACE_LOGIN and reports true when the
 // request object compact claims a login_hint that is a person of the Workspace: an address on one
-// of domains or a subdomain of one (onTheWorkspace), or a login that is no address at all, which
-// names no person outside it. It reads the claim without verifying the object's signature, which
-// costs no signature check and no bucket: a refusal only ever refuses the caller who sent it, and
-// the object the gate passes is verified as on the broker's own address. An object it cannot read,
-// or one claiming no login_hint, is the handler's to refuse, as it is there.
+// of domains or a subdomain of one, as Dispatch's sign-in reads an address by the same domains
+// (oidc.OnWorkspaceDomain), or a login that is no address at all, which names no person outside
+// it. It reads the claim without verifying the object's signature, which costs no signature check
+// and no bucket: a refusal only ever refuses the caller who sent it, and the object the gate passes
+// is verified as on the broker's own address. An object it cannot read, or one claiming no
+// login_hint, is the handler's to refuse, as it is there.
 func refuseWorkspaceLogin(w http.ResponseWriter, compact string, domains []string) bool {
 	login := record.CanonicalLogin(claimedLoginHint(compact))
 	if login == "" {
 		return false
 	}
 	at := strings.LastIndexByte(login, '@')
-	if at >= 0 && !onTheWorkspace(login[at+1:], domains) {
+	if at >= 0 && !oidc.OnWorkspaceDomain(login[at+1:], domains) {
 		return false
 	}
 	oauth.WriteRefusal(w, &oauth.Refusal{Status: http.StatusBadRequest, Code: "EDGE_WORKSPACE_LOGIN",
@@ -226,61 +226,4 @@ func claimedLoginHint(compact string) string {
 		return ""
 	}
 	return claims.LoginHint
-}
-
-// onTheWorkspace reports whether at, an address's domain with its ASCII letters lowered, is one of
-// domains or a subdomain of one, as Dispatch's rule of the same domains reads an address: compared
-// without one trailing dot, which names the same domain, and, when it holds a character outside
-// ASCII, also as IDNA lookup maps it (idna.Lookup.ToASCII), the A-label form domains are written
-// in, trimmed of one trailing dot again since the lookup maps U+3002, U+FF0E and U+FF61 onto the
-// full stop. A domain that still holds an empty label after that trim (example.com.., or a lone
-// "") is answered as the Workspace's: no mail server resolves one, so this refuses nothing a
-// person outside the Workspace could be named by, and what it stops is a spelling of the
-// Workspace's own domain that the comparison would not see.
-func onTheWorkspace(at string, domains []string) bool {
-	at = strings.TrimSuffix(at, ".")
-	if onAnyDomain(at, domains) || hasEmptyLabel(at) {
-		return true
-	}
-	if isASCII(at) {
-		return false
-	}
-	// The lookup maps every label it can even when it refuses another, and answers that mapping
-	// beside its error, so the error is not read: a domain it maps onto the Workspace's is the
-	// Workspace's whatever else it holds.
-	ascii, _ := idna.Lookup.ToASCII(at)
-	ascii = strings.TrimSuffix(ascii, ".")
-	return onAnyDomain(ascii, domains) || hasEmptyLabel(ascii)
-}
-
-// onAnyDomain reports whether at is one of domains or a subdomain of one, compared without regard
-// to case.
-func onAnyDomain(at string, domains []string) bool {
-	for _, domain := range domains {
-		tail := len(at) - len(domain)
-		switch {
-		case domain == "" || tail < 0:
-		case tail == 0 && strings.EqualFold(at, domain):
-			return true
-		case tail > 0 && at[tail-1] == '.' && strings.EqualFold(at[tail:], domain):
-			return true
-		}
-	}
-	return false
-}
-
-// hasEmptyLabel reports whether at, a domain already trimmed of one trailing dot, is empty or
-// holds a label with nothing in it.
-func hasEmptyLabel(at string) bool {
-	return at == "" || strings.HasPrefix(at, ".") || strings.HasSuffix(at, ".") || strings.Contains(at, "..")
-}
-
-// isASCII reports whether s holds no byte outside ASCII.
-func isASCII(s string) bool {
-	for i := range len(s) {
-		if s[i] >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
 }

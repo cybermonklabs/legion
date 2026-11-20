@@ -62,14 +62,14 @@ type Service struct {
 	// Policy is the secret policy, whose version a machine-login record carries.
 	Policy *policy.Current
 
-	// Audience is what a login's request object must name as its aud (BROKER_PUBLIC_URL): the
-	// broker's own address as the login's caller reached it.
+	// Audience is what a new login's request object must name as its aud exactly
+	// (BROKER_PUBLIC_URL): the broker's own address as the login's caller reached it.
 	Audience string
 	// EdgeAudience is BROKER_EDGE_URL, the broker's address at its edge, and "" for a broker with
-	// no edge. A login the edge opens is verified against it (AtEdge), and a record read back for
-	// its lookup or its decision, which Dispatch relays to Audience, against either address
-	// (record.VerifyStoredRequestObject): each is this broker, and the record's object was held to
-	// the one its caller reached when the login was opened.
+	// no edge. A login the edge opens is held to it exactly (AtEdge), and a record read back for
+	// its lookup or its decision, which Dispatch relays to Audience, is held to the origin of
+	// either address (record.VerifyStoredRequestObject): each is this broker, and the record's
+	// object was held to the one its caller reached when the login was opened.
 	EdgeAudience string
 	Skew         time.Duration
 	PendingTTL   time.Duration
@@ -96,7 +96,7 @@ type Service struct {
 const jtiRetentionMargin = time.Minute
 
 // embeddedJWK extracts the raw JWK embedded in a request object's JWS header. It is called only
-// after record.VerifyRequestObject already checked that JWS's signature and structure, so
+// after record.VerifyStoredRequestObject already checked that JWS's signature and structure, so
 // ApplyDecision can store the exact public key material a launcher credential is bound to.
 func embeddedJWK(compact string) (json.RawMessage, error) {
 	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})

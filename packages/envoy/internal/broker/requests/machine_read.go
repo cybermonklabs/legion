@@ -1029,8 +1029,9 @@ func sameLifetime(a, b *int) bool {
 
 // signedForAnotherBroker reports whether pending request p's record is signed for another broker
 // address: its request object does not verify for this broker, by the check PendingForApprover
-// lists a record by (requestedIdentifiers), because its aud is neither Machine.Audience nor
-// Machine.EdgeAudience (record.ErrAudienceMismatch). Such a request can be decided by no person
+// lists a record by (requestedIdentifiers), because its aud names neither Machine.Audience's
+// origin nor, for a machine login, Machine.EdgeAudience's (record.VerifyStoredRequestObject,
+// record.ErrAudienceMismatch). Such a request can be decided by no person
 // and no judge here: no approver's list shows it and the judge was never handed it. A request
 // with no record, a body that does not parse and every other refusal (a signature, a time) answer
 // false, so Create keeps such a request and applies the one-pending-request rule to it: the
@@ -1492,9 +1493,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 }
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, read from
-// the request object it embeds once that object verifies for this broker: its audience, one of
-// the broker's own addresses (record.VerifyStoredRequestObject), its signature and its time
-// against when the record was written.
+// the request object it embeds once that object verifies for this broker: its audience, an
+// address of this broker for its kind (record.VerifyStoredRequestObject), its signature and its
+// time against when the record was written.
 func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) ([]string, error) {
 	body, err := record.ParseBody(canonical)
 	if err != nil {

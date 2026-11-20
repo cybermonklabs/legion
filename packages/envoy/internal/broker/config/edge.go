@@ -5,11 +5,13 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -21,12 +23,12 @@ var EdgeSettings = []string{"BROKER_EDGE_LISTEN_ADDR", "BROKER_EDGE_URL", "BROKE
 const workspaceDomainsSetting = "BROKER_SIGNIN_WORKSPACE_DOMAINS"
 
 // loadEdge holds cfg's edge settings, which Load has read into it, to what the edge needs:
-// all three or none; a listen address of host:port whose port is not the port of the broker's
-// other three listeners; an edge URL of BROKER_PUBLIC_URL's form that is not publicURL, the
-// broker's own address as Load parsed it; a page that is an absolute http(s) URL; and the two
-// settings the edge's routes stand on, the device grant's page and the sign-in domain. With none
-// of the three set it holds nothing, and the broker has no edge.
-func loadEdge(cfg Config, publicURL *url.URL) error {
+// all three or none; a listen address of host:port whose port is a number and not the port of
+// the broker's other three listeners; an edge URL of BROKER_PUBLIC_URL's form whose origin is not
+// BROKER_PUBLIC_URL's; a page that is an absolute http(s) URL; and the two settings the edge's
+// routes stand on, the device grant's page and the sign-in domain. With none of the three set it
+// holds nothing, and the broker has no edge.
+func loadEdge(cfg Config) error {
 	values := []string{cfg.EdgeListenAddr, cfg.EdgeURL, cfg.EdgeMachineLoginURL}
 	var missing []string
 	for i, setting := range EdgeSettings {
@@ -41,22 +43,27 @@ func loadEdge(cfg Config, publicURL *url.URL) error {
 	default:
 		return fmt.Errorf("the broker's edge needs %s; missing %s", strings.Join(EdgeSettings, ", "), strings.Join(missing, ", "))
 	}
-	_, edgePort, err := net.SplitHostPort(cfg.EdgeListenAddr)
+	_, edgePortText, err := net.SplitHostPort(cfg.EdgeListenAddr)
 	if err != nil {
 		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR must be host:port, such as 0.0.0.0:13383, got %q", cfg.EdgeListenAddr)
 	}
+	edgePort, err := strconv.ParseUint(edgePortText, 10, 16)
+	if err != nil {
+		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR must name its port as a number from 0 to 65535, such as 0.0.0.0:13383, got %q", cfg.EdgeListenAddr)
+	}
 	// Port 0 is the kernel's choice of a port no listener holds, so two listeners given it never
 	// share one: a local run gives it to every listener.
-	if edgePort != "0" {
+	if edgePort != 0 {
 		for _, other := range []struct{ setting, addr string }{
 			{"BROKER_LISTEN_ADDR", cfg.ListenAddr},
 			{"BROKER_METRICS_LISTEN_ADDR", cfg.MetricsListenAddr},
 			{"BROKER_AIRLOCK_LISTEN_ADDR", cfg.AirlockListenAddr},
 		} {
-			// An address that does not parse is not this check's to refuse: its own bind refuses
-			// the boot, naming it.
-			if _, port, err := net.SplitHostPort(other.addr); err == nil && port == edgePort {
-				return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR (%s) and %s (%s) name the same port, %s: the edge is a listener of its own, which the public load balancer reaches and no other caller does, so give it a port no other listener of the broker binds",
+			// Each port is read as the bind reads it (listenPort), so a spelling of the same
+			// number, 013382 beside 13382, is the same port. An address that does not parse is
+			// not this check's to refuse: its own bind refuses the boot, naming it.
+			if port, ok := listenPort(other.addr); ok && port == int(edgePort) {
+				return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR (%s) and %s (%s) name the same port, %d: the edge is a listener of its own, which the public load balancer reaches and no other caller does, so give it a port no other listener of the broker binds",
 					cfg.EdgeListenAddr, other.setting, other.addr, edgePort)
 			}
 		}
@@ -65,10 +72,11 @@ func loadEdge(cfg Config, publicURL *url.URL) error {
 	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || edgeURL.Host == "" || edgeURL.Path != "" {
 		return fmt.Errorf("BROKER_EDGE_URL must be an absolute http or https URL with no path: %q", redact.URL(cfg.EdgeURL))
 	}
-	// One address for both would let a request object or a DPoP proof made for one listener be
-	// spent at the other, which naming each its own address is there to prevent.
-	if edgeURL.Scheme == publicURL.Scheme && strings.EqualFold(edgeURL.Host, publicURL.Host) {
-		return fmt.Errorf("BROKER_EDGE_URL is BROKER_PUBLIC_URL (%s): the edge's callers name an address of its own in their request objects and proofs, so that one made for either listener is never spent at the other", redact.URL(cfg.EdgeURL))
+	// One origin for both would let a DPoP proof made for one listener be spent at the other,
+	// which naming each its own address is there to prevent. The origins are compared as the
+	// proof's htu is (record.SameOrigin): https://secrets.example:443 is https://secrets.example.
+	if record.SameOrigin(cfg.EdgeURL, cfg.PublicURL) {
+		return fmt.Errorf("BROKER_EDGE_URL (%s) is BROKER_PUBLIC_URL's origin: the edge's callers name an address of its own in their request objects and proofs, so that one made for either listener is never spent at the other", redact.URL(cfg.EdgeURL))
 	}
 	if err := httpURLSetting("BROKER_EDGE_MACHINE_LOGIN_URL", cfg.EdgeMachineLoginURL); err != nil {
 		return err
@@ -80,6 +88,19 @@ func loadEdge(cfg Config, publicURL *url.URL) error {
 		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR needs BROKER_SIGNIN_DOMAIN: the edge refuses a machine login naming a person of the Workspace, and %s=%s names no Workspace", signInSwitchSetting, signInOffValue)
 	}
 	return nil
+}
+
+// listenPort is the port addr, a listener's host:port, binds, read as net.Listen reads it
+// (net.LookupPort): a decimal number, written with leading zeros or a sign or not, or a service
+// name. It answers false for an address that does not split into a host and a port, and for a
+// port the lookup does not take, which the listener's own bind refuses.
+func listenPort(addr string) (int, bool) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, false
+	}
+	n, err := net.LookupPort("tcp", port)
+	return n, err == nil
 }
 
 // domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and

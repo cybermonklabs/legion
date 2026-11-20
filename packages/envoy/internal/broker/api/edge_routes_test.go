@@ -24,17 +24,14 @@ import (
 // value of.
 var pathParameter = regexp.MustCompile(`\{[^}]+\}`)
 
-// TestTheEdgeMountsOnlyTheDeviceLoginRoutes walks every row of the broker's route table and asks
-// the edge's mux which pattern it would serve a request for that row with: POST
-// /v1/oauth/device_authorization, POST /v1/oauth/token and GET /healthz each resolve to
-// themselves, and every other row, the enrollment routes, the routes Dispatch relays a person's
-// decisions through and the approval page among them, resolves to none, so the mux answers it 404
-// or 405 and no handler of the broker runs. The edge needs no database to mount: it is built here
-// on a provider with no store, which serves nothing and is only inspected.
-//
-// The named revert: add "POST /v1/enrollments" to edgeRoutes, and this fails naming it.
-func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
-	const edgeURL = "https://secrets.edge.example"
+// testEdgeURL is BROKER_EDGE_URL in this file's edges.
+const testEdgeURL = "https://secrets.edge.example"
+
+// newTestEdgeMux is the edge's mux as RegisterEdge mounts it over a Deps it accepts. The edge
+// needs no database to mount: it is built on a provider with no store, which serves nothing, so
+// a test of it may inspect the mux and send it only what the mux answers itself.
+func newTestEdgeMux(t *testing.T) *http.ServeMux {
+	t.Helper()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
@@ -45,9 +42,9 @@ func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
 	deps := Deps{
 		PublicURL:    "https://secrets.internal.example",
 		OAuth:        provider,
-		MachineLogin: &machine.Service{Audience: "https://secrets.internal.example", EdgeAudience: edgeURL},
-		Machine:      &requests.Machine{Audience: "https://secrets.internal.example", EdgeAudience: edgeURL},
-		Enroll:       &enroll.Service{Chain: &record.ChainVerifier{Audience: "https://secrets.internal.example", EdgeAudience: edgeURL}},
+		MachineLogin: &machine.Service{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL},
+		Machine:      &requests.Machine{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL},
+		Enroll:       &enroll.Service{Chain: &record.ChainVerifier{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL}},
 		DeviceLogin:  func(context.Context, url.Values, string) error { return nil },
 		TokenHooks: oauth.TokenHooks{
 			Before: func(context.Context, oauth2.GrantType, map[string]any) error { return nil },
@@ -55,8 +52,20 @@ func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-	RegisterEdge(mux, deps, Edge{URL: edgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"}})
+	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"}})
+	return mux
+}
 
+// TestTheEdgeMountsOnlyTheDeviceLoginRoutes walks every row of the broker's route table and asks
+// the edge's mux which pattern it would serve a request for that row with: POST
+// /v1/oauth/device_authorization, POST /v1/oauth/token and GET /healthz each resolve to
+// themselves, and every other row, the enrollment routes, the routes Dispatch relays a person's
+// decisions through and the approval page among them, resolves to none, so the mux answers it 404
+// or 405 and no handler of the broker runs.
+//
+// The named revert: add "POST /v1/enrollments" to edgeRoutes, and this fails naming it.
+func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
+	mux := newTestEdgeMux(t)
 	want := map[string]bool{
 		http.MethodPost + " " + deviceAuthorizationPath: true,
 		http.MethodPost + " " + tokenPath:               true,
@@ -65,7 +74,7 @@ func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
 	served := 0
 	for _, route := range routes() {
 		name := route.Method + " " + route.Pattern
-		_, pattern := mux.Handler(httptest.NewRequest(route.Method, edgeURL+pathParameter.ReplaceAllString(route.Pattern, "x"), nil))
+		_, pattern := mux.Handler(httptest.NewRequest(route.Method, testEdgeURL+pathParameter.ReplaceAllString(route.Pattern, "x"), nil))
 		switch {
 		case want[name] && pattern != name:
 			t.Errorf("the edge serves %s with %q, want the row itself", name, pattern)
@@ -80,12 +89,34 @@ func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
 	}
 }
 
+// TestTheEdgeAnswersOnlyPostOnItsLoginPaths: the load balancer's route to the edge matches a path
+// and no method, so the method is the edge's to hold. Every method but POST on
+// /v1/oauth/device_authorization and /v1/oauth/token is answered 405 with Allow: POST, before any
+// handler or gate of the broker runs, and GET /healthz is still the health check.
+//
+// The named revert: mount the edge's rows by path alone, so the mux serves any method, and the
+// GET, PUT and DELETE rows reach the login handlers' gates.
+func TestTheEdgeAnswersOnlyPostOnItsLoginPaths(t *testing.T) {
+	mux := newTestEdgeMux(t)
+	for _, path := range []string{deviceAuthorizationPath, tokenPath} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+			answer := httptest.NewRecorder()
+			mux.ServeHTTP(answer, httptest.NewRequest(method, testEdgeURL+path, nil))
+			if answer.Code != http.StatusMethodNotAllowed || answer.Header().Get("Allow") != http.MethodPost {
+				t.Errorf("%s %s at the edge = %d, Allow %q; want 405, Allow POST", method, path, answer.Code, answer.Header().Get("Allow"))
+			}
+		}
+	}
+	if _, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, testEdgeURL+"/healthz", nil)); pattern != http.MethodGet+" /healthz" {
+		t.Fatalf("GET /healthz at the edge is served by %q, want the health check", pattern)
+	}
+}
+
 // TestTheEdgeRefusesADepsItCannotServe: RegisterEdge panics at wiring, as Register does, on a Deps
 // that would leave a login the edge opened unreadable by the routes that decide it — a
 // machine-login service, request machine or launcher credentials' chain that does not take the
 // edge's URL as its EdgeAudience — or that serves no device grant.
 func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
-	const edgeURL = "https://secrets.edge.example"
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
@@ -102,9 +133,9 @@ func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
 	wired := func() Deps {
 		return Deps{
 			OAuth:        provider,
-			MachineLogin: &machine.Service{EdgeAudience: edgeURL},
-			Machine:      &requests.Machine{EdgeAudience: edgeURL},
-			Enroll:       &enroll.Service{Chain: &record.ChainVerifier{EdgeAudience: edgeURL}},
+			MachineLogin: &machine.Service{EdgeAudience: testEdgeURL},
+			Machine:      &requests.Machine{EdgeAudience: testEdgeURL},
+			Enroll:       &enroll.Service{Chain: &record.ChainVerifier{EdgeAudience: testEdgeURL}},
 			DeviceLogin:  func(context.Context, url.Values, string) error { return nil },
 			TokenHooks: oauth.TokenHooks{
 				Before: func(context.Context, oauth2.GrantType, map[string]any) error { return nil },
@@ -129,8 +160,8 @@ func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
 					t.Fatalf("RegisterEdge with %s did not panic", row.name)
 				}
 			}()
-			RegisterEdge(http.NewServeMux(), deps, Edge{URL: edgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine"})
+			RegisterEdge(http.NewServeMux(), deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine"})
 		})
 	}
-	RegisterEdge(http.NewServeMux(), wired(), Edge{URL: edgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine"})
+	RegisterEdge(http.NewServeMux(), wired(), Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine"})
 }

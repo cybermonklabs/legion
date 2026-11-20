@@ -39,10 +39,11 @@ var ErrRequestInvalid = errors.New("request object invalid")
 
 // ErrAudienceMismatch is the one reason of ErrRequestInvalid a caller tells from the others: the
 // object's aud is not the audience it is verified for, which is a request signed for another
-// broker address (another BROKER_PUBLIC_URL). VerifyRequestObject wraps both, so its text stays
-// "request object invalid: aud does not match". requests.Machine.Create reads it to end a
-// pending request its session made on another broker that shares this database, which no person
-// and no judge on this broker can decide; a bad signature or a time outside the skew is no such
+// broker address (another BROKER_PUBLIC_URL). VerifyRequestObject and VerifyStoredRequestObject
+// wrap both, so its text stays "request object invalid: aud does not match".
+// requests.Machine.Create reads it to end a pending request its session made on another broker
+// that shares this database, which no person and no judge on this broker can decide; a bad
+// signature or a time outside the skew is no such
 // request, and is never this error.
 var ErrAudienceMismatch = errors.New("aud does not match")
 
@@ -193,6 +194,15 @@ func ValidLifetime(seconds int) bool {
 // signature and before the times, so an object that is ErrAudienceMismatch was really signed by
 // its embedded key.
 func VerifyRequestObject(compact, audience string, skew time.Duration, now time.Time) (RequestObject, error) {
+	return verifyRequestObject(compact, func(aud string, _ []AuthorizationDetail) bool { return aud == audience }, skew, now)
+}
+
+// verifyRequestObject is VerifyRequestObject with its aud check the caller's: ours reports
+// whether aud, the object's own and never empty, names this broker for an object claiming
+// details, its authorization details as the payload holds them, before they are validated.
+// VerifyRequestObject holds aud to one address exactly; VerifyStoredRequestObject to the origin
+// of one of the broker's two, the edge's for a machine login alone.
+func verifyRequestObject(compact string, ours func(aud string, details []AuthorizationDetail) bool, skew time.Duration, now time.Time) (RequestObject, error) {
 	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
 	if err != nil || len(sig.Signatures) != 1 {
 		return RequestObject{}, fmt.Errorf("%w: not a single ES256 JWS", ErrRequestInvalid)
@@ -220,7 +230,7 @@ func VerifyRequestObject(compact, audience string, skew time.Duration, now time.
 	if err != nil || c.Issuer == "" || c.Issuer != thumbprint {
 		return RequestObject{}, fmt.Errorf("%w: iss is not the embedded key's thumbprint", ErrRequestInvalid)
 	}
-	if c.Audience == "" || c.Audience != audience {
+	if c.Audience == "" || !ours(c.Audience, c.AuthorizationDetails) {
 		return RequestObject{}, fmt.Errorf("%w: %w", ErrRequestInvalid, ErrAudienceMismatch)
 	}
 	issued := time.Unix(c.IssuedAt, 0)

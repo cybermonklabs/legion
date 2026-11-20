@@ -292,9 +292,10 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 // them, in the request's order and each cut by Clip, up to secretNamesBytes of names as the line
 // writes them (listedBytes), and a count of the names after them. The first name that would pass
 // the bound ends the list, so the list is always a prefix of what the request named, and the
-// names it leaves out are counted, never kept. Middleware's Recorder notes the API port's names on
-// one, and the airlock's proxy port the name its call was handled for, so both ports' lines list
-// names by this one rule. The zero value has noted none.
+// names it leaves out are counted, never kept. Middleware's Recorder notes the names of the API
+// port and of the edge, which Middleware serves both, on one, and the airlock's proxy port the
+// name its call was handled for, so every port's lines list names by this one rule. The zero
+// value has noted none.
 type SecretNames struct {
 	// listed is the names the line lists, and bytes what the line writes for them.
 	listed []string
@@ -369,9 +370,10 @@ func (n *SecretNames) AppendFields(fields []any) []any {
 	return fields
 }
 
-// RefusalLine is the fields a refusal's line names on both ports of the broker, which a reader of
-// the log filters and alerts on by name: Middleware writes the API port's line by it and the
-// airlock's proxy port its own, so the two name each field alike and in one order.
+// RefusalLine is the fields a refusal's line names on every port of the broker that answers a
+// caller, which a reader of the log filters and alerts on by name: Middleware writes the line of
+// the API port and of the edge by it and the airlock's proxy port its own, so each names each
+// field alike and in one order.
 type RefusalLine struct {
 	// ID is the answer's id, which the answer carries in its X-Broker-Answer-Id header.
 	ID string
@@ -380,7 +382,8 @@ type RefusalLine struct {
 	Code   string
 	// Method is the request's method, which the line cuts as it cuts every text field (Fields).
 	Method string
-	// Route is the pattern of the route the API port's mux matched, and empty for none.
+	// Route is the pattern of the route the mux of the API port or the edge matched, and empty
+	// for none.
 	Route string
 	// CallerClass is one of the Caller constants, and Caller that class's identity.
 	CallerClass string
@@ -391,12 +394,12 @@ type RefusalLine struct {
 	Correlation string
 }
 
-// Fields is the line's attributes as slog takes them, in the one order both ports write: answer_id,
-// status, code, method, route, caller_class, caller, the names (SecretNames.AppendFields), then
-// extras, a port's own fields that come before correlation_id, then correlation_id when the
-// caller sent one, then trailing, a port's own fields that come after it. The API port has none of
-// either; the airlock's proxy port names its host, reason and path as extras, and its issue and
-// slot as trailing.
+// Fields is the line's attributes as slog takes them, in the one order every port writes:
+// answer_id, status, code, method, route, caller_class, caller, the names
+// (SecretNames.AppendFields), then extras, a port's own fields that come before correlation_id,
+// then correlation_id when the caller sent one, then trailing, a port's own fields that come
+// after it. The API port and the edge have none of either; the airlock's proxy port names its
+// host, reason and path as extras, and its issue and slot as trailing.
 //
 // Every text field of the line, extras and trailing included, is cut by Clip here (ClipFields),
 // where it enters the line, rather than by each writer: the method, the host and the path are

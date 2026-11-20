@@ -92,15 +92,17 @@ type Config struct {
 	// no person ever types a code.
 	MachineLoginURL string
 	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
-	// process, bound and drained with the API's, and refused when its port is the port of
-	// BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or BROKER_AIRLOCK_LISTEN_ADDR. The edge is
+	// process, bound and drained with the API's. Its port is a decimal number, and it is refused
+	// when that number is the port of BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or
+	// BROKER_AIRLOCK_LISTEN_ADDR, each read as the bind reads it, so 013382 is 13382. The edge is
 	// what a caller outside the deployment's private network reaches through a public load
 	// balancer, and it serves three routes and no other: POST /v1/oauth/device_authorization,
-	// POST /v1/oauth/token and GET /healthz. On it a caller's address is the second-to-last
-	// X-Forwarded-For entry, the one the load balancer appends for the client it accepted (a
-	// request with fewer than two is 400 REQUEST_INVALID); its buckets are its own, so a flood
-	// there spends nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an
-	// address on BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
+	// POST /v1/oauth/token and GET /healthz; any other method on the two login paths is 405. On
+	// the two login routes a caller's address is the second-to-last X-Forwarded-For entry, the
+	// one the load balancer appends for the client it accepted (a login request with fewer than
+	// two is 400 REQUEST_INVALID); the edge's buckets are its own, so a flood there spends
+	// nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an address on
+	// BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
 	// EDGE_WORKSPACE_LOGIN before any of them is spent; and the token route takes the device
 	// code, the refresh token and the trade of the broker's own access token, and answers every
 	// other grant 400 unsupported_grant_type. Set together with BROKER_EDGE_URL and
@@ -109,10 +111,13 @@ type Config struct {
 	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
 	EdgeListenAddr string
 	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
-	// http or https URL with no path, other than BROKER_PUBLIC_URL. A machine login's request
-	// object made at the edge names it as its audience and every DPoP proof sent there names it
-	// and the route's path, as one made on BROKER_PUBLIC_URL names that, so neither is spendable
-	// at the other. Set with BROKER_EDGE_LISTEN_ADDR.
+	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
+	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
+	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
+	// https://secrets.example. A machine login's request object made at the edge names it as its
+	// audience and every DPoP proof sent there names it and the route's path, as one made on
+	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
+	// BROKER_EDGE_LISTEN_ADDR.
 	EdgeURL string
 	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
 	// machine login made at the edge on, which that login's verification_uri names in place of
@@ -2105,7 +2110,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
 	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
-	if err := loadEdge(cfg, publicURL); err != nil {
+	if err := loadEdge(cfg); err != nil {
 		return Config{}, err
 	}
 	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {

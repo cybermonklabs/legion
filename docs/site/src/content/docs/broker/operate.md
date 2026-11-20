@@ -1169,7 +1169,8 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   `X-Forwarded-Proto` or `X-Forwarded-Host` a request arrives with: a proxy may rewrite `Host` or
   terminate TLS without setting `X-Forwarded-Proto`, and a client that sends those headers itself
   changes nothing. That holds for the machine login's token endpoint (`POST /v1/oauth/token`)
-  too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
+  too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`; at the broker's edge they name
+  `BROKER_EDGE_URL/v1/oauth/token` instead ([The edge](#the-edge-device-login-from-outside-the-private-network)).
 - The model judge adds two outbound calls. The broker reads one Dispatch issue, that issue's spec
   document and the ask the reason cites at `BROKER_JUDGE_DISPATCH_URL`, with its own projected
   ServiceAccount token, and writes nothing there: no ask, no comment, no status. At the same
@@ -1327,7 +1328,8 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 
 A person outside the deployment's private network, with no way onto it, logs a machine in through
 the broker's edge: a fourth port of the same process, which a public load balancer reaches and
-nothing else does. It serves three routes, and every other path answers `404`:
+nothing else does. It serves three routes; every other path answers `404`, and any method but
+`POST` on the two login paths answers `405`:
 
 - `POST /v1/oauth/device_authorization`, the start of a machine login;
 - `POST /v1/oauth/token`, the machine's poll, its refreshes and the trade of its access token;
@@ -1340,8 +1342,8 @@ launcher credential the approval mints works as any other.
 
 | Setting | What it is |
 | --- | --- |
-| `BROKER_EDGE_LISTEN_ADDR` | The edge's `host:port`, such as `0.0.0.0:13383`. Its port may not be the port of `BROKER_LISTEN_ADDR`, `BROKER_METRICS_LISTEN_ADDR` or `BROKER_AIRLOCK_LISTEN_ADDR`: the boot is refused naming both settings. Unset, the broker has no edge and binds nothing for one. |
-| `BROKER_EDGE_URL` | The broker's address as the edge's callers reach it, an absolute URL with no path, other than `BROKER_PUBLIC_URL`. A login made at the edge signs its request object for this audience, and every DPoP proof sent there names this URL and the path, so a proof or request object made for one port is refused at the other. |
+| `BROKER_EDGE_LISTEN_ADDR` | The edge's `host:port`, such as `0.0.0.0:13383`, with its port written as a number. That number may not be the port of `BROKER_LISTEN_ADDR`, `BROKER_METRICS_LISTEN_ADDR` or `BROKER_AIRLOCK_LISTEN_ADDR`, each read as the bind reads it, so `013382` is `13382`: the boot is refused naming both settings. Unset, the broker has no edge and binds nothing for one. |
+| `BROKER_EDGE_URL` | The broker's address as the edge's callers reach it, an absolute URL with no path, whose origin is not `BROKER_PUBLIC_URL`'s. The two are compared as a DPoP proof's `htu` is, the scheme and the host in any case and the scheme's default port the same as none, so `https://secrets.example:443` is refused beside `https://secrets.example`. A login made at the edge signs its request object for this audience, and every DPoP proof sent there names this URL and the path, so a proof or request object made for one port is refused at the other. |
 | `BROKER_EDGE_MACHINE_LOGIN_URL` | The page the person types the code into, which a device authorization at the edge answers as its `verification_uri` in place of `BROKER_MACHINE_LOGIN_URL`: a page the person can reach from outside. |
 | `BROKER_SIGNIN_WORKSPACE_DOMAINS` | Optional: the other domains the Workspace owns beside `BROKER_SIGNIN_DOMAIN`, separated by commas, as `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists them. |
 
@@ -1354,10 +1356,11 @@ What the edge does that the API's port does not:
 - **The caller's address is the second-to-last `X-Forwarded-For` entry.** Google's external
   Application Load Balancer writes the header as `[<what the client sent>,]<client address>,<load
   balancer address>`, so the last entry is the balancer's own, the same for every caller, and
-  anything before the second-to-last is the caller's own text. A request whose header holds fewer
-  than two entries, or whose entry is no IP address, did not come through the balancer as it writes
-  the header, and is refused `400 invalid_request` `REQUEST_INVALID`. `BROKER_TRUSTED_PROXY_HEADER`
-  is not read at the edge.
+  anything before the second-to-last is the caller's own text. A login request whose header holds
+  fewer than two entries, or whose entry is no IP address, did not come through the balancer as it
+  writes the header, and is refused `400 invalid_request` `REQUEST_INVALID`. `GET /healthz` reads
+  no address: the balancer's own probe calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the
+  edge.
 - **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
   [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
@@ -1378,6 +1381,16 @@ What the edge does that the API's port does not:
 - **Both login routes take a form and nothing else.** A body of any type but
   `application/x-www-form-urlencoded`, `multipart/form-data` included, is refused `400
   invalid_request` `REQUEST_INVALID` before it is read.
+- **The method is the edge's to hold.** The load balancer's route to the edge can match a path
+  and not a method, so the edge answers `405` with `Allow: POST` to any other method on
+  `/v1/oauth/device_authorization` and `/v1/oauth/token`.
+
+A machine login the edge opened is signed for `BROKER_EDGE_URL`, and the broker reads its record
+back on `BROKER_PUBLIC_URL`'s routes. Every reader of a stored record (the pending lists, the
+lookup, the decision and the launcher credential's chain) takes a machine login signed for either
+address, and a session's request signed for `BROKER_PUBLIC_URL` alone, since the edge never opens
+one. Each compares origins as a DPoP proof's `htu` is compared, so a record signed for
+`https://secrets.example:443` is read back by a broker whose setting is `https://secrets.example`.
 
 The load balancer's health check reads `GET /healthz` on the edge's port; route nothing else of
 the broker through it, and admit to the port only the balancer's own source ranges.
@@ -1585,7 +1598,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `agent secret value read failed; its state kept name=<secret's name in the store> version=<version> error=…` | At WARN: the broker could not read a type secret's stored value to check it ([the value read](#the-value-read)), for a permission, a timeout or the store's own failure, which `error` names by its call and its class and never by a byte of the value. A stored value that is not text is no failed read: it is refused `value-malformed`. The secret keeps the state it had, but for a `value-malformed` refusal of an older version: a failed read of a version the store listed since ends that refusal, which writes `agent secret policy no longer refused`. Each load after it reads the value again and writes nothing more until a read succeeds. |
 | `agent secret value read succeeded again name=<secret's name in the store> version=<version>` | At INFO: the first read of that secret's value that succeeds after the line above. |
 | `agent secret uses legacy classifier tag; retag it with --type name=<secret's name in the store> old_tag=kind tag=type` | At WARN, once per secret for as long as the broker process runs, the first time a load or a reread reads a secret's type from the old `kind` tag because the secret carries no `type` tag. The broker serves the secret as that type. `agent-secrets secret retag NAME --type <type>` writes `type`, after which the line is not written again for that secret. |
-| `broker: answer refused answer_id=<id> status=<status> code=<code> method=<method> route=<route> caller_class=<class> caller=<caller> secrets=[<names>] secrets_count=<n>` | At WARN, once for each refusal of the API port and of the airlock's proxy port: every answer from 400 to 499 but a `429` and the two answers a machine gets while it polls a device login, `slow_down` and `authorization_pending`, which are counted and not logged. It is written before the answer is sent, and it names the answer id the refused caller was given ([Refusals and the answer id](#refusals-and-the-answer-id)). It lists the first secret names the request named, up to 32 KiB of names as the line writes them (JSON-escaped, each with its two quotes), counts them all in `secrets_count`, and adds `secrets_omitted=<n>` when it left names out, since Cloud Logging refuses an entry over 256 KiB. An answer Go's HTTP server writes itself before any of the broker's code runs, such as a `400` for a malformed request line, has no answer id and writes no line. |
+| `broker: answer refused answer_id=<id> status=<status> code=<code> method=<method> route=<route> caller_class=<class> caller=<caller> secrets=[<names>] secrets_count=<n>` | At WARN, once for each refusal of the API port, of the edge and of the airlock's proxy port: every answer from 400 to 499 but a `429` and the two answers a machine gets while it polls a device login, `slow_down` and `authorization_pending`, which are counted and not logged. It is written before the answer is sent, and it names the answer id the refused caller was given ([Refusals and the answer id](#refusals-and-the-answer-id)). It lists the first secret names the request named, up to 32 KiB of names as the line writes them (JSON-escaped, each with its two quotes), counts them all in `secrets_count`, and adds `secrets_omitted=<n>` when it left names out, since Cloud Logging refuses an entry over 256 KiB. An answer Go's HTTP server writes itself before any of the broker's code runs, such as a `400` for a malformed request line, has no answer id and writes no line. The line does not say which port refused: the edge's `route` is one of its two login routes or `GET /healthz`. |
 | `broker: <operation> failed error=…` | A request failed with a 500 or 503; the line carries the cause the response does not. A reread whose own request ended before it finished - its caller went away, or it reached the 45-second bound - is not one of these: it answers `503 REQUEST_ENDED` and logs nothing, since anyone can end a request. One reread whose request ended only while it read the value of a `github-app`, `google-login`, `google-service-account` or `azure-login` secret has already put the secret's new tags in force on that pod, so it still tells the other pods to reread the secret, as a `200` does. A held read of a request (`GET /v1/requests/{id}?wait=`) whose caller went away before its wait ran out or in the half second after it, by a Ctrl-C, a timeout of its own or a front door that cut the call, is not one of these either: it answers `503 REQUEST_ENDED`, logs nothing, and is counted `cancelled`, not `failed` ([Metrics](#metrics)). Every other read of a request that ends early is one of these, `read request failed` with a failed `503 DATABASE_UNAVAILABLE`: a read with no wait, which owes its answer at once, and a held read the database stalled until its caller gave up or the 45-second bound ended it. A held read's wait counts from when the request arrived, before its proof is checked, so a caller that goes away while its proof is still being checked leaves inside its wait; one that goes away while the broker looks its enrollment up or records its proof's jti ends that check instead, which is `verify proof failed`, a failed `503 DATABASE_UNAVAILABLE`. |
 | `broker: mint failed name=<NAME> type=<type> class=<class> attempts=<attempts> error=…` | At ERROR, for each release of a type secret its minter could not make. `class` says whose fix it is: `stored-value`, the secret's value is not a key or login the type takes, so its owner stores a new one; `binding`, a `google-service-account` secret the deployment binds to no account, or to an account its stored value does not name, so the operator fixes `BROKER_SERVICE_ACCOUNT_SECRETS` — this one is not the secret's owner to fix by storing a new value, and the mint is refused before any call reaches Google; `refused`, GitHub or Google answered and refused, such as a Google login that needs a new sign-in or a GitHub App with no installation on a listed account, so its owner signs in again or fixes the App; `upstream`, GitHub or Google could not be asked, answered no usable reply or rate limited the call, or answered a narrowed GitHub token holding more than the narrowing asked, which the broker revokes at GitHub, so check the broker's egress and the upstream's status. `attempts` is how many times the broker sent the call the mint failed at, `1` to `3` ([the mint retry](#the-mint-retry)), and `0` for a failure that was no call's, such as a stored value the minter could not read. A `stored-value` failure also refuses the secret as `value-malformed`, so its grants release nothing until a value that decodes is stored. A narrowing the caller got wrong is never this line: see `broker: narrowing refused`. The error never holds the stored value, a token or a value from GitHub's answer. The session is answered `502 MINT_FAILED` with the same error. |
 | `broker: a stored value's trailing line ending was removed name=<NAME>` | At INFO, once for each value of a release the line-ending rule changed, so twice for one release that changed two values: both the value a session is handed and the input a minter reads pass that rule. The line carries the secret's name and no part of any value. The rule removes the trailing run of carriage returns and line feeds only where what is left is not empty and holds no line ending inside it, so a value whose last line ending is part of it is released as it is. |
@@ -1842,13 +1855,13 @@ write `tls: the service's certificate is not valid for this host; the names it h
 in its place. The API port's refusal line takes its `correlation_id` from the caller's
 `X-Correlation-Id` too; its line holds no message text, and names the code. Each
 answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
-the one record of the API port's `429` and of a device grant's poll answers.
+the one record of the API port's and the edge's `429` and of a device grant's poll answers.
 
-On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
-answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
-of a `429` and of a failure as well. For a `502 MINT_FAILED`, read the `broker: mint failed` line
-instead ([Health and logs](#health-and-logs)). It names the secret as `name` and holds no answer
-id, so find it by that name and the time of the answer.
+On the API port and the edge, an answer that no refusal line records names its id in no line: a
+`429`, the two answers of a device login's poll, and every answer of 500 and above.
+`agent-secrets` prints the id of a `429` and of a failure as well. For a `502 MINT_FAILED`, read
+the `broker: mint failed` line instead ([Health and logs](#health-and-logs)). It names the secret
+as `name` and holds no answer id, so find it by that name and the time of the answer.
 
 ### The value read
 
@@ -1949,7 +1962,7 @@ own listing.
 
 | Metric | Type | Labels | What it holds |
 | --- | --- | --- | --- |
-| `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
+| `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port, on the edge and on the airlock's proxy port, all in the same series: no label names the port. The answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
 | `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |

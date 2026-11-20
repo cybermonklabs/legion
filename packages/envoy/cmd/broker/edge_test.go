@@ -343,7 +343,8 @@ func sortedInts(ints []int) []int {
 // edge's page as its verification_uri and a request object signed for BROKER_EDGE_URL, through
 // the load balancer's X-Forwarded-For; refuses there a person of the Workspace, BROKER_SIGNIN_DOMAIN
 // or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain, and a request whose header names no client; answers
-// 404 for routes of the broker's own address; and drains with the API: once the broker is asked to
+// 404 for routes of the broker's own address and 405 for any method but POST on its two login
+// paths; and drains with the API: once the broker is asked to
 // stop, the edge's GET /healthz answers 503 SHUTTING_DOWN beside the API's, so the load balancer
 // stops choosing the pod while the edge still answers.
 func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
@@ -397,6 +398,13 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 	} {
 		if status := statusOf(t, row.method, edge+row.path); status != http.StatusNotFound {
 			t.Errorf("%s %s at the edge = %d, want 404: the edge serves the device login alone", row.method, row.path, status)
+		}
+	}
+	for _, path := range []string{"/v1/oauth/device_authorization", "/v1/oauth/token"} {
+		for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+			if status := statusOf(t, method, edge+path); status != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s at the edge = %d, want 405: the load balancer's route matches the path alone, and the edge answers POST there and nothing else", method, path, status)
+			}
 		}
 	}
 

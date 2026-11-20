@@ -62,10 +62,10 @@ type ChainVerifier struct {
 	// (MayDecide).
 	Kind string
 
-	// Audience and Skew re-verify the embedded request object exactly as VerifyRequestObject
-	// enforced them when the record was first created. EdgeAudience is BROKER_EDGE_URL on the
-	// launcher credentials' verifier of a broker with an edge, whose machine logins may be signed
-	// for it (VerifyStoredRequestObject), and "" on every other.
+	// Audience and Skew re-verify the embedded request object as VerifyStoredRequestObject reads
+	// every stored record: its aud is Audience's origin, its times are checked as of the record's
+	// creation. EdgeAudience is BROKER_EDGE_URL on the launcher credentials' verifier of a broker
+	// with an edge, whose machine logins may be signed for it, and "" on every other.
 	Audience     string
 	EdgeAudience string
 	Skew         time.Duration

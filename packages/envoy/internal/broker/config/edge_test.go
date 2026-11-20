@@ -19,10 +19,13 @@ func edgeEnv() map[string]string {
 // TestTheEdgeAddressSharesNoPortWithTheBrokersOtherListeners: the edge's address is refused when
 // its port is the port of the broker's API, its metrics port or its airlock's proxy port, each at
 // its default address and at one a deployment names, and the refusal names both settings, since
-// an operator reads from it which two collide. 13383, the port the deployment gives the edge, is
-// none of them and loads.
+// an operator reads from it which two collide. A port is the number the bind reads (net.Listen
+// reads 013382 as 13382), so the same number written with a leading zero, on either side or
+// beside another host, is the same port. 13383, the port the deployment gives the edge, is none
+// of them and loads.
 //
-// The named revert: drop the port comparison from Load, and the 13382 row loads.
+// The named reverts: drop the port comparison from Load, and the 13382 row loads; compare the
+// ports as text, and the 013382 rows load.
 func TestTheEdgeAddressSharesNoPortWithTheBrokersOtherListeners(t *testing.T) {
 	for _, row := range []struct {
 		name, edge string
@@ -34,6 +37,9 @@ func TestTheEdgeAddressSharesNoPortWithTheBrokersOtherListeners(t *testing.T) {
 		{name: "the default airlock address", edge: "0.0.0.0:13381", other: "BROKER_AIRLOCK_LISTEN_ADDR"},
 		{name: "a metrics address the deployment names", edge: ":13390", set: map[string]string{"BROKER_METRICS_LISTEN_ADDR": "0.0.0.0:13390"}, other: "BROKER_METRICS_LISTEN_ADDR"},
 		{name: "an API address the deployment names", edge: "127.0.0.1:8080", set: map[string]string{"BROKER_LISTEN_ADDR": "0.0.0.0:8080"}, other: "BROKER_LISTEN_ADDR"},
+		{name: "the default metrics port written with a leading zero", edge: "0.0.0.0:013382", other: "BROKER_METRICS_LISTEN_ADDR"},
+		{name: "the default metrics port with a leading zero beside another host", edge: "10.0.0.5:013382", other: "BROKER_METRICS_LISTEN_ADDR"},
+		{name: "an API port the deployment writes with leading zeros", edge: "0.0.0.0:8080", set: map[string]string{"BROKER_LISTEN_ADDR": "0.0.0.0:008080"}, other: "BROKER_LISTEN_ADDR"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			e := edgeEnv()
@@ -52,11 +58,13 @@ func TestTheEdgeAddressSharesNoPortWithTheBrokersOtherListeners(t *testing.T) {
 		t.Fatalf("Load(BROKER_EDGE_LISTEN_ADDR=0.0.0.0:13383) = (%q, %v), want the edge on 0.0.0.0:13383", cfg.EdgeListenAddr, err)
 	}
 	// Port 0 is the kernel's choice of a free port, which a local run gives every listener: two
-	// listeners on port 0 never share one, so it is no collision.
-	e := edgeEnv()
-	e["BROKER_LISTEN_ADDR"], e["BROKER_METRICS_LISTEN_ADDR"], e["BROKER_EDGE_LISTEN_ADDR"] = "127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:0"
-	if _, err := Load(env(e)); err != nil {
-		t.Fatalf("Load with every listener on port 0 = %v, want it to load", err)
+	// listeners on port 0 never share one, so it is no collision, however the 0 is written.
+	for _, zero := range []string{"0", "00"} {
+		e := edgeEnv()
+		e["BROKER_LISTEN_ADDR"], e["BROKER_METRICS_LISTEN_ADDR"], e["BROKER_EDGE_LISTEN_ADDR"] = "127.0.0.1:"+zero, "127.0.0.1:"+zero, "127.0.0.1:"+zero
+		if _, err := Load(env(e)); err != nil {
+			t.Fatalf("Load with every listener on port %s = %v, want it to load", zero, err)
+		}
 	}
 }
 
@@ -99,10 +107,15 @@ func TestTheEdgeSettingsAreAllThreeOrNone(t *testing.T) {
 }
 
 // TestTheEdgeSettingsAreHeldToTheirForm: the edge's address is the one its callers' proofs and
-// request objects name, so it is held to BROKER_PUBLIC_URL's form and must differ from it; its
-// page is an absolute http(s) URL; its listen address is host:port; and it needs the two things
-// its routes stand on, the device grant (BROKER_MACHINE_LOGIN_URL) and a Workspace to refuse
-// (BROKER_SIGNIN_DOMAIN, which BROKER_SIGNIN=off takes away).
+// request objects name, so it is held to BROKER_PUBLIC_URL's form and its origin must differ from
+// BROKER_PUBLIC_URL's, compared as a DPoP proof's htu is: the scheme and the host without regard
+// to case, and the scheme's default port the same as none, on either setting; its page is an
+// absolute http(s) URL; its listen address is host:port with a decimal port; and it needs the two
+// things its routes stand on, the device grant (BROKER_MACHINE_LOGIN_URL) and a Workspace to
+// refuse (BROKER_SIGNIN_DOMAIN, which BROKER_SIGNIN=off takes away). Another port of the public
+// URL's host is another origin, and loads.
+//
+// The named revert: compare the two URLs' raw hosts, and the :443 and :80 rows load.
 func TestTheEdgeSettingsAreHeldToTheirForm(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -114,8 +127,15 @@ func TestTheEdgeSettingsAreHeldToTheirForm(t *testing.T) {
 		{name: "an edge URL with no scheme", set: map[string]string{"BROKER_EDGE_URL": "secrets.edge.example"}, refusal: "BROKER_EDGE_URL"},
 		{name: "an edge URL of another scheme", set: map[string]string{"BROKER_EDGE_URL": "ftp://secrets.edge.example"}, refusal: "BROKER_EDGE_URL"},
 		{name: "the public URL as the edge URL", set: map[string]string{"BROKER_EDGE_URL": "https://secrets.internal.example"}, refusal: "BROKER_PUBLIC_URL"},
+		{name: "the public URL with its default port as the edge URL", set: map[string]string{"BROKER_EDGE_URL": "https://secrets.internal.example:443"}, refusal: "BROKER_PUBLIC_URL"},
+		{name: "the public URL in capitals with its default port as the edge URL", set: map[string]string{"BROKER_EDGE_URL": "HTTPS://SECRETS.INTERNAL.EXAMPLE:443"}, refusal: "BROKER_PUBLIC_URL"},
+		{name: "a public URL naming the edge URL's default port", set: map[string]string{"BROKER_PUBLIC_URL": "https://secrets.edge.example:443"}, refusal: "BROKER_PUBLIC_URL"},
+		{name: "an http public URL and its default port as the edge URL", set: map[string]string{"BROKER_PUBLIC_URL": "http://secrets.internal.example", "BROKER_EDGE_URL": "http://secrets.internal.example:80"}, refusal: "BROKER_PUBLIC_URL"},
 		{name: "a relative edge page", set: map[string]string{"BROKER_EDGE_MACHINE_LOGIN_URL": "/credentials/machine"}, refusal: "BROKER_EDGE_MACHINE_LOGIN_URL"},
 		{name: "an edge address with no port", set: map[string]string{"BROKER_EDGE_LISTEN_ADDR": "0.0.0.0"}, refusal: "BROKER_EDGE_LISTEN_ADDR"},
+		{name: "an edge port with a sign", set: map[string]string{"BROKER_EDGE_LISTEN_ADDR": "0.0.0.0:+13383"}, refusal: "BROKER_EDGE_LISTEN_ADDR"},
+		{name: "an edge port named as a service", set: map[string]string{"BROKER_EDGE_LISTEN_ADDR": "0.0.0.0:https"}, refusal: "BROKER_EDGE_LISTEN_ADDR"},
+		{name: "an edge port past 65535", set: map[string]string{"BROKER_EDGE_LISTEN_ADDR": "0.0.0.0:78919"}, refusal: "BROKER_EDGE_LISTEN_ADDR"},
 		{name: "no device grant", unset: []string{"BROKER_MACHINE_LOGIN_URL"}, refusal: "BROKER_MACHINE_LOGIN_URL"},
 		{name: "sign-in off", set: map[string]string{"BROKER_SIGNIN": "off"}, unset: signInSettings, refusal: "BROKER_SIGNIN_DOMAIN"},
 	} {
@@ -132,6 +152,13 @@ func TestTheEdgeSettingsAreHeldToTheirForm(t *testing.T) {
 				t.Fatalf("Load with %s = %v, want a refusal naming %s", row.name, err, row.refusal)
 			}
 		})
+	}
+	for _, edgeURL := range []string{"https://secrets.internal.example:8443", "http://secrets.internal.example"} {
+		e := edgeEnv()
+		e["BROKER_EDGE_URL"] = edgeURL
+		if _, err := Load(env(e)); err != nil {
+			t.Errorf("Load(BROKER_EDGE_URL=%s) beside BROKER_PUBLIC_URL=https://secrets.internal.example = %v, want it to load: it is another origin", edgeURL, err)
+		}
 	}
 }
 
