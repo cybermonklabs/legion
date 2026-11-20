@@ -349,6 +349,8 @@ daemon_go_tests:
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'
   - 'scripts/e2e/lib/port-file.sh'
+  # why: .github/ci-notes/ci.md#daemon_go_tests-report-portsh-the-rig-sources-it
+  - 'scripts/e2e/lib/report-port.sh'
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
@@ -1233,8 +1235,7 @@ test_fixtures:
   - *ci_filters_data
   - '.github/workflows/ci-job-test-fixtures.yaml'
   - *bun_install
-  - '.github/actions/install-jj/**'
-  - 'packages/daemon/docker/worker.Dockerfile'
+  - *jj_install
   - 'packages/test-fixtures/**'
 conflicts_script:
   - *ci_router

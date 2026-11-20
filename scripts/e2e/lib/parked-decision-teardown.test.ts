@@ -1,8 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -15,7 +16,7 @@ import {
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
-import { notInRoot, procRootOf, unrealPid } from "./proc-root";
+import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -42,7 +43,39 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 // Read once, at module scope: a call inside the test body would print the warning per row.
 const skip = skipWithout("tmux");
 
+// stop_agent_daemons (parked-decision-devbox.sh) reads a stat and an environment for every process
+// of `${proc_root:-/proc}`, and the row hands it a proc root of its own processes (lib/proc-root.ts),
+// so its walk reads those alone. What is left of the row's work is a few process starts (a tmux
+// server and pane, the stand-in broker, three shells running the code under test) and waits on its
+// processes' events. 30 s is the file's default, set above every hook, since Bun 1.4.4 gives a hook
+// the default in force where it is registered, and the hooks end what the row started.
+setDefaultTimeout(30_000);
+
 const dir = temporaryDirectory("parked-decision-teardown-test");
+const started: number[] = [];
+// What the test started that no pid of its own names: a tmux server to kill, a session a process
+// writes its own pid file for. Each is registered the moment the test starts it, before the waits
+// that can time out, so an unfinished test body still leaves nothing of the run alive. The hook is
+// an afterEach registered above the tmux server's directory below: Bun 1.4.4 runs a scope's
+// afterEach hooks in the order they were registered, a timed-out row's too, and all of them before
+// an afterAll, so the server is stopped through its socket before that directory or `dir` goes.
+const teardowns: (() => void)[] = [];
+// The row's proc root once it has made one, which the teardown reads too.
+let procRoot: string | undefined;
+afterEach(() => {
+  for (const teardown of teardowns.splice(0).reverse()) {
+    try {
+      teardown();
+    } catch {}
+  }
+  for (const pid of started.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  procRoot = undefined;
+});
+
 // tmux's Unix socket must fit below this directory, even when TMPDIR is long.
 const tmuxPrefix = "parked-decision-teardown-tmux";
 const tmuxSocket = join(`tmux-${process.getuid?.() ?? 0}`, "teardown");
@@ -92,23 +125,6 @@ test.skipIf(skip)("resolves tmux at the socket-path boundary the teardown row bu
     rmSync(base, { recursive: true, force: true });
   }
 });
-const started: number[] = [];
-// What the test started that no pid of its own names: a tmux server to kill, a session a process
-// writes its own pid file for. Each is registered the moment the test starts it, before the waits
-// that can time out, so an unfinished test body still leaves nothing of the run alive.
-const teardowns: (() => void)[] = [];
-afterAll(() => {
-  for (const teardown of teardowns.reverse()) {
-    try {
-      teardown();
-    } catch {}
-  }
-  for (const pid of started) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {}
-  }
-});
 
 const alive = (pid: number) => {
   try {
@@ -127,18 +143,40 @@ const sessionOf = (pid: number) =>
       .replace(/^.*\) /, "")
       .split(" ")[3]
   );
-const membersOf = (sid: number) =>
-  [...new Bun.Glob("[0-9]*").scanSync({ cwd: "/proc", onlyFiles: false })]
-    .map(Number)
-    .filter((pid) => {
-      try {
-        return sessionOf(pid) === sid && alive(pid);
-      } catch {
-        return false;
-      }
-    });
+// The broker LEADER and every live process it started that is still in its session, by the
+// kernel's children lists (descendantsOf): the row's waits on the broker, which a scan of every
+// process on the host would hold to the host's size. The stand-in's members are its own children.
+const familyOf = (leader: number) =>
+  [leader, ...descendantsOf(leader, true)].filter((pid) => {
+    try {
+      return sessionOf(pid) === leader && alive(pid);
+    } catch {
+      return false;
+    }
+  });
+// membersOf SID: every live member of session SID the teardown can reach with no scan of the host:
+// the leader's family while the leader lives, and every process of the row's proc root once the row
+// has made it, which holds a member a dead broker left behind.
+const membersOf = (sid: number) => {
+  const rooted =
+    procRoot === undefined
+      ? []
+      : readdirSync(procRoot)
+          .filter((name) => /^\d+$/.test(name))
+          .map(Number);
+  return [...new Set([...familyOf(sid), ...rooted])].filter((pid) => {
+    try {
+      return sessionOf(pid) === sid && alive(pid);
+    } catch {
+      return false;
+    }
+  });
+};
 // Every live pid whose command line holds TEXT: how a teardown finds a process the test started
-// in a session of its own before that process has named itself in a file.
+// in a session of its own before that process has named itself in a file. It scans the host's
+// /proc, and runs only for a row that ended before the stand-in broker wrote its pid file: the
+// broker is then in no file and, `setsid -f` having handed it to another parent, under no process
+// of the row's.
 const namingPids = (text: string) =>
   [...new Bun.Glob("[0-9]*").scanSync({ cwd: "/proc", onlyFiles: false })]
     .map(Number)
@@ -265,15 +303,23 @@ wait
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times
     // out before the test has read the pid still leaves no member of the broker's session running.
-    // Before the file is there the broker's command line, which names the run's runtime directory,
-    // is the only hold on it, `setsid -f` having already taken it out of the pane's session.
+    // A broker leads its session, so the pid in its file is the session's id even once the broker
+    // has ended, when only the row's proc root still holds the members it left. Before the file is
+    // there the broker's command line, which names the run's runtime directory, is the only hold on
+    // it, `setsid -f` having already taken it out of the pane's session.
     teardowns.push(() => {
-      const leaders = existsSync(pidFile)
+      const sessions = existsSync(pidFile)
         ? [Number(JSON.parse(readFileSync(pidFile, "utf8")).pid)]
-        : namingPids(runtime);
-      for (const pid of leaders) {
+        : namingPids(runtime).flatMap((pid) => {
+            try {
+              return [sessionOf(pid)];
+            } catch {
+              return [];
+            }
+          });
+      for (const sid of sessions) {
         try {
-          killSession(sessionOf(pid));
+          killSession(sid);
         } catch {}
       }
     });
@@ -294,9 +340,10 @@ wait
     );
     await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
     const leader: number = JSON.parse(readFileSync(pidFile, "utf8")).pid;
-    await until("the broker and its two members", () => membersOf(leader).length === 3);
-    const members = membersOf(leader);
+    await until("the broker and its two members", () => familyOf(leader).length === 3);
+    const members = familyOf(leader);
     const proc = procRootOf(dir, [leader, ...members, bystander.pid, stranger.pid]);
+    procRoot = proc;
     expect(
       notInRoot(proc, [
         ...members.map((pid): [string, number] => ["a process of the broker's session", pid]),

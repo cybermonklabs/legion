@@ -261,6 +261,11 @@ With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 liv
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
 
+## daemon_go_tests: report-port.sh: the rig sources it
+
+The Stage 1 proof sources `scripts/e2e/lib/rig.sh`, which sources
+`scripts/e2e/lib/report-port.sh` for `report_port`, so a change to it changes the proof's run.
+
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
 The plugin-pack job: internal/daemon's three tests of PLUGIN_PACK_TESTS
