@@ -55,12 +55,13 @@ const (
 // test's own connection. It selects on the application name alone, the way this package's other
 // census of the daemon's backends does (terminateDaemonBackends): the name is the test's, where
 // the database and the login are shared with every other test running against the same
-// PostgreSQL.
+// PostgreSQL. condition stands in parentheses of its own, so an or in it cannot let another
+// application's backend through.
 func daemonBackends(t *testing.T, pool *store.Pool, application, condition string) int {
 	t.Helper()
 	var count int
 	err := pool.QueryRow(context.Background(),
-		"select count(*) from pg_stat_activity where application_name = $1 and "+condition,
+		"select count(*) from pg_stat_activity where application_name = $1 and ("+condition+")",
 		application,
 	).Scan(&count)
 	if err != nil {

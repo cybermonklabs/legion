@@ -449,13 +449,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		t.Fatalf("store the ending: %v", err)
 	}
 	waitUntil(t, 30*time.Second, "the stream's state read waiting on going_requests", func() bool {
-		var waiting int
-		if err := rig.database.Pool.QueryRow(ctx, `
-			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read what is waiting on going_requests: %v", err)
-		}
-		return waiting > 0
+		return goingRequestsWaiters(t, rig.database) > 0
 	})
 	if err := ending.Commit(ctx); err != nil {
 		t.Fatalf("commit the ending: %v", err)

@@ -21,7 +21,7 @@ import (
 // repository-mapping locks), none of which is this value, so an owner lock never waits on one of
 // those whatever its owner hashes to. It is exported, with LockKey, so a test reads an owner's lock
 // out of pg_locks by the keys this file takes it with rather than by spelling them again
-// (api/files_test.go).
+// (storetest.OwnerLock).
 const OwnerLockNamespace int32 = 0x4F574E52
 
 // OwnerLockGateNamespace and OwnerLockGateKey are the two keys of the owner lock gate ("OWNG", 0),
@@ -132,7 +132,7 @@ func OwnerOf(issueKey, artifactID *string) *Owner {
 
 // LockKey is the text whose hashtext is the lock's second key: `<kind>:<key>`, the same spelling
 // the event broker orders owners by. It is exported, with OwnerLockNamespace, for a test that
-// reads an owner's lock out of pg_locks (api/files_test.go).
+// reads an owner's lock out of pg_locks (storetest.OwnerLock).
 func (o Owner) LockKey() string { return string(o.Kind) + ":" + o.Key }
 
 // OwnerLocker is what an owner lock runs on: a transaction, or a savepoint of one, whose rollback

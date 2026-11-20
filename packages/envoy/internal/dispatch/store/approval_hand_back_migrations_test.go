@@ -19,7 +19,8 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `
-			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted)
+			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted
+				and database = (select oid from pg_database where datname = current_database()))
 		`, relation, mode).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_locks: %v", err)
 		}

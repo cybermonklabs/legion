@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +21,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/fataltest"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -153,18 +154,6 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
-type fatalRecorder struct {
-	testing.TB
-	message string
-}
-
-func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); runtime.Goexit() }
-func (f *fatalRecorder) Fatalf(format string, args ...any) {
-	f.message = fmt.Sprintf(format, args...)
-	runtime.Goexit()
-}
-
 // A test gets one account however often it asks, so every connection it makes reaches the streams
 // any other made; a subtest gets an account of its own, where none of its parent's streams is.
 func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
@@ -267,19 +256,14 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 // for one.
 func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 	_, uri := Start(t)
-	wait := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		awaitAuth(wait, uri, false)
-	}()
+	wait, done := fataltest.Start(t, func(t testing.TB) { awaitAuth(t, uri, false) })
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the readiness wait is still waiting on a server that admits anyone")
 	}
-	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
-		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
+	if want := "admitted a client with no credential"; !strings.Contains(wait.Message(), want) {
+		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.Message(), want)
 	}
 }
 
@@ -473,16 +457,10 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 	grant := StartNkeyGranted(t, public, "first.>")
 	grant.Grant(t, "second.>")
 
-	refused := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		grant.Grant(refused, "not..a.subject")
-	}()
-	<-done
-	if !strings.Contains(refused.message, "NATS refused the new grant") ||
-		!strings.Contains(refused.message, `subject "not..a.subject" is not a valid subject`) {
-		t.Fatalf("a second Grant the server refused ended with %q, want the server's refusal", refused.message)
+	refused := fataltest.Failure(t, func(t testing.TB) { grant.Grant(t, "not..a.subject") })
+	if !strings.Contains(refused, "NATS refused the new grant") ||
+		!strings.Contains(refused, `subject "not..a.subject" is not a valid subject`) {
+		t.Fatalf("a second Grant the server refused ended with %q, want the server's refusal", refused)
 	}
 }
 
@@ -763,19 +741,14 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 	_, public := User(t)
 	uri := StartNkeyAuthorized(t, public)
-	wait := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		awaitAuth(wait, uri, true)
-	}()
+	wait, done := fataltest.Start(t, func(t testing.TB) { awaitAuth(t, uri, true) })
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the anonymous wait is still waiting on a server that refuses anyone")
 	}
-	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
-		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
+	if want := "refused a client with no credential"; !strings.Contains(wait.Message(), want) {
+		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.Message(), want)
 	}
 }
 

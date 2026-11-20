@@ -582,11 +582,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	}()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read lock waits: %v", err)
-		}
+		waiting = searchTermStatsWaiters(t, database)
 		if waiting > 0 {
 			break
 		}

@@ -968,6 +968,11 @@ RULES = {
         for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/lock_reads_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/lock_reads_test.go:203 walks ../.. (lockReadRoots, :22), infra included, and :225 parses each .go file's imports, :341 and :393 the whole of each test file that names a lock view and of its package's other files"),
+        (f"{ENVOY}/**/go.mod", "internal/textcheck/lock_reads_test.go:215 reads each go.mod its walk of ../.. (lockReadRoots, :22) meets, for the module path a package's import path starts with"),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/lock_reads_test.go:203 walks ../../../daemon (lockReadRoots, :22), and :225 parses each .go file's imports, :341 and :393 the whole of each test file that names a lock view and of its package's other files"),
+        (f"{DAEMON}/**/go.mod", "internal/textcheck/lock_reads_test.go:215 reads each go.mod its walk of ../../../daemon (lockReadRoots, :22) meets, for the module path a package's import path starts with")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     f"{ENVOY}/internal/textcheck/refusal_codes_test.go": reads(

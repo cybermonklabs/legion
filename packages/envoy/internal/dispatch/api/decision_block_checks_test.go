@@ -229,13 +229,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	var second map[string]any
 	for {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read lock waits: %v", err)
-		}
-		if waiting > 0 && strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
+		if searchTermStatsWaiters(t, database) > 0 && strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
 			paragraph := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)[1]
 			second = map[string]any{
 				"ops":          []map[string]string{{"op": "replace", "find": "Planning notes.", "with": "Planning notes, revised."}},

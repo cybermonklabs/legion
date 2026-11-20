@@ -606,14 +606,17 @@ func lockCredential(t *testing.T, rig *brokertest.Rig, credentialID string) (pgx
 }
 
 // awaitWaiters waits until n backends wait, directly or behind another waiter, on holder's lock.
+// It counts the backends of its own database alone: every backend that waits on holder, a backend
+// of this test's database, waits on a lock of that database, so the count is the same, and it
+// cannot take in another test's waiter.
 func awaitWaiters(t *testing.T, rig *brokertest.Rig, holder, n int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int
 		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity a
-			where $1 = any(pg_blocking_pids(a.pid)) or exists (select 1 from pg_stat_activity b
-				where $1 = any(pg_blocking_pids(b.pid)) and b.pid = any(pg_blocking_pids(a.pid)))`, holder).Scan(&waiting); err != nil {
+			where a.datname = current_database() and ($1 = any(pg_blocking_pids(a.pid)) or exists (select 1 from pg_stat_activity b
+				where $1 = any(pg_blocking_pids(b.pid)) and b.pid = any(pg_blocking_pids(a.pid))))`, holder).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= n {

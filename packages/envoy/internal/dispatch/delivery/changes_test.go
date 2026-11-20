@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -467,11 +468,10 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 
 	waitFor(t, 10*time.Second, func() bool {
 		var waiting int
-		err := pool.QueryRow(ctx, `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
-		`).Scan(&waiting)
-		return err == nil && waiting == 1
+		if counted, err := changeLogWaiters(ctx, pool); err == nil {
+			waiting = counted
+		}
+		return waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })
 
 	if err := a.Commit(ctx); err != nil {
@@ -484,6 +484,35 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 	changes := changesAfter(t, ctx, pool, before)
 	if len(changes) != 2 || changes[0].Ref != "11" || changes[1].Ref != "12" || changes[0].Seq >= changes[1].Seq {
 		t.Fatalf("changes = %+v, want A's (11) before B's (12)", changes)
+	}
+}
+
+// changeLogLock is the advisory lock the change log's trigger takes before it writes a change
+// (pg_advisory_xact_lock(6900, 0), migration 0100_delivery_changes), so changes take their seqs
+// in commit order.
+var changeLogLock = storetest.AdvisoryLockPair(6900, 0)
+
+// changeLogWaiters counts the backends of the test's database that wait on the change log's
+// lock. Its own database alone (storetest.Waiting): every database a test of this package opens
+// is a clone of one template, and every one of them takes the same key, so a writer waiting in
+// another test's database would count.
+func changeLogWaiters(ctx context.Context, pool *store.Pool) (int, error) {
+	return storetest.Waiting(ctx, pool, changeLogLock)
+}
+
+// The change log's wait probe counts its own database's waiters alone: a writer waiting on the
+// change log's lock in another database of the server counts for nothing, and one in its own
+// counts once, the control that shows the probe sees a waiter at all.
+func TestTheChangeLogWaitProbeCountsItsOwnDatabasesWaitersAlone(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	elsewhere := storetest.Queue(t, storetest.Open(t), changeLogLock)
+	if waiting, err := changeLogWaiters(ctx, database.Pool); err != nil || waiting != 0 {
+		t.Fatalf("the probe counted %d waiters (%v) with none in its own database and backend %d waiting in another, want 0", waiting, err, elsewhere)
+	}
+	here := storetest.Queue(t, database, changeLogLock)
+	if waiting, err := changeLogWaiters(ctx, database.Pool); err != nil || waiting != 1 {
+		t.Fatalf("the probe counted %d waiters (%v) with backend %d waiting in its own database, want 1", waiting, err, here)
 	}
 }
 

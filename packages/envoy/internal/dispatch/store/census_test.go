@@ -1337,7 +1337,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
 	for {
 		var waiting bool
-		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted)").Scan(&waiting); err != nil {
+		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted and database = (select oid from pg_database where datname = current_database()))").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
