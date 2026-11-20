@@ -553,7 +553,7 @@ fi
 # The session outside the project, `<peer>-foreign`, which P6 must not find on the edge's list.
 foreign_problem=$(lacking OUTSIDE_INTERNAL_LISTENER_URL)
 [ -n "$foreign_problem" ] || foreign_problem=$(tool_problem bun)
-[ -n "$foreign_problem" ] || [ -z "$peer_problem" ] || foreign_problem="no peer, which it is named after"
+[ -n "$foreign_problem" ] || [ -n "$peer" ] || foreign_problem="no peer session id, which it is named after"
 if [ -z "$foreign_problem" ]; then
   env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="$peer" \
     OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
