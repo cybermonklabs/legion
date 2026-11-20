@@ -39,14 +39,16 @@ and an OAuth refusal of a trade or of a machine login's refresh prints `the brok
 code, which whoever answers at that URL could fill with the credential it carries. A
 code prints there only where it is one the program matched against its own list: `renew`'s exit
 on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
-sign-in the broker refused names its code as that marker. What these programs print or log of an
-answer they accept prints whatever the URL; `--json` writes a 2xx body verbatim.
-Every other value of a broker's answer this CLI prints - the request, grant and enrollment ids,
-a request's state, who decided it and the broker's sentence about it, whom and where a pending
-request waits on, `self`'s lines, the cells of `machine list` and `grant list`, and `machine
-login`'s `user_code` and `verification_uri` - prints on one line: as it came where it holds no
-control character, Go-quoted where it holds one, which a broker's code and words beside a clean
-URL print under too.
+sign-in the broker refused names its code as that marker. Every value of an answer `AGENT_SECRETS_URL`
+answered that this CLI prints - the request, grant and enrollment ids, a request's state, who
+decided it and the broker's sentence about it, whom and where a pending request waits on,
+`self`'s lines, the cells of `machine list` and `grant list`, and the broker's settings - prints
+as the broker's address lets it print: beside a URL that prints, on one line, as it came where it
+holds no control character and Go-quoted where it holds one; beside one that does not, as
+`(not printed: …)`. `--json` writes a 2xx body verbatim, every field, since it asks for the body
+by name. Of a machine login the helper relays, the `user_code` prints on one line, and the
+`verification_uri` as the URL above prints: whole where it is a plain http(s) URL, `(not printed:
+the value carries a credential or is not a plain http(s) URL)` otherwise.
 The helper's log lines name the `credential_id` of the machine login the broker issued, which the
 log's own format escapes the same way.
 People and launchers use its other forms to log a

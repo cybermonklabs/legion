@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // forgedValues are answer values that hold a line feed, a carriage return and a line feed, and an
@@ -30,9 +31,10 @@ func noControl(t *testing.T, what, text string) {
 	}
 }
 
-// TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine: machine login prints the user_code and
-// verification_uri the broker answered as they came where they hold no control character, and
-// Go-quoted where they hold one, so each stays on its own one line.
+// TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine: machine login prints the user_code the
+// broker answered as it came where it holds no control character, and Go-quoted where it holds
+// one, so it stays on its own one line; a verification_uri with a control character in it is no
+// plain URL, so it prints as redact.NotPrinted, on one line too.
 func TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	const page = "https://dispatch.example/credentials/machine"
@@ -44,7 +46,7 @@ func TestMachineLoginPrintsTheBrokersCodeAndPageOnOneLine(t *testing.T) {
 			struct{ code, uri, want string }{forged, page,
 				"machine login code: " + strconv.Quote(forged) + "\nenter it at " + page + " — approve only if the code matches this terminal\n"},
 			struct{ code, uri, want string }{"KQ7M-X4PZ", page + "\n" + forged,
-				"machine login code: KQ7M-X4PZ\nenter it at " + strconv.Quote(page+"\n"+forged) + " — approve only if the code matches this terminal\n"})
+				"machine login code: KQ7M-X4PZ\nenter it at " + redact.NotPrinted + " — approve only if the code matches this terminal\n"})
 	}
 	for _, row := range rows {
 		t.Run(strconv.Quote(row.code)+" "+strconv.Quote(row.uri), func(t *testing.T) {

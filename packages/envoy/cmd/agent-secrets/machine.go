@@ -57,9 +57,9 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	// The code and the page are the broker's, as the helper relayed them, so each prints on
-	// one line (redact.OneLine): as it came, or Go-quoted where a control character in it
-	// would start a line of its own or rewrite this one.
+	// The code is the broker's, as the helper relayed it, so it prints on one line
+	// (redact.OneLine): as it came, or Go-quoted where a control character in it would start a
+	// line of its own or rewrite this one.
 	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
 		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
@@ -67,7 +67,10 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		// where a person who pasted a credential in place of Dispatch's address finds it.
 		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
 	} else if resp.VerificationURI != "" {
-		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
+		// The broker's page, as the helper relayed it, prints as the page above does: whole
+		// when it is a plain http(s) URL, redact.NotPrinted otherwise, so a user, a password, a
+		// query or a control character in it does not print.
+		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.URL(resp.VerificationURI))
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
