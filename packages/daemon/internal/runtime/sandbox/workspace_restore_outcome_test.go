@@ -45,7 +45,10 @@ func faultedBundleRig(t *testing.T) (*store.Store, *testdb.CommitFault, runtime.
 	// The hop runs inside the start, whose bound is BootTimeout: the rig's two seconds would end
 	// a hop that waits for the store before the store answers.
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = faulted.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle = func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+			return faulted.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podCreated)
+		}
+		o.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceBundle
 		o.BootTimeout = 15 * time.Second
 	}))
 	return st, fault, saved, g
@@ -163,7 +166,7 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	fired := fault.Cut(bundleTake, testdb.CutAfterCommitRefusing)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, take, err := faulted.TakeWorkspaceBundleForRestore(ctx, testTree, podUID, created)
+	_, take, err := faulted.TakeWorkspaceBundleForRestore(ctx, testProject, testTree, podUID, created)
 	testdb.Met(t, fired)
 	if !errors.Is(err, store.ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "may be spent") {
 		t.Fatalf("the take whose outcome stayed unknown = %v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the attempt may be spent", take, err)
@@ -176,7 +179,7 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	if attempt == nil || *attempt != podUID {
 		t.Fatalf("the bundle's attempt names %v, want %s: the run committed", attempt, podUID)
 	}
-	if _, again, err := st.TakeWorkspaceBundleForRestore(context.Background(), testTree, podUID, created); err != nil || again != runtime.WorkspaceBundleNone {
+	if _, again, err := st.TakeWorkspaceBundleForRestore(context.Background(), testProject, testTree, podUID, created); err != nil || again != runtime.WorkspaceBundleNone {
 		t.Fatalf("a later take by the same pod = %v, %v; want nothing: the attempt is spent", again, err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || !held {

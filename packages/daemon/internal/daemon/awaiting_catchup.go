@@ -64,8 +64,9 @@ const (
 	catchUpRetryDelay = 2 * time.Second
 )
 
-// catchesUp says whether the boot's catch-up reads issue: a tree root of the daemon's project,
-// not lingering, and one of three things —
+// catchesUp says whether the boot's catch-up reads issue: a tree root, which the records it is
+// read from hold of the daemon's project alone (projectRecords), not lingering, and one of three
+// things —
 //
 //   - a root in awaiting_person;
 //   - a root ReconcileAwaiting could move into it — at admitted, with a row of its own saying the
@@ -103,7 +104,7 @@ const (
 // among the issues whose work came back, oldest first, so the cost is the boot's reads
 // and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted map[string]struct{}) bool {
-	if issue.Project != w.dispatchProject || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
 		return false
 	}
 	if issue.Phase == phase.AwaitingPerson {

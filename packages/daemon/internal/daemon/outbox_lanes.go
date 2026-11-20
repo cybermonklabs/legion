@@ -88,10 +88,25 @@ func (r *outbox) Run(ctx context.Context) {
 	}
 }
 
-// sweep wakes every lane of the project with a row still in the outbox: due, running, backing off
-// or held. A lane that has nothing to run goes back to waiting, so the sweep costs an idle lane one
-// list; a lane whose rows a lapsed lease held back is the one it is for.
+// sweep reads the project's pause into the daemon's flag (refreshPause, decision 18 of
+// dispatch://INFRA-3759) and wakes every lane of the project with a row still in the outbox
+// (wakeUnfinished). A pause read that fails is logged and the flag keeps what it held: the next
+// sweep reads it again, and the outbox's own claim reads the pause from the store at every row
+// regardless (record's outboxPauseFree).
 func (r *outbox) sweep(ctx context.Context) {
+	if r.refreshPause != nil {
+		if err := r.refreshPause(ctx); err != nil && ctx.Err() == nil {
+			r.log.Error("pause: the outbox sweep could not read whether the project is paused; the flag keeps what it held until the next sweep", "error", err)
+		}
+	}
+	r.wakeUnfinished(ctx)
+}
+
+// wakeUnfinished wakes every lane of the project with a row still in the outbox: due, running,
+// backing off or held. A lane that has nothing to run goes back to waiting, so it costs an idle
+// lane one list; a lane whose rows a lapsed lease held back is the one it is for, and so is every
+// lane a resume lets its held rows out on (decision 22).
+func (r *outbox) wakeUnfinished(ctx context.Context) {
 	var lanes []record.LaneKey
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
@@ -312,7 +327,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	// mark is fresh for each row, so a tick still in flight when its row stops (renewOnce) shares
 	// none with the next row's ticks, and it is taken here, where the lane holds no connection: the
 	// claim's transaction has committed.
-	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row)
+	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
 	renewal.stop()
 	settleCtx := ctx
@@ -325,9 +340,11 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	return nil
 }
 
-// leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run
-// has ended, and what the ticks have already said, so each is said once per run.
+// leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed
+// next, whether the run has ended, and what the ticks have already said, so each is said once per
+// run. began is set once, before the first tick, and read without the lock.
 type leaseRenewal struct {
+	began   time.Time
 	mu      sync.Mutex
 	stopped bool
 	tick    supervise.Cancel
@@ -388,10 +405,11 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // at the next tick; a lease found no longer the row's is logged once, and the run goes on to its
 // end, since nothing cancels a row mid-effect — the finish or retry then fences on the token and
 // records nothing. A lifecycle row's tick also reads the rows its issue holds behind it, and logs
-// each once it has waited heldWarnAfter: the lane runs one row at a time, so a row that runs long
-// is what an operator looks at when a stop or a start of the issue does not happen.
-func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRenewal {
-	renewal := &leaseRenewal{warned: map[int64]bool{}}
+// each once it has waited heldWarnAfter behind it (warnHeld): the lane runs one row at a time, so a
+// row that runs long is what an operator looks at when a stop or a start of the issue does not
+// happen. began is when the row's run began, the moment of its claim (runRow).
+func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began time.Time) *leaseRenewal {
+	renewal := &leaseRenewal{began: began, warned: map[int64]bool{}}
 	clock := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()
@@ -433,7 +451,10 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it
-// (record.Store.HeldRows): each that has waited heldWarnAfter is logged, once per run of this row.
+// (record.Store.HeldRows): each that has waited heldWarnAfter behind it is logged, once per run of
+// this row. The wait is counted from the later of the held row's next_at and the moment this row's
+// run began: a row a project's pause held keeps the next_at it had, which can be hours old when the
+// resume lets it run, and the time before this row began is no wait behind it.
 func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held []record.HeldRow
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -450,7 +471,11 @@ func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *le
 		if waiting.WaitsOn != row.ID {
 			continue
 		}
-		waited := now.Sub(waiting.NextAt)
+		since := waiting.NextAt
+		if renewal.began.After(since) {
+			since = renewal.began
+		}
+		waited := now.Sub(since)
 		if waited < heldWarnAfter || renewal.ended() || !renewal.warnOnce(waiting.ID) {
 			continue
 		}

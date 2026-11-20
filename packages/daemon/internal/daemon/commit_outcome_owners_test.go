@@ -517,7 +517,7 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 	before := len(rig.rt.CallsOf("Resume"))
 
 	fired := fault.Cut("insert into pod_resumes", testdb.CutAfterCommitRefusing)
-	_, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	_, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	testdb.Met(t, fired)
 	if !errors.Is(err, store.ErrCommitOutcomeUnknown) {
 		t.Fatalf("the wake whose take's outcome is unknown = %v, want store.ErrCommitOutcomeUnknown", err)
@@ -531,7 +531,7 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 			return count(logs, "wake: a released pod is coming back for a delivery") == 1
 		})
 
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
+	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	if err != nil || !woken {
 		t.Fatalf("the row's retry = %t, %v; want the claim woken", woken, err)
 	}

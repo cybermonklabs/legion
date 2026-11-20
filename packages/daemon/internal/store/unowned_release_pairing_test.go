@@ -47,7 +47,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		// outbox's delivery wake in one of its own, so one pairing holds for all of them.
 		records := podRecords(t, st)
 		inTx(t, st, func(tx pgx.Tx) error {
-			taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeDelivery, at)
+			taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeDelivery, at, 0)
 			if err != nil || !taken {
 				t.Fatalf("TakePodWake = %t, %v; want the architect's wake taken", taken, err)
 			}

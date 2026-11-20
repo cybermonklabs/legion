@@ -19,7 +19,8 @@ const ttl = 60 * time.Second
 const expiredRetention = time.Hour
 
 var (
-	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained.
+	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained,
+	// or MintController no session.
 	ErrUnauthenticated = errors.New("grant requires an authenticated claim")
 	// ErrExpired means the grant's sixty-second window elapsed before redemption.
 	ErrExpired = errors.New("grant expired")
@@ -28,9 +29,16 @@ var (
 	ErrUnavailable = errors.New("grant is unavailable")
 )
 
-// Grant is the in-memory capability returned by Mint or MintController. ID is the bearer and is
-// never persisted or logged. CapabilityHash is deliberately private: routes compare it through
-// StillMatches, so a grant authenticates only while its claim holds the capability that minted it.
+// Grant is the in-memory capability returned by Mint, MintController or MintOperatorController. ID
+// is the bearer and is never persisted or logged. CapabilityHash is deliberately private: routes
+// compare it through StillMatches, so a grant authenticates only while its claim holds the
+// capability that minted it.
+//
+// A controller grant (Controller) says who minted it, because a project's pause records who acted
+// (decision 19 of dispatch://INFRA-3759): Session is the controller session that minted it
+// (MintController), and Operator is set where the operator's bearer minted it instead
+// (MintOperatorController). Exactly one of the two is set on every controller grant, and neither
+// on a claim's.
 type Grant struct {
 	ID         string
 	Issue      string
@@ -40,6 +48,8 @@ type Grant struct {
 	Claim      claim.Token
 	ExpiresAt  time.Time
 	Controller bool
+	Operator   bool
+	Session    string
 
 	capabilityHash []byte
 	// generation is the controller capability a controller grant is recorded under
@@ -91,17 +101,31 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 	return grant, nil
 }
 
-// MintController records a sixty-second controller grant under the controller capability of
-// generation, or under the highest generation a confirmed mint has named, when that is higher. The
-// operator's bearer form passes 0, so its grant is recorded under the confirmed generation; a
-// session's grant passes the generation of the registration it holds. Authorization happens at
-// the route: the service keeps no bearer and cannot accidentally copy one into a grant record.
-func (g *Grants) MintController(generation uint64) (Grant, error) {
+// MintController records a sixty-second controller grant for session under generation, the
+// controller capability that registered it. Authorization happens at the route: the service keeps
+// no secret and cannot accidentally copy one into a grant record. A blank session is refused,
+// since a controller grant that names no session would read as nobody's.
+func (g *Grants) MintController(session string, generation uint64) (Grant, error) {
+	if session == "" {
+		return Grant{}, ErrUnauthenticated
+	}
+	return g.mintController(Grant{Session: session}, generation)
+}
+
+// MintOperatorController records a sixty-second controller grant for the operator's bearer, which
+// the route compared before it asked. The service keeps no bearer. Its zero generation is raised
+// to the last generation a confirmed mint named.
+func (g *Grants) MintOperatorController(generation uint64) (Grant, error) {
+	return g.mintController(Grant{Operator: true}, generation)
+}
+
+// mintController records grant, which names who minted it, as a controller grant under generation.
+func (g *Grants) mintController(grant Grant, generation uint64) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
 		return Grant{}, err
 	}
-	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true}
+	grant.ID, grant.ExpiresAt, grant.Controller = id, g.now().Add(ttl), true
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	grant.generation = max(generation, g.confirmed)

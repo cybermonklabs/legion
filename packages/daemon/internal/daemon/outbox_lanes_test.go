@@ -1006,46 +1006,62 @@ func heldWarnings(t *testing.T, logged string) [][2]int64 {
 
 // A lifecycle row that runs long is what an operator looks at when the issue's next start or stop
 // does not happen: its lease renewal logs each lifecycle row held behind it, once, when that row
-// has waited heldWarnAfter, naming the held row and the running one — and nothing before then.
+// has waited heldWarnAfter behind it, naming the held row and the running one — and nothing before
+// then. The wait is counted from the later of the held row's due time and the moment the running
+// row began its run: a row a project's pause held keeps the due time it had, which can be hours
+// before the row ahead of it began.
 func TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong(t *testing.T) {
-	var logged syncBuffer
-	tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
-	tree.holdArchitectStart(t)
-	tree.commit(t, "own-implementer", tree.start(t, claim.RoleImplementer))
-	ids := outboxIDs(t, tree.pool)
-	if len(ids) != 2 {
-		t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
-	}
-	running, held := ids[0], ids[1]
+	for _, tc := range []struct {
+		name string
+		// due is how long before the running row began its run the held row fell due.
+		due time.Duration
+	}{
+		{name: "a row due as the running row began"},
+		{name: "a row a pause held, due an hour before the running row began", due: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged syncBuffer
+			tree := startLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
+			tree.holdArchitectStart(t)
+			implementer := tree.start(t, claim.RoleImplementer)
+			implementer.NextAt = implementer.NextAt.Add(-tc.due)
+			tree.commit(t, "own-implementer", implementer)
+			ids := outboxIDs(t, tree.pool)
+			if len(ids) != 2 {
+				t.Fatalf("outbox rows = %v, want the running start and the one held behind it", ids)
+			}
+			running, held := ids[0], ids[1]
 
-	renewEvery := outboxLease / 3
-	tick := func() {
-		t.Helper()
-		tree.clock.advance(renewEvery)
-		if fired := tree.clock.fire(renewEvery); fired != 1 {
-			t.Fatalf("renewal timers fired = %d, want the running row's", fired)
-		}
-	}
-	ticks := int(heldWarnAfter / renewEvery)
-	for range ticks - 1 {
-		tick()
-	}
-	if got := heldWarnings(t, logged.String()); len(got) != 0 {
-		t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
-		t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
-	}
-	tick()
-	if got := heldWarnings(t, logged.String()); len(got) != 1 {
-		t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
-	}
-	if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
-		t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
-	}
-	tree.blocked(t, "after the held row was logged")
+			renewEvery := outboxLease / 3
+			tick := func() {
+				t.Helper()
+				tree.clock.advance(renewEvery)
+				if fired := tree.clock.fire(renewEvery); fired != 1 {
+					t.Fatalf("renewal timers fired = %d, want the running row's", fired)
+				}
+			}
+			ticks := int(heldWarnAfter / renewEvery)
+			for range ticks - 1 {
+				tick()
+			}
+			if got := heldWarnings(t, logged.String()); len(got) != 0 {
+				t.Fatalf("held rows logged %v after %s, want none before %s", got, heldWarnAfter-renewEvery, heldWarnAfter)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 || got[0] != [2]int64{held, running} {
+				t.Fatalf("held rows logged %v after %s, want row %d held behind row %d, once", got, heldWarnAfter, held, running)
+			}
+			tick()
+			if got := heldWarnings(t, logged.String()); len(got) != 1 {
+				t.Fatalf("held rows logged %v after %s, want the one line, not one per tick", got, heldWarnAfter+renewEvery)
+			}
+			if lease := rowStateOf(t, tree.pool, running); lease.leaseUntil == nil || !lease.leaseUntil.Equal(tree.clock.Now().Add(outboxLease)) {
+				t.Fatalf("the running row's lease_until = %v, want renewed to a lease ahead of now", lease.leaseUntil)
+			}
+			tree.blocked(t, "after the held row was logged")
 
-	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+			tree.spawn.gate.open()
+			testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+		})
+	}
 }

@@ -10,8 +10,8 @@
 # (/proc/<pid>/exe).
 #
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
-# proc_walk_complaint), and by stage2-tmux-supervision.sh, which sources no rig. It needs nothing
-# of its caller's.
+# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
+# packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -52,7 +52,8 @@ recorded_pid() {
 # from whichever thread runs the call. None reads every process on the machine as `ps -p` and
 # `pgrep -P` do: procps-ng's `ps -o args= -p PID` opened /proc/<pid>/stat 12,564 times for one pid
 # at about 13,000 processes, about a second on a loaded devbox. Each prints nothing for a process
-# that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with `read`:
+# that is gone, and succeeds, on either path: a caller under `set -e` assigns the answer bare. A host
+# with no /proc (macOS) asks ps and pgrep. The files are read with `read`:
 # under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE, even on the left of `||`.
 #
 # proc_children's list is complete only while the children are stopped or frozen:
@@ -76,7 +77,7 @@ proc_stat_field() {
     read -r -a fields <<<"${stat##*) }"
     printf '%s\n' "${fields[$2 - 3]}"
   else
-    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' '
+    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' ' || :
   fi
 }
 proc_parent() { proc_stat_field "$1" 4 ppid; }

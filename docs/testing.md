@@ -81,11 +81,18 @@ itself, whose tests import its sources by relative path.
   whose `afterAll` puts the name back and removes the root. Anything staged under that root is
   staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
   Both forms take `root`, the directory the temporary one is made in, for a test that needs another
-  filesystem, such as `/dev/shm` for a rename that must cross one. Both remove a tree a test left
-  read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
-  leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
-  files a Go module cache writes, and because a file in such a tree can be a hard link to one
-  outside it.
+  filesystem, such as `/dev/shm` for a rename that must cross one. `memoryRoot({ need })` names
+  `/dev/shm` where it is a tmpfs that allows exec, this process may write in and search it, and it
+  has `need` bytes free (0 unless given), else `tmpdir()`: a suite that makes or removes many
+  entries inside one row's or hook's time takes it as `root`, so a busy shared disk does not set
+  that time. A suite that holds much there gives `need`: the most one run holds at once, times the
+  runs that may share the host, because a tmpfs is often small (a Kubernetes pod's is 64 MiB),
+  keeps what a stopped run never removed, and fails a write past its end with ENOSPC. tmpfs charges
+  a page for each file that holds data, so a suite that removes files it has read holds less.
+  Both remove a tree a test left read-only: the removal chmods `u+rwX` down the tree first,
+  following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails
+  on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a
+  tree can be a hard link to one outside it.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
@@ -143,7 +150,7 @@ itself, whose tests import its sources by relative path.
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 116 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -233,6 +240,25 @@ and each command runs there.
   module loading the next, which a smaller `DISPATCH_COLD_HOLD_MS` tells apart. The weekly
   workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the modules
   its first run loaded, so only the first run is cold.
+
+- `bun run test:web:late-reads` is `test:web` with `web/src/__tests__/hold-read-answers.ts` added
+  last to its preloads. That file wraps the `queryFn` of every TanStack query, so each read's
+  answer reaches its cache one turn of the real event loop after its request has answered, while
+  what a page draws without a read comes at once. A row that waits for what the page draws at
+  once, then reads what a read brings without waiting for it, fails there under every seed, where
+  under `test:web` it fails only on a runner loaded enough to split the two commits:
+  `settings.test.tsx`'s mapping row read the sidebar's Settings link after the page's heading,
+  and the sidebar draws its links only once its inbox, pinned issues and projects have answered.
+  The wait is the real
+  `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation and a write
+  of the page's store run no `queryFn`, so none of them is held. A row that fails there and
+  passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
+  failure, which the head of `hold-read-answers.ts` names: a row that times a read's answer (the
+  query client's own rows, a write's 401 path through the sign-in check), a row that ends while a
+  read it never reads is out, whose late answer React reports outside `act`, and a page that
+  never reaches the state its row waits for, which is a finding about the page. No workflow runs
+  the lane: it is for a change to a test that reads what a read draws, and for a search of that
+  class.
 
 - A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells:
   happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`,

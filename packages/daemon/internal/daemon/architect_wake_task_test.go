@@ -57,7 +57,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply the listener's report %s = %#v, %v", report, result, err)
 	}
-	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token))
+	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token), workflow.StoppedByRelease)
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:

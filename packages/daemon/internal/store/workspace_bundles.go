@@ -58,10 +58,24 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 
 // TakeWorkspaceBundleForRestore answers the bundle issue's last release saved for the pod of
 // podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
-// same statement what that ask did to the bundle. It answers runtime.WorkspaceBundleNone, having
-// recorded nothing, when the issue has no bundle — one never released, one whose restore the
-// launcher confirmed, one whose release a wake cancelled — when the row already carries an
-// attempt, and when the pod asking is the pod the work came off (source_pod_uid).
+// same statement what that ask did to the bundle. project is the token of the daemon whose pod
+// asks (claim.ProjectToken). It answers runtime.WorkspaceBundleNone, having recorded nothing, when
+// the issue has no bundle of project's — one never released, one whose restore the launcher
+// confirmed, one whose release a wake cancelled, one of an issue project does not record — when
+// the row already carries an attempt, and when the pod asking is the pod the work came off
+// (source_pod_uid).
+//
+// A bundle is project's only where project records its issue (issues.project, the Dispatch key
+// the token lowercases). The row names no project, and its release's mark, which does, is gone
+// once the release has finished, so the issue's record stands in for it. That holds because
+// the one writer of a bundle is the save of an idle release (PutWorkspaceBundle, run by
+// internal/daemon's bundleIssueWorkspace from the release's save row). A daemon's outbox runs
+// only the rows of its own project's keys (record's DueRows), and a release only marks a pod
+// whose issue its project records (ReleaseIdleIssue, readIdleView). So a bundle of an issue this
+// project does not record was saved by another project's daemon on a database the two share,
+// for that daemon's own pod. The operator's spawn makes a claim of such an issue under this
+// project's token, and a new pod of that claim would otherwise spend the other daemon's one
+// attempt and leave that daemon's pod nothing to restore.
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
@@ -101,7 +115,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // The row stays. A bundle nothing restored holds the issue's pod (workflow.IdleHoldBundleUnrestored)
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
-func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	if project == "" {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the project whose pod asks", issue)
+	}
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -122,9 +139,10 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 			set attempt_pod_uid = $2, attempt_at = now(),
 				attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
 			where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
+				and exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)
 			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
 				at, head, tips, bookmarks, release_id, source_pod_uid`,
-			issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+			issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
