@@ -3283,29 +3283,39 @@ func (r *outbox) issueSandboxName(issue string) string {
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
 // idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
 // (workflow.OpenPhaseRole).
+//
+// The hold the cancel records (store.ReleaseCancelPause's Hold) commits in the cancel's own
+// transaction, under its lifecycle serializer, so it is ordered with every other hold record: a
+// record written after the commit, late, would end the streak a newer pass opened. A hold that
+// cannot be recorded fails the cancel, and the row's lane runs it again. The line is the commit's
+// hook, so a cancel whose reply is lost and that the store says committed still says so.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole,
-			Hold: &store.PodHold{Project: r.project, Issue: issue, Reason: hold.String(), At: r.now().UTC()}})
-	if err != nil {
-		return err
-	}
-	// A release that suspended no role resumes nothing, so the empty set of resumed roles is the
-	// whole story rather than a release whose claims another path took over, and the line must
-	// not say that the issue's roles go on in the pod, since no role of this issue is running
-	// anywhere.
-	switch {
-	case cancelled.SuspendsNoRole:
-		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
-			"issue", issue, "hold", hold.String(), "reason", why)
-	case cancelled.Pause != 0:
-		r.log.Info("outbox: the idle release of an issue's pod did not finish while its project is paused; its roles stay stopped by the pause in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "pause", cancelled.Pause, "stopped", cancelled.Stopped)
-	default:
-		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "resumed", cancelled.Resumed)
-	}
-	return nil
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole,
+				Hold: &store.PodHold{Project: r.project, Issue: issue, Reason: hold.String(), At: r.now().UTC()}})
+		if err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			// A release that suspended no role resumes nothing, so the empty set of resumed roles
+			// is the whole story rather than a release whose claims another path took over, and
+			// the line must not say that the issue's roles go on in the pod, since no role of this
+			// issue is running anywhere.
+			switch {
+			case cancelled.SuspendsNoRole:
+				r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
+					"issue", issue, "hold", hold.String(), "reason", why)
+			case cancelled.Pause != 0:
+				r.log.Info("outbox: the idle release of an issue's pod did not finish while its project is paused; its roles stay stopped by the pause in the same pod",
+					"issue", issue, "hold", hold.String(), "reason", why, "pause", cancelled.Pause, "stopped", cancelled.Stopped)
+			default:
+				r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
+					"issue", issue, "hold", hold.String(), "reason", why, "resumed", cancelled.Resumed)
+			}
+		})
+		return nil
+	})
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

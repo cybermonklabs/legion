@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -318,8 +320,21 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark)
-	if err != nil {
+	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
+	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
+	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	var taken bool
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if taken, err = r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark); err != nil || !taken {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
+				"issue", issue.Key, "role", held.Role, "detail", detail)
+		})
+		return nil
+	}); err != nil {
 		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
@@ -340,9 +355,6 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, detail)
-	} else {
-		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
