@@ -1,0 +1,305 @@
+package policy_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+)
+
+const (
+	owner  = "sami@example.com"
+	other  = "ben@example.com"
+	legion = "legion"
+)
+
+// TestEvaluateFollowsOwnerAndTierAlone is the policy's whole table: who asks (the owner's own
+// session, another person's session, a pod, the owning service's session) against whose secret
+// at which tier. A person's agent-tier secret is automatic only for that person's sessions and an
+// approval request to them for everyone else; a human-tier secret always needs its owner, or
+// anyone for a shared one; a shared agent-tier secret goes to everyone; a service's secret goes
+// to that service alone.
+func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
+	store := secrets.NewLocal(
+		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
+		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+		policytest.Secret("SHARED_HUMAN", policy.OwnerShared, policy.TierHuman, "v"),
+		policytest.Secret("SERVICE_AGENT", legion, policy.TierAgent, "v"),
+	)
+	set, err := policytest.Loader(store, legion).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	automatic := policy.Decision{Outcome: policy.Automatic}
+	deny := policy.Decision{Outcome: policy.Deny}
+	approval := func(approver string) policy.Decision {
+		return policy.Decision{Outcome: policy.Approval, Approver: approver}
+	}
+	requesters := map[string]policy.Requester{
+		"owner's session":          {Operator: owner},
+		"owner's session, cased":   {Operator: " Sami@Example.COM "},
+		"another person's session": {Operator: other},
+		"pod":                      {},
+		"the service's session":    {Service: legion},
+		"another service's":        {Service: "other-service"},
+	}
+	table := map[string]map[string]policy.Decision{
+		"PERSON_AGENT": {
+			"owner's session": automatic, "owner's session, cased": automatic,
+			"another person's session": approval(owner), "pod": approval(owner),
+			"the service's session": approval(owner), "another service's": approval(owner),
+		},
+		"PERSON_HUMAN": {
+			"owner's session": approval(owner), "owner's session, cased": approval(owner),
+			"another person's session": approval(owner), "pod": approval(owner),
+			"the service's session": approval(owner), "another service's": approval(owner),
+		},
+		"SHARED_AGENT": {
+			"owner's session": automatic, "owner's session, cased": automatic,
+			"another person's session": automatic, "pod": automatic,
+			"the service's session": automatic, "another service's": automatic,
+		},
+		"SHARED_HUMAN": {
+			"owner's session": approval(record.AnyoneApprover), "owner's session, cased": approval(record.AnyoneApprover),
+			"another person's session": approval(record.AnyoneApprover), "pod": approval(record.AnyoneApprover),
+			"the service's session": approval(record.AnyoneApprover), "another service's": approval(record.AnyoneApprover),
+		},
+		"SERVICE_AGENT": {
+			"owner's session": deny, "owner's session, cased": deny,
+			"another person's session": deny, "pod": deny,
+			"the service's session": automatic, "another service's": deny,
+		},
+	}
+	for name, row := range table {
+		for who, want := range row {
+			got, err := set.Evaluate(name, requesters[who])
+			want.Source = secrets.LocalARN(policytest.ID(name))
+			if err != nil || got != want {
+				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
+			}
+		}
+	}
+	if _, err := set.Evaluate("NOT_A_SECRET", requesters["owner's session"]); !errors.Is(err, policy.ErrUnknownSecret) {
+		t.Errorf("Evaluate(NOT_A_SECRET) = %v, want ErrUnknownSecret", err)
+	}
+}
+
+// TestEvaluateTreatsAWithheldNameAsHumanTier is the rule for a session whose operator withheld a
+// secret from it by revoking a grant of it the session got without asking: the secret is human tier
+// to that session, so it asks the owner, or anyone for a shared secret, and a service's own secret,
+// which no person approves, is denied. Withholding one name changes no other name's answer.
+func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
+	store := secrets.NewLocal(
+		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
+		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+		policytest.Secret("SHARED_HUMAN", policy.OwnerShared, policy.TierHuman, "v"),
+		policytest.Secret("SERVICE_AGENT", legion, policy.TierAgent, "v"),
+	)
+	set, err := policytest.Loader(store, legion).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	approval := func(approver string) policy.Decision {
+		return policy.Decision{Outcome: policy.Approval, Approver: approver}
+	}
+	withheld := func(r policy.Requester, name string) policy.Requester {
+		r.Withheld = []string{name}
+		return r
+	}
+	for _, c := range []struct {
+		name      string
+		requester policy.Requester
+		want      policy.Decision
+	}{
+		{"PERSON_AGENT", withheld(policy.Requester{Operator: owner}, "PERSON_AGENT"), approval(owner)},
+		{"PERSON_AGENT", withheld(policy.Requester{Operator: other}, "PERSON_AGENT"), approval(owner)},
+		{"PERSON_HUMAN", withheld(policy.Requester{Operator: owner}, "PERSON_HUMAN"), approval(owner)},
+		{"SHARED_AGENT", withheld(policy.Requester{Operator: owner}, "SHARED_AGENT"), approval(record.AnyoneApprover)},
+		{"SHARED_AGENT", withheld(policy.Requester{}, "SHARED_AGENT"), approval(record.AnyoneApprover)},
+		{"SHARED_HUMAN", withheld(policy.Requester{Operator: other}, "SHARED_HUMAN"), approval(record.AnyoneApprover)},
+		{"SERVICE_AGENT", withheld(policy.Requester{Service: legion}, "SERVICE_AGENT"), policy.Decision{Outcome: policy.Deny}},
+		{"SERVICE_AGENT", withheld(policy.Requester{Operator: owner}, "SERVICE_AGENT"), policy.Decision{Outcome: policy.Deny}},
+		// Another name withheld leaves this one as the tags decide it.
+		{"PERSON_AGENT", withheld(policy.Requester{Operator: owner}, "SHARED_AGENT"), policy.Decision{Outcome: policy.Automatic}},
+		{"SHARED_AGENT", withheld(policy.Requester{}, "PERSON_AGENT"), policy.Decision{Outcome: policy.Automatic}},
+		{"SERVICE_AGENT", withheld(policy.Requester{Service: legion}, "PERSON_AGENT"), policy.Decision{Outcome: policy.Automatic}},
+	} {
+		got, err := set.Evaluate(c.name, c.requester)
+		c.want.Source = secrets.LocalARN(policytest.ID(c.name))
+		if err != nil || got != c.want {
+			t.Errorf("Evaluate(%s, %+v) = %+v, %v; want %+v", c.name, c.requester, got, err, c.want)
+		}
+	}
+	if _, err := set.Evaluate("NOT_A_SECRET", withheld(policy.Requester{Operator: owner}, "NOT_A_SECRET")); !errors.Is(err, policy.ErrUnknownSecret) {
+		t.Errorf("Evaluate(NOT_A_SECRET) = %v, want ErrUnknownSecret", err)
+	}
+}
+
+// TestRequesters is the requesters tag's table: a secret that lists who may ask for it is denied,
+// with the reason requester-not-listed, to every session and pod the list does not name, and
+// decided by owner and tier as before for the ones it does. A session signed in as nobody and a
+// pod proving no service are on no list, so both are denied every listed secret, and a secret
+// carrying no list answers exactly as it did before the tag existed. A person is matched only by
+// a person's entry and a service only by a service's: an operator whose login is a registered
+// service's name — which record.CanonicalLogin allows, since a record from before people were
+// named by email keeps its GitHub login — is on no list that names that service. (The mirror,
+// a pod whose service is equal to a person's entry, cannot happen: every person entry holds an
+// @ and no service name may.)
+func TestRequesters(t *testing.T) {
+	const (
+		sami   = "sami@example.com"
+		jason  = "jason@example.com"
+		aditya = "aditya@example.com"
+		daemon = "legion-daemon"
+	)
+	listed := func(name, owner, tier, requesters string) secrets.LocalSecret {
+		return policytest.ListedSecret(name, owner, tier, requesters, "v")
+	}
+	store := secrets.NewLocal(
+		listed("GCLOUD_DEMO", sami, policy.TierHuman, daemon+" "+sami),
+		listed("AZURE_ADMIN", sami, policy.TierHuman, jason+" "+daemon+" "+sami),
+		listed("DEV_PERSON", aditya, policy.TierAgent, aditya),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+	)
+	set, err := policytest.Loader(store, daemon).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	automatic := policy.Decision{Outcome: policy.Automatic}
+	notListed := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRequesterNotListed}
+	approval := func(approver string) policy.Decision {
+		return policy.Decision{Outcome: policy.Approval, Approver: approver}
+	}
+	requesters := map[string]policy.Requester{
+		"sami's session":                      {Operator: sami},
+		"jason's session":                     {Operator: jason},
+		"aditya's session":                    {Operator: aditya},
+		"the daemon's pod":                    {Service: daemon},
+		"another service's pod":               {Service: "other-service"},
+		"a pod with no person and no service": {},
+		"a person named like the daemon":      {Operator: daemon},
+	}
+	table := map[string]map[string]policy.Decision{
+		"GCLOUD_DEMO": {
+			"sami's session": approval(sami), "jason's session": notListed,
+			"aditya's session": notListed, "the daemon's pod": approval(sami),
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"AZURE_ADMIN": {
+			"sami's session": approval(sami), "jason's session": approval(sami),
+			"aditya's session": notListed, "the daemon's pod": approval(sami),
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"DEV_PERSON": {
+			"sami's session": notListed, "jason's session": notListed,
+			"aditya's session": automatic, "the daemon's pod": notListed,
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"SHARED_AGENT": {
+			"sami's session": automatic, "jason's session": automatic,
+			"aditya's session": automatic, "the daemon's pod": automatic,
+			"another service's pod": automatic, "a pod with no person and no service": automatic,
+			"a person named like the daemon": automatic,
+		},
+	}
+	for name, row := range table {
+		for who, want := range row {
+			got, err := set.Evaluate(name, requesters[who])
+			want.Source = secrets.LocalARN(policytest.ID(name))
+			if err != nil || got != want {
+				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
+			}
+		}
+	}
+}
+
+// TestARestrictedMemberIsDeniedEverySecret: a requester Dispatch calls a restricted member — a
+// person an access list admitted from outside the sign-in domain — is denied every secret the set
+// serves, restricted-member, before owner, tier and the requesters tag are read: a shared
+// agent-tier secret, one the person owns, one whose requesters list names them, a human-tier one
+// that would have been an approval request, and a service's. The control is the same requester
+// unmarked, who is answered exactly as before. A name the set does not serve is still
+// ErrUnknownSecret.
+func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
+	const outsider = "outsider@outside.example"
+	store := secrets.NewLocal(
+		policytest.Secret("OWN_AGENT", outsider, policy.TierAgent, "v"),
+		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+		policytest.Secret("SHARED_HUMAN", policy.OwnerShared, policy.TierHuman, "v"),
+		policytest.Secret("SERVICE_AGENT", legion, policy.TierAgent, "v"),
+		policytest.ListedSecret("LISTED_AGENT", policy.OwnerShared, policy.TierAgent, outsider, "v"),
+	)
+	set, err := policytest.Loader(store, legion).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	unmarked := map[string]policy.Decision{
+		"OWN_AGENT":     {Outcome: policy.Automatic},
+		"PERSON_HUMAN":  {Outcome: policy.Approval, Approver: owner},
+		"SHARED_AGENT":  {Outcome: policy.Automatic},
+		"SHARED_HUMAN":  {Outcome: policy.Approval, Approver: record.AnyoneApprover},
+		"SERVICE_AGENT": {Outcome: policy.Deny},
+		"LISTED_AGENT":  {Outcome: policy.Automatic},
+	}
+	for name, want := range unmarked {
+		source := secrets.LocalARN(policytest.ID(name))
+		want.Source = source
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider}); err != nil || got != want {
+			t.Errorf("Evaluate(%s, the person unmarked) = %+v, %v; want %+v", name, got, err, want)
+		}
+		denied := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRestrictedMember, Source: source}
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider, Restricted: true}); err != nil || got != denied {
+			t.Errorf("Evaluate(%s, the person a restricted member) = %+v, %v; want %+v", name, got, err, denied)
+		}
+	}
+	if _, err := set.Evaluate("NOT_A_SECRET", policy.Requester{Operator: outsider, Restricted: true}); !errors.Is(err, policy.ErrUnknownSecret) {
+		t.Errorf("Evaluate(NOT_A_SECRET, a restricted member) = %v, want ErrUnknownSecret", err)
+	}
+}
+
+// TestTrimLineEnding is the one line-ending rule's table: the value TrimLineEnding spends for
+// each stored value, and whether it says it changed it. The whole trailing run of carriage
+// returns and line feeds goes only where what is left is not empty and holds no carriage return
+// and no line feed inside it, so a PEM document keeps the line ending that ends it, and a value
+// that is nothing but line endings keeps them, since the empty string reads to a caller as a
+// credential that is not set. (The values below are fixtures, not credentials.)
+func TestTrimLineEnding(t *testing.T) {
+	const (
+		token = "tok-abc"
+		pem   = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	)
+	for _, c := range []struct {
+		name        string
+		value       string
+		want        string
+		wantChanged bool
+	}{
+		{"a line feed", token + "\n", token, true},
+		{"a carriage return and a line feed", token + "\r\n", token, true},
+		{"a carriage return", token + "\r", token, true},
+		{"two line feeds", token + "\n\n", token, true},
+		{"no line ending", token, token, false},
+		// A PEM document holds line endings inside it, so its last one is left alone.
+		{"a PEM document", pem, pem, false},
+		{"a line ending inside the value", "a\nb\r", "a\nb\r", false},
+		{"two lines", "a\nb\n", "a\nb\n", false},
+		{"one line feed alone", "\n", "\n", false},
+		{"leading line feeds", "\n\n" + token, "\n\n" + token, false},
+	} {
+		got, changed := policy.TrimLineEnding(c.value)
+		if got != c.want || changed != c.wantChanged {
+			t.Errorf("%s: TrimLineEnding(%q) = %q, %t; want %q, %t",
+				c.name, c.value, got, changed, c.want, c.wantChanged)
+		}
+	}
+}

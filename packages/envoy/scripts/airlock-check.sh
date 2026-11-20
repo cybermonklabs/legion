@@ -63,7 +63,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LEAN_DIR="$ENVOY_DIR/internal/broker/airlock/lean"
+LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
 
@@ -1550,7 +1550,7 @@ say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CON
 # command line: curl reads the header on standard input. wget reads a header from no pipe, so it
 # gets a startup file of its own, removed when this script exits: the airlock's WGETRC first,
 # whose ca_certificate is the one way the proxy's certificate reaches wget
-# (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
+# (cmd/cipher/airlock.go, wgetrcFor), then the header. --config would read that file in
 # place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
 # wget follows a redirect by default and sends a startup file's header on every request, to the
 # origin a Location names too (wget 1.21.4, measured 2026-11-17), so --max-redirect=0 holds it to
@@ -2130,9 +2130,9 @@ check_k15() {
 		"${bad:-every one of the $count rests on propext, Classical.choice and Quot.sound alone, and none on sorryAx}"
 
 	echo "airlock-check: fuzzing the Go airlock against the model for ten minutes..." >&2
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/seed-corpus.log" 2>&1
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -run FuzzAirlock ./internal/cipher/proxyrules/) >"$WORK_DIR/seed-corpus.log" 2>&1
 	local seed_status=$?
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -fuzz FuzzAirlock -fuzztime=600s -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/fuzz.log" 2>&1
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -fuzz FuzzAirlock -fuzztime=600s -run FuzzAirlock ./internal/cipher/proxyrules/) >"$WORK_DIR/fuzz.log" 2>&1
 	local fuzz_status=$?
 	observe "the seed corpus comparison exited $seed_status: $(tail -n 2 "$WORK_DIR/seed-corpus.log" | tr '\n' ' ')"
 	observe "ten minutes of fuzzing exited $fuzz_status: $(grep -E '^(ok|FAIL|--- FAIL|fuzz:)' "$WORK_DIR/fuzz.log" | tail -n 3 | tr '\n' ' ')"
