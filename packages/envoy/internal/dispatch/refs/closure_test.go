@@ -269,33 +269,9 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 	}
 }
 
-// recordedStatement is one statement a recordingQueryer passed on: its text and its arguments, as
-// the Queryer received them.
-type recordedStatement struct {
-	SQL  string
-	Args []any
-}
-
-// recordingQueryer passes every statement to q and records it, in the order it was sent, so a test
-// reads back how many statements a read sent and explains each one with its own arguments.
-type recordingQueryer struct {
-	q          Queryer
-	statements []recordedStatement
-}
-
-func (r *recordingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	r.statements = append(r.statements, recordedStatement{SQL: sql, Args: args})
-	return r.q.Query(ctx, sql, args...)
-}
-
-func (r *recordingQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	r.statements = append(r.statements, recordedStatement{SQL: sql, Args: args})
-	return r.q.QueryRow(ctx, sql, args...)
-}
-
 // head is the statement's first line of SQL after any leading comment, which names it in a log.
 func (s recordedStatement) head() string {
-	for line := range strings.Lines(s.SQL) {
+	for line := range strings.Lines(s.sql) {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "/*") {
 			return line
@@ -439,7 +415,7 @@ func boundedPlan(t *testing.T, database *store.Store, statement recordedStatemen
 		}
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, timing off, format json) "+statement.SQL, statement.Args...).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (analyze, timing off, format json) "+statement.sql, statement.args...).Scan(&raw); err != nil {
 		return nil, err
 	}
 	return explaintest.OnePlan(t, raw), nil
@@ -1218,7 +1194,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+oneHopBound+"'"); err != nil {
 		t.Fatalf("set the read's bound: %v", err)
 	}
-	recorder := &recordingQueryer{q: tx}
+	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
 	references, err := Closure(ctx, recorder, fixture.issue)
 	took := time.Since(read)
@@ -1241,7 +1217,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	for index := range min(2, len(statements)) {
 		sent := 0
 		for _, statement := range statements {
-			if statement.SQL == statements[index].SQL {
+			if statement.sql == statements[index].sql {
 				sent++
 			}
 		}
@@ -1307,7 +1283,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 
 	// The control: main's statement on the same fixture, under the same bound.
-	mainStatement := recordedStatement{SQL: mainClosureQuery, Args: []any{fixture.issue}}
+	mainStatement := recordedStatement{sql: mainClosureQuery, args: []any{fixture.issue}}
 	control, err := fixture.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the control's transaction: %v", err)
@@ -1316,7 +1292,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 		t.Fatalf("set the control's bound: %v", err)
 	}
 	started := time.Now()
-	mainRows, mainErr := control.Query(ctx, mainStatement.SQL, mainStatement.Args...)
+	mainRows, mainErr := control.Query(ctx, mainStatement.sql, mainStatement.args...)
 	if mainErr == nil {
 		for mainRows.Next() {
 		}
