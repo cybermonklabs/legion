@@ -43,15 +43,20 @@ var gitCredentialStdin io.Reader = os.Stdin
 // A path whose owner the bundle holds no directory for, an owner the role's App is not installed
 // on, may still name a fork of a repository the bundle serves: an outside author's fork that holds
 // the head of a pull request to it. For such a path `get` reads the repository from GitHub once,
-// with GH_CONFIG_DIR's token and within forkReadBound and ctx (forkUpstreamDir), and answers the
-// token it would answer for the fork's parent where the bundle serves the parent's owner, else
-// for the fork's source where it serves that owner. GitHub then decides what that token may push
-// to the fork. A repository of such an owner that is no fork of a served repository, or that the
-// read cannot tell is one, answers nothing. A pairs file that cannot be read makes no read, since
-// neither the fork's parent nor its source could be routed by it either. Where the directory the
-// fork routed to holds a hosts.yml that cannot be read or names no token, it answers nothing on a
-// line that names the fork, that directory and whether the fork's parent or its source routed
-// there (forkUpstreamDir's route), since the token read's own error names the directory alone.
+// with GH_CONFIG_DIR's token and within forkReadBound and ctx (forkUpstreamDir). Where the bundle
+// holds a directory for the owner of the fork's parent, `get` answers what a request for the
+// parent would get; otherwise, where it holds one for the owner of the fork's source, what a
+// request for the source would get; in every other case nothing. GitHub then decides what an
+// answered token may push to the fork. So an upstream whose owner has no directory is passed over
+// even where a configured rename would move it to an owner that has one, and the upstream that
+// answers gets nothing where a rename moved it to an owner with none, as a request for it does;
+// a parent that gets nothing leaves the source untried. A repository of such an owner that is no
+// fork of a served repository, or that the read cannot tell is one, answers nothing. A pairs file
+// that cannot be read makes no read, since neither the fork's parent nor its source could be
+// routed by it either. Where the directory the fork routed to holds a hosts.yml that cannot be
+// read or names no token, it answers nothing on a line that names the fork, that directory and
+// whether the fork's parent or its source routed there (forkUpstreamDir's route), since the
+// token read's own error names the directory alone.
 //
 // Any other host or protocol, a request with no path, a path whose owner is no GitHub login, a
 // pair whose `to` owner has no directory, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with no

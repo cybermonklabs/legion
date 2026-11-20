@@ -50,18 +50,20 @@ func forkRepository(ownersDir, owner, name string) (repo ghrepo.Repository, ok b
 // It reads repo from GitHub once: `GET /repos/<owner>/<name>` through the leak guard's curl read
 // (leakguard's Guard.CurlGet), with the token of GH_CONFIG_DIR's directory (forkReadToken). The
 // read runs within forkReadBound, the token read included, and inside ctx. Where GitHub answers
-// that repo is a fork, the answer is the directory ghConfigDirFor routes the fork's parent to,
-// and where the parent routes to none, the one it routes the fork's source to (forkAnswer.dir),
-// with route, the words that say how: `the fork <repo> routes to <dir> through its parent
-// <full name>`, or `through its source <full name>`. The caller then reads that directory's
-// token as it reads every answer's, and puts route in front of a failure of that read, whose own
-// error names the directory alone and so neither the fork nor which of its two upstreams led
-// there.
+// that repo is a fork, the answer is the directory ghConfigDirFor routes the fork's parent to
+// where the bundle holds a directory for the parent's owner, else the one it routes the fork's
+// source to where the bundle holds a directory for the source's owner (forkAnswer.dir), with
+// route, the words that say how: `the fork <repo> routes to <dir> through its parent <full
+// name>`, or `through its source <full name>`. The caller then reads that directory's token as it
+// reads every answer's, and puts route in front of a failure of that read, whose own error names
+// the directory alone and so neither the fork nor which of its two upstreams led there.
 //
 // Anything else is an error that holds refused, ghConfigDirFor's refusal of the request, and then
 // what the read found, on one line: no token to read with, a read that could not be made or did
-// not finish, any answer of GitHub's but a 200 for repo, a repository that is no fork, and a fork
-// whose parent and source both route nowhere. No second read is made, and no error holds a token.
+// not finish, any answer of GitHub's but a 200 for repo, a repository that is no fork, a fork
+// whose upstream that answers, its parent or else its source, routes nowhere (a parent that does
+// leaves the source untried), and a fork whose parent's and source's owners the bundle holds no
+// directory for. No second read is made, and no error holds a token.
 func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Repository, refused error) (dir, route string, err error) {
 	dir, route, err = readForkUpstream(ctx, ownersDir, repo)
 	if err != nil {
@@ -185,13 +187,21 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	return answer, nil
 }
 
-// dir is the gh directory that answers for the fork repo: the one ghConfigDirFor routes its
-// parent to, the nearer of the two repositories it comes from, else the one it routes its source
-// to. Each is routed as a request for it would be (upstreamGHConfigDir), so a configured rename
-// that moved it applies. route names repo, that directory and the repository that routed there,
-// as GitHub spells it: `the fork <repo> routes to <dir> through its parent <full name>`, or `its
-// source`. Where neither routes, the error names repo, the parent and the source, and why each
-// did not route.
+// dir is the gh directory that answers for the fork repo, by R2's rule: where the bundle holds a
+// directory for the owner of the fork's parent, the nearer of the two repositories it comes from,
+// it is the answer a request for the parent would get; otherwise, where the bundle holds one for
+// the owner of the fork's source, the answer a request for the source would get; and in every
+// other case there is none. The owner's directory alone decides which of the two answers
+// (upstreamOwnerServed): one GitHub does not name, or whose owner the bundle holds no directory
+// for, is not routed at all, even where a configured rename would move it to an owner that has
+// one. The one that answers is routed as a request for it would be (upstreamGHConfigDir), so a
+// configured rename that moved it applies, and where that routes nowhere, as a rename that moved
+// it to an owner with no directory does, the fork gets nothing, as a request for it does, and a
+// parent that routes nowhere leaves the source untried. route names repo, that directory and the
+// repository that routed there, as GitHub spells it: `the fork <repo> routes to <dir> through its
+// parent <full name>`, or `its source`. Where the parent routes nowhere, the error names repo and
+// the parent, why the parent did not route, and that the source was not tried; otherwise it names
+// repo, the parent and the source, and why each did not answer.
 func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
 	tried := make([]string, 0, 2)
 	for _, upstream := range []struct {
@@ -202,8 +212,16 @@ func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route st
 			tried = append(tried, "GitHub names no "+upstream.role)
 			continue
 		}
+		if err = upstreamOwnerServed(ownersDir, upstream.fullName); err != nil {
+			tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
+			continue
+		}
 		if dir, err = upstreamGHConfigDir(ownersDir, upstream.fullName); err == nil {
 			return dir, fmt.Sprintf("the fork %s routes to %s through its %s %s", repo, dir, upstream.role, upstream.fullName), nil
+		}
+		if upstream.role == "parent" {
+			return "", "", fmt.Errorf("GitHub answers that %s is a fork of %s, whose owner the bundle holds a directory for, and a request for %s answers nothing, so the fork gets nothing either and its source is not tried: %v",
+				repo, upstream.fullName, upstream.fullName, err)
 		}
 		tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
 	}
@@ -221,4 +239,18 @@ func upstreamGHConfigDir(ownersDir, fullName string) (string, error) {
 		return "", err
 	}
 	return ghConfigDirFor(ownersDir, strings.ToLower(upstream.Owner()), ghconfig.RepositoryName(upstream.Name()))
+}
+
+// upstreamOwnerServed is nil where the bundle under ownersDir holds a directory for the owner of
+// the repository fullName, as GitHub spells it, keyed as upstreamGHConfigDir keys it (lowercased),
+// and otherwise the error that says why not: ownerGHConfigDir's refusal, in the words a request
+// for a repository of that owner is refused with, or ghrepo.Parse's refusal of a fullName, which
+// then names no owner.
+func upstreamOwnerServed(ownersDir, fullName string) error {
+	upstream, err := ghrepo.Parse("GitHub's full_name", fullName)
+	if err != nil {
+		return err
+	}
+	_, err = ownerGHConfigDir(ownersDir, strings.ToLower(upstream.Owner()))
+	return err
 }

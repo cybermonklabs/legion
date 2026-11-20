@@ -780,12 +780,23 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 // fork that moved, whose redirect curl does not follow), each named by its status and the 301 by
 // where it points; a spent core limit, named with its reset in UTC, and a secondary limit, named
 // with the wait its Retry-After asks for; a curl that could not reach GitHub; a body that is not
-// JSON; a 200 with no fork field; and no curl at the path. No read is made without a token: where
-// GH_CONFIG_DIR is unset, is no directory of the bundle, holds a hosts.yml with no token, or a
-// token with a line break, which would put a header of its own on curl's request, the helper
-// names which and the fake GitHub never runs. No stderr holds a token.
+// JSON; a 200 with no fork field; a fork whose parent is a repository of an owner the bundle
+// holds a directory for, which a configured rename moved to an owner it holds none for, so that a
+// request for the parent answers nothing (ghConfigDirFor) and so does the fork, naming the parent
+// and the pair, with its source, acme/sample-project, not tried though the bundle holds acme's
+// directory; and no curl at the path. No read is made without a token: where GH_CONFIG_DIR is
+// unset, is no directory of the bundle, holds a hosts.yml with no token, or a token with a line
+// break, which would put a header of its own on curl's request, the helper names which and the
+// fake GitHub never runs. No stderr holds a token.
 func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
+	// root's one configured rename, sjawhar/legion -> cybermonklabs/legion, moves a repository of
+	// sjawhar, an owner root holds a directory for, to cybermonklabs, which it holds none for. Only
+	// the row whose fork's parent is sjawhar/legion routes through it.
+	pairs := ghconfig.RenderPairs([]ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")})
+	if err := os.WriteFile(filepath.Join(root, ghconfig.PairsFile), []byte(pairs), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// Three directories whose token the read cannot carry: one of the bundle whose hosts.yml is
 	// empty, one of the bundle whose token holds a line break, and one outside the bundle with a
 	// hosts.yml of its own, named for an owner of it.
@@ -814,6 +825,10 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 	// fork-of-a-served-repository.http without its own `"fork": true,` line; the parent's and
 	// the source's say `"fork": false,`.
 	noFork := derivedForkRead(t, "fork-of-a-served-repository.http", "  \"fork\": true,\n", "")
+	// fork-of-a-served-repository.http with its parent's full_name changed to sjawhar/legion, the
+	// repository root's pair moves: of its two `"full_name": "acme/sample-project"` lines, the first
+	// is the parent's and the second the source's, which stays acme's.
+	movedParent := derivedForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/sample-project"`, `"full_name": "sjawhar/legion"`)
 	forkOfAcme := printsAnswer(forkReadFixture(t, "fork-of-a-served-repository.http"), 0)
 	for _, tc := range []struct {
 		name string
@@ -864,6 +879,17 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 		{
 			name: "a 200 with no fork field", configDir: acme, token: "ghs_acme_write", reads: 1,
 			answer: printsAnswer(noFork, 0), says: []string{`no "fork" field`},
+		},
+		{
+			// A request for sjawhar/legion answers nothing, so the fork answers nothing too, and not
+			// acme's token, its source's, though the bundle holds acme's directory.
+			name:      "a fork of a served owner's repository a configured rename moved to an owner with no directory",
+			configDir: acme, token: "ghs_acme_write", reads: 1, answer: printsAnswer(movedParent, 0),
+			says: []string{
+				"a fork of sjawhar/legion",
+				"the configured rename sjawhar/legion -> cybermonklabs/legion serves sjawhar/legion from cybermonklabs's gh directory",
+				"its source is not tried",
+			},
 		},
 		{
 			name: "no curl at the path", configDir: acme, noCurl: true,
