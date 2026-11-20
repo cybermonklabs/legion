@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -487,7 +488,7 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 		"admission":{"cap":2}}`)
 	sampler.Pass(t.Context())
 
-	state, err := ReadCurrent(t.Context(), database.Pool, "INFRA")
+	state, err := ReadCurrent(t.Context(), database.Pool, "INFRA", refs.VisibilityArg(model.ServerReader))
 	if err != nil {
 		t.Fatalf("read the current state: %v", err)
 	}
@@ -554,7 +555,7 @@ func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
 	}
 
 	for _, order := range []string{"field", "field desc"} {
-		current, err := ReadCurrent(t.Context(), inOrder{db: database.Pool, order: order}, "INFRA")
+		current, err := ReadCurrent(t.Context(), inOrder{db: database.Pool, order: order}, "INFRA", refs.VisibilityArg(model.ServerReader))
 		if err != nil {
 			t.Fatalf("read the current state ordered by %s: %v", order, err)
 		}
