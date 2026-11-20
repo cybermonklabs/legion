@@ -2,6 +2,7 @@ package bus
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,32 +11,27 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A connection life ends as soon as its status listener receives the report of a drop. nats.go can
-// drop that report only when the listener's ten-event channel is full. The connection's watch then
-// catches the missed report from the reconnect count recorded when the life was first pinned: a
-// count past that first pin means a reconnect happened in this life, whatever reached its listener.
+// A connection life ends as soon as its status listener receives a drop report. nats.go removes a
+// listener after one unread report, so the connection watch compares the reconnect count the first
+// window pinned in that life read after CONNECTED. A later count ends the life even when the report
+// was missed.
 //
-// The row drives the watch itself (lifeCheckEvery is set past the row) and decides by connection
-// events and windows, not elapsed time:
-//   - one drop: a listener removed before one drop leaves the old life current until one check ends
-//     it; the windows it carried are refused and a fresh window pins;
-//   - two drops in one gap: a listener removed before two drops leaves the old life current until
-//     one check sees the count past its first pin; the windows it carried are refused and a fresh
-//     window pins;
-//   - a drop before first registration: two reports happen before the first listener registers;
-//     after the reconnect the first pin records that count, and a check keeps it;
-//   - a drop then a clean reconnect: after two reports before registration, a normal reported drop
-//     ends that old life. A window pinned after its clean reconnect stays current through two checks.
+// The row drives the watch itself (lifeCheckEvery is set past the row) and decides by events:
+//   - one missed report: a listener removed before one drop leaves the old life current until one
+//     check ends it; the windows it carried are refused and a fresh window pins;
+//   - a drop between the life and connected reads: the old life closes before the pin can record it,
+//     so the loop takes a fresh life after the reconnect; that fresh window survives two checks;
+//   - a clean reconnect: a reported drop ends the old life, and the post-reconnect window survives
+//     two checks.
 //
-// Each control is the first-life bracket at f83e859506: it credits only one of the third and
-// fourth rows' two reports before registration. Its check then ends the first pinned life in the
-// third, and the clean new life in the fourth. The tests' 30 s waits only guard against NATS not
-// changing state.
+// The f83e859506 control has no per-pin count and leaves the first row's old window usable. A fault
+// that reads connected before the life makes the second row pin across the reconnect. The tests'
+// 30 s waits only guard against NATS not changing state.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
 
-	t.Run("one drop", func(t *testing.T) {
+	t.Run("one missed report", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
@@ -51,7 +47,46 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		requireFresh(t, client, "one missed report")
 	})
 
-	t.Run("two drops in one gap", func(t *testing.T) {
+	t.Run("a drop between life and connected reads", func(t *testing.T) {
+		client, hold := heldHandshakeClient(t)
+		conn := client.Connection()
+		w := client.WindowUntil(nil).(*window)
+		original := lifeOf(conn).current()
+		var once sync.Once
+		var held <-chan struct{}
+		startDrop := func() {
+			once.Do(func() {
+				held = hold.Hold()
+				waitForLifeEnded(t, original)
+			})
+		}
+		releaseAfterCount := func() {
+			select {
+			case <-held:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the reconnect handshake did not reach the hold")
+			}
+			hold.Release()
+		}
+		w.afterConnected.Store(&startDrop)
+		w.pinCountRead.Store(&releaseAfterCount)
+		t.Cleanup(func() {
+			w.afterConnected.Store(nil)
+			w.pinCountRead.Store(nil)
+			hold.Release()
+		})
+		if err := w.pinToSend(); err != nil {
+			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", err)
+		}
+		life := lifeOf(conn)
+		life.check()
+		life.check()
+		if err := w.pinToSend(); err != nil {
+			t.Errorf("the window pinned after the reconnect answered %v after the checks, want nil", err)
+		}
+	})
+
+	t.Run("a clean reconnect", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
@@ -59,76 +94,19 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
 		life := lifeOf(conn)
-		conn.RemoveStatusListener(life.reports)
-		dropAndPin(t, client, conn, hold)
-		stale := dropAndPin(t, client, conn, hold)
-		life.check()
-		requireStale(t, old, "the old window after two missed reports")
-		requireStale(t, stale, "the window pinned before two missed reports were found")
-		requireFresh(t, client, "two missed reports")
-	})
-
-	t.Run("a drop before first registration", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
-		conn := client.Connection()
-		life, before := lifeAfterTwoMissedReports(t, conn, hold)
+		before := conn.Stats().Reconnects
+		oldLife := old.life
+		hold.Cut()
+		hold.Restore()
+		waitForLifeEnded(t, oldLife)
 		w := pinAfterReconnect(t, client, conn, before)
 		life.check()
 		life.check()
 		if err := w.pinToSend(); err != nil {
-			t.Errorf("the first window pinned after two reports before registration answered %v after the check, want nil", err)
-		}
-	})
-
-	t.Run("a drop then a clean reconnect", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
-		conn := client.Connection()
-		life, before := lifeAfterTwoMissedReports(t, conn, hold)
-		old := pinAfterReconnect(t, client, conn, before)
-		before = conn.Stats().Reconnects
-		hold.Cut()
-		hold.Restore()
-		waitForLifeEnded(t, old.life)
-		fresh := pinAfterReconnect(t, client, conn, before)
-		life.check()
-		life.check()
-		if err := fresh.pinToSend(); err != nil {
 			t.Errorf("a window pinned after a clean reconnect answered %v after the checks, want nil", err)
 		}
 		requireStale(t, old, "the old window after the reported drop")
 	})
-
-}
-
-// lifeAfterTwoMissedReports starts a drop, then holds and loses one reconnect handshake before
-// life registers its listener. It returns once the second held handshake has been released; both
-// RECONNECTING reports happened before the listener could receive them.
-func lifeAfterTwoMissedReports(t *testing.T, conn *nats.Conn, hold *testnats.HandshakeHold) (*connLife, uint64) {
-	t.Helper()
-	before := conn.Stats().Reconnects
-	hold.Cut()
-	cutUntilReconnecting(t, conn, hold)
-	hold.Restore()
-	beforeRegister := func() {
-		hold.Hold()
-		waitForAttempts(t, hold, 2)
-		hold.Release()
-	}
-	lifeOfBeforeRegister.Store(&beforeRegister)
-	t.Cleanup(func() { lifeOfBeforeRegister.Store(nil) })
-	life := lifeOf(conn)
-	return life, before
-}
-
-func waitForAttempts(t *testing.T, hold *testnats.HandshakeHold, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for hold.Attempts() < want {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d of %d reconnect handshakes reached the hold", hold.Attempts(), want)
-		}
-		time.Sleep(time.Millisecond)
-	}
 }
 
 // dropAndPin cuts conn through hold, lets it reconnect, and returns a window pinned before the

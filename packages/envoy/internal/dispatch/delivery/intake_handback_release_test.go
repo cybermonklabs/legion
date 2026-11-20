@@ -320,6 +320,14 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !row.handBackPending() {
 			t.Fatal("control: the hand-back reached NATS before its client closed")
 		}
+		finalizing := make(chan struct{})
+		releaseFinalizer := make(chan struct{})
+		hook := func() {
+			close(finalizing)
+			<-releaseFinalizer
+		}
+		finalizerBeforeRelease.Store(&hook)
+		t.Cleanup(func() { finalizerBeforeRelease.Store(nil) })
 		var runs sync.WaitGroup
 		closed := make(chan struct{})
 		go func() {
@@ -329,12 +337,26 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		testnats.RequireLockHeld(t, row.conn)
 		row.thaw()
 		select {
+		case <-finalizing:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the client close did not settle the pending hand-back within 30 s")
+		}
+		select {
+		case <-closed:
+			t.Fatal("StartIntakes' stop returned while its finalizer was held before release")
+		default:
+		}
+		if !holdLive(t, row.pool) {
+			t.Fatal("the hold was released before the finalizer's release step")
+		}
+		close(releaseFinalizer)
+		select {
 		case <-closed:
 		case <-time.After(30 * time.Second):
-			t.Fatal("StartIntakes' stop did not return within 30 s of the link moving")
+			t.Fatal("StartIntakes' stop did not return within 30 s of finalizer release")
 		}
 		if holdLive(t, row.pool) {
-			t.Fatal("the pending hand-back's finalizer returned after the client closed but left its hold live: shutdown could close the pool before releasing it")
+			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")
 		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
 	})

@@ -158,6 +158,10 @@ type window struct {
 	// life is the life of conn the window pinned (connLife.current), closed once nats.go has
 	// reported that life over.
 	life <-chan struct{}
+	// afterConnected and pinCountRead are nil outside the row that stages a drop between the
+	// connected read and the life pin. The second runs after the count read and before pinIf.
+	afterConnected atomic.Pointer[func()]
+	pinCountRead   atomic.Pointer[func()]
 	// connectionWaitEntered, when set, runs as a first send begins its wait for a connection
 	// (pinFirst). It is nil outside tests: a row sets it on the window it drives, to see two first
 	// sends wait side by side.
@@ -236,10 +240,10 @@ func (w *window) pin(wait time.Duration) error {
 }
 
 // pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to it and to its current life (connLife), unless another send pinned it first. The
-// reconnect count is read after the connection read CONNECTED and records the first pin of that
-// life; a report of its end after that read closes the life, and a life that ended during the read
-// has the connection read again.
+// the window to its current life (connLife), unless another send pinned it first. It takes that
+// life before it reads connected; a report of its end after either read closes the channel and the
+// loop tries the connection again. The reconnect count records a life only while that same channel
+// is still current and unpinned.
 func (w *window) pinFirst(wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -259,15 +263,22 @@ func (w *window) pinFirst(wait time.Duration) error {
 			w.client.mu.Lock()
 			pinned := connection{conn: w.client.Conn, js: w.client.js}
 			w.client.mu.Unlock()
+			life := lifeOf(pinned.conn)
+			ch := life.current()
 			if !pinned.conn.IsConnected() {
 				continue
 			}
-			pinned.life = lifeOf(pinned.conn).pin(pinned.conn.Stats().Reconnects)
-			select {
-			case <-pinned.life:
-				continue
-			default:
+			if connected := w.afterConnected.Load(); connected != nil {
+				(*connected)()
 			}
+			count := pinned.conn.Stats().Reconnects
+			if read := w.pinCountRead.Load(); read != nil {
+				(*read)()
+			}
+			if !life.pinIf(ch, count) {
+				continue
+			}
+			pinned.life = ch
 			return pinned, nil
 		}
 	})

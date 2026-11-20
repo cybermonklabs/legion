@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -675,9 +676,10 @@ func (d *heldDurable) check(ctx context.Context) {
 // the durable over, and recreated it under the same name, would move that message's pending entry on
 // the standby's consumer and have it delivered a second time. So the hold keeps renewing on a
 // goroutine of its own (finalizeHandBacks) until that hand-back lands and a flush confirms it, or the
-// intake client's connection closes, which leaves the hand-back unsent; only then is it released. The
-// renewal ends with the process, together with the connection, so the row cannot lapse while the
-// hand-back can still be sent.
+// intake client's connection closes. Close flushes its outbound buffer first, so that hand-back is
+// sent at close or dropped with the connection; only then is the hold released. The renewal ends
+// with the process, together with the connection, so the row cannot lapse while the hand-back can
+// still be sent.
 func (d *heldDurable) stop(ctx context.Context) {
 	d.StopDelivering(ctx)
 	if d.hold == nil {
@@ -728,6 +730,9 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	defer retry.Stop()
 	for {
 		if d.handBacksSettled() {
+			if before := finalizerBeforeRelease.Load(); before != nil {
+				(*before)()
+			}
 			select {
 			case <-hold.Lost():
 			default:
@@ -742,6 +747,10 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 		}
 	}
 }
+
+// finalizerBeforeRelease is nil outside the shutdown row. It holds a settled finalizer before it
+// releases, so the row sees that stopIntakes waits for it.
+var finalizerBeforeRelease atomic.Pointer[func()]
 
 // waitFinalizers waits for hand-backs a stopped durable left running to settle after its NATS
 // client closes. They can then no longer wait for that client, and release their holds through the
@@ -798,7 +807,7 @@ func (d *heldDurable) flushHandBacks() bool {
 
 // handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
 // flush of the intake client's connection answered within intakeFlushWait, so each has reached it,
-// or the connection has closed, which leaves each unsent. It waits for nats.go's lock with no bound.
+// or the connection has closed, which sent its outbound buffer or dropped it with the connection.
 func (d *heldDurable) handBacksSettled() bool {
 	conn := d.nats.Connection()
 	return conn == nil || conn.IsClosed() || conn.FlushTimeout(intakeFlushWait) == nil

@@ -27,12 +27,12 @@ func init() { lifeCheckEvery.Store(int64(10 * time.Second)) }
 // each report and ends the current life at once, so a check of whether a life has ended
 // (window.current) takes no lock nats.go holds and waits for nothing.
 //
-// A report can be dropped only after nats.go's ten-event listener channel fills. The drain does
-// nothing else, so it normally takes every report. The watch handles the exceptional missed report:
-// the first window pinned in a life records nats.go's reconnect count after it has read CONNECTED.
-// A later count means that connection has reconnected in that pinned life, whether the listener
-// received the report or not, so the watch replaces the listener and ends the life. A new window
-// then records the count of the new life. The watch holds no window lock while it reads nats.go.
+// nats.go removes a listener when it finds one unread report in that listener's channel. The drain
+// does nothing else, so it normally takes every report. The watch handles the exceptional missed
+// report: the first window pinned in a life records nats.go's reconnect count after it has read
+// CONNECTED. A later count means that connection has reconnected in that pinned life, whether the
+// listener received the report or not, so the watch replaces the listener and ends the life. A new
+// window then records the count of the new life. The watch holds no window lock while it reads nats.go.
 type connLife struct {
 	conn *nats.Conn
 
@@ -87,20 +87,28 @@ func lifeOf(conn *nats.Conn) *connLife {
 	return life
 }
 
-// pin records reconnects for life the first time a window pins it and returns its current channel.
-// pinFirst calls it only after conn read CONNECTED, inside its existing bound.
-func (l *connLife) pin(reconnects uint64) <-chan struct{} {
+// pinIf records reconnects for ch's life only while ch is still current and unpinned. pinFirst
+// takes ch before it reads the connection as CONNECTED, so a drop between those reads closes ch and
+// refuses the pin rather than letting it cross the reconnect.
+func (l *connLife) pinIf(ch <-chan struct{}, reconnects uint64) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.life != ch {
+		return false
+	}
+	select {
+	case <-ch:
+		return false
+	default:
+	}
 	if !l.pinned {
 		l.reconnects, l.pinned = reconnects, true
 	}
-	return l.life
+	return true
 }
 
-// lifeOfBeforeRegister is nil outside a row. The row keeps two reconnect reports before the first
-// listener registration, an interleaving nats.go otherwise does not expose
-// (conn_lives_check_test.go).
+// lifeOfBeforeRegister is nil outside a row. The row stages reports before the first listener
+// registration, an interleaving nats.go otherwise does not expose (conn_lives_check_test.go).
 var lifeOfBeforeRegister atomic.Pointer[func()]
 
 // current is the channel closed when the connection's current life ends.
