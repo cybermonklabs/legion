@@ -478,11 +478,15 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 // issue and says the runtime keeps its volume, and keeps the bundle the release saved. With the
 // new name written, the next pod would make a fresh workspace under the new name, the runtime
 // would drop the saved bundle, since the kept volume holds that work
-// (runtime.HeldWorkspaceBundleDrop), and the work would stay under the old name. Control: the
-// same release with no kept volume writes the new name at the pod end and logs no kept line, as
-// an ordinary release does (TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds); with podEndKeep
-// keeping nothing under a runtime that runs a pod per issue, the release that keeps the volume
-// writes the new name too.
+// (runtime.HeldWorkspaceBundleDrop), and the work would stay under the old name. A later pass
+// writes such an issue once no kept volume is left: here, once the runtime keeps no volume of the
+// issue, as after the teardown of its close (SuspendIssue), the next pod end writes the new name,
+// and its issues line counts one row written and none left. Control: the same release with no kept
+// volume writes the new name at the pod end and logs no kept line, as an ordinary release does
+// (TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds); with podEndKeep keeping nothing under a
+// runtime that runs a pod per issue, the release that keeps the volume writes the new name too;
+// with podEndKeep keeping the issue whatever IssueKeepsVolume answers, that later pod end leaves
+// it on the old name.
 func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -529,6 +533,18 @@ func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
 			}
 			if !rig.bundled(t) {
 				t.Errorf("%s holds no saved bundle after its release's pod end, want the one the release saved", key)
+			}
+			if tc.kept {
+				// The runtime keeps no volume of the issue now, as after its close's teardown, which
+				// deletes the Sandbox and its volume: the pass at the next pod end writes the issue.
+				rig.rt.ScriptKeptVolume(key, time.Time{})
+				rig.w.podEndsOn(renamePodRuntime{rig.rt})(ctx, []string{key})
+				if names := storedRepositoryNames(t, rig.pool, key); !namedAll(names, renameTo) {
+					t.Errorf("%s's stored names after a pod end with no kept volume left = %v, want each on %s", key, names, renameTo)
+				}
+				if got := renameTables(t, logged.String())["issues"]; got != (renameTableTally{written: 1}) {
+					t.Errorf("the issues line of the pod end with no kept volume left = %+v, want one row written and none left", got)
+				}
 			}
 		})
 	}

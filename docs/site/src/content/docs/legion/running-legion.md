@@ -599,6 +599,7 @@ What each part is for:
   an idle release keeps the issue's Sandbox and its volume for the issue's next pod. That pod
   mounts the volume, and the workspace on it is under the old name. So such an issue keeps its old
   name until no kept volume is left. The pass at the issue's close, or a later boot, writes it then.
+  Until it does, the pass's `left` count can stay above 0.
   The daemon writes a pair only once GitHub shows the transfer, both role Apps installed on the
   `to` and neither on the `from`, and writes the `to` as GitHub spells it;
   until then it leaves the pair's records as they are and logs one `rename pass: left …` line, so a

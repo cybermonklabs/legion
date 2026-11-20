@@ -3765,6 +3765,8 @@ every other step of the boot that reads GitHub or writes a cache's credential mi
 One such step fills a record that lacks its repository columns, one read per such record, each bounded at 15 s, and a read that fails leaves the record for the refresher.
 The one-time rename pass, before the consumers open, reads GitHub for a `repository_renames` pair only while a stored row still names the pair's `from`: then it reads both role Apps' installations on each of the pair's names that the daemon holds no answer for (at boot, both) and, where the daemon holds no spelling of the `to`, GitHub's spelling of it, each read bounded at 15 s;
 once no row names a pair's `from`, the pass reads nothing of GitHub for that pair.
+Under `keep_volume`, an issue whose Sandbox keeps its volume keeps its old name until the end of its last pod, or until a later boot finds no kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+Until then, the pass's `left` count can stay above 0.
 The refresher's reads of each repository's installations, name and default branch run beside the boot, once the API serves, and hold neither the boot nor the port.
 A pane's `legion` tool calls (`read_record` and `handoff_complete`, the latter minting its grant in-process first) and `controller start` all wait on that same API, so none of them succeeds until the daemon actually serves;
 a pane's plain `gh` and `git` do not, since they read the role's credential from its gh files and call the daemon for nothing.
