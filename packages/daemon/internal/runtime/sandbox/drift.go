@@ -15,6 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
+var _ runtime.IssuePodReplacer = (*Runtime)(nil)
+
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
 // deletes the disk they work on, with everything unpushed on it. The daemon opens an update round
@@ -22,7 +24,8 @@ import (
 // claims/ready-for-update), and replaces the pod once every asked role has answered and no turn
 // runs, or at the round's bound (pod_update_grace_minutes) whatever the roles answered, an
 // operator's suspension excepted. PodDrift is what the round is opened on, and ReplacePod what
-// ends the round; the round itself, its ask and its sweep are the daemon's (internal/daemon).
+// ends the round, or ReplaceIssuePod where no role process is left in the pod to name it through;
+// the round itself, its ask and its sweep are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
 // roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
@@ -421,15 +424,45 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return err
 	}
-	name := k.Locator.Sandbox.Name
+	return r.replaceRoundPod(ctx, k.Locator.Sandbox.Name, k.Locator.Sandbox.PodUID, due, "claim", string(k.Claim))
+}
+
+// ReplaceIssuePod satisfies runtime.IssuePodReplacer: it ends the pod podUID of issue's Sandbox,
+// once the update round over that pod is over and no role process runs in it, and waits until
+// the cluster no longer has it. It is ReplacePod's act keyed by the issue rather than by a
+// claim's locator: the round's claims record no process in the pod, so no locator names it, and
+// the Sandbox is the issue's one Sandbox (issueSandboxName). The act is ReplacePod's own
+// (replaceRoundPod): the launch turn, the round's own displaced-pod mark, the wait for the pod's
+// end, and due asked last. So a sweep that reads the Sandbox before the pod ends tells this
+// replacement from a launch's, as it tells ReplacePod's (PodDrift).
+//
+// It is a no-op when the issue has no Sandbox, when the Sandbox is already suspended, and when
+// the pod the Sandbox holds is not podUID: there is then no pod of that round to end. An issue
+// key no Sandbox name can be built from is an error.
+func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("sandbox runtime: replace the pod of %s: %w", issue, err)
+	}
+	return r.replaceRoundPod(ctx, name, podUID, due, "issue", issue)
+}
+
+// replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
+// Sandbox named name, it ends that Sandbox's pod podUID as a finished update round's own
+// replacement and waits until the cluster no longer has it. It answers nil having written nothing
+// for a Sandbox that is absent or already suspended, and for a Sandbox whose own pod is not
+// podUID. due is asked last, one statement before the suspension, and its error is returned
+// having written nothing. key and of name what the caller replaces the pod for, the claim or the
+// issue, in an error and on the line.
+func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due func(context.Context) error, key, of string) error {
 	release, err := r.lockPod(ctx, name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", of, err)
 	}
 	defer release()
 	s, err := r.storedSandbox(name)
 	if err != nil {
-		return fmt.Errorf("replace %s's pod: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: %w", of, err)
 	}
 	if s == nil || s.mode() == modeSuspended {
 		return nil
@@ -437,19 +470,19 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	// The pod the Sandbox owns, as every other reader of the two together takes it (viewOf): a
 	// same-named pod it does not own is some earlier Sandbox's, and no pod of this round.
 	v := r.viewOf(name, s)
-	if v.pod == nil || string(v.pod.UID) != k.Locator.Sandbox.PodUID {
+	if v.pod == nil || string(v.pod.UID) != podUID {
 		return nil
 	}
 	if err := due(ctx); err != nil {
 		return err
 	}
 	if _, err := r.suspendDisplacing(ctx, s, v.pod.UID, roundReplacement); err != nil {
-		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", of, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
-		return fmt.Errorf("replace %s's pod: wait out its pod: %w", k.Claim, err)
+		return fmt.Errorf("replace %s's pod: wait out its pod: %w", of, err)
 	}
-	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", v.pod.UID, "claim", k.Claim)
+	r.log.Info("sandbox runtime: the pod of a finished update round is replaced", "sandbox", name, "pod", v.pod.UID, key, of)
 	return nil
 }
 

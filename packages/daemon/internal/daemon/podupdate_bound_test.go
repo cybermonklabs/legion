@@ -8,6 +8,7 @@ package daemon
 // moment in what it asserts.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -593,52 +594,112 @@ func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
 	wantNoRefusedNotice(t, rig)
 }
 
-// A round held past its bound by a claim recording no process in the round's pod — the daemon
-// suspended the one claim after the sweep read it, and the pod is still there — is told once, at
-// the bound, naming that reading. A minute before the bound the same reading tells nobody.
+// A round whose claims stop recording a process in the round's pod between the sweep's snapshot
+// and its live read: the daemon suspended the one claim after the sweep read it, and the pod is
+// still there. There is no process to replace the pod through. The daemon suspended the claim
+// before the round's ask reached it, so the round does not wait for it (dispatch://INFRA-4109 R1),
+// and nothing holds the pod (roundPodEnds). The sweep replaces the pod by issue at once, a minute
+// before the bound, and tells the controller nothing: no reading holds the round. The issue is
+// written that the implementer had not answered and that no process could read the workspace
+// (dispatch://INFRA-4109 R7).
+//
+// The told-once case is a replacement by issue that the runtime refuses. A minute before the
+// bound the refusal tells nobody. At the bound it holds the round past it, so the controller is
+// told once, naming the refusal, as a refused ReplacePod is told, and later sweeps tell nothing
+// more.
 func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.settleAll()
-	group := rig.snapshot()
-	rig.suspendBy(claim.RoleImplementer, supervise.SuspendedByDaemon)
-
-	rig.clockAt(podUpdateBound.Add(-time.Minute))
-	rig.s.reconcilePodUpdates(rig.ctx, group)
-	if notices := rig.notices(); len(notices) != 0 {
-		t.Fatalf("at %s, a minute before the bound, the controller was told %+v", rig.clock.Now(), notices)
+	// opened is the round over the implementer, and the snapshot a sweep took of it just before
+	// the daemon suspended the implementer.
+	opened := func(t *testing.T) (*podUpdateRig, []supervise.Claim) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+		rig.drifts(podUpdateDrift)
+		rig.tick()
+		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+		rig.settleAll()
+		group := rig.snapshot()
+		rig.suspendBy(claim.RoleImplementer, supervise.SuspendedByDaemon)
+		return rig, group
 	}
 
-	rig.clockAt(podUpdateBound)
-	rig.s.reconcilePodUpdates(rig.ctx, group)
+	t.Run("replaced by issue and told nothing", func(t *testing.T) {
+		rig, group := opened(t)
+		rig.clockAt(podUpdateBound.Add(-time.Minute))
+		rig.s.reconcilePodUpdates(rig.ctx, group)
 
-	// The bound steps over no fact about the pod: with no process recorded in it, ReplacePod is not
-	// called at all, not even to be refused inside it.
-	if calls, refused := rig.replacements(), rig.notDue(); len(calls)+len(refused) != 0 {
-		t.Fatalf("at the bound %s ReplacePod was called %d times (%d of them refused) with no process recorded in the pod", rig.clock.Now(),
-			len(calls)+len(refused), len(refused))
-	}
-	notices := rig.notices()
-	if len(notices) != 1 {
-		t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
-	}
-	if !strings.Contains(notices[0].Reason, "No claim of the issue records a process in the pod of the round") {
-		t.Errorf("the notice says %q, want it to name the claim recording no process in the round's pod", notices[0].Reason)
-	}
-	if notices[0].Update == nil || notices[0].Update.Pod != podUpdatePod {
-		t.Errorf("the notice carries %+v, want the round's pod %s", notices[0].Update, podUpdatePod)
-	}
-	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
-	wantNoRefusedNotice(t, rig)
+		replaced := rig.issueReplacements()
+		if len(replaced) != 1 || replaced[0].Issue != podUpdateIssue || replaced[0].PodUID != podUpdatePod {
+			t.Fatalf("the pod was replaced by issue as %+v, want once, of issue %s and the round's pod %s", replaced, podUpdateIssue, podUpdatePod)
+		}
+		// The bound steps over no fact about the pod: with no process recorded in it, ReplacePod is
+		// not called at all, not even to be refused inside it.
+		if calls, refused := rig.replacements(), rig.notDue(); len(calls)+len(refused) != 0 {
+			t.Fatalf("ReplacePod was called %d times (%d of them refused) with no process recorded in the pod", len(calls)+len(refused), len(refused))
+		}
+		rig.awaitClaim(claim.RoleImplementer, "its round to end with the replacement by issue",
+			func(c supervise.Claim) bool { return c.UpdateRound == "" })
+		wantPodlessEnd(t, rig, false, []claim.Role{claim.RoleImplementer})
+		if notices := rig.notices(); len(notices) != 0 {
+			t.Fatalf("the controller was told %+v of a round its replacement by issue ended", notices)
+		}
 
-	rig.tick()
-	rig.tick()
-	if notices := rig.notices(); len(notices) != 1 {
-		t.Fatalf("the controller had been told %d times, want once per round", len(notices))
-	}
+		rig.clockAt(podUpdateBound)
+		rig.tick()
+		rig.tick()
+		if notices := rig.notices(); len(notices) != 0 {
+			t.Fatalf("at the bound %s the controller was told %+v of a round that is over", rig.clock.Now(), notices)
+		}
+		if messages := rig.messages(); len(messages) != 1 {
+			t.Fatalf("the issue was written %d messages after two more sweeps, want the one of the round's end: %q", len(messages), messages)
+		}
+	})
+
+	t.Run("a refused replacement by issue is told once at the bound", func(t *testing.T) {
+		rig, group := opened(t)
+		refused := errors.New("the API server refused the Sandbox's suspension")
+		rig.rt.FailReplaceIssuePod(refused)
+
+		rig.clockAt(podUpdateBound.Add(-time.Minute))
+		rig.s.reconcilePodUpdates(rig.ctx, group)
+		if notices := rig.notices(); len(notices) != 0 {
+			t.Fatalf("at %s, a minute before the bound, the controller was told %+v", rig.clock.Now(), notices)
+		}
+
+		rig.clockAt(podUpdateBound)
+		rig.s.reconcilePodUpdates(rig.ctx, group)
+
+		if calls := rig.issueReplacements(); len(calls) != 2 {
+			t.Fatalf("the replacement by issue was tried %d times over two sweeps, want once a sweep", len(calls))
+		}
+		if calls, notDue := rig.replacements(), rig.notDue(); len(calls)+len(notDue) != 0 {
+			t.Fatalf("ReplacePod was called %d times with no process recorded in the pod", len(calls)+len(notDue))
+		}
+		notices := rig.notices()
+		if len(notices) != 1 {
+			t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
+		}
+		for _, want := range []string{"The runtime refused the pod replacement", refused.Error()} {
+			if !strings.Contains(notices[0].Reason, want) {
+				t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
+			}
+		}
+		if notices[0].Update == nil || notices[0].Update.Pod != podUpdatePod {
+			t.Errorf("the notice carries %+v, want the round's pod %s", notices[0].Update, podUpdatePod)
+		}
+		wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
+		wantNoRefusedNotice(t, rig)
+		if messages := rig.messages(); len(messages) != 0 {
+			t.Fatalf("the issue was written %q, want nothing: no replacement was made", messages)
+		}
+		if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
+			t.Fatalf("the implementer is in round %q, want the round open while its replacement is refused", c.UpdateRound)
+		}
+
+		rig.tick()
+		rig.tick()
+		if notices := rig.notices(); len(notices) != 1 {
+			t.Fatalf("the controller had been told %d times, want once per round", len(notices))
+		}
+	})
 }
 
 // podUpdateDeployReset puts the rig's store in the state that migration 20261113110610 leaves

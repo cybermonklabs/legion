@@ -195,12 +195,35 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // locator: an update round whose claims record no pod — every claim suspended, since a suspension
 // lets the process go and its locator with it (supervise's letGo) — has no claim left to ask
 // PodDrift through, and only the issue to ask by (internal/daemon's podlessRound). A pod other
-// than the round's own, or none, is that round's pod gone, and the round ends; the round's own
-// pod, or no answer, leaves it waiting. A runtime whose processes run in no pod implements
-// nothing here, and the daemon then reads no answer, which a round never needs from it, since
-// such a runtime answers no drift and so opens no pod round.
+// than the round's own, or none, is that round's pod gone, and the round ends. The round's own pod
+// is replaced by the issue where nothing holds it (IssuePodReplacer), and otherwise, or with no
+// answer, the round waits. A runtime whose processes run in no pod implements nothing here, and
+// the daemon then reads no answer, which a round never needs from it, since such a runtime
+// answers no drift and so opens no pod round.
 type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
+}
+
+// IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
+// issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
+// with no claim left to name the pod through: every role of the pod is suspended or between
+// launches, so no claim records a locator in it, and ReplacePod has no process to act through
+// (internal/daemon's podlessRound and roundWithNoProcessInItsPod, dispatch://INFRA-4109 R7).
+// Without it such a round holds the pod, and the issue's next launch goes into a pod that the
+// round is about to replace.
+//
+// podUID is the round's own pod. The call is a no-op returning nil where the runtime holds no
+// Sandbox of the issue, where the Sandbox is already suspended, and where the pod the Sandbox
+// holds is not podUID: there is then no pod of that round to end. It creates nothing in its
+// stead, as ReplacePod creates nothing: the issue's next launch builds a pod from the current
+// configuration.
+//
+// due is the caller's last word, with ReplacePod's contract: it is asked under whatever the
+// runtime holds the pod with and immediately before the runtime ends anything, nil goes on, and
+// any error is returned having changed nothing. A runtime whose processes run in no pod
+// implements nothing here.
+type IssuePodReplacer interface {
+	ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the

@@ -2346,11 +2346,16 @@ func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) 
 
 // A round whose claims record no pod and that every worker has answered is the ordinary end of a
 // phase: each pushed, each answered, and the daemon suspended each, which let its process and its
-// locator go. Nothing is stalled there and nobody has anything to do about it, so the controller
-// is told nothing — a notice would open a finding ask over a round that needs no one.
+// locator go. The issue's Sandbox still holds the round's own pod, and nothing holds it, so the
+// sweep replaces it by issue and the round ends, long before its bound (dispatch://INFRA-4109 R7):
+// a launch into that pod later would have its first turn cut by the round's replacement. Nobody
+// is told anything. The controller has nothing to do — a notice would open a finding ask over a
+// round that needs no one — and the issue is written nothing, since every member answered and the
+// pod took nothing unpushed with it.
 func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
 	rig.tick()
 	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -2362,6 +2367,14 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 		return c.State == supervise.StateSuspended && c.Locator == nil
 	})
 
+	replaced := rig.awaitIssueReplacement("once every worker of the round answered and none runs in the pod")
+	if replaced.Issue != podUpdateIssue || replaced.PodUID != podUpdatePod {
+		t.Fatalf("the pod was replaced by issue as %+v, want issue %s and the round's pod %s", replaced, podUpdateIssue, podUpdatePod)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "its round to end with the replacement by issue",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	wantPodlessEnd(t, rig, false, nil, claim.RoleImplementer)
+
 	for range 2 {
 		rig.clock.advance(podUpdateGrace)
 		rig.tick()
@@ -2372,6 +2385,9 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 	}
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was written on %d times: %q", len(messages), messages)
+	}
+	if calls := rig.issueReplacements(); len(calls) != 1 {
+		t.Fatalf("the pod was replaced by issue %d times over the round and two bounds after it, want once", len(calls))
 	}
 }
 
@@ -2819,11 +2835,14 @@ func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
 
 // A round whose claims record no pod at all — every role of the issue suspended, which lets each
 // process go with its locator (letGo) — is decided on the runtime's word about the issue's Sandbox
-// (podlessRound). While the Sandbox holds the round's own pod the round waits, as it waits for
-// a claim to run in that pod again. Once the Sandbox holds another pod, or none, the round's pod
-// is gone: the round ends on every member as every gone pod's round does, the end names the
-// round's own pod rather than what the Sandbox holds now, and the issue is told which member had
-// not answered, since what it had not pushed went with that pod's disk.
+// (podlessRound). While the Sandbox holds the round's own pod and an operator's suspension holds a
+// member, the round waits, as it waits for any operator's resume, and nothing replaces the pod.
+// Where nothing holds that pod, the sweep replaces it by issue instead
+// (TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt). Once the Sandbox holds another pod, or
+// none, the round's pod is gone, whatever the operator's hold: the round ends on every member as
+// every gone pod's round does, the end names the round's own pod rather than what the Sandbox
+// holds now, and the issue is told which member had not answered, since what it had not pushed
+// went with that pod's disk.
 func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 	const (
 		waits = "supervise: no claim of this issue records a pod; its update round waits for one to run again"
@@ -2838,13 +2857,14 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rig := newPodUpdateRig(t,
 				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
-					round: podUpdateRound, reasons: podUpdateDrift, suspendedBy: supervise.SuspendedByDaemon},
+					round: podUpdateRound, reasons: podUpdateDrift, suspendedBy: supervise.SuspendedByOperator},
 				podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
 					round: podUpdateRound, reasons: podUpdateDrift, signalled: true, suspendedBy: supervise.SuspendedByDaemon},
 			)
 			rig.drifts(podUpdateDrift)
 
-			// The control: the issue's Sandbox still holds the round's own pod, and the round waits.
+			// The control: the issue's Sandbox still holds the round's own pod, and the operator's
+			// suspension of the implementer holds it, so the round waits.
 			rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 			rig.tick()
 			rig.settleAll()
@@ -2864,6 +2884,9 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 			}
 			if messages := rig.messages(); len(messages) != 0 {
 				t.Fatalf("the issue was written %q of a pod that is still there", messages)
+			}
+			if asked := rig.byIssueAsks(); len(asked) != 0 {
+				t.Fatalf("the runtime was asked to replace the pod by issue %+v under an operator's suspension, want nothing", asked)
 			}
 
 			// The round's own pod goes.
