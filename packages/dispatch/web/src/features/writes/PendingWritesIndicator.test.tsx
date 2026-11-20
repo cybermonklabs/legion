@@ -380,6 +380,41 @@ test("a Discard pressed by pointer that takes its row away moves the focus to no
   }
 });
 
+// A focus the reader takes out of the indicator by keyboard is forgotten as it lands outside it.
+// The control it went to can leave the page later, which drops the focus to the page's body with
+// no event; a row the focus had been in that goes after that moves nothing, since the reader had
+// left the indicator, rather than pull the focus back onto the indicator's next control.
+test("a focus the reader took out of the indicator by keyboard stays on the body as its row goes, once the control it went to has left the page", async () => {
+  const user = userEvent.setup();
+  const { dropElsewhere, unmount, writes } = mountOnPage();
+  try {
+    const { indicator } = await twoRefusedWrites(writes);
+    const row = within(indicator)
+      .getByText(/^Not saved: CORE-1 set to done/)
+      .closest("li") as HTMLElement;
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    await user.tab();
+    expect(within(row).getByRole("button", { name: "Retry" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(elsewhere).toHaveFocus();
+
+    dropElsewhere();
+    expect(document.body).toHaveFocus();
+    act(() => {
+      writes.discard(Number(row.getAttribute("data-pending-write")));
+    });
+    await settle();
+    expect(within(indicator).queryByText(/CORE-1/)).not.toBeInTheDocument();
+    expect(
+      document.body,
+      "the reader had taken the focus out of the indicator, and its row's going pulled it back in"
+    ).toHaveFocus();
+  } finally {
+    unmount();
+  }
+});
+
 /** Taps `target` as a touch screen does, on the fake clock: the `pointerdown` as the finger
  *  lands; then, once it lifts - a tap is held longer than a timer of no delay waits - the
  *  `pointerup`, and only after it the `mousedown` that moves the focus, onto the button tapped or

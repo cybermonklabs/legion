@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
@@ -23,10 +23,13 @@ export const RELEASE_FAILED = "Could not release this claim.";
  * No control here is disabled while its release is out, since Chromium moves the focus of a
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
  * keyboard: Release and Retry take no press while it is out (`aria-disabled`), and the failure's
- * line stays until the release Retry sent again is answered (`useSaidFailure`). A focus on a
- * control that goes as the release lands goes on in the row (`useFocusHandOff`): from Retry to
- * Release while the claim is still drawn, and from any of them, once it is not, to the None the
- * row reads then, the one place left in the row and the answer to the reader's press.
+ * line stays until the release Retry sent again is answered (`useSaidFailure`). The row hands on
+ * a focus by one rule (`useFocusHandOff`), so that no change, the reader's or another session's,
+ * drops it to the page's body: an element of the row that leaves the page with the focus in it -
+ * Retry, the claim's box, None - hands it to the row's own control as the row draws it then,
+ * Release while a claim is drawn, else None. So Retry hands it to Release while its claim stays,
+ * the claim's box to None once the release lands, and None to the new claim's Release once
+ * another session claims the issue.
  *
  * A release's failure is about the claim it was pressed on, and the row says it only while that
  * claim is still the issue's: Dispatch releases whichever claim the issue holds, so once the claim
@@ -60,8 +63,16 @@ export function IssueClaimControl({
   const failure = onHeld ? said : null;
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
-  const retryLeft = useFocusHandOff(() => releaseControl.current);
-  const claimLeft = useFocusHandOff(() => none.current);
+  // The target is read from what the row draws once the element has left, not from which element
+  // left, so the one rule holds for each of them.
+  const left = useFocusHandOff(() => releaseControl.current ?? none.current);
+  const noneRef = useCallback(
+    (element: HTMLSpanElement | null) => {
+      none.current = element;
+      return left(element);
+    },
+    [left]
+  );
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
   // drops a press made before React has drawn the release out, and `isPending` one made after
   // this row was drawn afresh, with a guard that starts free.
@@ -72,13 +83,13 @@ export function IssueClaimControl({
   };
   if (issue.claim === null) {
     return (
-      <span className={`outline-none ${pageQuietText}`} ref={none} tabIndex={-1} {...pageChrome}>
+      <span className={`outline-none ${pageQuietText}`} ref={noneRef} tabIndex={-1} {...pageChrome}>
         {CONTROL_LABELS.none}
       </span>
     );
   }
   return (
-    <div className="contents" ref={claimLeft}>
+    <div className="contents" ref={left}>
       <ClaimChip author claim={issue.claim} inRow liveness={issue} />
       <button
         aria-disabled={releaseClaim.isPending || undefined}
@@ -102,7 +113,7 @@ export function IssueClaimControl({
           }
           onRetry={release}
           refused={releaseClaim.isPending}
-          retryRef={retryLeft}
+          retryRef={left}
         />
       )}
     </div>

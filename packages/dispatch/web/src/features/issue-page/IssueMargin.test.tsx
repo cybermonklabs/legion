@@ -5163,6 +5163,53 @@ test("a window switch keeps the route's control noted, and a close made elsewher
   }
 });
 
+// A window switch keeps the route's control noted, and the focus the reader then puts on a
+// control outside Development forgets it (the keeper's `focusin` listener): the reader has left
+// the section. That control then lets the focus fall to the page's body with no `focusin`, as a
+// press on plain text does, and a close made elsewhere leaves the focus there. Had the note been
+// kept, the close would move the focus to Development's heading.
+test("a focus put outside Development after a window switch forgets the route's control, and a close made elsewhere then leaves the focus on the body", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+  // As in the window switch's case above: from the switch the stub says the document has no focus.
+  const hasFocus = spyOn(document, "hasFocus");
+
+  try {
+    const control = await screen.findByRole("button", { name: "Messages default to no route" });
+    act(() => control.focus());
+    hasFocus.mockReturnValue(false);
+    act(() => {
+      control.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    // happy-dom blurs the route's control again as People's heading takes the focus. The stub
+    // still says the document has no focus then, so that blur keeps the control noted as the
+    // switch's did, and only the `focusin` on the heading can forget it.
+    const people = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.people });
+    act(() => people.focus());
+    hasFocus.mockRestore();
+    expect(document.activeElement, "the focus did not go to People's heading").toBe(people);
+    // As a press on plain text does: the focus leaves the heading for the body.
+    act(() => people.blur());
+    expect(document.activeElement, "the blur left the focus on People's heading").toBe(
+      document.body
+    );
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(control, "the close left the route's control enabled").toBeDisabled()
+    );
+    expect(
+      document.activeElement,
+      "the reader had left Development for People's heading, and the close moved the focus to Development's heading"
+    ).toBe(document.body);
+  } finally {
+    hasFocus.mockRestore();
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
 // A closed issue's Parent row draws no control, so another session's close takes Set parent issue
 // off the page, and the focus a reader had on it went to the page's body. It goes to Development's
 // heading, the button that opens and closes the section the row is in.
