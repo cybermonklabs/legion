@@ -178,8 +178,10 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
-# Part one's driver is two files: the steps, and its seed and setup checks, which the control
-# copies into the base tree together, since the steps call the seed.
+# Part one's driver is three files: the test and its harness, its steps, and its seed and setup
+# checks, which the control copies into the base tree together, since the test runs the steps and
+# the steps call the seed.
+steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
 driver_test=TestAnApprovedVersionReachesItsHolderLive
 sessions_test=TestRealSessionsTellAndAnswerANewVersionLive
@@ -686,11 +688,11 @@ if [ -n "$control" ]; then
   begin base-tree
   base_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-base.XXXXXXXX")
   git -C "$root" archive "$base_sha" | tar -x -C "$base_tree" || fail "git archive $base_sha | tar -x into $base_tree failed"
-  for file in "$driver_file" "$seed_file"; do
+  for file in "$driver_file" "$steps_file" "$seed_file"; do
     cp "$root/$file" "$base_tree/$file" || fail "could not copy $file into $base_tree"
   done
   build_tree=$base_tree
-  note "$base_sha extracted into $base_tree, with this checkout's $driver_file and $seed_file"
+  note "$base_sha extracted into $base_tree, with this checkout's $driver_file, $steps_file and $seed_file"
   pass
 fi
 

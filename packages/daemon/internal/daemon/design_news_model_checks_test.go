@@ -151,7 +151,9 @@ func (m *newsModel) owes(row *newsModelRow, prompts []*newsModelPrompt) bool {
 // that. The booted machine reads the stored delivery, so the two agree, yet what the stopped
 // machine had decided of it in memory — a provider error's take-back, say — was never written, and
 // the booted machine's own first write of it can be refused too. So a store that lagged at a
-// restart lags until the stored delivery is another than it was then (behind).
+// restart lags until the stored delivery is another than it was then (behind). Only the reviewer's
+// writes are ever refused (newsModelStore.refusing), so a store that holds another claim's delivery
+// otherwise than its machine lost a write it answered as made, and that fails the run.
 func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise.Delivery) bool {
 	m.t.Helper()
 	if a.machine == nil {
@@ -164,7 +166,15 @@ func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise
 		}
 		a.behind = nil
 	}
-	return held != storedFrom(a.machine.Claim().Pending)
+	machine := storedFrom(a.machine.Claim().Pending)
+	if held == machine {
+		return false
+	}
+	if a.token != m.claims.refusing {
+		m.fail("the claim store lags the %s's claim, whose writes it never refuses: the store holds %+v, and the claim's machine holds %+v",
+			a.name, held, machine)
+	}
+	return true
 }
 
 // check reads every write the claim store took since the last check and holds each told row, as

@@ -46,13 +46,16 @@
 // container; an opener four columns past its container's lines is code or paragraph text; a typed
 // block that opened with N colons closes only at a line of N colons or more, which closes it
 // whatever block inside it the line would continue; and an opener's attributes are read as the
-// server reads them, so a `#` inside a quoted value is no id and an opener whose attributes the
-// server refuses opens nothing. A document's front matter is no markdown, and an empty list item
-// or one numbered other than 1 opens no list where the browser editor's parser would not let it
-// interrupt the block before it. HTML blocks, which the server refuses in a write, are not read.
+// server reads them (askgate-typed-opener.ts), so a `#` inside a quoted value is no id and an
+// opener whose attributes the server refuses opens nothing. A document's front matter is no
+// markdown, and an empty list item or one numbered other than 1 opens no list where the browser
+// editor's parser would not let it interrupt the block before it. HTML blocks, which the server
+// refuses in a write, are not read.
 // The server's table of inserts and the ask blocks it adds
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.
+
+import { refusedDirective, typedOpener } from "./askgate-typed-opener";
 
 /** A new ask a call opens for a person. */
 export interface NewAsk {
@@ -899,102 +902,4 @@ function runOf(text: string, index: number, char: string): number {
 function fenceColons(text: string): number {
   const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, "");
   return /^:+$/.test(trimmed) ? trimmed.length : 0;
-}
-
-/** directive.go's `directiveNameByte`. */
-function nameChar(char: string): boolean {
-  return /^[A-Za-z0-9_-]$/.test(char);
-}
-
-/**
- * directive.go's `ParseTypedDirectiveOpen`: three colons or more, a name, then `{` at once, and
- * the line ends with `}`, the attributes between them read as the server reads them.
- */
-function typedOpener(
-  text: string
-): { name: string; id: string | undefined; colons: number } | undefined {
-  const colons = runOf(text, 0, ":");
-  if (colons < 3) return undefined;
-  const rest = text.slice(colons);
-  let nameEnd = 0;
-  while (nameEnd < rest.length && nameChar(rest.charAt(nameEnd))) nameEnd++;
-  if (nameEnd === 0 || rest.charAt(nameEnd) !== "{" || !rest.endsWith("}")) return undefined;
-  const attributes = directiveAttributes(rest.slice(nameEnd + 1, -1));
-  if (attributes === undefined) return undefined;
-  return { name: rest.slice(0, nameEnd), id: attributes.id, colons };
-}
-
-/** directive.go's `unsupportedDirectiveReason`: a line of directive syntax the server refuses. */
-function refusedDirective(text: string): boolean {
-  if (text.startsWith(":::")) return text !== ":::" && typedOpener(text) === undefined;
-  if (text.startsWith("::")) return text.length > 2 && nameChar(text.charAt(2));
-  return text.length > 1 && nameChar(text.charAt(1)) && text.includes("{");
-}
-
-/** The whitespace Go's `unicode.IsSpace` finds in a byte of the attributes: ASCII's. */
-function attributeSpace(char: string): boolean {
-  return char === " " || (char >= "\t" && char <= "\r");
-}
-
-/** The key that holds a block's id among a directive's attributes (pmdoc's `BlockIDAttr`). */
-const BLOCK_ID_ATTRIBUTE = "blockId";
-
-/**
- * directive.go's `parseDirectiveAttributes`, for the block's id alone: `#id` or `blockId="…"`,
- * undefined when the server refuses the attributes. A quoted id holding an escape or a character
- * reference is not decoded, and reads as no id.
- */
-function directiveAttributes(value: string): { id: string | undefined } | undefined {
-  const named = new Set<string>();
-  let id: string | undefined;
-  let offset = 0;
-  const name = () => {
-    const start = offset;
-    while (offset < value.length && nameChar(value.charAt(offset))) offset++;
-    return value.slice(start, offset);
-  };
-  while (offset < value.length) {
-    while (offset < value.length && attributeSpace(value.charAt(offset))) offset++;
-    if (offset === value.length) break;
-    const sigil = value.charAt(offset);
-    if (sigil === "#") {
-      offset++;
-      const read = name();
-      if (read === "" || named.has(BLOCK_ID_ATTRIBUTE)) return undefined;
-      named.add(BLOCK_ID_ATTRIBUTE);
-      id = read;
-    } else if (sigil === ".") {
-      offset++;
-      if (name() === "") return undefined;
-      named.add("class");
-    } else {
-      const key = name();
-      if (key === "" || named.has(key)) return undefined;
-      named.add(key);
-      // A name alone is an empty value; the browser editor reads a name up to a space.
-      if (offset === value.length || value.charAt(offset) === " ") continue;
-      if (value.charAt(offset) !== "=" || value.charAt(offset + 1) !== '"') return undefined;
-      offset += 2;
-      const start = offset;
-      let escaped = false;
-      while (offset < value.length && (value.charAt(offset) !== '"' || escaped)) {
-        escaped = value.charAt(offset) === "\\" && !escaped;
-        offset++;
-      }
-      if (offset === value.length) return undefined;
-      const quoted = value.slice(start, offset);
-      if (!goQuoted(quoted)) return undefined;
-      if (key === BLOCK_ID_ATTRIBUTE) id = /[\\&]/.test(quoted) ? undefined : quoted;
-      offset++;
-    }
-    if (offset < value.length && !attributeSpace(value.charAt(offset))) return undefined;
-  }
-  return { id };
-}
-
-/** Whether Go's `strconv.Unquote` reads `body` between double quotes: its escapes, and no line feed. */
-function goQuoted(body: string): boolean {
-  return /^(?:[^\\\n"]|\\(?:[abfnrtv\\"]|x[0-9A-Fa-f]{2}|[0-3][0-7]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))*$/.test(
-    body
-  );
 }

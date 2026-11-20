@@ -139,16 +139,24 @@ const sources = new Map(scripts.map((path) => [path, sourcedLibraries(path)]));
 // A line of code, not a comment.
 const code = (line: string) => line.trim() !== "" && !line.trim().startsWith("#");
 
+/**
+ * The command of each trap SCRIPT sets on EXIT, in any command of a line (commandsOf), so a trap
+ * an operator joins to another command is one: the trap's command text, its quotes taken off. A
+ * trap that resets EXIT (`-`) or ignores it (`''`) sets none.
+ */
+function exitTrapCommands(script: string): string[] {
+  return commandsOf(script).flatMap((command) => {
+    const trap = /^trap\s+('[^']*'|"[^"]*"|\S+)\s+([A-Z0-9 ]+?)\s*$/.exec(command);
+    if (trap === null || !trap[2].split(/\s+/).includes("EXIT")) return [];
+    const run = trap[1].replace(/^(['"])([\s\S]*)\1$/, "$2");
+    return run === "-" || run === "" ? [] : [run];
+  });
+}
+
 /** Each EXIT trap a script sets: the trap's own command text, and the function it runs, with the
  * file that defines it, when that command starts with a function the script reaches. */
 function exitTraps(path: string) {
-  const found: { command: string; fn?: { name: string; body: string; file: string } }[] = [];
-  for (const trap of (text.get(path) ?? "").matchAll(
-    /^\s*trap\s+('[^']*'|"[^"]*"|\S+)\s+([A-Z0-9 ]+?)\s*$/gm
-  )) {
-    if (!trap[2].split(/\s+/).includes("EXIT")) continue;
-    const command = trap[1].replace(/^(['"])([\s\S]*)\1$/, "$2");
-    if (command === "-" || command === "") continue;
+  return exitTrapCommands(text.get(path) ?? "").map((command) => {
     const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(command)?.[0];
     let fn: { name: string; body: string; file: string } | undefined;
     for (const file of name === undefined ? [] : (sources.get(path) ?? [])) {
@@ -159,10 +167,14 @@ function exitTraps(path: string) {
         // Not this file's function: the next one the script sources may define it.
       }
     }
-    found.push({ command, fn });
-  }
-  return found;
+    return { command, fn };
+  });
 }
+
+/** Each command of BODY, a function's definition, that prints PASS itself: an echo or printf of
+ *  it, in any command of a line (commandsOf). */
+const printsPass = (body: string) =>
+  commandsOf(body).filter((command) => /^(echo|printf)\b.*\bPASS\b/.test(command));
 
 /** Whether the script at PATH calls run_end on a line of its own. */
 const marks = (path: string) => /^\s*run_end\s*$/m.test(text.get(path) ?? "");
@@ -177,6 +189,12 @@ const opensIf = (word: string) => /^if\b/.test(word) && !/[\s;]fi(\s|;|$)/.test(
 /** A line of code that closes an `if`: its `fi` alone, or before a comment. */
 const closesIf = /^fi(\s+#.*)?$/;
 
+/** A command's quoted text: single-quoted, or double-quoted with its backslash escapes. */
+const quotedText = /'[^']*'|"(?:\\.|[^"\\])*"/g;
+
+/** A command's comment: a `#` that starts a word, to the end of its line, after the space before it. */
+const commentText = /(^|\s)#.*$/gm;
+
 /**
  * The command that starts on line INDEX of LINES, with each line it continues onto with a
  * trailing backslash, as the shell reads its operators: each quoted text and each comment emptied.
@@ -186,12 +204,46 @@ function commandAt(lines: string[], index: number): string {
   for (let at = index; at < lines.length - 1 && lines[at].trimEnd().endsWith("\\"); at++) {
     command += `\n${lines[at + 1]}`;
   }
-  return command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''").replace(/(^|\s)#.*$/gm, "$1");
+  return command.replace(quotedText, "''").replace(commentText, "$1");
 }
 
 /** A control operator (`;`, `|`, `||`, `&&`, `&`) in a command commandAt reads: after a call on
  *  its line it runs more, and `>&` and `&>` are redirections, not operators. */
-const controlOperator = /;|\||&&|(^|[^<>&])&(?!>)/;
+const controlOperator = /;|\||&&|(?<![<>&])&(?!>)/;
+
+/** What a command may follow at its start on its line: a reserved word that opens or goes on with
+ *  a compound command, `!`, a subshell's `(`, and a function's `name()` and `{`. */
+const leadingWords =
+  /^(?:\s*(?:(?:if|then|else|elif|do|while|until|!|\{)(?=\s|$)|\(|[A-Za-z_][A-Za-z0-9_]*\(\)))*/;
+
+/**
+ * Each command of TEXT as the shell cuts it: at each line's end but where a trailing backslash
+ * continues the line, and at each control operator (controlOperator) outside quoted text and
+ * comments. Each comment is taken off, each quoted text kept as written, and the words a command
+ * follows at its start (leadingWords) taken off it. So `cond && trap 'x' EXIT` holds the trap,
+ * and `if c; then echo PASS; fi` the echo.
+ */
+function commandsOf(text: string): string[] {
+  return text.split(/(?<!\\[ \t]*)\n/).flatMap((command) => {
+    // The operators are read where each quoted text is blanked and each comment emptied, at the
+    // offsets they stand at, and each command is cut from the text with its comments emptied.
+    const masked = command.replace(quotedText, (quoted) => "_".repeat(quoted.length));
+    const read = masked.replace(commentText, (comment, space: string) =>
+      space.padEnd(comment.length)
+    );
+    let kept = "";
+    for (let at = 0; at < command.length; at++) kept += read[at] === masked[at] ? command[at] : " ";
+    const commands: string[] = [];
+    let start = 0;
+    for (const operator of read.matchAll(new RegExp(controlOperator.source, "g"))) {
+      const at = operator.index ?? 0;
+      commands.push(kept.slice(start, at));
+      start = at + operator[0].length;
+    }
+    commands.push(kept.slice(start));
+    return commands.map((simple) => simple.replace(leadingWords, "").trim()).filter(Boolean);
+  });
+}
 
 /**
  * What runs after the command on line INDEX of the script at PATH, in the shell it runs in, read
@@ -322,10 +374,8 @@ describe("every script under scripts/e2e", () => {
       for (const { command, fn } of exitTraps(path)) {
         if (/\bPASS\b/.test(command)) wrong.push(`${shown(path)}: trap '${command}' prints PASS`);
         if (fn === undefined) continue;
-        for (const line of fn.body.split("\n")) {
-          if (/^\s*(echo|printf)\b.*\bPASS\b/.test(line)) {
-            wrong.push(`${shown(fn.file)}: ${fn.name} prints PASS itself: ${line.trim()}`);
-          }
+        for (const printed of printsPass(fn.body)) {
+          wrong.push(`${shown(fn.file)}: ${fn.name} prints PASS itself: ${printed}`);
         }
         if (fn.body.includes("run_verdict") && !sources.get(fn.file)?.includes(lib)) {
           wrong.push(
@@ -421,5 +471,46 @@ describe("every script under scripts/e2e", () => {
         /^controller-sweep-kind\.sh:\d+ run_end runs more after it: controller-sweep-kind\.sh:\d+ note after$/
       ),
     ]);
+  });
+});
+
+// The two readers of an EXIT trap read every command of a line (commandsOf), not its start alone:
+// a trap or an echo that an operator joins to another command runs all the same, and one in a
+// comment or in quoted text does not run.
+describe("the readers of an EXIT trap read every command of a line", () => {
+  test.each([
+    ["alone on its line", "trap cleanup EXIT", ["cleanup"]],
+    ["with a command after it", "trap 'cleanup 1' EXIT; note x", ["cleanup 1"]],
+    ["after a condition", '[ -n "$dir" ] && trap cleanup EXIT', ["cleanup"]],
+    ["before an ||", "trap cleanup EXIT || true", ["cleanup"]],
+    ["after a pipe", "true | trap cleanup EXIT", ["cleanup"]],
+    ["after a command sent to the background", "sleep 1 & trap cleanup EXIT", ["cleanup"]],
+    ["in a one-line if", "if true; then trap cleanup EXIT; fi", ["cleanup"]],
+    ["in quoted text", "note 'trap cleanup EXIT; x'", []],
+    ["in a comment", "note x # trap cleanup EXIT", []],
+  ])("reads a trap %s", (_, script, commands) => {
+    expect(exitTrapCommands(script)).toEqual(commands);
+  });
+
+  // Each row is a function's whole definition, as scriptFunctions gives it.
+  const within = (line: string) => `cleanup() {\n  ${line}\n}`;
+  test.each([
+    ["after a condition", within('[ "$rc" -eq 0 ] && echo PASS'), "echo PASS"],
+    ["after another command", within("note done; printf '%s\\n' PASS"), "printf '%s\\n' PASS"],
+    [
+      "in a one-line if",
+      within('if [ "$rc" -eq 0 ]; then echo "e2e: PASS"; fi'),
+      'echo "e2e: PASS"',
+    ],
+    ["in a one-line function", "cleanup() { echo PASS; }", "echo PASS"],
+  ])("finds an echo of PASS %s", (_, definition, printed) => {
+    expect(printsPass(definition)).toEqual([printed]);
+  });
+
+  test.each([
+    ["in a comment", within("note x # echo PASS")],
+    ["in quoted text", within("note 'x; echo PASS'")],
+  ])("finds no echo of PASS %s", (_, definition) => {
+    expect(printsPass(definition)).toEqual([]);
   });
 });

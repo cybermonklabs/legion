@@ -113,7 +113,7 @@ const setup = (checks = 5) => [
 // The one-approval check's own failure on a daemon from before the change, as awaitQueued writes it.
 const ownFailure = `FAIL ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`;
 const goFailure = [
-  `    approved_version_news_live_test.go:558: ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn`,
+  `    approved_version_news_part_one_steps_live_test.go:147: ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn`,
   `--- FAIL: ${driverTest} (191.40s)`,
   "FAIL",
 ];

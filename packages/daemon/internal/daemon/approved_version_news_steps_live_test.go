@@ -3,9 +3,10 @@
 package daemon
 
 // approved_version_news_steps_live_test.go holds the bodies of part two's three steps
-// (sessionsBodies) and the tasks and helpers each step alone uses: the driver that runs them, its
-// seed and its reads of the daemon and of Dispatch are approved_version_news_sessions_live_test.go,
-// and the step table they run from, with its picks, is approved_version_news_transcript_test.go.
+// (sessionsBodies) and the tasks and helpers each step alone uses: the driver that runs them and
+// its reads of the daemon and of Dispatch are approved_version_news_sessions_live_test.go, its
+// services, seed and boot are approved_version_news_sessions_setup_live_test.go, and the step
+// table they run from, with its picks, is approved_version_news_transcript_test.go.
 
 import (
 	"bytes"

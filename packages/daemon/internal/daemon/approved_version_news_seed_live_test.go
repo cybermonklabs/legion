@@ -5,11 +5,11 @@ package daemon
 // approved_version_news_seed_live_test.go holds part one's seed of the approved-version-news live
 // proof and its setup checks: the seed that starts each claim through the daemon's own start path,
 // and the checks that every claim stands at the entry that path gives it. Part two's seed
-// (approved_version_news_sessions_live_test.go) starts its roles through the same path and checks
-// them by the same rule, so the pieces both seeds use are here: the start of a fixture's roles
-// (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), the read of a
-// told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and the
-// write of a told row by hand, checked against the row the start path writes (seedToldRow).
+// (approved_version_news_sessions_setup_live_test.go) starts its roles through the same path and
+// checks them by the same rule, so the pieces both seeds use are here: the start of a fixture's
+// roles (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), the read
+// of a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and
+// the write of a told row by hand, checked against the row the start path writes (seedToldRow).
 
 import (
 	"context"

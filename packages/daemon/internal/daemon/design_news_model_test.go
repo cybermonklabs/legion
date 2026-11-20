@@ -91,12 +91,14 @@ import (
 //   - and, once the run quiesces, the reviewer has taken the approved version and owes no opening.
 //
 // A refused write leaves the claim store behind the machine until the machine's next write of the
-// same delivery finishes it or undoes it (lagging). The model reads the credit the store holds, so
-// the exact rule and the never-ahead rule hold through it; but whether the agents' own view is level
-// with the record has two answers until the store has caught up, so each step after which a claim's
-// store lags is counted as ambiguous, with how many steps each such stretch lasts until the step
-// that settles it (newsModelAmbiguity), and the level rule is held again from that step on. Each seed
-// logs its counts, and the run logs their totals.
+// same delivery finishes it or undoes it (lagging). The store refuses only the reviewer's writes, so
+// a store behind any other claim's machine lost a write it answered as made, and that fails the run.
+// The model reads the credit the store holds, so the exact rule and the never-ahead rule hold
+// through a refused write; but whether the agents' own view is level with the record has two
+// answers until the store has caught up, so each step after which a claim's store lags is counted as
+// ambiguous, with how many steps each such stretch lasts until the step that settles it
+// (newsModelAmbiguity), and the level rule is held again from that step on. Each seed logs its
+// counts, and the run logs their totals.
 //
 // One credit the drive never makes final is a tester's: the first hand-over's tester turn ends in a
 // provider error, and the second's runs until a clear has ended its run, so no tester's turn ends
