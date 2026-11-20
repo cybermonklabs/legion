@@ -66,16 +66,17 @@ import (
 // replication the store serves, takes a global key). This is the GCP counterpart of
 // checkSettingsKeyARN: it ties the project a write lands in to the resource-name prefix the
 // broker itself derived it from, not to a separately-sent field a spoofed or plain-http broker
-// could set on its own to steer a write.
+// could set on its own to steer a write. Each field a refusal names, and each validator's words,
+// which quote the field, print as the broker's address lets its answer print (Settings.words).
 func checkSettingsKMSKeyName(settings Settings) error {
 	if err := secrets.ValidGCPPrefix(settings.SecretsPrefix); err != nil {
-		return fmt.Errorf("the broker's settings name an invalid secrets_prefix: %w", err)
+		return fmt.Errorf("the broker's settings name an invalid secrets_prefix: %s", settings.words(err.Error()))
 	}
 	if project := secrets.GCPProject(settings.SecretsPrefix); settings.GCPProject != project {
-		return fmt.Errorf("the broker's settings name project %s, but its secrets prefix %s is in project %s: the broker's settings are inconsistent", settings.GCPProject, settings.SecretsPrefix, project)
+		return fmt.Errorf("the broker's settings name project %s, but its secrets prefix %s is in project %s: the broker's settings are inconsistent", settings.words(settings.GCPProject), settings.words(settings.SecretsPrefix), settings.words(project))
 	}
 	if err := secrets.ValidGCPKeyName(settings.KMSKeyName); err != nil {
-		return fmt.Errorf("the broker's settings name an invalid KMS key name: %w", err)
+		return fmt.Errorf("the broker's settings name an invalid KMS key name: %s", settings.words(err.Error()))
 	}
 	return nil
 }

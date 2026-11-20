@@ -39,6 +39,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
@@ -52,11 +53,14 @@ const (
 	testGCPPrefix  = "projects/100000000001/secrets/agent-secrets-"
 )
 
+// gcpTestSettings are a GCP broker's settings, as the clean address https://broker.example
+// answered them (Settings.answeredBy), so a refusal a test calls directly names their fields.
 func gcpTestSettings() Settings {
 	return Settings{
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
 		SecretTypeTag: true,
+		answeredBy:    brokeraddr.New("https://broker.example"),
 	}
 }
 

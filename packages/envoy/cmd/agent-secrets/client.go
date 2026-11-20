@@ -732,7 +732,16 @@ type Settings struct {
 	// seconds and its guidance; absent where the rules give the judge nothing. `secret show`
 	// reads it to say who decides a request for a key and what the judge will look for.
 	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
+	// answeredBy is the address whose answer these settings are (client.Settings), so a message
+	// prints a field of them only as that address lets the text of its answer print (words).
+	answeredBy brokeraddr.Address
 }
+
+// words is text of these settings - a field, or a value read out of one, or a check's words that
+// quote one - as a message may print it (brokeraddr.Address.Words): whoever answered at an address
+// that is not clean can repeat its credential in any field, so beside such an address no field
+// prints. Settings no client read (the zero answeredBy) print none of their text either.
+func (s Settings) words(text string) string { return s.answeredBy.Words(text) }
 
 // JudgeKey is one key in Settings.JudgeKeys.
 type JudgeKey struct {
@@ -751,6 +760,7 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 	if err := c.decode(raw, &settings, "decode settings"); err != nil {
 		return Settings{}, err
 	}
+	settings.answeredBy = c.baseURL
 	return settings, nil
 }
 

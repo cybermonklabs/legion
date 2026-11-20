@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -364,17 +365,18 @@ func awsAddressesSet() string {
 // not match the account and region in kms_key_arn. The broker derives both from the key ARN the same
 // way (internal/broker/api handlers_secrets.go, secrets.AWSKeyARNParts), so the account the sign-in is
 // checked against (requireAccount) and the region the SDK is pinned to are the key ARN's, not a
-// separately-sent field a spoofed or plain-http broker could set on its own to steer a write.
+// separately-sent field a spoofed or plain-http broker could set on its own to steer a write. Each
+// field a refusal names prints as the broker's address lets its answer print (Settings.words).
 func checkSettingsKeyARN(settings Settings) error {
 	if !secrets.ValidAWSKeyARN(settings.KMSKeyARN) {
-		return fmt.Errorf("the broker's settings name an invalid KMS key ARN %q (expected arn:aws:kms:<region>:<account>:key/<key id>)", settings.KMSKeyARN)
+		return fmt.Errorf("the broker's settings name an invalid KMS key ARN %s (expected arn:aws:kms:<region>:<account>:key/<key id>)", settings.words(strconv.Quote(settings.KMSKeyARN)))
 	}
 	region, account := secrets.AWSKeyARNParts(settings.KMSKeyARN)
 	if settings.AWSAccountID != account {
-		return fmt.Errorf("the broker's settings name account %s, but its KMS key ARN %s is in account %s: the broker's settings are inconsistent", settings.AWSAccountID, settings.KMSKeyARN, account)
+		return fmt.Errorf("the broker's settings name account %s, but its KMS key ARN %s is in account %s: the broker's settings are inconsistent", settings.words(settings.AWSAccountID), settings.words(settings.KMSKeyARN), settings.words(account))
 	}
 	if settings.AWSRegion != region {
-		return fmt.Errorf("the broker's settings name region %s, but its KMS key ARN %s is in region %s: the broker's settings are inconsistent", settings.AWSRegion, settings.KMSKeyARN, region)
+		return fmt.Errorf("the broker's settings name region %s, but its KMS key ARN %s is in region %s: the broker's settings are inconsistent", settings.words(settings.AWSRegion), settings.words(settings.KMSKeyARN), settings.words(region))
 	}
 	return nil
 }

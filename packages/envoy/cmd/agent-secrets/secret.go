@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -890,7 +891,7 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		}
 		return newGCPBackend(ctx, settings)
 	default:
-		return nil, fmt.Errorf("the broker's settings name an unknown secret store %q", settings.Store)
+		return nil, fmt.Errorf("the broker's settings name an unknown secret store %s", settings.words(strconv.Quote(settings.Store)))
 	}
 }
 
@@ -1136,7 +1137,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
-	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, guidance)
+	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, s.settings.words(guidance))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",

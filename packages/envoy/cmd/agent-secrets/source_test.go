@@ -56,6 +56,8 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			// The settings are base's answer, as client.Settings marks them (Settings.answeredBy).
+			row.settings.answeredBy = brokeraddr.New(row.base)
 			src := brokerSource(brokeraddr.New(row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
