@@ -21,8 +21,13 @@
 #   OUTSIDE_EDGE_ROUTED    a file of `name method sni host path backend` lines, the positive
 #                          controls, one or more per backend: each a request one of our routes
 #                          takes and marks with `X-Outside-Edge-Backend: <backend>`.
-#   OUTSIDE_EDGE_REFUSALS  a file of `name method sni host path` lines, each a request the edge
-#                          must refuse.
+#   OUTSIDE_EDGE_REFUSALS  a file of `name method sni host path [status:marker]` lines, each a
+#                          request the edge must refuse. The optional sixth field names the
+#                          answer that refuses it, where that is not the Gateway's 404: a status
+#                          of 100 to 599 and a marker of letters, digits, `.`, `_` and `-`, such
+#                          as `405:broker` for a GET on the broker's token path. No route of the
+#                          edge matches on method (its Gateway class supports none), so that GET
+#                          reaches the broker, and the broker's own 405, marked, is its refusal.
 # Both lists split their fields on spaces and tabs; a line whose first field starts with `#` is a
 # comment, and a blank line is skipped. Every byte must be printable ASCII or a tab, but a CR that
 # comes directly before an LF (CRLF line endings). Each line's name is its own, across both lists,
@@ -46,10 +51,13 @@
 # The routed controls are read first. Each must answer with `X-Outside-Edge-Backend: <backend>`,
 # whatever its status; one that does not shows this run cannot see a route of this edge, and the
 # run stops at UNKNOWN before it reads any refusal line. Then each refusal line is
-#   refused  when its answer came whole, with status 404 and no marker;
-#   REACHED  when its answer carried a marker, of any value, or a status other than 404;
-#   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), or a
-#            404 with no marker came that curl did not read whole.
+#   refused  when its answer came whole and is the one the line names: status 404 and no marker
+#            for a line of five fields, and exactly the sixth field's status with exactly its
+#            marker for a line of six;
+#   REACHED  when any other answer came: for a line of five fields, a marker of any value or a
+#            status other than 404;
+#   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), or the
+#            named answer came and curl did not read it whole.
 # Each probe prints its status (000 where none came), its marker (`none` where it had none) and the
 # SHA-256 of its body (`none` where no answer came), so two runs can be compared, and curl's exit
 # code and first message where curl did not exit 0. Then the verdict:
@@ -144,6 +152,13 @@ is_path() {
   case $1 in *$url_outside*) return 1 ;; esac
 }
 
+# is_expected TEXT: TEXT is a refusal line's expected answer, `<status>:<marker>`: a status of 100
+# to 599, a colon, and a marker of letters, digits, `.`, `_` and `-`, never empty.
+is_expected() {
+  case $1 in [1-5][0-9][0-9]:?*) ;; *) return 1 ;; esac
+  case ${1#*:} in *[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
 # byte_hex BYTE: sets `hex` to the two hexadecimal digits of BYTE, one byte other than NUL, as
 # outside-path-reach.sh's byte_hex does (its comment says why the mask).
 byte_hex() {
@@ -184,12 +199,14 @@ read_whole() {
   esac
 }
 
-# read_list SETTING FILE FIELDS: reads FILE, the list SETTING names, and appends each of its lines
-# to the probe table, after row `total`, refusing the run at the first line it cannot take. FIELDS
-# is 6 for the routed list, whose last field is the backend, and 5 for the refusal list.
+# read_list SETTING FILE KIND: reads FILE, the list SETTING names, and appends each of its lines to
+# the probe table, after row `total`, refusing the run at the first line it cannot take. KIND is
+# `routed`, whose lines have six fields, the last the backend, or `refusals`, whose lines have five,
+# or six with the expected answer last.
 read_list() {
-  local setting=$1 file=$2 fields=$3 shape='name method sni host path' number=0 ended row prefix
-  [ "$fields" -eq 5 ] || shape="$shape backend"
+  local setting=$1 file=$2 kind=$3 shape='name method sni host path backend' number=0 ended row
+  local prefix
+  [ "$kind" = routed ] || shape='name method sni host path [status:marker]'
   read_whole "$setting" "$file"
   rest=$text
   while [ -n "$rest" ]; do
@@ -213,7 +230,10 @@ read_list() {
     set +f
     [ "$#" -eq 0 ] && continue
     case $1 in '#'*) continue ;; esac
-    [ "$#" -eq "$fields" ] || unknown "line $number of $file is not '$shape': $row"
+    case $kind:$# in routed:6 | refusals:5 | refusals:6) ;; *)
+      unknown "line $number of $file is not '$shape': $row"
+      ;;
+    esac
     case $1 in '' | *[!A-Za-z0-9._-]*)
       unknown "line $number of $file: the name $1 is not letters, digits, '.', '_' and '-'"
       ;;
@@ -232,11 +252,13 @@ read_list() {
       unknown "line $number of $file: the host $4 is not a host name; no route can name an address, so none could be planted for it"
     is_path "$5" ||
       unknown "line $number of $file: the path $5 is not an absolute path of URL characters"
-    if [ "$fields" -eq 6 ]; then
+    if [ "$kind" = routed ]; then
       case $6 in *[!A-Za-z0-9._-]*)
         unknown "line $number of $file: the backend $6 is not letters, digits, '.', '_' and '-'"
         ;;
       esac
+    elif [ "$#" -eq 6 ] && ! is_expected "$6"; then
+      unknown "line $number of $file: the expected answer $6 is not '<status>:<marker>', a status of 100 to 599 and a marker of letters, digits, '.', '_' and '-'"
     fi
     total=$((total + 1))
     names[total]=$1
@@ -244,7 +266,9 @@ read_list() {
     snis[total]=$3
     hosts[total]=$4
     paths[total]=$5
-    backends[total]=${6-}
+    backends[total]=''
+    expects[total]=''
+    if [ "$kind" = routed ]; then backends[total]=$6; else expects[total]=${6-}; fi
   done
 }
 
@@ -253,7 +277,7 @@ read_list() {
 [ -n "${OUTSIDE_EDGE_ROUTED:-}" ] ||
   unknown "OUTSIDE_EDGE_ROUTED is unset: set it to the file of 'name method sni host path backend' lines, one routed control per backend"
 [ -n "${OUTSIDE_EDGE_REFUSALS:-}" ] ||
-  unknown "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path' lines the edge must refuse"
+  unknown "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path [status:marker]' lines the edge must refuse"
 
 connect=${OUTSIDE_EDGE_CONNECT_SECONDS:-3}
 max_time=${OUTSIDE_EDGE_READ_SECONDS:-10}
@@ -286,11 +310,11 @@ esac
 # The probe table: the routed controls in rows 1 to `routed`, then the refusal lines to `total`.
 total=0
 taken=''
-read_list OUTSIDE_EDGE_ROUTED "$OUTSIDE_EDGE_ROUTED" 6
+read_list OUTSIDE_EDGE_ROUTED "$OUTSIDE_EDGE_ROUTED" routed
 routed=$total
 [ "$routed" -gt 0 ] ||
   unknown "$OUTSIDE_EDGE_ROUTED lists no routed control: no marker can be seen, so no refusal can be read"
-read_list OUTSIDE_EDGE_REFUSALS "$OUTSIDE_EDGE_REFUSALS" 5
+read_list OUTSIDE_EDGE_REFUSALS "$OUTSIDE_EDGE_REFUSALS" refusals
 [ "$total" -gt "$routed" ] ||
   unknown "$OUTSIDE_EDGE_REFUSALS lists no refusal line: nothing was tried, so nothing is proved"
 
@@ -423,11 +447,18 @@ reached=''
 unread=''
 while [ "$row" -le "$total" ]; do
   probe "$row"
-  if [ "$marked" = yes ] || { [ "$status" != 000 ] && [ "$status" != 404 ]; }; then
+  # matched: the answer is the one this line names, whether or not curl read it whole.
+  matched=no
+  if [ -n "${expects[row]}" ]; then
+    if [ "$marked" = yes ] && [ "$status:$marker" = "${expects[row]}" ]; then matched=yes; fi
+  elif [ "$marked" = no ] && [ "$status" = 404 ]; then
+    matched=yes
+  fi
+  if [ "$matched" = yes ] && [ "$code" -eq 0 ]; then
+    report refused "$row"
+  elif [ "$matched" = no ] && { [ "$marked" = yes ] || [ "$status" != 000 ]; }; then
     report REACHED "$row"
     reached="$reached ${names[row]}"
-  elif [ "$status" = 404 ] && [ "$code" -eq 0 ]; then
-    report refused "$row"
   else
     report UNKNOWN "$row"
     unread="$unread ${names[row]}"
@@ -442,5 +473,5 @@ done
   exit 1
 }
 [ -z "$unread" ] || unknown "no answer could be read whole for$unread"
-printf 'PASS: every one of the %s refusal lines was answered 404 with no marker, after each of the %s routed controls showed its marker\n' \
+printf 'PASS: every one of the %s refusal lines was refused (404 with no marker, or the answer its line names), after each of the %s routed controls showed its marker\n' \
   $((total - routed)) "$routed"

@@ -841,8 +841,12 @@ and stops. Its inputs:
 - `OUTSIDE_EDGE_ROUTED`, a file of `name method sni host path backend` lines, the positive
   controls: one or more per backend, each a request a route takes and marks with
   `X-Outside-Edge-Backend: <backend>`;
-- `OUTSIDE_EDGE_REFUSALS`, a file of `name method sni host path` lines, each a request the edge
-  must refuse.
+- `OUTSIDE_EDGE_REFUSALS`, a file of `name method sni host path [status:marker]` lines, each a
+  request the edge must refuse. The optional sixth field names the answer that refuses a line
+  where that is not the Gateway's 404: a status of 100 to 599 and a marker of letters, digits,
+  `.`, `_` and `-`, such as `405:broker` for a `GET` on the broker's token path. No route of the
+  edge matches on method (its Gateway class supports none), so that `GET` reaches the broker, and
+  the broker's own `405`, marked, is its refusal. Any other sixth field refuses the run.
 
 Both lists split their fields on spaces and tabs, skip blank lines and lines whose first field
 starts with `#`, and take LF or CRLF line endings; any other byte outside printable ASCII and tab
@@ -869,9 +873,9 @@ marker says nothing where no marker can be seen. Then each refusal line reads:
 
 | The answer | Line |
 |---|---|
-| 404 with no marker, read whole | `refused` |
-| a marker of any value, or a status other than 404 | `REACHED` |
-| no status (a connect or TLS failure, a timeout), or a 404 with no marker curl did not read whole | `UNKNOWN` |
+| the one the line names, read whole: 404 with no marker for a line of five fields, exactly the sixth field's status and marker for a line of six | `refused` |
+| any other answer: for a line of five fields, a marker of any value or a status other than 404 | `REACHED` |
+| no status (a connect or TLS failure, a timeout), or the named answer that curl did not read whole | `UNKNOWN` |
 
 Each line prints the status, the marker (`none` for none) and the SHA-256 of the body, so two runs
 can be compared, and curl's exit code and first message where curl did not exit 0; no line names
@@ -888,7 +892,9 @@ no marker otherwise, and through a `curl` of the row's own for the HTTPS command
 answers no stand-in gives. It holds the check's planted-route control: against a table of the
 routes an edge serves and sixteen refusal lines (spoofed Hosts, cluster names, paths beside the
 routed ones), a route planted for exactly one line makes the run fail naming that line and no
-other, once for each line. Its rows that run the script under dash and zsh skip where either is
+other, once for each line. A line whose sixth field is `405:broker` is refused on the broker's
+`405` marked `broker`, and fails naming it on a `404` with no marker, a `405` with another marker
+or none, and a `200`. Its rows that run the script under dash and zsh skip where either is
 missing; CI's `dispatch-ui` job installs zsh.
 
 ## Acceptance run against the deployed image

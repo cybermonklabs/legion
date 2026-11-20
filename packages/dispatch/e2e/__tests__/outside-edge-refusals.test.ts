@@ -56,7 +56,8 @@ const notFound = "no route matched\n";
 /** The canary's answer: the plan's canary serves this body with status 200 on every route. */
 const canaryBody = "outside-edge-canary";
 
-/** One line of a list: a refusal line, or a routed control with its backend. */
+/** One line of a list: a refusal line, with the answer it expects where its sixth field names one,
+ *  or a routed control with its backend. */
 interface Line {
   name: string;
   method: string;
@@ -64,6 +65,7 @@ interface Line {
   host: string;
   path: string;
   backend?: string;
+  expect?: string;
 }
 
 /** The plan's refusal file, in its own layout, with example hosts of the same shape. */
@@ -77,7 +79,7 @@ const refusalTable = [
   "broker-introspect  POST secrets.edge.example  secrets.edge.example            /v1/oauth/introspect",
   "broker-pending     GET  secrets.edge.example  secrets.edge.example            /v1/pending",
   "broker-approve     GET  secrets.edge.example  secrets.edge.example            /approve/x",
-  "broker-token-get   GET  secrets.edge.example  secrets.edge.example            /v1/oauth/token",
+  "broker-token-get   GET  secrets.edge.example  secrets.edge.example            /v1/oauth/token      405:broker",
   "broker-token-tail  POST secrets.edge.example  secrets.edge.example            /v1/oauth/token/x",
   "broker-healthz     GET  secrets.edge.example  secrets.edge.example            /healthz",
   "broker-dispatch    GET  secrets.edge.example  secrets.edge.example            /api/v1/projects",
@@ -93,18 +95,25 @@ const routedTable = [
   "listener-v1      GET  envoy.edge.example    envoy.edge.example    /v1/registry/none              listener",
 ];
 
-function parsed(table: string[]): Line[] {
+/** The lines of `table`, whose sixth field, where one is written, is `sixth`. */
+function parsed(table: string[], sixth: "backend" | "expect"): Line[] {
   return table.map((text) => {
-    const [name = "", method = "", sni = "", host = "", path = "", backend] = text.split(/\s+/);
-    return { name, method, sni, host, path, backend };
+    const [name = "", method = "", sni = "", host = "", path = "", last] = text.split(/\s+/);
+    return { name, method, sni, host, path, [sixth]: last };
   });
 }
-const refusals = parsed(refusalTable);
-const routed = parsed(routedTable);
+const refusals = parsed(refusalTable, "expect");
+const routed = parsed(routedTable, "backend");
+
+/** The body of the broker's own 405 for a method its two routes do not serve. */
+const methodRefused = '{"error":"method_not_allowed"}';
 
 /** The routes the edge serves, as the plan describes them: Dispatch's host on every path, the
- *  broker's two exact POST paths, and the listener's `/v1/` prefix. Each marks its backend. Their
- *  statuses differ on purpose: a control is read by its marker, whatever status its backend
+ *  broker's two exact paths, and the listener's `/v1/` prefix. Each marks its backend. No route of
+ *  the edge matches on method (the Gateway class supports none), so the broker's two paths take
+ *  every method and the broker answers a method other than POST with its own 405, still marked:
+ *  the stand-in models that with the POST answer first and a 405 for every other method after it.
+ *  Their statuses differ on purpose: a control is read by its marker, whatever status its backend
  *  answers with. */
 const production: Route[] = [
   {
@@ -115,22 +124,17 @@ const production: Route[] = [
     marker: "dispatch",
     body: "dispatch healthz\n",
   },
-  {
-    host: "secrets.edge.example",
-    method: "POST",
-    path: "/v1/oauth/device_authorization",
-    status: 400,
-    marker: "broker",
-    body: '{"error":"invalid_request"}',
-  },
-  {
-    host: "secrets.edge.example",
-    method: "POST",
-    path: "/v1/oauth/token",
-    status: 400,
-    marker: "broker",
-    body: '{"error":"invalid_request"}',
-  },
+  ...["/v1/oauth/device_authorization", "/v1/oauth/token"].flatMap((path) => [
+    {
+      host: "secrets.edge.example",
+      method: "POST",
+      path,
+      status: 400,
+      marker: "broker",
+      body: '{"error":"invalid_request"}',
+    },
+    { host: "secrets.edge.example", path, status: 405, marker: "broker", body: methodRefused },
+  ]),
   {
     host: "envoy.edge.example",
     path: "/v1/",
@@ -269,7 +273,16 @@ function sent(line: Line): Seen {
 }
 
 const passVerdict =
-  "PASS: every one of the 16 refusal lines was answered 404 with no marker, after each of the 3 routed controls showed its marker";
+  "PASS: every one of the 16 refusal lines was refused (404 with no marker, or the answer its line names), after each of the 3 routed controls showed its marker";
+
+/** The line a refusal line prints where `production` answers it: the broker's own 405, marked,
+ *  for a line whose sixth field names that answer, and the Gateway's 404 with no marker for every
+ *  other line. */
+function refusedLine(line: Line): string {
+  return line.expect === undefined
+    ? probeLine("refused", line.name, 404, "none", notFound)
+    : probeLine("refused", line.name, 405, "broker", methodRefused);
+}
 
 function markerNotVisible(name: string): string {
   return `UNKNOWN: the marker of ${name} is not visible, so no refusal can be read`;
@@ -379,8 +392,10 @@ function httpsArgv(line: Line, address: string, connect = "3", read = "10"): str
   ];
 }
 
-/** The `httpsCurl` answers under which every routed control shows its marker. Two of them write
- *  the header name in lower case, as an HTTP/1.1 front end may: the name is case-insensitive. */
+/** The `httpsCurl` answers under which every routed control shows its marker, and the broker
+ *  answers `broker-token-get`, the line whose sixth field names it, with its own 405, marked. Two
+ *  of them write the header name in lower case, as an HTTP/1.1 front end may: the name is
+ *  case-insensitive. */
 const httpsControls = {
   "dispatch.edge.example /healthz": { status: "200", header: "X-Outside-Edge-Backend: dispatch" },
   "secrets.edge.example /v1/oauth/device_authorization": {
@@ -390,6 +405,10 @@ const httpsControls = {
   "envoy.edge.example /v1/registry/none": {
     status: "404",
     header: "x-outside-edge-backend:listener",
+  },
+  "secrets.edge.example /v1/oauth/token": {
+    status: "405",
+    header: "X-Outside-Edge-Backend: broker",
   },
 };
 
@@ -402,15 +421,13 @@ const httpsControls = {
 // run's bound is counting.
 describe(scriptName, () => {
   test.skipIf(withoutTools)(
-    "(a) passes when every refusal line is answered 404 with no marker, after each routed control showed its marker",
+    "(a) passes when every refusal line is refused, 404 with no marker or the answer its line names, after each routed control showed its marker",
     async () => {
       const edge = await standIn(production);
       try {
         const run = await check("a", { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() });
         expect(linesOf(run, "control"), said(run)).toEqual(visibleControls);
-        expect(linesOf(run, "refused"), said(run)).toEqual(
-          refusals.map((line) => probeLine("refused", line.name, 404, "none", notFound))
-        );
+        expect(linesOf(run, "refused"), said(run)).toEqual(refusals.map(refusedLine));
         expect(linesOf(run, "REACHED"), said(run)).toEqual([]);
         expect(linesOf(run, "UNKNOWN"), said(run)).toEqual([]);
         expect(verdict(run), said(run)).toBe(passVerdict);
@@ -441,9 +458,7 @@ describe(scriptName, () => {
             probeLine("REACHED", line.name, 200, "canary", canaryBody),
           ]);
           expect(linesOf(run, "refused"), said(run)).toEqual(
-            refusals
-              .filter((other) => other !== line)
-              .map((other) => probeLine("refused", other.name, 404, "none", notFound))
+            refusals.filter((other) => other !== line).map(refusedLine)
           );
           expect(verdict(run), said(run)).toBe(`FAIL: reached ${line.name}`);
           expect(run.code, said(run)).toBe(1);
@@ -510,6 +525,131 @@ describe(scriptName, () => {
       rowLimit("short")
     );
   }
+
+  // A refusal line whose sixth field names its answer, `broker-token-get`'s `405:broker`: no route
+  // of the edge matches on method, so a GET on the broker's token path reaches the broker, and its
+  // own 405, marked, is the refusal. Exactly that status with exactly that marker is refused, and
+  // any other answer is a line reached.
+  const tokenGet = refusals.find((line) => line.name === "broker-token-get") as Line;
+
+  test.skipIf(withoutTools)(
+    "(f) refuses a line whose sixth field names its answer on exactly that answer: broker-token-get's 405 marked broker",
+    async () => {
+      const edge = await standIn(production);
+      try {
+        const run = await check("f expected", {
+          OUTSIDE_EDGE_ADDRESS: edge.address,
+          ...planLists(),
+        });
+        expect(linesOf(run, "refused"), said(run)).toContain(
+          probeLine("refused", "broker-token-get", 405, "broker", methodRefused)
+        );
+        expect(verdict(run), said(run)).toBe(passVerdict);
+        expect(run.code, said(run)).toBe(0);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The script, a bounded child under the short bound.
+    rowLimit("short")
+  );
+
+  const otherAnswers: {
+    name: string;
+    routes: Route[];
+    status: number;
+    marker: string;
+    body: string;
+  }[] = [
+    {
+      // The broker's 405 route gone: the Gateway's own 404, with no marker.
+      name: "a 404 with no marker",
+      routes: production.filter((route) => !(route.path === tokenGet.path && route.status === 405)),
+      status: 404,
+      marker: "none",
+      body: notFound,
+    },
+    {
+      name: "a 405 marked canary",
+      routes: [planted(tokenGet, { status: 405, body: methodRefused }), ...production],
+      status: 405,
+      marker: "canary",
+      body: methodRefused,
+    },
+    {
+      name: "a 405 with no marker",
+      routes: [
+        planted(tokenGet, { status: 405, marker: undefined, body: methodRefused }),
+        ...production,
+      ],
+      status: 405,
+      marker: "none",
+      body: methodRefused,
+    },
+    {
+      name: "a 200 marked broker",
+      routes: [planted(tokenGet, { marker: "broker", body: "token\n" }), ...production],
+      status: 200,
+      marker: "broker",
+      body: "token\n",
+    },
+  ];
+  for (const { name, routes, status, marker, body } of otherAnswers) {
+    test.skipIf(withoutTools)(
+      `(f) fails naming broker-token-get and no other line when it is answered ${name}, not its 405:broker`,
+      async () => {
+        const edge = await standIn(routes);
+        try {
+          const run = await check(`f ${name}`, {
+            OUTSIDE_EDGE_ADDRESS: edge.address,
+            ...planLists(),
+          });
+          expect(linesOf(run, "REACHED"), said(run)).toEqual([
+            probeLine("REACHED", "broker-token-get", status, marker, body),
+          ]);
+          expect(linesOf(run, "refused"), said(run)).toEqual(
+            refusals.filter((other) => other !== tokenGet).map(refusedLine)
+          );
+          expect(verdict(run), said(run)).toBe("FAIL: reached broker-token-get");
+          expect(run.code, said(run)).toBe(1);
+        } finally {
+          await edge.stop();
+        }
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
+  }
+
+  test.skipIf(withoutTools)(
+    "(f) reads UNKNOWN, not refused, when the named answer came that curl did not read whole",
+    async () => {
+      const { path } = httpsCurl({
+        ...httpsControls,
+        "secrets.edge.example /v1/oauth/token": {
+          status: "405",
+          header: "X-Outside-Edge-Backend: broker",
+          exit: 28,
+          message: "curl: (28) Operation timed out",
+        },
+      });
+      const run = await check(
+        "f cut short",
+        { OUTSIDE_EDGE_ADDRESS: "192.0.2.10", OUTSIDE_EDGE_ALLOW_HTTP: undefined, ...planLists() },
+        { path }
+      );
+      expect(linesOf(run, "UNKNOWN"), said(run)).toEqual([
+        `UNKNOWN broker-token-get 405 broker body-sha256 ${sha("answer 405\n")}; curl exit 28: curl: (28) Operation timed out`,
+      ]);
+      expect(linesOf(run, "refused").length, said(run)).toBe(15);
+      expect(verdict(run), said(run)).toBe(
+        "UNKNOWN: no answer could be read whole for broker-token-get"
+      );
+      expect(run.code, said(run)).toBe(2);
+    },
+    // The script, a bounded child under the short bound.
+    rowLimit("short")
+  );
 
   for (const control of routed) {
     test.skipIf(withoutTools)(
@@ -906,7 +1046,7 @@ describe(scriptName, () => {
     {
       name: "no OUTSIDE_EDGE_REFUSALS",
       env: { OUTSIDE_EDGE_REFUSALS: null },
-      says: "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path' lines the edge must refuse",
+      says: "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path [status:marker]' lines the edge must refuse",
     },
     ...["edge.example", "010.0.0.1", "192.0.2.1:443", "::1", "https://192.0.2.1"].map(
       (address) => ({
@@ -931,12 +1071,22 @@ describe(scriptName, () => {
       says: "OUTSIDE_EDGE_REFUSALS names {refusals}, which could not be read: could not open it",
     },
     {
-      name: "a refusal line of six fields",
+      name: "a refusal line of seven fields",
       env: {
-        OUTSIDE_EDGE_REFUSALS: "list:a GET dispatch.edge.example dispatch.tailnet.example /x extra",
+        OUTSIDE_EDGE_REFUSALS:
+          "list:a GET dispatch.edge.example dispatch.tailnet.example /x 405:broker extra",
       },
-      says: "line 1 of {refusals} is not 'name method sni host path': a GET dispatch.edge.example dispatch.tailnet.example /x extra",
+      says: "line 1 of {refusals} is not 'name method sni host path [status:marker]': a GET dispatch.edge.example dispatch.tailnet.example /x 405:broker extra",
     },
+    ...["405", "405:", ":broker", "40x:broker", "099:broker", "600:broker", "405:br/oker"].map(
+      (field) => ({
+        name: `the expected answer ${field}`,
+        env: {
+          OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example /x ${field}`,
+        },
+        says: `line 1 of {refusals}: the expected answer ${field} is not '<status>:<marker>', a status of 100 to 599 and a marker of letters, digits, '.', '_' and '-'`,
+      })
+    ),
     {
       name: "a routed line of five fields",
       env: {
