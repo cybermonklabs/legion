@@ -1463,11 +1463,12 @@ jobs:
   # The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
   # and its pull is counted at the 120 s the browser step spent before the stack's first output
   # on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-  # below.
+  # it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
+  # a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1514,14 +1515,15 @@ jobs:
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
       # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
       # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-      # digest the browser step below exports, and a pull the runner had not made yet counts
-      # inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
-      # 120 s before the stack's first output, where five green visual jobs (134499880849,
+      # digest the browser steps below export, and a pull the runner had not made yet counts
+      # inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+      # spent 120 s before the stack's first output, where five green visual jobs (134499880849,
       # 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
       # past its budget at 250 s. Its log does not time the pull apart from the rest of that
       # start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-      # digest is the browser step's, written twice, and the two must stay the same: a pull of
-      # another digest here leaves that step to pull its own inside its budget again.
+      # digest is written three times, here and in the two browser steps (the normal order and
+      # the reverse), and the three must stay the same: a pull of another digest here leaves the
+      # browser steps to pull their own inside their budgets again.
       - name: Pull the stack's Postgres image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       # The stack's connection limit, read outside the browser step's budget, where
@@ -1534,6 +1536,7 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
+        id: visual-normal
         timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of the stack
@@ -1557,24 +1560,51 @@ jobs:
           # would stand idle.
           e2e/visual-run.sh
         working-directory: packages/dispatch
+      # The same rows again in reverse order, on a new stack and a new seed: the phone rows before
+      # the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
+      # One seed serves a whole run, so a row whose page reads a write another row made fails one
+      # of the two runs by its own name, and a baseline that holds another row's write is found
+      # here rather than as a flake. It runs when the normal run failed too, since that is when its
+      # answer says most, and not when the normal run never started: a setup step that failed
+      # leaves nothing for either run to compare. Its budget is the first step's, for the same
+      # rows on a new stack of the same size.
+      #
+      # Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
+      # passes on), so the normal run's stay in `test-results`, where a reader of a failed run
+      # looks for the shots, however this run ends.
+      - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
+        if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
+        timeout-minutes: 4
+        run: |
+          # Exported on the command line, as the first step's are, for the reason the job's head
+          # gives.
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          export DISPATCH_E2E_VISUAL_ORDER=reverse
+          e2e/visual-run.sh --output=e2e/test-results-reverse
+        working-directory: packages/dispatch
       # Always, not on failure alone: a reader of a green run wants the report too, and a run
       # that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
-      # which is how that file reaches the pull request from a machine with no container.
+      # which is how that file reaches the pull request from a machine with no container. It
+      # holds both runs: the normal run's results under test-results, the reverse run's under
+      # test-results-reverse.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: dispatch-browser-visual-${{ github.run_attempt }}
-          # The third pattern matches no file in THIS job and is not dead: it is what fixes the
+          # The last pattern matches no file in THIS job and is not dead: it is what fixes the
           # archive's layout. This job runs one stack, and for one stack e2e/harness-pool.ts
           # leaves `logDir` unset, so the harness writes to stderr and no `worker-*/log/*.log`
           # is ever created. upload-artifact takes the archive root from the least common
           # ancestor of its patterns' search paths, so this `${{ runner.temp }}` pattern is what
           # keeps that root at the runner's work directory and the repository path inside the
-          # archive - which is what packages/dispatch/AGENTS.md's step 3 tells a reader to look
+          # archive - which is what packages/dispatch/AGENTS.md's step 2 tells a reader to look
           # for when it takes a changed baseline out of this artifact. Delete it as unused and
           # `test-results` moves to the top of the archive and that step goes wrong.
           path: |
             packages/dispatch/e2e/test-results
+            packages/dispatch/e2e/test-results-reverse
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore

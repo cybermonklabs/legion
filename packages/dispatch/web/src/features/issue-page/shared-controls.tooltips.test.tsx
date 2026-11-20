@@ -2597,7 +2597,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
     // A registry that answered leaves no claim unjudged.
-    expect(scope.queryAllByTestId("issue-claim-unchecked")).toEqual([]);
+    expect(scope.queryAllByTestId("issue-claim-unchecked")).toHaveLength(0);
   });
   // ... and "· running state unknown" when the agent list cannot be read.
   await readDrawn(
@@ -2695,7 +2695,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     const [removable, wider] = scope.getAllByRole("listitem");
     expect(removable?.textContent).not.toContain(STATE_LINES.subscription_wider);
     expect(wider?.textContent).toContain(STATE_LINES.subscription_wider);
-    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toEqual([]);
+    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toHaveLength(0);
   });
 });
 
@@ -2971,7 +2971,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
       [CONTROL_LABELS.add_priority, "page-chrome"],
       ["P2 Rocq and Lean speed work restarted", "author-text"],
     ]);
-    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toEqual([]);
+    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toHaveLength(0);
   });
   await readDrawn(mountNamed("IssuePriorityLine, adding a priority"), "inside", (view) => {
     expectMarks(view.container, [
@@ -3145,7 +3145,7 @@ test("inside NoTooltips a stale chip draws its latest version", async () => {
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
     ]);
-    expect(within(view.container).queryAllByText(/latest v5/)).toEqual([]);
+    expect(within(view.container).queryAllByText(/latest v5/)).toHaveLength(0);
   });
 });
 
@@ -3363,8 +3363,8 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
     expect(
       within(root)
         .getAllByText(word)
-        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`))
-    ).toEqual(forms.map(() => null));
+        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) === null)
+    ).toEqual(forms.map(() => true));
     expect(
       within(root).getAllByRole("link", { name: `Open live conversation with ${word}` })
     ).toHaveLength(2);

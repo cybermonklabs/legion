@@ -39,8 +39,9 @@ import (
 // one project and reaches Postgres through an interface here as it does through record.Store.
 //
 // A wake is taken whole by TakePodWake: the resume recorded against the release the wake ends,
-// which the role's one open resume refuses a second of, and the woken role's backstop cancelled.
-// The store owns that order, and this package never writes a part of it.
+// or against the pause that holds it, which the role's one open resume refuses a second of, and
+// the woken role's backstop cancelled. The store owns that order, and this package never writes a
+// part of it.
 type Pods interface {
 	// RecordListenerReady stamps when the Envoy listener last said it is alive and reporting,
 	// which is the whole of R7's gate.
@@ -53,8 +54,16 @@ type Pods interface {
 	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
 	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
-	// a wake another pass already took, which is already bringing the pod back.
-	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error)
+	// a wake another pass already took, which is already bringing the pod back. pause is the
+	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
+	// no release (decision 15 of dispatch://INFRA-3759).
+	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
+	// PauseOfWake is which pause holds a wake of the claim token, issue's role, by the store's one
+	// rule of it (store's PodRecords.PauseOfWake), and which pause stopped the claim. mark is the
+	// pause that held the outbox row the wake is taken for, which a wake of this package, taken
+	// for no row, passes as 0. The wake is a held wake of held (decision 15), and the session it
+	// brings back is one stopping stopped in a pod it kept (decision 16).
+	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
 	// has gone away: a release of the issue recorded since that wake was taken. It answers the
 	// issue's newest release where it closed a row, and 0 where it closed none.
@@ -87,15 +96,48 @@ type Pods interface {
 // fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
 // never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
 // of an issue in reviewing is told the entry of its round too (WakeTask says why).
-func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
+//
+// The row is marked with the wake's kind, so the start finishes without acting once a park, a
+// close or a moved phase has taken the role over while the row waited (decision 10 of
+// dispatch://INFRA-3759), and with the pause that held the wake, 0 for none (decision 15), which
+// the outbox's lines of the start name. The outbox holds every start of a paused project, marked
+// or not (record's outboxPauseFree).
+func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task string) record.SuperviseRequest {
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
+		WakeKind: kind, Pause: pause}
 }
 
-// WakeTask is the one task a woken role is given: which wake brought its pod back and what that
-// wake was about. A message Envoy kept for the role can reach the woken session as a card before
-// this task does, so the role message sentence says so. R6 asks for exactly one such task or
-// message per wake, and the outbox row that carries it is written in the wake's own transaction,
-// so a wake that commits has its task and one that does not has neither.
+// PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
+// the stop transaction writes beside its held wake (pods.WakePause, decision 6 of
+// dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
+// finishes without acting once a park, a close or a moved phase has taken the role over (decision
+// 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
+// carries no task: the task the role holds pending, if any, is what its launch delivers.
+func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
+	return wakeRow(issue, role, pods.WakePause, pause, "")
+}
+
+// WakeStop is what stopped the session a wake brings back, which the wake's task names first.
+type WakeStop int
+
+const (
+	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
+	// brings back as a fresh pod with the workspace the release saved.
+	StoppedByRelease WakeStop = iota
+	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
+	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
+	StoppedByPause
+)
+
+// WakeTask is the one task a woken role is given, the sentence its first turn reads before
+// anything else: what stopped its session, which wake brought it back and what that wake was
+// about. A message Envoy kept for the role can reach the woken session as a card before this task
+// does, so the role message sentence says so. R6 asks for exactly one such task or message per
+// wake, and the outbox row that carries it is written in the wake's own transaction, so a wake
+// that commits has its task and one that does not has neither.
+//
+// The first sentences name what stopped the session: an idle release, which took the pod, or a
+// project's pause, which kept it (stop, decision 16 of dispatch://INFRA-3759).
 //
 // The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
 // two sentences of the review round (reviewround.Sentences), which the queue appends to it as to
@@ -104,25 +146,31 @@ func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseR
 // waiting for CI it cannot judge yet is released after the idle period and woken by the CI
 // settlement, so the wake is its newest task, and the review it then submits moves the commit it
 // read only when its footer names the entry that stands. The text here names no entry itself.
-func WakeTask(kind, detail string) string {
-	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+func WakeTask(kind, detail string, stop WakeStop) string {
+	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
+	away, backstop := "while your pod was gone", "the release's backstop"
+	if stop == StoppedByPause {
+		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
+			"Your pod, your workspace and any work you had not pushed are as you left them. "
+		away, backstop = "while your session was stopped", "your backstop"
+	}
 	switch kind {
 	case pods.WakeChecks:
 		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") while your pod was gone. Envoy keeps a role message for one hour: a message kept for your role " +
+			") " + away + ". Envoy keeps a role message for one hour: a message kept for your role " +
 			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
 			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
 			"A message sent with keep: false is not kept, and its sender sends it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
-			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. " +
+			") " + away + ". A message that Envoy or Dispatch stored for your session reaches you in this session. " +
 			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
 	case pods.WakeBackstop:
-		return preamble + "The wake is the release's backstop running out: " + detail +
+		return preamble + "The wake is " + backstop + " running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
 	default:
 		return preamble + "The wake is " + kind + ": " + detail + "."
@@ -267,9 +315,21 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
-// read: the claim is still released, and its tree is live — neither the issue nor its root has
-// left the workflow and neither lingers (pods.InWorkflowNotLingering). A pod in any other state
-// is a close's to stop or an operator's to resume, never a wake's.
+// read: the claim is still released, its issue is one this daemon records, and its tree is live —
+// neither the issue nor its root has left the workflow and neither lingers
+// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
+// resume, never a wake's.
+//
+// A claim of another project's issue, which the operator's spawn makes under this daemon's token
+// and a project's pause stops as released, finds no record here, even where the database it shares
+// with that project's daemon holds that daemon's record of the issue: the daemon's store reads no
+// record of another project (internal/daemon's projectRecords, which says why). Read as this
+// daemon's, that record would also leave the resume this wake took open, refusing every later wake
+// of the role. So such a wake is refused as the wake of every operator's spawn of an issue with no
+// record is: it takes nothing and queues nothing. What brings such a claim back is what brings back
+// every operator's spawn: the resume of the pause that stopped it owing a launch
+// (internal/daemon's resumeOwedSpawns), or the operator's own resume or delivery
+// (`legion claims resume`, `legion claims deliver`).
 //
 // A wake of a role whose resume is already open wakes nothing a second time: that pod is coming
 // back, and the start row of the wake that took it carries the task. A wake that takes it records
@@ -278,6 +338,14 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // this transaction's, so a wake this daemon took is a wake whose start row is queued: a take that
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
 // resumes a claim in process instead, heals a refused wake (wakeForDelivery).
+//
+// Which pause holds the wake is the store's one rule of it (Pods.PauseOfWake, decision 15 of
+// dispatch://INFRA-3759), read on this fact's own transaction. A wake of this file is taken for no
+// outbox row, so it passes no row's mark. A held wake is recorded on the resume, which pairs with
+// no release, and on the start row, which the outbox holds while a pause stands: what kept the
+// role down was the pause, not a release. The pause that stopped the role is also what the task
+// names as what stopped the session (WakeTask, decision 16): the pause where one stopped it, and
+// the release otherwise.
 //
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
@@ -299,6 +367,10 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
+	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)
+	if err != nil {
+		return false, err
+	}
 	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
 		return false, err
@@ -307,12 +379,17 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
-	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
 	if err != nil || !taken {
 		return false, err
 	}
-	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
+	stop := StoppedByRelease
+	if stopping != 0 {
+		stop = StoppedByPause
+	}
+	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
+		"pause", pause, "stopped_by_pause", stopping)
+	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

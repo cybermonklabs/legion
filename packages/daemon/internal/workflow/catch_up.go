@@ -38,9 +38,12 @@ import (
 // claimed by a queued start or catch-up is that row's to settle. A child's names none: what a
 // person decided while nobody could hear it is kept for the tree, and stays its root architect's.
 // A tree that lingers or has left the workflow is told nothing, and so is the architect of an
-// issue the daemon has not recorded, or of a child that has left the workflow or is done. A phase
-// worker's ready is answered differently: it is given its phase's task again when it holds that
-// phase with nothing pending (readyWorkerTask).
+// issue the daemon has not recorded — an operator's spawn of an issue no record of the project
+// holds, the project's own or another project's, whose record the daemon's records do not read
+// (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
+// issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
+// differently: it is given its phase's task again when it holds that phase with nothing pending
+// (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -182,12 +185,14 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
-// claim's, its tree does not linger, and its phase's own terminating fact has not arrived
-// (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds a task is left
-// alone: it has work, and a second task would be a second prompt for work under way. So is a role
-// a queued row already covers (queuedRowCovers).
+// one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
+// its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
+// a merged root stands in merging for as long as the rest of its tree runs, and its merger must
+// not be handed merging again at every launch. A claim of another project's issue finds no record
+// here, as a claim of an issue nobody records finds none: the daemon's store reads no record of
+// another project (internal/daemon's projectRecords). A claim that holds a task is left alone: it
+// has work, and a second task would be a second prompt for work under way. So is a role a queued
+// row already covers (queuedRowCovers).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
@@ -225,7 +230,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // label" in docs/site/src/content/docs/legion/concepts.md.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
+	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
 	role := RoleFor(issue.Phase)

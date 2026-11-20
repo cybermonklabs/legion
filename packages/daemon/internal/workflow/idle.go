@@ -47,10 +47,11 @@ const (
 	IdleHoldReminder
 	// IdleHoldNotIdle: the pod did something inside the idle period, so the period has not passed.
 	IdleHoldNotIdle
-	// IdleHoldNoPod: the record holds no such issue, so there is no pod of the workflow's to
-	// release at all. An issue the record does hold whose claims have all stopped is
-	// IdleHoldNoLiveClaim instead: a pod stands there, and this rule is simply not the one that
-	// decides it.
+	// IdleHoldNoPod: the record holds no such issue under the daemon's own project, so there is
+	// no pod of the workflow's to release at all: a record another project's daemon keeps of the
+	// issue is none of this daemon's (store.readIdleView). An issue the record does hold whose
+	// claims have all stopped is IdleHoldNoLiveClaim instead: a pod stands there, and this rule
+	// is simply not the one that decides it.
 	IdleHoldNoPod
 	// IdleHoldReleasing: a release of this pod is already in progress. It is the idle tick's own
 	// word for "my release is already running", never a release that stopped short: a release
@@ -120,6 +121,22 @@ const (
 	// IdleHoldUnownedNotIdle: the pod did something inside the quiet period, so the period has
 	// not passed and the pod is not this rule's to take yet.
 	IdleHoldUnownedNotIdle
+
+	// The three holds below are a project's pause's (decision 12 of dispatch://INFRA-3759).
+	// IdleHoldPaused is both rules' (IdleRelease, UnownedPodRelease), and the daemon records it
+	// too for a release a pause cancelled at its save (releaseHold in internal/daemon);
+	// IdleHoldPauseHeld is the idle rule's; and IdleHoldUnownedPauseHeld is the second rule's,
+	// whose name carries the unowned_ prefix as the nine above do.
+
+	// IdleHoldPaused: the daemon's project is paused (pods.IdleView.Paused), and a pause starts
+	// no release.
+	IdleHoldPaused
+	// IdleHoldPauseHeld: a pause holds the pod. The pause stopped its roles and kept it, and it
+	// stays until a role of it is ready again or something deletes it (decision 13).
+	IdleHoldPauseHeld
+	// IdleHoldUnownedPauseHeld: a pause holds the pod no claim can use now. Its roles are the
+	// pause's to bring back in this pod, so the second rule leaves it to them.
+	IdleHoldUnownedPauseHeld
 )
 
 var idleHoldNames = map[IdleHold]string{
@@ -153,6 +170,10 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
 	IdleHoldUnownedReleasing:         "unowned_releasing",
 	IdleHoldUnownedNotIdle:           "unowned_not_idle",
+
+	IdleHoldPaused:           "paused",
+	IdleHoldPauseHeld:        "pause_held",
+	IdleHoldUnownedPauseHeld: "unowned_pause_held",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -189,6 +210,11 @@ type IdleDecision struct {
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
 //     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
 //     close's to stop;
+//
+//   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
+//     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
+//     pod it held stays after the resume until a role of it is ready again (decision 12 of
+//     dispatch://INFRA-3759);
 //
 //   - no bundle of the issue's unpushed work is waiting to be restored. A release saves that
 //     work out of the pod it deletes, and the pod that replaces it puts it back; until a
@@ -241,6 +267,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
+	}
+	if view.Paused {
+		return IdleDecision{Hold: IdleHoldPaused}
+	}
+	if view.PauseHeld {
+		return IdleDecision{Hold: IdleHoldPauseHeld}
 	}
 	if view.BundleUnrestored {
 		return IdleDecision{Hold: IdleHoldBundleUnrestored}
@@ -346,6 +378,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
 //     is already gone and nothing of it is reserved (IdleHoldUnownedSandboxGone);
 //
+//   - no pause holds the pod (pods.IdleView.PauseHeld). A pause stopped its roles and kept it,
+//     and it stays until a role of it is ready again or something deletes it
+//     (IdleHoldUnownedPauseHeld);
+//
 //   - no claim records a process (pods.IdleClaim.HasProcess). A stopped claim that still records
 //     a locator is one the teardown's own fence refuses (claimMayRun in internal/store/claims.go,
 //     read through issueStopFences), so a release marked for such an issue could never finish:
@@ -365,11 +401,17 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //
 //   - the pod has recorded nothing for the whole idle period, read as the newest write to any
 //     claim row of the issue (view.QuietSince, compared as IdleRelease compares it)
-//     (IdleHoldUnownedNotIdle).
+//     (IdleHoldUnownedNotIdle);
 //
-// The quiet conjunct is last, as the idle rule's is, so that a pass records a hold only for a pod
-// that has already stood past the period: a pod inside it is simply not this rule's yet, while
-// every other hold names something true of a pod that has stood past it.
+//   - the daemon's project is not paused (pods.IdleView.Paused). The release's own transaction
+//     marks no release while the project is paused (store.Store.ReleaseIdleIssue, decision 12 of
+//     dispatch://INFRA-3759), so a pod this rule would otherwise release is kept, and the hold
+//     says what kept it (IdleHoldPaused).
+//
+// The quiet conjunct comes last but one, where the idle rule's comes last, so that a pass records
+// a hold only for a pod that has already stood past the period: a pod inside it is simply not this
+// rule's yet, while every other hold names something true of a pod that has stood past it. The
+// pause's comes last, since a pause keeps only a pod this rule would release.
 //
 // The decision names no roles. There is no live claim to suspend and no bundle to ask the pod
 // for, so the release this answers changes no claim at all: it takes the Sandbox, the pod and
@@ -392,6 +434,9 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if !sandboxPresent {
 		return IdleDecision{Hold: IdleHoldUnownedSandboxGone}
 	}
+	if view.PauseHeld {
+		return IdleDecision{Hold: IdleHoldUnownedPauseHeld}
+	}
 	for _, c := range view.Claims {
 		if c.HasProcess {
 			return IdleDecision{Hold: IdleHoldUnownedClaimProcess}
@@ -407,6 +452,9 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	}
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldUnownedNotIdle}
+	}
+	if view.Paused {
+		return IdleDecision{Hold: IdleHoldPaused}
 	}
 	return IdleDecision{Release: true}
 }
