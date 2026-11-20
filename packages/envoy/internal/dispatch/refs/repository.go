@@ -73,6 +73,17 @@ func RepositoryClause(repoExpr, viewerParam string) string {
 	end)`
 }
 
+// RepositoryHidden is RepositoryClause's negation: true where the GitHub proxy hides the
+// repository repoExpr names from the viewer bound at viewerParam, false where it shows it, never
+// null. A write that would give a repository to the people of a project its writer sees holds the
+// repository to it with the writer as the viewer (api's refuseRepoHidden: an issue's own
+// repository, a project's default), so a writer gives no project a repository the proxy would not
+// show the writer, and the write and the proxy cannot come to different answers. repoExpr is
+// spliced as RepositoryClause's.
+func RepositoryHidden(repoExpr, viewerParam string) string {
+	return `(not ` + RepositoryClause(repoExpr, viewerParam) + `)`
+}
+
 // repositorySeen is whether an issue of a project the viewer sees resolves to the repository
 // repoExpr names. It sits under RepositoryClause's CASE, so it ends in `offset 0`, as every
 // `exists` a clause adds there does (#3178 at 0f8b389c).
