@@ -105,14 +105,14 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"echo: ` + secret + `"}`))
 	})
-	credential := func(t *testing.T, subject string) []byte {
+	credential := func(t *testing.T, source map[string]any) []byte {
 		t.Helper()
 		data, err := json.Marshal(map[string]any{
 			"type":               "external_account",
 			"audience":           "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
 			"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
 			"token_url":          sts + "/v1/token",
-			"credential_source":  map[string]any{"file": subject},
+			"credential_source":  source,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -120,22 +120,31 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 		return data
 	}
 	for _, row := range []struct {
-		name    string
-		subject func(t *testing.T) string
-		want    string
+		name   string
+		source func(t *testing.T) map[string]any
+		want   string
 	}{
-		{"a subject token file that is not there", func(t *testing.T) string { return filepath.Join(t.TempDir(), secret) },
-			"read the subject token file its credential_source names: open: no such file or directory"},
-		{"control: the token service refuses the exchange", func(t *testing.T) string {
+		{"a subject token file that is not there", func(t *testing.T) map[string]any {
+			return map[string]any{"file": filepath.Join(t.TempDir(), secret)}
+		}, "read the subject token file its credential_source names: open: no such file or directory"},
+		{"a subject token url that refuses", func(t *testing.T) map[string]any {
+			source := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"echo: ` + secret + `"}`))
+			})
+			return map[string]any{"url": source + "/token"}
+		}, "the subject token source its credential_source names: the server answered HTTP 403 access_denied"},
+		{"control: the token service refuses the exchange", func(t *testing.T) map[string]any {
 			subject := filepath.Join(t.TempDir(), "subject")
 			if err := os.WriteFile(subject, []byte("the.workload.credential"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			return subject
+			return map[string]any{"file": subject}
 		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			identity := &ExternalAccountIdentity{CredentialsJSON: credential(t, row.subject(t)), ServiceAccount: "deploy-bot@example-project.iam.gserviceaccount.com",
+			identity := &ExternalAccountIdentity{CredentialsJSON: credential(t, row.source(t)), ServiceAccount: "deploy-bot@example-project.iam.gserviceaccount.com",
 				Audience: "https://aud.example", HTTP: HTTPClient()}
 			_, _, err := identity.Token(context.Background())
 			if err == nil {

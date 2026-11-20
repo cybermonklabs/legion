@@ -196,29 +196,34 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 // credential_source names (without wrapping the file call's error) and the body of a refusal. A
 // subject token file the credential names that cannot be read prints as the file call's reason
 // (redact.File), the file read again here for it; a refusal names the service that answered - the
-// security token service, IAM Credentials, or the token service the credential names - and the
-// status and registered code its answer carried (redact.Answered); any other failure prints as its
-// class (redact.Class).
+// security token service, IAM Credentials, the token service the credential names (token_url),
+// or else the subject token source its credential_source names (a url, or AWS's metadata) - and
+// the status and registered code its answer carried (redact.Answered); any other failure prints
+// as its class (redact.Class).
 func externalAccountFailure(credential []byte, answered *statusOf, err error) string {
-	var file struct {
-		Source struct {
+	var fields struct {
+		TokenURL string `json:"token_url"`
+		Source   struct {
 			File string `json:"file"`
 		} `json:"credential_source"`
 	}
-	if json.Unmarshal(credential, &file) == nil && file.Source.File != "" {
-		if _, readErr := os.ReadFile(file.Source.File); readErr != nil {
+	parsed := json.Unmarshal(credential, &fields) == nil
+	if parsed && fields.Source.File != "" {
+		if _, readErr := os.ReadFile(fields.Source.File); readErr != nil {
 			return "read the subject token file its credential_source names: " + redact.File(readErr).Error()
 		}
 	}
 	if answered.status/100 <= 2 {
 		return redact.Class(err).Error()
 	}
-	service := "the token service the credential names"
-	switch answered.host {
-	case "sts.googleapis.com":
+	service := "the subject token source its credential_source names"
+	switch tokenURL, _ := url.Parse(fields.TokenURL); {
+	case answered.host == "sts.googleapis.com":
 		service = "Google's security token service"
-	case "iamcredentials.googleapis.com":
+	case answered.host == "iamcredentials.googleapis.com":
 		service = "IAM Credentials"
+	case parsed && tokenURL != nil && answered.host == tokenURL.Host:
+		service = "the token service the credential names"
 	}
 	return service + ": " + redact.Answered(answered.status, answered.answer())
 }
