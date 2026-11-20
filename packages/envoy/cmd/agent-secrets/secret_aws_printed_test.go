@@ -193,7 +193,8 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			wantNamedNotPrinted(t, "stderr", stderr, []string{"load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed)"}, []string{secret}...)
+			// The refusal lists the profiles the files hold, as the GCP refusals list theirs.
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"load your AWS sign-in: " + variable + " names a profile the shared config and credentials files do not hold (not printed); they hold: work"}, []string{secret}...)
 		})
 		t.Run("control: "+variable+" naming a profile the files hold", func(t *testing.T) {
 			useProfiles(t)

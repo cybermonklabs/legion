@@ -105,9 +105,63 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, [
 // missingAWSProfile is the refusal of variable naming a profile the shared config and credentials
 // files do not hold. The profile is not printed, though the AWS SDK's own error quotes it: a
 // profile the files do not hold is the caller's text, and a variable meant for a name is where a
-// pasted credential lands. A profile they hold is a label, and the using line prints it.
+// pasted credential lands. A profile they hold is a label, and the using line prints it, so the
+// refusal lists the profiles they hold (heldAWSProfiles), as the GCP refusals list the held
+// configurations and logins.
 func missingAWSProfile(variable string) error {
-	return fmt.Errorf("load your AWS sign-in: %s names a profile the shared config and credentials files do not hold (not printed)", variable)
+	held := "none"
+	if profiles := heldAWSProfiles(); len(profiles) > 0 {
+		held = strings.Join(profiles, ", ")
+	}
+	return fmt.Errorf("load your AWS sign-in: %s names a profile the shared config and credentials files do not hold (not printed); they hold: %s", variable, held)
+}
+
+// awsProfileName is the shape of a profile name the refusal lists: a label of letters, digits and
+// the punctuation AWS's own examples use. A section of another shape is not listed: the files are
+// the person's own, but a line that is no profile header is no label of theirs.
+var awsProfileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}$`)
+
+// heldAWSProfiles is the profiles the shared config and credentials files hold, sorted and each
+// once: the files AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE name, else the SDK's defaults
+// (~/.aws/config and ~/.aws/credentials), read by their section headers as the SDK reads them - a
+// config file's [default] and [profile <name>], a credentials file's [<name>]. A file that cannot
+// be read holds none.
+func heldAWSProfiles() []string {
+	configFile, credentialsFile := os.Getenv("AWS_CONFIG_FILE"), os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	if configFile == "" {
+		configFile = config.DefaultSharedConfigFilename()
+	}
+	if credentialsFile == "" {
+		credentialsFile = config.DefaultSharedCredentialsFilename()
+	}
+	var held []string
+	for _, file := range []struct {
+		path   string
+		config bool
+	}{{configFile, true}, {credentialsFile, false}} {
+		data, err := os.ReadFile(file.path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			section, ok := strings.CutPrefix(strings.TrimSpace(line), "[")
+			if section, ok = strings.CutSuffix(section, "]"); !ok {
+				continue
+			}
+			name := strings.TrimSpace(section)
+			if file.config && name != "default" {
+				if name, ok = strings.CutPrefix(name, "profile "); !ok {
+					continue
+				}
+				name = strings.TrimSpace(name)
+			}
+			if awsProfileName.MatchString(name) {
+				held = append(held, name)
+			}
+		}
+	}
+	slices.Sort(held)
+	return slices.Compact(held)
 }
 
 // webIdentityToken is the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, as the AWS
