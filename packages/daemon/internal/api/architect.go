@@ -454,7 +454,7 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 // graph. An issue already in the workflow is refused, since writing todo would move an in-progress
 // child back.
 //
-// A sub-architect releases only issues under its own, as it parks and runs again only those
+// A sub-architect releases only issues under its own, as it runs again only those
 // (architectOwnsUnder): the tree root, its own issue, a sibling of it and an issue under a sibling
 // are another architect's, and are refused ISSUE_NOT_OWNED. That is judged before the status, so a
 // sub-architect that names the running root or a running sibling is told the issue is not its own,
@@ -1408,7 +1408,9 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 
 // rootRoute is a route an architect takes only on its tree's root: its refusal code, and its two
 // refusals, each a whole message whose one verb is the tree root: forChild when the grant names a
-// child of the tree, notOwner when its architect does not own the root.
+// child of the tree, notOwner when its architect does not own the root. close_root's forChild says
+// how a child leaves instead, by its owning architect's status write (record.EndChildRule), which
+// holds no percent sign for this format to read.
 type rootRoute struct{ code, forChild, notOwner string }
 
 var (
@@ -1416,7 +1418,7 @@ var (
 		"the design gate belongs to the tree root %s; register it there",
 		"the design gate belongs to the tree root %s; its root architect registers it"}
 	closeRootRoute = rootRoute{"ROOT_REQUIRED",
-		"close_root ends the tree root %s; a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed",
+		"close_root ends the tree root %s. " + record.EndChildRule,
 		"close_root ends the tree root %s; its root architect closes it"}
 )
 

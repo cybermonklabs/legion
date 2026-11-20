@@ -188,12 +188,25 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done, and sign off again. " +
-  "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-  "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
+  "Sign off again when each of them has left the workflow. " +
+  "End a child with your own status write in Dispatch, which the daemon takes as it takes a person's move. " +
+  "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+  "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+  "For a fold, name the carrier in the reason: the issue that carries the work. " +
+  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead, because done starts those issues. " +
+  "Before done on a running child, have its worker push the work that the carrier needs, because done ends its turn and its pod at once. " +
+  "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+  "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+  "Do this before done, or at once after a done that you wrote first. " +
+  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart (backlog, then rerun_child). " +
+  "Say why in a dispatch comment. " +
+  "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+  "After each move, read the child back. When the daemon set the move back, write it again. " +
+  "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+  "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-  "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+  "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
@@ -201,7 +214,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
-  "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+  "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -336,7 +349,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
+        "close_root's and request_backward_move's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },

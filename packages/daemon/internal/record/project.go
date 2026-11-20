@@ -51,6 +51,41 @@ func OutOfWorkflow(status string) bool {
 	return slices.Contains(OutOfWorkflowStatuses, status)
 }
 
+// EndChildRule is how an architect ends a child, in the short form that the daemon's refusals
+// and notices carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done,
+// backlog, icebox or triage on a child as it takes a person's move (workflow's
+// sessionStatusWrite). So the move is the architect's own status write in Dispatch, and no
+// operation of the legion tool makes it. The rule says eight things, and each one stops a loss
+// that the move alone does not stop. A fold names its carrier, and the issues that wait on the
+// folded child wait on the carrier first, because done starts them. A running child's worker
+// pushes first, because done ends its turn and its pod at once. An open pull request leaves the
+// merge queue and closes unless its work should land, because the daemon changes no pull request.
+// Backlog and icebox are for a person's request or a restart, and finished work is done. A child
+// already done takes no status, because a move out of done ends its production check. And a read
+// back after each move finds a move that the daemon set back.
+//
+// It lives here because two packages send it, and api does not import workflow: workflow's
+// refusals and notices over children still in the workflow, and api's refusal of close_root on a
+// child. The architect prompts carry the same eight things whole (prompts/go/architect-common.md).
+// It holds no percent sign, because a caller can join it into a format string.
+const EndChildRule = "End a child with your own status write in Dispatch. " +
+	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+	"For a fold, name the carrier in the reason: the issue that carries the work. " +
+	"Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+	"Before done on a running child, have its worker push the work that the carrier needs. " +
+	"Done ends the worker's turn and the pod at once. " +
+	"Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+	"When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+	"Do this before done, or at once after a done that you wrote first. " +
+	"Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+	"A restart is backlog, then rerun_child. " +
+	"Say why in a dispatch comment. " +
+	"Write no status on a child that is already done, because a move out of done ends an open production check. " +
+	"After each move, read the child back (dispatch read --issue <KEY>). " +
+	"When the daemon set the move back, write it again."
+
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no

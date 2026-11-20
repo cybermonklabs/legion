@@ -251,3 +251,41 @@ func TestControllerStatusOnAnotherProjectsIssueRecordsNothing(t *testing.T) {
 		t.Fatalf("outbox rows of %s = %v, want none", foreign, got)
 	}
 }
+
+// close_root ends only a tree root. Its refusal of a child tells the architect how a child leaves
+// the workflow instead: by the status write of the architect that owns it, in Dispatch
+// (record.EndChildRule), and never by an operation the daemon no longer serves (dispatch://INFRA-3178
+// R6). Two checks refuse it, and each says so: the route's check of the issue the request names
+// (rootArchitectOf), and the workflow's check of the record the close fact reads (workflow's
+// closeRoot). Each row holds only that much of the wording.
+func TestTheRootRequiredRefusalNamesTheStatusWrite(t *testing.T) {
+	h, handlers, _ := statusHarness(t)
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	for _, tc := range []struct {
+		name string
+		text func(t *testing.T) string
+	}{
+		{"the API", func(t *testing.T) string {
+			return refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
+				"grantId": architect.grant(t), "issue": statusChild, "reason": "moot",
+			}, nil), http.StatusForbidden, "ROOT_REQUIRED")
+		}},
+		{"the workflow", func(t *testing.T) string {
+			result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "api", "close-a-child", intake.CloseRoot{Issue: statusChild, Reason: "moot"}, handlers...)
+			if err != nil || result.Refusal == nil || result.Refusal.Code != "ROOT_REQUIRED" {
+				t.Fatalf("the close fact of %s = %+v, %v; want ROOT_REQUIRED", statusChild, result.Refusal, err)
+			}
+			return result.Refusal.Message
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text(t)
+			if !strings.Contains(text, "dispatch issue-update") || !strings.Contains(text, "--status done") {
+				t.Errorf("ROOT_REQUIRED from %s says %q, want it to name the architect's status write (dispatch issue-update … --status done)", tc.name, text)
+			}
+			if strings.Contains(strings.ToLower(text), "park") {
+				t.Errorf("ROOT_REQUIRED from %s says %q, which names a removed operation or the old word for the move", tc.name, text)
+			}
+		})
+	}
+}

@@ -54,11 +54,12 @@ They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
 A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
-A child that duplicates another issue and is not yet released is never released:
-fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`, because
-its work is folded into the issue you keep.
-Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
+A child that duplicates another issue and is not yet released is never released.
+A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
+Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
+For a fold, name in the reason the issue that carries the work.
+Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
+Say why in a `dispatch comment`.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
 outside this tree is never an issue you file: a clear defect in code this tree touches or depends
@@ -99,7 +100,7 @@ you, unless the daemon already sent one for your issue in this run of the tree. 
 a child of yours starts while Dispatch shows an open child under it, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child at
 once, release every child that should run, and move each other child as section 3 of
-`skill://legion-architect` says. Park between event-driven wakes; do not poll or manufacture
+`skill://legion-architect` says. Wait between event-driven wakes; do not poll or manufacture
 progress. The daemon starts every phase of each released child itself, in the order its fixed
 workflow table sets, each phase worker as its own process with that child's context already in
 its environment; a role it starts again resumes the same session, and it starts in a new session,

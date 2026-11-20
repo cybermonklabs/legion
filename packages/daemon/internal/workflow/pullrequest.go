@@ -422,10 +422,12 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
 // request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
-// close is waiting, and for whom.
+// close is waiting, and for whom. It also says how a child leaves without its own merge, which is
+// the architect's status write (record.EndChildRule), and that such a write counts once the daemon
+// has taken it (statusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves. Park one with park_child "+parkRule+", and say in a comment which of those it is",
-		number, issue, strings.Join(waiting, ", "), issue)
+	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
+		number, issue, strings.Join(waiting, ", "), issue) + " " + statusNotTakenYet + " " + record.EndChildRule
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close

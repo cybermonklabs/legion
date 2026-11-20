@@ -2026,11 +2026,22 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
-// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
-// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
-// so that an architect reads one rule wherever it reads of a park.
-const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
+// statusNotTakenYet is the sentence that each refusal and notice over children still in the
+// workflow adds: sign_off's, close_root's and the pr-merged notice (waitingForTree). The daemon
+// reads the architect's status write on a child from that write's Dispatch event, and the event
+// consumer can deliver the event after the architect calls again. Until then the record holds the
+// child in the workflow and the refusal names it, so the architect waits for read_record to show
+// its move (dispatch://INFRA-3178 R1).
+const statusNotTakenYet = "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it."
+
+// endChildrenFirst is what the two refusals over children still in the workflow, sign_off's and
+// close_root's, tell the architect to do: wait for its status write to be taken, end a child by
+// that write (record.EndChildRule), and ask the person about a child that no move fits. hold is
+// what the architect holds until the person answers.
+func endChildrenFirst(hold string) string {
+	return statusNotTakenYet + " " + record.EndChildRule +
+		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+}
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
@@ -2058,8 +2069,9 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. "+
+			"A parent's head proves its children's merged work, so the daemon accepts it after them. Sign off again when each of them has left the workflow.",
+			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
