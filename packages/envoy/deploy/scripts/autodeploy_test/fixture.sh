@@ -42,7 +42,7 @@ fi
 mkdir -p "$compose" "$backups" "$bin" "$tools"
 # The fixture makes its credential and URL at run time. The source carries neither a password
 # assignment nor a URL with userinfo, so the public-source check has no credential-like test data.
-password='s@cret-'canary
+password='s@cret-'"canary"
 encoded_password=${password/@/%40}
 url_user='postgres://dispatch'
 default_database_target='db.test:5432/dispatch'

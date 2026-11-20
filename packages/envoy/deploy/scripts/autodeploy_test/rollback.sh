@@ -303,9 +303,9 @@ fi
 # password in a refused URL can reach a process's arguments, and the refusal never prints the URL.
 # Build the URLs from source fragments. The fixture must exercise credentials without putting a
 # credential-shaped literal in a public source file.
-review_credential='review-'secret
-password_key='pass'word
-sslpassword_key='sslpass'word
+review_credential='review-'"secret"
+password_key='pass'"word"
+sslpassword_key='sslpass'"word"
 url_scheme='postgres'
 url_with_user_credential() {
   local user=$1 credential=$2 target=$3 scheme=${4:-$url_scheme}
@@ -390,11 +390,11 @@ done
 # credential at all. The clients get the URL without its credential as their last argument. The
 # credential reaches the fake libpq only as PGPASSWORD, and the deploy goes on to the origin
 # check's rollback.
-encoded_unicode='s%C3%BC%C3%9F-'canary
+encoded_unicode='s%C3%BC%C3%9F-'"canary"
 for case in \
   "$(accepted_case "$password" "$(url_with_credential "$encoded_password" "$default_database_target?sslmode=require&connect_timeout=10&application_name=dispatch-deploy")" "$(url_without_credential "$default_database_target?sslmode=require&connect_timeout=10&application_name=dispatch-deploy")")" \
   "$(accepted_case 'Az09._~-:/?#[] @' "$(url_with_user_credential 'dispatch.ro' 'Az09._~-%3A%2F%3F%23%5B%5D%20%40' 'db-1.internal.example/dispatch_prod' postgresql)" "$(url_without_user_credential 'dispatch.ro' 'db-1.internal.example/dispatch_prod' postgresql)")" \
-  "$(accepted_case 'süß-'canary "$(url_with_credential "$encoded_unicode" '10.0.0.7:65535/dispatch')" "$(url_without_credential '10.0.0.7:65535/dispatch')")" \
+  "$(accepted_case 'süß-'"canary" "$(url_with_credential "$encoded_unicode" '10.0.0.7:65535/dispatch')" "$(url_without_credential '10.0.0.7:65535/dispatch')")" \
   "$(accepted_case '' "$(url_without_credential 'db.test/dispatch')" "$(url_without_credential 'db.test/dispatch')")"; do
   IFS='|' read -r case_password case_url case_client_url <<<"$case"
   case_begin "an accepted DATABASE_URL ($case_url)"
