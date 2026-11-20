@@ -284,11 +284,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // as an error; a publish refused because the connection is reconnecting (ErrReconnectBufExceeded) is
 // logged at INFO.
 func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T, answered bool) {
-	type answer struct {
-		value T
-		err   error
-	}
-	answers := make(chan answer, 1)
+	answers := make(chan T, 1)
 	go func() {
 		v, err := call()
 		switch {
@@ -300,14 +296,14 @@ func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T
 		default:
 			slog.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
 		}
-		answers <- answer{value: v, err: err}
+		answers <- v
 	}()
 	wait := time.Duration(callNATSWait.Load())
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case a := <-answers:
-		return a.value, true
+	case value = <-answers:
+		return value, true
 	case <-timer.C:
 		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
 		return value, false
