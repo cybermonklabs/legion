@@ -27,9 +27,29 @@ export type Advised<T> = T & { readonly advice?: WriteAdvice };
  *  write never sends. */
 export type DocumentAdvised<T> = T & { readonly advice?: DocumentWriteAdvice };
 
+/** The token of the version a whole-document upload is replacing, which `dispatch doc-read`
+ *  prints as `Document token: sha256:…`. It is not an edit's `EditPrecondition`: an upload
+ *  rewrites the whole tree, so a `blocks` guard says nothing about what it replaces and the
+ *  server refuses one (`400 INVALID_PRECONDITION`, `docs.ValidateUploadPrecondition`). */
+export interface UploadPrecondition {
+  readonly document: string;
+}
+
 interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
+  /** The token of the version this upload is replacing, which `dispatch doc-read` prints. Every
+   *  upload over a document the owner already holds names it, and one that names none is refused
+   *  `400 PRECONDITION_REQUIRED`. A token behind the live document is refused
+   *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
+   *  live version number. A first upload under a name replaces no version, and a file is no
+   *  document, so neither names one. An upload that names a token where the document has none
+   *  for it to name — a first upload under a name its owner holds nothing under, and the repair
+   *  of a document whose live tree is outside the Proof schema — is refused
+   *  `409 PRECONDITION_FAILED` carrying `code` and `error` alone: there is no live token to put
+   *  in a `current`, and no mismatch to report, so the refusal asks for the upload again naming
+   *  no token. */
+  readonly precondition?: UploadPrecondition;
   readonly actor?: Actor;
 }
 

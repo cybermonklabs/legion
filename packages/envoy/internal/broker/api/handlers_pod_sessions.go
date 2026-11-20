@@ -313,20 +313,22 @@ type podSessionReleaseResponse struct {
 // BROKER_SERVICE_LOGINS lists, presenting its own projected ServiceAccount token for the broker's
 // audience, and nothing else. The class answers before the handler, as it does for the
 // registration: 401 for the token, 403 ACCOUNT_NOT_LISTED for an account the logins do not name,
-// and 429 with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS
-// does not gate it, so a registrar whose entry was taken out still releases what it registered
-// while it was listed. A release is the registrar account's (registrar.Subject), not a pod's: it
-// releases every live registration of each named session that the account wrote, whichever pod of
-// the account logged in to write it. So every pod of an account paired with itself in
-// BROKER_POD_REGISTRARS, which BROKER_SERVICE_LOGINS lists so that the pair registers anything,
-// logs in as that registrar and can release every registration that account wrote, by session
-// name alone, with no token of the pod whose trade it ends. Every pod that runs as any registrar's
-// account logs in as that registrar in the same way and can release every registration that
-// account wrote. So a deployment lists as a registrar only an account whose pods may end the
-// trades of every pod that account registers. An account paired with itself is the common case of
-// an account whose pods may not. The caller stops every write of the names it releases first, its
-// renewal and any write in flight: a registration write by the caller's login account after the
-// release makes that registration live again.
+// 403 PERSON_ACCOUNT for an account BROKER_POD_OPERATORS maps to a person (serviceCaller), and 429
+// with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS does not gate
+// it, so a registrar whose entry was taken out still releases what it registered while it was
+// listed, unless BROKER_POD_OPERATORS then maps its account to a person: serviceCaller refuses that
+// account 403 PERSON_ACCOUNT, so a registrar that is to be mapped releases before it is mapped. A
+// release is the registrar account's (registrar.Subject), not a pod's: it releases every live
+// registration of each named session that the account wrote, whichever pod of the account logged in
+// to write it. So every pod of an account paired with itself in BROKER_POD_REGISTRARS, which
+// BROKER_SERVICE_LOGINS lists so that the pair registers anything, logs in as that registrar and
+// can release every registration that account wrote, by session name alone, with no token of the
+// pod whose trade it ends. Every pod that runs as any registrar's account logs in as that registrar
+// in the same way and can release every registration that account wrote. So a deployment lists as a
+// registrar only an account whose pods may end the trades of every pod that account registers. An
+// account paired with itself is the common case of an account whose pods may not. The caller stops
+// every write of the names it releases first, its renewal and any write in flight: a registration
+// write by the caller's login account after the release makes that registration live again.
 //
 // The body is exactly {"sessions": [...]}, at most 1 MiB (413 REQUEST_TOO_LARGE above it); an
 // unknown field, a body that is not JSON, and an entry that is not a string are 400

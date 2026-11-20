@@ -53,7 +53,7 @@ Many small pull requests each cost a workspace, an admission wait, review, CI, a
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
-A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A child that duplicates another issue and is not yet released is never released.
 A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
 Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
@@ -99,8 +99,8 @@ open child under it, its first phase waits and the `children-first` notice of th
 you, unless the daemon already sent one for your issue in this run of the tree. No first phase of
 a child of yours starts while Dispatch shows an open child under it, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child at
-once, release every child that should run, and move each other child as section 3 of
-`skill://legion-architect` says. Wait between event-driven wakes; do not poll or manufacture
+once, release every child that should run, and move each other child as the `children-first` row
+of `skill://legion-architect/references/wake-routing.md` says. Wait between event-driven wakes; do not poll or manufacture
 progress. The daemon starts every phase of each released child itself, in the order its fixed
 workflow table sets, each phase worker as its own process with that child's context already in
 its environment; a role it starts again resumes the same session, and it starts in a new session,
@@ -108,7 +108,7 @@ which has read none of its own earlier work, only once supervise's `forgetSessio
 that one. You start no worker. Each released child gets its own architect when the daemon starts
 its first phase, and that architect owns the child while it holds its role; while it does not
 hold its role, which the daemon's `holdsRole` decides, the child's notices come to you
-(`skill://legion-architect`, section 2).
+(`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
 

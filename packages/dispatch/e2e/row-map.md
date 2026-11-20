@@ -271,6 +271,8 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
+| `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
+| `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
@@ -293,6 +295,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
 | `e2e/machine-login.e2e.ts` | device grants decided on the real broker |
+| `e2e/machine-logins-person-pod.e2e.ts` | the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back |
 | `e2e/machines.e2e.ts` | the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes |
 | `e2e/margin-composer-hold.e2e.ts` | live document margin with sends out and server refusals |
 | `e2e/margin-kind-switch.e2e.ts` | two readers in one live document room |

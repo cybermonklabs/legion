@@ -998,6 +998,8 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 }
 registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A check's command in a node's body: the muted grey on the mark grey (`NodeFacts.tsx`).
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
 // Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.

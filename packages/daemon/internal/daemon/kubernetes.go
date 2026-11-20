@@ -610,7 +610,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// attempt: the first pod that is not the one the work came off takes it, whether the
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -648,6 +648,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
+	}
+}
+
+// savedWorkspaceBundle is st's take of a release's saved work for a pod of project, the runtime's
+// project token (sandbox.Options.Project), in the shape the runtime calls it
+// (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
+// (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
+// daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
+func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
 	}
 }
 

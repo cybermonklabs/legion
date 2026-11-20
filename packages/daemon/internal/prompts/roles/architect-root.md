@@ -31,7 +31,7 @@ owns its child while it holds its role: it decomposes the child, files the child
 under the child, reviews their specs and signs the child off. So file every child you create under
 the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
 its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
-architect does not hold its role (`skill://legion-architect`, section 2).
+architect does not hold its role (`skill://legion-architect/references/wake-routing.md`).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
@@ -159,7 +159,7 @@ It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
 A child that duplicates another issue and is not yet released is never released.
 A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.

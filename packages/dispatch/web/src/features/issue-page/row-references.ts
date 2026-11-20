@@ -4,7 +4,7 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
-import { readTextReferences } from "../refs/text-references";
+import { readTextReferences, type TextReading } from "../refs/text-references";
 import { textHead } from "../refs/tree-fragment";
 
 /** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
@@ -36,10 +36,103 @@ const TITLE_MAX = 60;
 /** One reference in a text, where it stands and what it names. */
 export interface RowReference {
   readonly end: number;
+  /** The address a link to it goes to (`buildReferencePath`). */
+  readonly path: string;
   /** The reference as the batched read is asked for it. */
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
   readonly start: number;
+}
+
+/** How many texts' readings the page keeps. A link pass reads one text per painted text node,
+ *  so a row reads several: its stored text, each paragraph, list item and inline run of its
+ *  drawn words, its answer. The largest issue the page draws, with 86 comments, 11 messages and
+ *  2,106 blocks over 56 documents, holds 11,907 distinct such texts, counted from its stored
+ *  texts through the API by paragraph, list item and inline span; that is every text of every
+ *  document, more than one outline and a second view draw. The cap is about twice that, so a
+ *  draw that goes over the rows in the same order each time finds every text kept. */
+const READINGS_KEPT = 24_576;
+
+/** How many lists of issue keys one text keeps a reading for: the tree's citations read against
+ *  none, and a row against the keys the batched read names, which change as names arrive. */
+const KEY_LISTS_KEPT = 4;
+
+/** One text's reading, and the references of it a row links, read once it is first asked. */
+interface Reading {
+  linked?: readonly RowReference[];
+  readonly reading: TextReading;
+}
+
+/** Each text's readings, the least recently asked text first, by the small id of the list of
+ *  issue keys it was read against (`keyListId`), the least recently asked list first. The text
+ *  itself is the key, so an entry holds no copy of it or of the keys. Nothing else a reading
+ *  depends on changes while the page is open: the origin is the page's, and the references read
+ *  ambiguous are left out after the reading (`rowReferences`), so a new set of them draws no
+ *  stale link. */
+const readings = new Map<string, Map<number, Reading>>();
+
+/** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
+ *  for a new list of the same keys. `0` is no list. */
+const listIds = new WeakMap<readonly string[], number>();
+const keySetIds = new Map<string, number>();
+let lastKeySetId = 0;
+
+/** How many distinct sets of keys are kept an id before they are forgotten: a set the batched
+ *  read has moved on from is asked no more, and a new one takes a new id. */
+const KEY_SETS_KEPT = 64;
+
+/** The small id of the list of keys `issues` holds: the same id for the same keys. */
+function keyListId(issues: readonly string[] | undefined): number {
+  if (issues === undefined) return 0;
+  const known = listIds.get(issues);
+  if (known !== undefined) return known;
+  const joined = issues.join(" ");
+  let id = keySetIds.get(joined);
+  if (id === undefined) {
+    if (keySetIds.size >= KEY_SETS_KEPT) keySetIds.clear();
+    lastKeySetId += 1;
+    id = lastKeySetId;
+    keySetIds.set(joined, id);
+  }
+  listIds.set(issues, id);
+  return id;
+}
+
+/**
+ * `text` read by `readTextReferences` against `issues`, the bare keys it may link, once per
+ * distinct text and set of keys while the reading is kept. The page read every row's words again
+ * on each draw, and encoded each reference's block id again with them, which was about 650 ms of
+ * a draw of the outline after a view change on a production-size issue.
+ */
+function readingOf(text: string, issues: readonly string[] | undefined): Reading {
+  const id = keyListId(issues);
+  let byKeys = readings.get(text);
+  if (byKeys === undefined) {
+    byKeys = new Map();
+    if (readings.size >= READINGS_KEPT) {
+      const oldest = readings.keys().next();
+      if (oldest.done !== true) readings.delete(oldest.value);
+    }
+  } else {
+    readings.delete(text);
+  }
+  readings.set(text, byKeys);
+  const held = byKeys.get(id);
+  if (held !== undefined) {
+    // The list asked is its text's newest, so a fifth list evicts the one asked longest ago.
+    byKeys.delete(id);
+    byKeys.set(id, held);
+    return held;
+  }
+  const read: Reading = {
+    reading: readTextReferences(text, issues === undefined ? {} : { issues }),
+  };
+  if (byKeys.size >= KEY_LISTS_KEPT) {
+    const oldest = byKeys.keys().next();
+    if (oldest.done !== true) byKeys.delete(oldest.value);
+  }
+  byKeys.set(id, read);
+  return read;
 }
 
 /**
@@ -53,7 +146,7 @@ export interface RowReference {
  */
 export function citedReferences(text: string): string[] {
   if (text === "") return [];
-  const { needs, references } = readTextReferences(text);
+  const { needs, references } = readingOf(text, undefined).reading;
   const cited = new Set<string>();
   for (const found of references) {
     if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
@@ -91,13 +184,21 @@ export function rowReferences(
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
 ): RowReference[] {
   if (text === "") return [];
-  const found: RowReference[] = [];
-  for (const one of readTextReferences(text, { issues }).references) {
-    if (one.form === "question" || one.reference === undefined || one.route === undefined) continue;
-    if (ambiguous.has(one.reference)) continue;
-    found.push({ end: one.end, reference: one.reference, route: one.route, start: one.start });
-  }
-  return found;
+  const read = readingOf(text, issues);
+  read.linked ??= read.reading.references.flatMap((one) =>
+    one.form === "question" || one.reference === undefined || one.route === undefined
+      ? []
+      : [
+          {
+            end: one.end,
+            path: buildReferencePath(one.route),
+            reference: one.reference,
+            route: one.route,
+            start: one.start,
+          },
+        ]
+  );
+  return read.linked.filter((one) => !ambiguous.has(one.reference));
 }
 
 /**
@@ -193,7 +294,7 @@ export function linkRowReferences(
     for (const one of found) {
       pieces.push(value.slice(at, one.start));
       const anchor = document.createElement("a");
-      anchor.setAttribute("href", buildReferencePath(one.route));
+      anchor.setAttribute("href", one.path);
       anchor.setAttribute(ROW_REFERENCE, one.reference);
       anchor.setAttribute(ROW_WRITTEN, value.slice(one.start, one.end));
       anchor.tabIndex = -1;
