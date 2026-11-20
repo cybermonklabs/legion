@@ -103,7 +103,7 @@ fixture() {
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios"
+    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
@@ -228,6 +228,11 @@ YAML
 #!/usr/bin/env bash
 docker run -d --name pg --cpus 2 --memory 2g \\
   -e POSTGRES_DB=legion $REGISTRY@$NATS >/dev/null
+YAML
+  cat > "$root/packages/envoy/deploy/scripts/compose-2.12.2_test.sh" <<YAML
+# shellcheck shell=bash
+compose_2_12_image=$REGISTRY@$NATS
+container=\$(docker create "\$compose_2_12_image")
 YAML
   echo "$root"
 }
