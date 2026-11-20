@@ -1109,10 +1109,12 @@ needs the sign-in group too, though it is not in that group: a person from outsi
 passkey with an invitation a project owner makes while signed in through Google, so without that
 group nobody could invite anyone, and it is refused with the clause naming each sign-in input
 still unset. So the second origin's host is then one Google takes in a redirect URI, never an IP
-address, which no browser makes a passkey for. The sandbox refuses it by name, as it refuses
-`outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With it unset the component
-renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
-predates the setting ignores it, as it ignores every variable its settings table does not list.
+address, which no browser makes a passkey for. It replaces the Google sign-in of people from
+outside that `signInOutside` turns on, so the two are refused together. The sandbox refuses it by
+name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With
+it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
+`envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
+does not list.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1544,7 +1546,8 @@ above states, a `publicOrigin` that breaks the rule its own paragraph states or 
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
 `signInClientId`, `signInClientSecret`, `signInOutside`, `signInPasskey` or `outsideOrigin`, and,
 once it resolves, an `iapAudience` of another form than a backend service's, a `signInOutside`
-without the sign-in inputs, a `signInPasskey` without `outsideOrigin` or the sign-in inputs, an
+without the sign-in inputs, a `signInPasskey` without `outsideOrigin` or the sign-in inputs or
+beside `signInOutside`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2224,9 +2227,10 @@ it at and turns outside sign-in on; every other property above is unchanged:
 ```
 
 Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
-`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). One that signs them in with a passkey at that
-origin sets `signInPasskey: true` beside `outsideOrigin`, and its app then also carries
-`DISPATCH_SIGNIN_PASSKEY=1`, right after `DISPATCH_OUTSIDE_ORIGIN`.
+`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). A deployment that signs them in with a passkey
+instead sets `signInPasskey: true` in place of `signInOutside: true`; the component refuses the
+two together. Its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
+`DISPATCH_OUTSIDE_ORIGIN`, and no `DISPATCH_SIGNIN_OUTSIDE`.
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and

@@ -207,9 +207,10 @@ type DispatchArgs struct {
 	// and its relying party ID that origin's host, so it needs outsideOrigin and renders right after
 	// DISPATCH_OUTSIDE_ORIGIN. It needs the sign-in inputs too, though it is no member of their
 	// group: a person from outside enrolls a passkey with an invitation a project owner makes while
-	// signed in through Google, so without them nobody could invite anyone. It is refused beside
-	// iapAudience, since IAP signs a person in, and in the sandbox, which serves no https origin.
-	// Unset renders nothing.
+	// signed in through Google, so without them nobody could invite anyone. It replaces the Google
+	// sign-in of people from outside that signInOutside turns on, so it is refused beside
+	// signInOutside. It is refused beside iapAudience, since IAP signs a person in, and in the
+	// sandbox, which serves no https origin. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
@@ -1493,7 +1494,7 @@ func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error
 	}
 	for _, in := range dispatchClusterOnlyRefusals(args) {
 		if in.set {
-			return dispatchSettings{}, fmt.Errorf("%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
+			return dispatchSettings{}, core.InputErrorf(in.input, "%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
 		}
 	}
 	return s, nil
@@ -1569,7 +1570,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for, and
 	// a person from outside enrolls a passkey with an invitation a project owner makes while signed
 	// in through Google, so it needs the sign-in inputs too; their clause names each one still unset.
-	// The sandbox and the IAP door have refused it above, each by a rule of its own.
+	// It replaces the Google sign-in of people from outside that signInOutside turns on, so the two
+	// are refused together. The sandbox and the IAP door have refused it above, each by a rule of
+	// its own.
 	if args.SignInPasskey {
 		if outsideOrigin == "" {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
@@ -1577,6 +1580,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !signInOn {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey%s",
 				dispatchGroupClause("sign-in", signInGroup))
+		}
+		if args.SignInOutside {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey is refused beside signInOutside: passkey sign-in replaces the Google sign-in of people from outside the company that signInOutside turns on; unset signInOutside, or unset signInPasskey")
 		}
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so

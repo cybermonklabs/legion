@@ -241,9 +241,9 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 }
 
 // Every input that configures Dispatch rather than the cluster is refused by name when it arrives
-// with clusterOnly, so a stack already running Dispatch cannot turn the mode on: such a stack sets
-// these inputs, and the update is refused before anything it would no longer build is deleted. The
-// resolver is what refuses, and it needs no engine.
+// with clusterOnly, as a core.InputError naming it, so a stack already running Dispatch cannot
+// turn the mode on: such a stack sets these inputs, and the update is refused before anything it
+// would no longer build is deleted. The resolver is what refuses, and it needs no engine.
 func TestDispatchClusterOnlyRefusesEveryDispatchInput(t *testing.T) {
 	for _, row := range dispatchClusterOnlyRefusals() {
 		t.Run(row.input, func(t *testing.T) {
@@ -251,6 +251,9 @@ func TestDispatchClusterOnlyRefusesEveryDispatchInput(t *testing.T) {
 			row.set(args)
 			_, err := gcp.ResolveDispatch(args)
 			require.EqualError(t, err, row.input+" configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly")
+			var refused *core.InputError
+			require.ErrorAs(t, err, &refused)
+			require.Equal(t, row.input, refused.Input)
 		})
 	}
 	// The same inputs unset, which is what a cluster-only consumer sends, resolve.
