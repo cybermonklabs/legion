@@ -33,7 +33,7 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs.
+# job of CI runs, and a step whose gate names the harness it runs must run that harness alone.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -2235,6 +2235,74 @@ check "fails" "$(is "$status" 1)"
 check "names both gates and the test" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory the exact entries of gates app, app_step pin it to: on its line 1, its -run leaves out TestGuard, which the pinned -run names; make the step run that text there again, or change the entries, ')"
 check "and refuses it once" "$(is "$(grep -c 'is off the script and directory' <<<"$out" || true)" 1)"
+
+# harness_step <root>: the lint job gains a step, "Test a", that runs the harness tests/a.test.sh
+# behind a filter of its own, harness_a, and the table a gate on that step that names the harness
+# it runs (rule 24), as ci_job_reads.py's harness() builds one for every harness step of the test
+# job. tests/b.test.sh is a second harness no step runs. The check reads neither file's text.
+harness_step() {
+  local root=$1
+  mkdir -p "$root/tests"
+  printf '#!/bin/sh\necho a\n' > "$root/tests/a.test.sh"
+  printf '#!/bin/sh\necho b\n' > "$root/tests/b.test.sh"
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      harness_a: ${{ steps.filter.outputs.harness_a }}'
+  replace "$root/.github/workflows/ci.yaml" $'        run: echo lint\n' \
+    $'        run: echo lint\n      - name: Test a\n        if: needs.changes.outputs.harness_a == \'true\'\n        run: tests/a.test.sh\n'
+  replace "$root/.github/ci-filters.yaml" $'\nimage:' \
+    $'\nharness_a:\n  - \'.github/workflows/ci.yaml\'\n  - \'tests/a.test.sh\'\nimage:'
+  cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES.append(gate("harness_a", "lint", step="Test a", harness="tests/a.test.sh",
+                  reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"),
+                         Read("tests/a.test.sh", "the step runs it")]))
+PY
+}
+
+echo "case: a harness step whose run: is its harness alone"
+root=$(fixture harness-step)
+harness_step "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and says nothing of the harness" "$(is "$(contains "$out" 'is the gate of harness')" false)"
+
+echo "case: a harness step that runs its harness through bash, or by ./ from its own directory"
+root=$(fixture harness-step-forms)
+harness_step "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: tests/a.test.sh" "        run: bash tests/a.test.sh"
+run_check "$root"
+check "bash <harness> exits 0" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "        run: bash tests/a.test.sh" \
+  $'        run: |\n          # the harness of this step\n          ./a.test.sh\n        working-directory: tests'
+run_check "$root"
+check "./<harness> from the step's directory, beside a comment, exits 0" "$(is "$status" 0)"
+
+echo "case: a harness step whose run: names another harness"
+root=$(fixture harness-step-swapped)
+harness_step "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: tests/a.test.sh" "        run: tests/b.test.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the gate, the harness, the step and what it runs" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::gate harness_a is the gate of harness tests/a.test.sh, and step "Test a" of lint does not run that harness alone: its run: is `tests/b.test.sh`. ')"
+check "and the remedy" "$(contains "$out" "make the step's run: \`tests/a.test.sh\` alone")"
+
+echo "case: a harness step that runs a second file after its harness"
+root=$(fixture harness-step-second-line)
+harness_step "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: tests/a.test.sh" \
+  $'        run: |\n          tests/a.test.sh\n          tests/b.test.sh'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quoting both lines" \
+  "$(contains "$out" 'does not run that harness alone: its run: is `tests/a.test.sh`; `tests/b.test.sh`. ')"
+
+echo "case: a harness step whose run: holds the harness's path inside a longer command"
+root=$(fixture harness-step-longer)
+harness_step "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: tests/a.test.sh" "        run: tests/a.test.sh || true"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quoting the line" "$(contains "$out" 'its run: is `tests/a.test.sh .. true`')"
 
 for odd in cr nbsp; do
   echo "case: a hidden command after a ${odd} that Python reads as a comment and bash runs"

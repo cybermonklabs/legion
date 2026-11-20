@@ -127,6 +127,8 @@ jobs:
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
+      check_ci_images_rows_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_rows_test }}
+      check_ci_images_references_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_references_test }}
       mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
       ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_test }}
       mirror_ci_tools_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_tools_test }}
@@ -332,6 +334,8 @@ jobs:
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}
+      check_ci_images_rows_test: ${{ needs.changes.outputs.check_ci_images_rows_test }}
+      check_ci_images_references_test: ${{ needs.changes.outputs.check_ci_images_references_test }}
       mirror_ci_images_test: ${{ needs.changes.outputs.mirror_ci_images_test }}
       ci_tools_test: ${{ needs.changes.outputs.ci_tools_test }}
       mirror_ci_tools_test: ${{ needs.changes.outputs.mirror_ci_tools_test }}

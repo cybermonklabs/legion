@@ -222,7 +222,9 @@ class Gate:
     step) it gates reads. `workflow` is the file that holds that job's steps: ci.yaml, or a
     workflow ci.yaml calls, since a job that calls a reusable workflow keeps its id, its
     `needs: changes` and the whole `if:` that tests the filter in ci.yaml and holds its steps in
-    the called file under the same id."""
+    the called file under the same id. `harness`, on a step's gate, is the test harness that step
+    runs: the step's run: must then be that file alone (harness_difference), so the step is tied
+    to the file its filter names by what it runs rather than by its name."""
 
     filter: str
     job: str
@@ -231,10 +233,11 @@ class Gate:
     step: str = ""
     exact: tuple = ()
     workflow: str = WORKFLOW
+    harness: str = ""
 
 
-def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=WORKFLOW):
-    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact), workflow)
+def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=WORKFLOW, harness=""):
+    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact), workflow, harness)
 
 
 def gate_runs(g: Gate) -> list:
@@ -1363,6 +1366,24 @@ def clean_dir(path: str) -> str:
     return path.strip().removeprefix("./").rstrip("/") or "."
 
 
+def harness_difference(document: dict, job: dict, step: dict, harness: str) -> str:
+    """'' when a harness gate's step runs its harness alone: the step's run:, comments and blank
+    lines aside (script_lines), is one line, and that line is the harness's path from the
+    repository root or from the step's working directory, with or without a leading `./`, alone
+    or after `bash `. Else the run: lines as a refusal quotes them. The step's name ties it to
+    nothing it runs, so this is what ties the step to the file its gate's filter names: a run:
+    naming another harness leaves a change to this one starting a step that never runs it, and a
+    second line runs a file the gate need not read. The line is compared as text, so a character
+    the two readers split differently (odd_character) makes it no match."""
+    workdir = step_workdir(document, job, step)
+    paths = {harness, os.path.relpath(harness, workdir)} if workdir != "." else {harness}
+    forms = {f"{shell}{lead}{path}" for path in paths for lead in ("", "./") for shell in ("", "bash ")}
+    lines = script_lines(str(step.get("run", "")))
+    if len(lines) == 1 and lines[0] in forms:
+        return ""
+    return "; ".join(f"`{line}`" for line in lines) or "no line"
+
+
 def tag_set(tags: str) -> frozenset:
     return frozenset(t for t in tags.split(",") if t)
 
@@ -1530,6 +1551,16 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 problems.append(error(g.workflow, f"gate {g.filter} names step \"{g.step}\" of {g.job}, but "
                                                   f"no single step of that name has an if: on "
                                                   f"needs.changes.outputs.{g.filter}"))
+            # Rule 24: a harness gate's step runs its harness, the file its filter names, and
+            # nothing else; the step's name is no tie.
+            ran = harness_difference(steps_document, job, steps[0], g.harness) if len(steps) == 1 and g.harness else ""
+            if ran:
+                problems.append(error(g.workflow, f"gate {g.filter} is the gate of harness {g.harness}, and step "
+                                                  f"\"{g.step}\" of {g.job} does not run that harness alone: its run: "
+                                                  f"is {ran}. The step is tied to its harness by what it runs, not "
+                                                  f"by its name, so a change to {g.harness} would start a step that "
+                                                  f"does not run it; make the step's run: `{g.harness}` alone, and "
+                                                  f"give any other harness a step and a harness() gate of its own"))
         elif g.filter not in gated[(WORKFLOW, g.job)]:
             problems.append(error(WORKFLOW, f"job {g.job}'s if: does not test needs.changes.outputs.{g.filter}"))
     for name in excluded:

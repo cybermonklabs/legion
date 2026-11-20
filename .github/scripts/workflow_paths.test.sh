@@ -7,8 +7,9 @@
 #
 # Only what the model does. What each checker makes of it — its verdicts, its reading of a
 # workflow — stays in that checker's own suite: check-ci-filters.test.sh,
-# check-image-trigger-paths.test.sh and check-ci-images.test.sh, each of which symlinks this same
-# module rather than reimplementing it.
+# check-image-trigger-paths.test.sh and the three harnesses of check-ci-images.sh, each of which
+# symlinks this same module (the last through check-ci-images-test-lib.sh) rather than
+# reimplementing it.
 #
 # The module is symlinked into a temporary directory and imported the way the checks import it
 # (PYTHONPATH, no bytecode), so the code under test is the file CI runs. It needs a python3 with

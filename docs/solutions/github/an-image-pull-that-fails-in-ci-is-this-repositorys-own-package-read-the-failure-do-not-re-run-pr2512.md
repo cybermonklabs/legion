@@ -121,6 +121,8 @@ own fault.
   (`GET https://ghcr.io/token?scope=repository:cybermonklabs/legion/ci:pull&service=ghcr.io`) and one
   manifest `HEAD` per row with that token answered `200` for all 12 rows. A `HEAD` with no token
   answers `401`, which is the registry asking for a token rather than refusing the package. GitHub
-  published the package with the repository's own visibility, so no person had to act, no
-  consuming job needs a `docker/login-action` step, and no service container needs a
-  `credentials:` block.
+  published the package with the repository's own visibility, so no person had to act and no
+  consuming job needs a `docker/login-action` step. A service or job container still sets
+  `credentials: ${{ fromJSON('{"username":"anonymous"}') }}`, which
+  `.github/scripts/check-ci-images.sh` requires: the pull needs no credential, and the username
+  stops the runner's own login to ghcr.io with the job's token before checkout.

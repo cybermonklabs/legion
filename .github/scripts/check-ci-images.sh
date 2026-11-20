@@ -88,6 +88,28 @@
 #      reads the package. A second image this repository builds is a second build workflow,
 #      and this rule and rule 10 would then name the Dockerfile each of them builds.
 #
+# A `services:` or `container:` image from ghcr.io must set
+# `credentials: ${{ fromJSON('{"username":"anonymous"}') }}`. Runner 2.338.2 fills credentials
+# that are both empty with the job's actor and token (UpdateRegistryAuthForGitHubToken in
+# ContainerOperationProvider.cs), and logs in before checkout only when the username and the
+# password are both set (ContainerRegistryLogin). The evaluated mapping sets a username and no
+# password, so the runner does neither and pulls this public package anonymously, as run
+# 44661259584 showed. A later runner that logs in with a username alone brings the login back,
+# and its job log shows `docker login` before checkout again. The form gives no access to a
+# private image. A job's `services:`, one of its services or its `container:` that is not a
+# mapping written in the workflow is refused by name, so neither this rule nor rules 4 to 6 passes
+# it unread: an expression, because the runner evaluates it and this check cannot, so this check
+# cannot read the image the runner pulls or its credentials; a bare image, because it cannot set
+# `credentials:`; any other value, because it names no image this check can read. A
+# `uses: docker://` action is refused: it can add the same pre-checkout pull without a
+# credentials field. A job that calls a workflow other than one of this tree's
+# (`jobs.<id>.uses:` that does not start with `./`, such as
+# `<owner>/<repo>/.github/workflows/<file>@<ref>`) is refused by name: the runner pulls the
+# services and the container that workflow's jobs declare before checkout, as it does a job's
+# own, and this check cannot read that workflow's services or container. A call of this tree's
+# own workflow (`./.github/workflows/<file>`) passes, because this check reads that file.
+# .github/scripts/check-image-trigger-paths.sh refuses the same call for a reason of its own.
+#
 # IN PACKAGE MODE:
 #
 #   9. a row whose digest the package does not hold: the manifest is read with an anonymous
@@ -186,10 +208,10 @@
 # legion.browser-image.source-sha256 label. A stand-in that prints a status alone answers for
 # the manifest and not for a label, and rule 10 refuses a `built` row answered that way rather
 # than passing it over: a seam that could turn a rule off is a seam that hides what the rule
-# would have said. check-ci-images.test.sh sets the seam to a small script of its own, which
-# prints the label its rule 10 cases drive the comparison with, and mirror-ci-images.test.sh
-# drives rule 9 with it over the repository's own rows, so no case of either test reaches the
-# network.
+# would have said. check-ci-images-test-lib.sh, which this check's three harnesses source, sets
+# the seam to a small script of its own, which prints the label the rule 10 cases of
+# check-ci-images-rows.test.sh drive the comparison with, and mirror-ci-images.test.sh drives
+# rule 9 with it over the repository's own rows, so no case of those tests reaches the network.
 #
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
@@ -277,6 +299,7 @@ PACKAGE = "package"
 MODE = os.environ["CI_IMAGES_MODE"]
 
 REGISTRY = "ghcr.io/cybermonklabs/legion/ci"
+ANONYMOUS_CREDENTIALS = '${{ fromJSON(\'{"username":"anonymous"}\') }}'
 REPOSITORY = "cybermonklabs/legion/ci"
 CI_IMAGES = Path(".github/ci-images.yaml")
 MIRROR_SCRIPT = ".github/scripts/mirror-ci-images.sh"
@@ -316,7 +339,9 @@ MIRROR = "mirror.gcr.io"
 # The directories workflow_paths.walk skips (.git, .jj, node_modules, .venv, vendor) are every
 # directory this sweep skips but one, and this set holds that one.
 SWEEP_SKIP_DIRS = {".legion"}
-SELF = {".github/scripts/check-ci-images.sh", ".github/scripts/check-ci-images.test.sh"}
+# The files the sweep below skips, because each names MIRROR on purpose: this check, which names
+# it to refuse it, and the harness of the sweep's cases, which writes it into fixture trees.
+SELF = {".github/scripts/check-ci-images.sh", ".github/scripts/check-ci-images-references.test.sh"}
 ACCEPT = ",".join(
     (
         "application/vnd.oci.image.index.v1+json",
@@ -1175,6 +1200,30 @@ def scan_source(path: Path, lines: list[str]) -> None:
                 note(path, number, value, "this string")
 
 
+def not_a_mapping(path: Path, line: int, what: str, value: object, image_slot: bool) -> None:
+    """A job's `container:`, its `services:` or one of its services that is not a mapping written
+    in the workflow. The runner pulls each image of it before checkout, and logs in to ghcr.io
+    with the job's token for one with no credentials, so it is refused by name rather than passed
+    unread: rules 4 to 6 and the credentials rule read only the images of a mapping. The message
+    gives the reason true for its shape: an expression is a value the runner evaluates and this
+    check cannot; a bare image, in a slot that takes one (`image_slot`: the container, or one
+    service), is a value that cannot set `credentials:`; anything else names no image at all."""
+    if isinstance(value, str) and "${{" in value:
+        reason = (
+            "an expression, which the runner evaluates and this check cannot, so this check "
+            "cannot read the image the runner pulls before checkout or its credentials"
+        )
+    elif isinstance(value, str) and image_slot:
+        reason = "a bare image, which cannot set credentials:"
+    else:
+        reason = "neither a mapping nor an expression, so it names no image this check can read"
+    problems.append(
+        f"{path}:{line}: {what} {one_line(value)}, {reason}. Write a mapping, with image: "
+        f"{REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds, and credentials: "
+        f"{ANONYMOUS_CREDENTIALS} for each image."
+    )
+
+
 def scan_workflow(path: Path, lines: list[str]) -> None:
     """Rules 4, 5 and 6 over a workflow or a composite action: each job's runner and service
     images, each buildx driver-opts image=, and every run: script."""
@@ -1189,36 +1238,70 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
     jobs = parsed.get("jobs")
     if isinstance(jobs, dict):
         holders.extend(job for job in jobs.values() if isinstance(job, dict))
+        for name, job in jobs.items():
+            called = job.get("uses") if isinstance(job, dict) else None
+            if called is not None and not (isinstance(called, str) and called.startswith("./")):
+                problems.append(
+                    f"{path}:{key_line(job, 'uses')}: the {name} job calls {one_line(called)}, a "
+                    "workflow outside this tree, and the image gate cannot read that workflow's "
+                    "services or container, which the runner pulls before checkout. Call a "
+                    "./.github/workflows/ workflow of this tree, whose jobs this check reads."
+                )
     runs = parsed.get("runs")
     if isinstance(runs, dict):
         holders.append(runs)
     for holder in holders:
-        images: list[tuple[int, object, str]] = []
+        images: list[tuple[int, object, str, object]] = []
         container = holder.get("container")
         how = "this job's container image"
         if isinstance(container, dict):
-            images.append((key_line(container, "image"), container.get("image"), how))
+            images.append((key_line(container, "image"), container.get("image"), how, container))
         elif container is not None:
-            images.append((key_line(holder, "container"), container, how))
+            not_a_mapping(
+                path, key_line(holder, "container"), "this job's container is", container,
+                image_slot=True,
+            )
         services = holder.get("services")
         if isinstance(services, dict):
             for name, service in services.items():
                 how = f"the {name} service's image"
                 if isinstance(service, dict):
-                    images.append((key_line(service, "image"), service.get("image"), how))
+                    images.append((key_line(service, "image"), service.get("image"), how, service))
                 else:
-                    images.append((key_line(services, name), service, how))
-        for line, image, how in images:
+                    not_a_mapping(
+                        path, key_line(services, name), f"the {name} service is", service,
+                        image_slot=True,
+                    )
+        elif services is not None:
+            not_a_mapping(
+                path, key_line(holder, "services"), "this job's services are", services,
+                image_slot=False,
+            )
+        for line, image, how, definition in images:
             if not isinstance(image, str) or "${{" in image:
                 problems.append(
                     f"{path}:{line}: {how} is {one_line(image)}, which this check cannot read. "
                     f"Write {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds."
                 )
                 continue
+            if image.lower().startswith("ghcr.io/"):
+                credentials = definition.get("credentials") if isinstance(definition, dict) else None
+                if credentials != ANONYMOUS_CREDENTIALS:
+                    problems.append(
+                        f"{path}:{line}: {how} pulls from ghcr.io before checkout, so set "
+                        f"credentials: {ANONYMOUS_CREDENTIALS} to pull the public image without "
+                        "the runner's GitHub-token login."
+                    )
             note(path, line, image, how)
         for step in holder.get("steps", []) or []:
             if not isinstance(step, dict):
                 continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and uses.lower().startswith("docker://"):
+                problems.append(
+                    f"{path}:{key_line(step, 'uses')}: docker:// actions can pull before checkout; "
+                    "use a checked-out action or a bounded docker command after checkout."
+                )
             with_ = step.get("with")
             if isinstance(with_, dict):
                 options = with_.get("driver-opts")

@@ -65,12 +65,12 @@ function natsProblems(name: string, text: string): string[] {
 
 /**
  * The tracked shell scripts that start a NATS server of their own. One is left out:
- * .github/scripts/check-ci-images.test.sh writes a rig's start line into a fixture tree for
+ * .github/scripts/check-ci-images-test-lib.sh writes a rig's start line into a fixture tree for
  * check-ci-images.sh to read, inside a heredoc, and starts no server.
  */
 const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
   (name) =>
-    name !== ".github/scripts/check-ci-images.test.sh" &&
+    name !== ".github/scripts/check-ci-images-test-lib.sh" &&
     natsStart.test(readFileSync(join(root, name), "utf8"))
 );
 

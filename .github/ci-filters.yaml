@@ -689,10 +689,33 @@ check_ci_images_test: &check_ci_images_test
   - '.github/workflows/ci-job-test.yaml'
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-ci-images.test.sh'
+  - '.github/scripts/check-ci-images-test-lib.sh'
   - '.github/scripts/check-ci-images.sh'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/ci_images.py'
   - '.github/ci-images.yaml'
+  - '.github/docker/**'
+  - '.github/workflows/browser-image.yaml'
+check_ci_images_rows_test: &check_ci_images_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-ci-images-rows.test.sh'
+  - '.github/scripts/check-ci-images-test-lib.sh'
+  - '.github/scripts/check-ci-images.sh'
+  - '.github/scripts/workflow_paths.py'
+  - '.github/scripts/ci_images.py'
+check_ci_images_references_test: &check_ci_images_references_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-ci-images-references.test.sh'
+  - '.github/scripts/check-ci-images-test-lib.sh'
+  - '.github/scripts/check-ci-images.sh'
+  - '.github/scripts/workflow_paths.py'
+  - '.github/scripts/ci_images.py'
 mirror_ci_images_test: &mirror_ci_images_test
   - *ci_router
   - *ci_filters_data
@@ -999,6 +1022,8 @@ test:
   - *workflow_paths_test
   - *check_image_trigger_paths_test
   - *check_ci_images_test
+  - *check_ci_images_rows_test
+  - *check_ci_images_references_test
   - *mirror_ci_images_test
   - *ci_tools_test
   - *mirror_ci_tools_test

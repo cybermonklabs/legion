@@ -327,6 +327,15 @@
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
 #      nothing would say so.
+#  24. a step whose gate names the harness it runs - every gate ci_job_reads.py's harness()
+#      builds does - and whose run: is not that harness alone, naming the gate, the harness, the
+#      step and the run: lines. Such a gate's filter names one harness file and what it reads,
+#      and the step is found by its name, so the name is all that would tie the two: a step
+#      whose run: named another harness would be started by a change to this one and would not
+#      run it, and a second line of the run: would run a file no gate of the step need read,
+#      with every rule above passing. The run:, comments and blank lines aside, must be one
+#      line, and that line the harness's path from the repository root or from the step's
+#      working directory, with or without a leading `./`, alone or after `bash `.
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
 # in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file

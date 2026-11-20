@@ -106,6 +106,14 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh and what it tests."
         type: string
         required: true
+      check_ci_images_rows_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_rows_test: check-ci-images-rows.test.sh and what it tests."
+        type: string
+        required: true
+      check_ci_images_references_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_references_test: check-ci-images-references.test.sh and what it tests."
+        type: string
+        required: true
       mirror_ci_images_test:
         description: "ci.yaml's needs.changes.outputs.mirror_ci_images_test: mirror-ci-images.test.sh and what it tests."
         type: string
@@ -381,6 +389,14 @@ jobs:
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'
         run: .github/scripts/check-ci-images.test.sh
+
+      - name: Test the CI image check's rows
+        if: inputs.changes-result != 'success' || inputs.check_ci_images_rows_test == 'true'
+        run: .github/scripts/check-ci-images-rows.test.sh
+
+      - name: Test the CI image check's references
+        if: inputs.changes-result != 'success' || inputs.check_ci_images_references_test == 'true'
+        run: .github/scripts/check-ci-images-references.test.sh
 
       - name: Test the CI image mirror
         if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'

@@ -92,7 +92,7 @@ def at(job, step, workflow=""):
     return at_in(job, step, workflow or job_file(job))
 
 
-def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
+def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow="", harness=""):
     """A gate, whose job holds its steps in its own called file unless another file is named.
     The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
     steps.
@@ -105,7 +105,7 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     themselves, CI_SELF among it."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
-    return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
+    return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job), harness)
 
 
 def targets(path: str, key: str) -> list:
@@ -2284,11 +2284,12 @@ def harness(filter, step, harness_script, subjects, lib=True):
     """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
     harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
     script it tests first among them. The gate is the step's, so its `if:` must test this
-    filter and no other (rule 2)."""
+    filter and no other (rule 2), and the step's run: must be `harness_script` alone (rule 24):
+    the step's name is what finds it, and what it runs is what ties it to this filter."""
     entries = [(harness_script, at("test", step))]
     if lib:
         entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
-    return gate(filter, "test", step=step,
+    return gate(filter, "test", step=step, harness=harness_script,
                 reads=reads(*entries, *subjects))
 
 
@@ -2355,11 +2356,35 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
     ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
+        (f"{SCRIPTS}/check-ci-images-test-lib.sh", "check-ci-images.test.sh:22 sources it for its fixtures"),
+        (TEST_LIB, "check-ci-images-test-lib.sh:42 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
-        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images.test.sh:108 symlinks in the path model its sweep walks the tree with"),
-        (f"{SCRIPTS}/ci_images.py", "check-ci-images.test.sh:109 symlinks in the reference grammar it reads a reference with"),
-        (".github/ci-images.yaml", "its last case runs the package mode over this repository's own rows"),
-    ]),
+        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images-test-lib.sh:98 symlinks in the path model its sweep walks the tree with"),
+        (f"{SCRIPTS}/ci_images.py", "check-ci-images-test-lib.sh:99 symlinks in the reference grammar it reads a reference with"),
+        (".github/ci-images.yaml", "check-ci-images.test.sh:249 reads its built row, and that last case runs the package mode "
+                                   "over this repository's own rows"),
+        (".github/docker/**", "that same case hashes the built row's build recipe with recipe "
+                              "(check-ci-images.test.sh:253, check-ci-images-test-lib.sh:293), whose build context is every "
+                              "file of this directory, and the package mode it runs hashes the same files "
+                              "(check-ci-images.sh:808)"),
+        (".github/workflows/browser-image.yaml", "the other half of that recipe: recipe and the package mode "
+                                                 "(check-ci-images.sh:799,808) hash this file too"),
+    ], lib=False),
+    harness("check_ci_images_rows_test", "Test the CI image check's rows", f"{SCRIPTS}/check-ci-images-rows.test.sh", [
+        (f"{SCRIPTS}/check-ci-images-test-lib.sh", "check-ci-images-rows.test.sh:22 sources it for its fixtures"),
+        (TEST_LIB, "check-ci-images-test-lib.sh:42 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images-test-lib.sh:98 symlinks in the path model its sweep walks the tree with"),
+        (f"{SCRIPTS}/ci_images.py", "check-ci-images-test-lib.sh:99 symlinks in the reference grammar it reads a reference with"),
+    ], lib=False),
+    harness("check_ci_images_references_test", "Test the CI image check's references",
+            f"{SCRIPTS}/check-ci-images-references.test.sh", [
+        (f"{SCRIPTS}/check-ci-images-test-lib.sh", "check-ci-images-references.test.sh:21 sources it for its fixtures"),
+        (TEST_LIB, "check-ci-images-test-lib.sh:42 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images-test-lib.sh:98 symlinks in the path model its sweep walks the tree with"),
+        (f"{SCRIPTS}/ci_images.py", "check-ci-images-test-lib.sh:99 symlinks in the reference grammar it reads a reference with"),
+    ], lib=False),
     harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/mirror-ci-images.test.sh", [
         (f"{SCRIPTS}/mirror-ci-images.sh", "the script under test"),
         (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:437 runs the gate over the registry a copy left"),
