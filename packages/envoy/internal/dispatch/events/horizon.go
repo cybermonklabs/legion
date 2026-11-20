@@ -274,6 +274,10 @@ type Horizon struct {
 	// second to make an observation end before they look.
 	afterObservationParked      func()
 	afterParkedObservationEnded func()
+	// afterObservationBoundary runs, outside the lock, after Safe or Await has read its call
+	// boundary and before it calls observe. Nothing in production sets it; the package's tests
+	// hold a caller here to prove it can take an observation that began after its call.
+	afterObservationBoundary func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -281,9 +285,10 @@ type Horizon struct {
 	generation uint64
 	// started counts observations ever started and is never reset: an observation's number is
 	// its order, and Safe and Await each wait for one numbered above the count when called.
-	// inFlight is the observation running now, if any, and ended the newest one that has ended:
-	// one observation runs at a time, so every observation that has ended is numbered at or
-	// below ended's number.
+	// inFlight is the observation running now, if any, and ended the newest one that has ended
+	// without being abandoned (run records it): an abandoned observation is no answer a live
+	// caller may take, so it does not replace ended. One observation runs at a time, so every
+	// observation that has ended is numbered at or below the newest that started.
 	started  uint64
 	inFlight *horizonFlight
 	ended    *horizonFlight
@@ -438,6 +443,9 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	after := h.started
 	h.mu.Unlock()
+	if h.afterObservationBoundary != nil {
+		h.afterObservationBoundary()
+	}
 	if _, err := h.observe(ctx, after); err != nil {
 		return 0, err
 	}
@@ -470,6 +478,9 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	after := h.started
 	h.mu.Unlock()
+	if h.afterObservationBoundary != nil {
+		h.afterObservationBoundary()
+	}
 	// seen is the number of the newest observation this call has used: each round takes one
 	// numbered above it, so no round reads the same observation twice.
 	seen := after
@@ -731,9 +742,14 @@ func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	h.mu.Unlock()
 	observation, writer, err := h.take(ctx, newestPending)
 	h.mu.Lock()
-	h.inFlight, h.ended = nil, flight
+	h.inFlight = nil
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
+	// An abandoned observation is not an answer a live caller may use, so it must not hide the
+	// newest ended observation that is. observe skips an abandoned flight for such a caller.
+	if !flight.abandoned {
+		h.ended = flight
+	}
 	var stalled *horizonObservation
 	var safe, toPersist int64
 	var toPersistAt time.Time
