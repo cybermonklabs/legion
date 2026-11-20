@@ -826,11 +826,14 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		w.conn.Store(nil)
 		return err
 	}
+	// The give-up bound takes intake's production values (ConsumerSpec's defaults), and a give-up's
+	// notice wakes its outbox lane through the records' own lane wake once it commits.
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
+		WakeOutbox: w.wakeOutbox,
 	})
 	if err != nil {
 		conn.Close()

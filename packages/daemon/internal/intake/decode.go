@@ -55,10 +55,18 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact.
-// repositories are its configured repositories: a GitHub event whose payload names another
-// repository is a nil Fact, whatever subject carried it.
+// project is the daemon's Dispatch project: another project's issue event is a nil Fact, decided
+// from the issue key its subject names before the envelope is read, so a message of another
+// project's that does not decode is no poison of this daemon's, and no record of it (every daemon
+// hears every project's issue events). A name in neither form goes on to the decode, which refuses
+// it (errIssueNameInNeitherForm). repositories are its configured repositories: a GitHub event
+// whose payload names another repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
+	if strings.HasPrefix(subject, subjectforms.IssueTopicPrefix) {
+		if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
+			return decodedMessage{LegacyName: legacy}, nil
+		}
+	}
 	var envelope envoyEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return decodedMessage{}, fmt.Errorf("decode Envoy envelope: %w", err)
@@ -237,7 +245,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
 func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
-	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
+	if !projectIssueKey(key, project) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -256,6 +264,13 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 		return nil, nil, err
 	}
 	return fact, unread, nil
+}
+
+// projectIssueKey says whether key is an issue key of project, which the daemon decodes events
+// of; any other key is another daemon's.
+func projectIssueKey(key, project string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return keyProject == project && claim.IsIssueKey(key)
 }
 
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
