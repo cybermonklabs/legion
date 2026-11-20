@@ -98,28 +98,35 @@ func roomWeight(stateBytes, structs int64) int64 {
 }
 
 // bytesOfHeapAParkedRange is the heap a room's live document holds for each delete range its
-// pending queue parks: 16 bytes in the store's pending delete set (crdt.StructStore.pendingDs, a
-// crdt.DeleteRange of two uint64s) and 16 more in the record of the apply that parked it, which
+// pending queue parks: the range in the store's pending delete set (crdt.StructStore.pendingDs, a
+// crdt.DeleteRange of two uint64s in its client's entry) and in the record of who parked it, which
 // the room keeps so that a refused drain can name who parked what it discards
-// (crdt.Doc.parkedDsBy, which SetDiscardRefusedDrain turns on: leaveParkedOut). Measured on
-// theorem-labs/ygo v1.55.1-theorem.9 with one 4,186,013-byte frame of 1,048,565 ranges over one
-// client the room had never seen (TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge):
-// the live heap grew 29,370,136 bytes between a reading before the frame and one after it, the
-// frame itself freed between the two, and 2 x 16 x 1,048,565 = 33,554,080 less the frame's
-// 4,186,013 is 29,368,067, within 2,069 bytes of it. The 28 bytes a range that reading divides
-// out to are that figure less the frame; what the room holds is the 32.
+// (crdt.Doc.parkedDsBy, which SetDiscardRefusedDrain turns on: leaveParkedOut). Since
+// theorem-labs/ygo v1.55.1-theorem.11 the record keeps one delete set for each sender, the
+// connection the provider applies an update for (its origin, provider/websocket/peer.go:357),
+// compacted as the pending deletes are and cut to what they still hold, and after every apply it
+// holds at most twice the parked ranges plus 16; an apply with no sender records nothing.
+//
+// Measured 2026-11-20 on theorem-labs/ygo v1.55.1-theorem.11 (f80e73e7), over this package at
+// fae59209, each shape parking 4,096 ranges, the cap, through the hook (weighPeerUpdate), with the
+// heap read once the frames were freed. The repro's frames, one range a frame under one client
+// applied with no sender (`DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test
+// ./internal/dispatch/docs/ -count=1 -run TestRV9ParkedRangesOneAFrameHoldNoMoreHeapThanTheirCharge
+// -v`), held 16.3 to 18.0 bytes a range over three runs. Every other shape applied each frame for
+// a sender, as the provider does, and each figure is the most of three runs: the repro's frames
+// for one sender, 36.4 bytes a range; a client of its own for each range, which adds a map entry
+// to the pending delete set and to each sender's set, 228.5 for one sender, in one frame or in a
+// frame each, and 223.6 with a sender for each 128 clients (maxConfirmedClients); a sender for
+// each range, which adds a set of its own, 550.4; and the heaviest, each client's range parked in
+// two halves by two senders, so the record holds twice the ranges the queue does, 994.4 bytes a
+// range over three runs and 994.9 and 995.8 (4,078,736 bytes) in two runs of its own test
+// (TestParkedDeleteRangesHoldNoMoreHeapThanTheirChargeAtTheirHeaviestShape, run as the repro is).
+// It is set past the most.
 //
 // It is charged on the live document alone, outside roomCopies: the room's replica applies only
 // what each commit integrated (renderedReplica.takeLocked), and a live write's fork is that
 // replica cloned (warmFork), so neither holds a range the room parks.
-//
-// It is the price of a range recorded once, which since theorem-labs/ygo v1.55.1-theorem.10 is
-// every range: the record of who parked what keeps only the part of each parking frame's ranges
-// the pending delete set did not hold already, and is pruned by the ranges it holds, so a frame
-// sent again records nothing, as the queue's count, which this is charged on, does not move.
-// Spread over many clients a range costs more, a map entry of each holder's for each client,
-// which no reading has measured [INFERENCE: about 120 to 180 bytes].
-const bytesOfHeapAParkedRange = 32
+const bytesOfHeapAParkedRange = 1_000
 
 // maxParkedDeleteRanges is the most delete ranges one room's document parks
 // (websocket.Server.MaxPendingDeleteRanges, which New sets; crdt.WithMaxPendingDeleteRanges): an
@@ -134,10 +141,9 @@ const bytesOfHeapAParkedRange = 32
 // delete range at any moment (dispatch://INFRA-179/artifact/infra179-r9-caps-measure-md). A range
 // parks only under a client the sender's socket holds (parkJudge), so an honest page parks one
 // only after a frame of its own parked or was refused. Its cost sets it instead: 4,096 ranges at
-// bytesOfHeapAParkedRange are 128 KiB a room, which the room budget charges, and about 740 KB
-// where every range has a client of its own [INFERENCE, from the 120 to 180 bytes above]. At
-// maxUpdateItems, the cap ranges shared with the structs before, one 4,186,013-byte frame held
-// 29,370,136 bytes of a room's heap.
+// bytesOfHeapAParkedRange are 4,096,000 bytes a room, which the room budget charges, past the
+// 4,078,736 the heaviest shape measured held. At maxUpdateItems, the cap ranges shared with the
+// structs before, one 4,186,013-byte frame held 29,370,136 bytes of a room's heap.
 const maxParkedDeleteRanges = 4096
 
 // roomChargeWeight is what the budget charges a loaded room in all (roomCharge.weigh): its two

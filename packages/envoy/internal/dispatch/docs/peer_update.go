@@ -1107,7 +1107,8 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 // (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive).
 //
 // The figure is the library's count of what the queue holds now (crdt.PendingStats.ContentBytes,
-// counted as ApplyBudget.Bytes counts a struct's content, the map key left out), read after each
+// counted as ApplyBudget.Bytes counts a struct, its map key included since theorem-labs/ygo
+// v1.55.1-theorem.11, which a struct with no origin holds from its decode on), read after each
 // apply, and not a sum of what each apply added: a drain, a merge and a discard take content out
 // of the queue as a park puts it in. Summed, every apply that left the queue holding anything
 // was charged its whole content, integrated or parked, and the charge went back only once the

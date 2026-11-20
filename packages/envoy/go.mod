@@ -281,6 +281,11 @@ require (
 // one at or under it at the apply's value limit; under AnswerOnceStored a frame that commits
 // nothing waits for the stores in flight, and a room instance one commit of which was not stored
 // answers nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything
-// is relayed to its own sender too (ApplyOutcome.Drained). The tag is on 382ed018, the head of
-// release/v1.55.1/2026-11-19.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.10
+// is relayed to its own sender too (ApplyOutcome.Drained).
+// v1.55.1-theorem.11 closes findings 2 and 3 of review 9. The record of who parked each delete
+// range keeps one set per sender, compacted as the pending deletes are and cut to what they still
+// hold, so frames that grow or bridge the ranges parked no longer grow it past twice the parked
+// ranges plus 16 (bytesOfHeapAParkedRange); and PendingStats.ContentBytes counts the map key a
+// parked struct holds (noteQueued). The tag is on f80e73e7, the head of
+// release/v1.55.1/2026-11-20.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.11

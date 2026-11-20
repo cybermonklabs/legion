@@ -226,7 +226,7 @@ func splitEveryOtherCharacter(client crdt.ClientID, run int) []byte {
 // figures for. The budget charges those 144 parked ranges beside the two copies' weight, at
 // bytesOfHeapAParkedRange each (roomChargeWeight), so the charge is compared with that sum: this
 // compared it with the copies' weight alone (roomWeight) from before parked ranges were charged,
-// which the charge now stands 144 x 32 = 4,608 bytes above.
+// which the charge now stands 144 x 1,000 = 144,000 bytes above.
 func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	const run = splitDenseRun

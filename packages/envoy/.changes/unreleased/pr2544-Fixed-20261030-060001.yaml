@@ -56,11 +56,11 @@ body: |-
     nothing itself and what the drain started from is not known yet; the edit its editor then sends
     again is weighed as that browser's own.
     A parked delete range spends none of the decode cap's headroom, and the room budget charges each
-    32 bytes on the room's live copy while it waits. A room parks at most 4,096 delete ranges and
+    1,000 bytes on the room's live copy while it waits. A room parks at most 4,096 delete ranges and
     1,048,576 structs, and an update that would park past either is answered not applied with its
     socket left open, since it waits on edits the room has not received yet. What the queue holds of
-    content is weighed as it holds it now, so content a later edit or a server write landed is no
-    longer charged after it.
+    content, the map keys of its structs included, is weighed as it holds it now, so content a later
+    edit or a server write landed is no longer charged after it.
     A browser's edit is now answered saved only once the commit that holds it is stored. A frame
     that commits nothing, such as a reconnect's sync step 2 carrying only what the room holds, is
     answered saved only once every commit the room had made by then is stored, and a room that could
@@ -182,7 +182,7 @@ body: |-
     leave still decodes, and leave one they would carry past the cap as it was.
 
     These bounds are built on the ygo fork Dispatch pins,
-    `github.com/theorem-labs/ygo v1.55.1-theorem.10`. It applies a browser's update whole or not at
+    `github.com/theorem-labs/ygo v1.55.1-theorem.11`. It applies a browser's update whole or not at
     all under the allowance, roots and content kinds the room gives it, and reports what a refused
     apply's counters reached. It runs the room's render check after the apply and before its commit,
     keeps what parks out of the document until it lands, lets a delete range park only under a

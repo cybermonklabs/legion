@@ -938,7 +938,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned theorem-labs/ygo v1.55.1-theorem.10 carries, a room that parked anything was
+// which the pinned theorem-labs/ygo v1.55.1-theorem.11 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
