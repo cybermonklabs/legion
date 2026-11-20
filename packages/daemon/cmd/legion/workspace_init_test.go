@@ -1062,7 +1062,8 @@ func killProcessesRunning(t *testing.T, path string) []string {
 // reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
 // --cache-url with its user name and its query: each line keeps the cache's host and path, and
-// neither the user name nor the query reaches the init log.
+// neither the user name nor the query reaches the init log. A cache that is never ready is a cause
+// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v := newIssueVolume(t)
 	// A port nothing listens on, so every ask of the cache fails at its dial.
@@ -1077,8 +1078,8 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
-	if want := "the repository cache " + shown + " was not ready within "; code != 1 || !strings.Contains(stderr, want) {
-		t.Errorf("exit %d, stderr %q; want 1 naming %q", code, stderr, want)
+	if want := "the repository cache " + shown + " was not ready within "; code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
+		t.Errorf("exit %d, stderr %q; want %d naming %q", code, stderr, workspace.InitExitOutsideVolume, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-7"} {
 		if strings.Contains(stdout+stderr, credential) {
