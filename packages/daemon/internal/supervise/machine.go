@@ -3185,10 +3185,9 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // The workflow is told once, at the forget and before the spawn: a fresh spawn that fails is a
 // launch failure the caller charges, and its retry finds no session to forget, so a report made
 // only after a spawn that succeeded would never be made at all. The cause is kept on the machine
-// for the launches that follow the forget (Machine.lostCause says until when), so each of them —
-// that retry, and a relaunch of the fresh agent before its ready — is built for a claim that
-// knows its session was forgotten, and the agent that comes up is told in its own prompt rather
-// than left to infer it from an empty transcript.
+// for the launches that follow the forget, which Machine.lostCause names and says until when, so
+// each of them is built for a claim that knows its session was forgotten, and the agent that comes
+// up is told in its own prompt rather than left to infer it from an empty transcript.
 func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, error) {
 	line, why, detail := forgetWords(cause, m.claim.Session, answer)
 	m.log.Warn(line, "session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", answer)

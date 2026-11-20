@@ -522,9 +522,10 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // fresh agent in its place, charged nothing and reported (supervise's start), which is also what a
 // taken-over runtime's session gets, since nothing tells it from this host's own (sessionfile.go).
 // A search that fails — a recorded path it cannot check, a pane sessions directory it cannot
-// resolve, or a sessions directory or one of its folders it cannot read — opens no pane either,
-// and its error wraps no runtime.ErrSessionFileMissing: what it could not read may hold the
-// session, so the caller keeps the session, charges the launch failure and tries again.
+// resolve, a sessions directory or one of its folders it cannot read, or a matching file it cannot
+// check — opens no pane either, and its error wraps no runtime.ErrSessionFileMissing: what it
+// could not read may hold the session, so the caller keeps the session, charges the launch
+// failure and tries again.
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err

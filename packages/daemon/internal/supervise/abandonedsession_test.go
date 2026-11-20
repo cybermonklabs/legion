@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,7 +88,7 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 			t.Errorf("the first task of the fresh session does not name %q:\n%s", want, first)
 		}
 	}
-	if quoted := "The session this claim ran before this one, \"" + session + "\", was abandoned"; !strings.Contains(first, quoted) {
+	if quoted := "The session this claim ran before this one, " + strconv.Quote(session) + ", was abandoned"; !strings.Contains(first, quoted) {
 		t.Errorf("the first task of the fresh session does not quote the session it replaced, %q:\n%s", quoted, first)
 	}
 	if !strings.HasSuffix(first, "Continue Workflow. Issue: LEGION-209. Phase: implementing.") {

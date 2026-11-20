@@ -175,16 +175,15 @@ func TestSessionFileOfMatchesTheSessionsDirectoryAndTheNameAsWritten(t *testing.
 	}
 }
 
-// A sessions directory, or a folder of it, that cannot be read may hold the session, so the search
-// that cannot read it is a failure to look: an error and no file, never the session found nowhere,
+// A sessions directory, or a folder of it, that cannot be read may hold the session, and so may a
+// folder that can be listed but not entered, whose files cannot be checked: the search that cannot
+// read or check it is a failure to look, an error and no file, never the session found nowhere,
 // which the claim's machine would answer by forgetting the session. An entry of the sessions
-// directory that is no folder — a file, or a symlink to nothing — holds no session and is skipped.
+// directory that is no folder — a file, one it may not read among them, a symlink to a file or to
+// nothing — holds no session and is skipped.
 func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
-	if err := os.MkdirAll(sessions, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	for name, where := range map[string]string{
 		"the pane's sessions directory": "",
 		"a folder of it":                "--pane-work--",
@@ -199,35 +198,69 @@ func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
 		})
 	}
 
+	t.Run("a folder that can be listed but not entered", func(t *testing.T) {
+		pane := filepath.Join(t.TempDir(), "pane-sessions")
+		folder := filepath.Join(pane, "--pane-work--")
+		writeSession(t, filepath.Join(folder, filepath.Base(recorded)), time.Now())
+		if err := os.Chmod(folder, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(folder, 0o700); err != nil {
+				t.Error(err)
+			}
+		})
+		if got, _, err := sessionFileOf(recorded, paneAt(pane)); err == nil || got != "" {
+			t.Fatalf("sessionFileOf with a folder it can list but not enter = %q, %v; want no file and an error", got, err)
+		}
+	})
+
 	t.Run("an entry that is no folder", func(t *testing.T) {
 		pane := filepath.Join(t.TempDir(), "pane-sessions")
 		carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
 		writeSession(t, carried, time.Now())
-		writeSession(t, filepath.Join(pane, "--a-file--"), time.Now())
+		file := filepath.Join(pane, "--a-file--")
+		writeSession(t, file, time.Now())
+		if err := os.Symlink(file, filepath.Join(pane, "--a-link-to-a-file--")); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Symlink(filepath.Join(pane, "gone"), filepath.Join(pane, "--a-link-to-nothing--")); err != nil {
 			t.Fatal(err)
 		}
 		if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
-			t.Fatalf("sessionFileOf beside a file and a symlink to nothing = %q, %v; want %s", got, err, carried)
+			t.Fatalf("sessionFileOf beside a file, a symlink to it and one to nothing = %q, %v; want %s", got, err, carried)
+		}
+	})
+
+	t.Run("a file it may not read among the folders", func(t *testing.T) {
+		pane := filepath.Join(t.TempDir(), "pane-sessions")
+		carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
+		writeSession(t, carried, time.Now())
+		stray := filepath.Join(pane, "--a-stray-file--")
+		writeSession(t, stray, time.Now())
+		unreadable(t, stray)
+		if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
+			t.Fatalf("sessionFileOf beside a file it may not read = %q, %v; want %s", got, err, carried)
 		}
 	})
 }
 
-// unreadable takes every permission off dir until the test's cleanup gives them back, so the
-// test's temporary directory can still be removed. A test that runs as root reads dir all the
-// same, and so would prove nothing: it fails rather than pass on that.
-func unreadable(t *testing.T, dir string) {
+// unreadable takes every permission off path, a directory or a file, until the test's cleanup
+// gives them back, so the test's temporary directory can still be removed. A test that runs as
+// root opens path all the same, and so would prove nothing: it fails rather than pass on that.
+func unreadable(t *testing.T, path string) {
 	t.Helper()
-	if err := os.Chmod(dir, 0); err != nil {
+	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := os.Chmod(path, 0o700); err != nil {
 			t.Error(err)
 		}
 	})
-	if _, err := os.ReadDir(dir); err == nil {
-		t.Fatalf("%s is readable at mode 000, so this row would prove nothing (is the test running as root?)", dir)
+	if f, err := os.Open(path); err == nil {
+		f.Close()
+		t.Fatalf("%s opens at mode 000, so this row would prove nothing (is the test running as root?)", path)
 	}
 }
 
