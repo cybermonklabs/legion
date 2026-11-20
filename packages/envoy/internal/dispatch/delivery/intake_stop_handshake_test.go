@@ -544,11 +544,15 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 // handBacksLanded closes either way. The negative control is such a callNATS (bus.Bounded
 // with a context.WithTimeout of callNATSWait).
 func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) {
+	var first sync.Once
+	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+		// Only the first delivery is handed back: a hand-back with no delay is redelivered at once,
+		// and handing each redelivery back would loop until teardown.
+		first.Do(func() { delivery.handBack(message.msg) })
+	}, true)
+	// Registered after startStopRow, so the wait is restored before the row's teardown runs.
 	saved := callNATSWait.Swap(0)
 	t.Cleanup(func() { callNATSWait.Store(saved) })
-	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
-		delivery.handBack(message.msg)
-	}, true)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})

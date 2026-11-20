@@ -108,11 +108,19 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	publishMergedPullRequest(t, publisher, inFlight)
 	awaitAckPending(t, publisher, 2)
 
+	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and on a loaded
+	// runner the drain can take longer than callNATS's wait: the stop then withholds its hand-backs,
+	// and the row has no publish to hold. The row gives the stop's calls a 30 s guard, and puts the
+	// wait back as the hand-back's publish begins, so the held write still outlives it.
+	wait := callNATSWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
 	thawed := make(chan func(), 1)
 	hook := func() {
 		holding.Do(func() {
+			restoreWait()
 			thawed <- link.HoldWriteLock(t, holderConn)
 			close(held)
 		})
@@ -135,7 +143,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	select {
 	case <-held:
 	case <-time.After(30 * time.Second):
-		t.Fatal("control: the stop's hand-back never reached its publish: " + consumerState(publisher))
+		t.Fatal("control: the stop's hand-back never reached its publish: the stop withheld it, as it does when its drain has not answered within the row's 30 s guard: " + consumerState(publisher))
 	}
 	row.thaw = <-thawed
 	return row
@@ -227,6 +235,20 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 	}
 }
 
+// requireNoHandBackAfterCreation waits for the standby's creation of the durable and fails the test
+// when a hand-back reached the server after it. A hand-back the holder's client dropped with its
+// connection never reaches the server, which is allowed: the message stays with the durable.
+func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client) {
+	t.Helper()
+	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
+		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
+	})
+	events := recorded.since(from)
+	if slices.Index(events, "-NAK") > slices.Index(events, durableCreated) {
+		t.Fatalf("the hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
+	}
+}
+
 // A hand-back the holder's stop published never reaches the durable a standby recreates.
 //
 // A hand-back is a publish at the message's reply subject, which names the durable rather than the
@@ -252,7 +274,10 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 //     hand-back reaches the server before the standby creates the durable;
 //   - a pending hand-back at shutdown: the Run returns at its deadline, then StartIntakes' stop
 //     closes the client that can still send it and waits for its finalizer. The hold is gone before
-//     that stop returns, so its caller can close the pool without leaving the hold to lapse.
+//     that stop returns, so its caller can close the pool without leaving the hold to lapse. The
+//     close sends the hand-back in its flush or drops it with the connection, whichever takes
+//     nats.go's lock first; either way it does not reach the server after the standby creates the
+//     durable.
 //
 // No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
 // a 30 s wait only guards against a stop that never returns. The negative controls: a release that
@@ -359,6 +384,6 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if holdLive(t, row.pool) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")
 		}
-		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher)
 	})
 }
