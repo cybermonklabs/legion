@@ -755,9 +755,11 @@ func (s *simRun) aliveAt(pid int, at time.Duration) bool {
 // them, and the case of a guard that measured from a read made after the kill: false where pid is
 // left out, never read before the kill or, at the guard's last read of it by the end of reading k,
 // still running another program, the program it runs as far as the guard knows. Where fromNothing
-// is set, a process never read before the kill whose first read after it ran its own program, not
-// a fork's read, has 0 (case d): the order's third tier counts it from 0 from the stay's first kill
-// (INFRA-3368's architect's decision of 2026-11-20T08:13Z, item 2).
+// is set, a process never read before the kill whose first read after it ran its own program has 0
+// (case d): an exec lands at the end of the reading it falls in, so none of its reads at that
+// reading is a fork's read, its parent read there before or after it, and the order's third tier
+// counts it from 0 from the stay's first kill (firstReadSince; INFRA-3368's architect's decision of
+// 2026-11-20T08:13Z, item 2).
 func (s *simRun) asOfKill(pid, k int, fromNothing bool) (size uint64, cause string, ok bool) {
 	first := s.killsAt(k)[0].at
 	var last, latest, after *simRead

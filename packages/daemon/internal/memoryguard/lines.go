@@ -123,26 +123,23 @@ const (
 // versions 34 and 37; candidate.sinceFirstKill); ruleLargest, none of these applies and it is the
 // largest. ruleUrgent is a process ended beside the first at a reading at or above the urgent
 // share, the mark plus half the distance from the mark to the limit, where the guard ends every
-// process that grew over the window and, where the decision holds a process that is not new to the
-// stay, every process of the sets the urgent rule ends for the stay: grown since the stay's first
-// kill by growthNoise or more, started during the stay and no fork with memory of its own, or new
-// to it with memory of its own, each with its line, the first naming its own tier and each other
-// this rule, whichever of the groups it is of (endUrgent, endsInStay, INFRA-3531 R1 of spec
-// versions 39, 41, 42 and 46, the last by INFRA-3368's architect's decisions of 2026-11-20T13:55Z,
-// 14:00Z, 14:05Z and 14:58Z; `4g-latepool-4tpqx`, and `4g-r15latepool-r206`), and, at the reading
-// at the mark, those the read-on after the first kill reads up to one interval from the reading
-// (readOn, spec version 43; `4g-t4latepool-r3`). At such a reading after a kill the guard also ends
-// by this rule, as it reads them again before the full read, the processes it read at the reading
-// before that grew since that kill, and after the first of those kills each process it reads that
-// the urgent rule ends (urgentEnds), but the first of its kills, whose line names its own tier
-// (endKnown, spec versions 43 and 46; the tester's run r17 at 41d4f45b). And where, at such a
-// reading, those sets are the one
-// reason to act, the first kill goes to the first process in the order that the urgent rule ends at
-// that reading, one that grew over the window or one of those sets, and not to a process the rule
-// does not end, as a pool's parent flat since before the stay's first kill; its line names this
-// rule only where the order put such a process before it, and its own tier otherwise (urgentFirst,
-// spec version 46). Where every process is new to the stay, it ends the window's growers alone
-// beside the first.
+// process the urgent rule ends (urgentEnds): each that grew over the window and, where the decision
+// holds a process that is not new to the stay, each of the sets of the stay (endsInStay), each with
+// its line, the first naming its own tier and each other this rule (endUrgent, INFRA-3531 R1 of
+// spec versions 39, 41, 42 and 46, the last by INFRA-3368's architect's decisions of
+// 2026-11-20T13:55Z, 14:00Z, 14:05Z and 14:58Z; `4g-latepool-4tpqx`, and `4g-r15latepool-r206`),
+// and, at the reading at the mark, those the read-on after the first kill reads up to one interval
+// from the reading (readOn, spec version 43; `4g-t4latepool-r3`). At such a reading after a kill
+// the guard also ends by this rule, as it reads them again before the full read, the processes it
+// read at the reading before that grew since that kill, and after the first of those kills each
+// process it reads that the urgent rule ends (urgentEnds), but the first of its kills, whose line
+// names its own tier (endKnown, spec versions 43 and 46; the tester's run r17 at 41d4f45b). And
+// where, at such a reading, those sets are the one reason to act, the first kill goes to the first
+// process in the order that the urgent rule ends at that reading, one that grew over the window or
+// one of those sets, and not to a process the rule does not end, as a pool's parent flat since
+// before the stay's first kill; its line names this rule only where the order put such a process
+// before it, and its own tier otherwise (urgentFirst, spec version 46). Where every process is new
+// to the stay, it ends the window's growers alone beside the first.
 // ruleKernel is a process the guest kernel killed (Guest), which the kernel chose by rules of its
 // own.
 const (
