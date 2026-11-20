@@ -128,11 +128,16 @@ var otherIssueBase = issueSubscriberBase("-")
 
 // keyScopedTopics returns the subset of topics that deliver base's events and not those of every
 // other issue: its exact forms, and every narrower wildcard naming it (`<base>.*`, `<base>.issue.>`),
-// which a broader wildcard (`notifications.dispatch.>`) is not.
+// which a broader wildcard (`notifications.dispatch.>`) is not. A topic is read in every form a
+// reader takes it in (contracts.TopicForms), as matchingTopics reads it, so the form naming the
+// key's project (`notifications.dispatch.issue.<project>.<key>.>`) is scoped to the key too.
 func keyScopedTopics(topics []string, base string) []string {
 	scoped := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		if routing.Match(topic, base+".marker") && !routing.Match(topic, otherIssueBase+".marker") {
+		forms := contracts.TopicForms(topic)
+		delivers := slices.ContainsFunc(forms, func(form string) bool { return routing.Match(form, base+".marker") })
+		broader := slices.ContainsFunc(forms, func(form string) bool { return routing.Match(form, otherIssueBase+".marker") })
+		if delivers && !broader {
 			scoped = append(scoped, topic)
 		}
 	}
