@@ -538,6 +538,10 @@ type rig struct {
 	refuseLeakCheck    string
 	silentLeakCheck    bool
 	causelessLeakCheck bool
+	// resumesBySession is what every fake launcher's hello says of looking a session up by its id
+	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
+	// built before it could.
+	resumesBySession bool
 }
 
 type rigOption func(*rig, *Options)
@@ -581,6 +585,10 @@ func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silen
 func withCauselessLeakCheck() rigOption {
 	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
 }
+
+// withResumesBySession has every fake launcher's hello say it can look a session up by its id and
+// resume the file it finds, as a launcher of this release says.
+func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
 // carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
@@ -1082,7 +1090,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
-		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
+		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))

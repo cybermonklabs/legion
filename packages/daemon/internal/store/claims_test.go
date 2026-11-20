@@ -443,6 +443,29 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The mark of a launch that had Oh My Pi resume the claim's session by its id itself
+// (AgentResumeGeneration) is a column of its own: a daemon restarted between that launch and its
+// agent's registration reads the mark back, and with it whether the launch's end is charged and
+// whether the claim's next try forgets the session (dispatch://INFRA-4108 R3). The claim marked
+// is one launched at generation 7 that records its session and no file; once its agent registered
+// with the file, the mark is 0, no such launch outstanding, and reads back as 0.
+func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	want.Generation, want.SessionFile, want.AgentResumeGeneration = 7, "", 7
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.SessionFile, want.AgentResumeGeneration = "/state/sessions/implementer.jsonl", 0
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
 // The turn a claim last started and the one it last ended are nullable columns of their own: a
 // claim that has taken no turn reads back with neither time rather than with a zero one, and a
 // claim that has worked reads both back to the microsecond, which is what a restarted daemon
