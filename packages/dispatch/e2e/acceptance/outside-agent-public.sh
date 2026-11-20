@@ -466,12 +466,22 @@ else
   done
   # A HOME Oh My Pi has never run in opens its first-run screens, which the session waits behind:
   # each is skipped as a person who skips it would, the setup with Escape and the splash with
-  # Enter, one screen at a time.
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  # Enter. One screen can follow another a moment later, so the leg goes on only after three
+  # checks in a row, 2 s apart, show neither (at most 40 s).
+  checks=0
+  clear=0
+  while [ "$checks" -lt 20 ] && [ "$clear" -lt 3 ]; do
+    checks=$((checks + 1))
     case $(tmux -S "$tmux_socket" capture-pane -p -t outside-e2e 2>/dev/null) in
-      *'exit setup'*) tmux -S "$tmux_socket" send-keys -t outside-e2e Escape ;;
-      *'to skip'*) tmux -S "$tmux_socket" send-keys -t outside-e2e Enter ;;
-      *) break ;;
+      *'exit setup'*)
+        tmux -S "$tmux_socket" send-keys -t outside-e2e Escape
+        clear=0
+        ;;
+      *'to skip'*)
+        tmux -S "$tmux_socket" send-keys -t outside-e2e Enter
+        clear=0
+        ;;
+      *) clear=$((clear + 1)) ;;
     esac
     sleep 2
   done
