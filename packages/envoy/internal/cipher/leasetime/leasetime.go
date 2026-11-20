@@ -44,7 +44,7 @@ const (
 
 	// RenewClientTimeout is how long one renewal that the outage black-holes — a connection a
 	// front door accepts while nothing serves behind it, or a node that is gone — holds its
-	// renewer before it gives up. Both renewers' HTTP clients carry it: cmd/cipher'
+	// renewer before it gives up. Both renewers' HTTP clients carry it: cmd/cipher's
 	// newClient and the client cmd/cipher-helper builds for helper.Broker, which is what
 	// the helper's renewals go through (internal/cipher/helper/broker.go, httpClient).
 	RenewClientTimeout = 30 * time.Second

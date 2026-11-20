@@ -253,7 +253,7 @@ legion_command: &legion_command
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/cipherclient/*'
   - 'packages/envoy/dispatchbody/*'
-  # why: .github/ci-notes/ci.md#legion_command-the-brokers-oauth-wire-types-packagesenvoyinternalbrokerclient
+  # why: .github/ci-notes/ci.md#legion_command-the-brokers-oauth-wire-types-packagesenvoyinternalcipherclient
   - 'packages/envoy/internal/cipher/oauthwire/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/internal/contracts/*'
@@ -539,7 +539,7 @@ claude_envoy_build: &claude_envoy_build
   - '.github/workflows/release.yaml'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'
-  # why: .github/ci-notes/ci.md#claude_envoy_build-its-srcbroker-credentialts-imports-legionbroker-client
+  # why: .github/ci-notes/ci.md#claude_envoy_build-its-srcbroker-credentialts-imports-legioncipher-client
   - 'packages/cipher-client/**'
   - 'packages/envoy-client/bin/dispatch.ts'
   - 'packages/pi-shared/src/**'
@@ -2311,7 +2311,7 @@ envoy_e2e_local:
   - 'packages/envoy/scripts/e2e-local.test.sh'
   - 'packages/envoy/scripts/fixtures/github/**'
   - 'packages/envoy-client/src/**'
-  # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legionbroker-client-with-it-the-tsc-program-of
+  # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legioncipher-client-with-it-the-tsc-program-of
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
   - *listener_command

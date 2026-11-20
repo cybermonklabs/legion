@@ -16,7 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// tokenTypeURN begins each token type RFC 8693 Section 3 names.
+// tokenTypeURN begins each token type RFC 8693 Section 3 names. SubjectTokenTypeAccessToken is
+// built from it because the public leak check reads the whole URN as an access token.
 const tokenTypeURN = "urn:ietf:params:oauth:token-type:"
 
 const (

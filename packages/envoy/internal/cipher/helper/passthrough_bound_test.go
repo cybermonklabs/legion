@@ -15,7 +15,7 @@ const overBound = 500 * time.Millisecond
 // TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown drives, through the REAL helper socket, the
 // one case of a slow broker that contract_brokercall_test.go and brokercall_test.go leave out:
 // those drive an enrollment and a revoke the broker answers after 8 s, and an enrollment and a
-// login past their bound, and cmd/cipher' TestMachineLoginPrintsItsCodeAgainstASlowBroker
+// login past their bound, and cmd/cipher's TestMachineLoginPrintsItsCodeAgainstASlowBroker
 // drives a login the broker answers after 12 s, inside the bound.
 //
 // An unenroll-session-key whose DELETE the broker holds past the op's bound (the fake's

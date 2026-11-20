@@ -11,7 +11,7 @@ import (
 const containerModule = "github.com/testcontainers/testcontainers-go"
 
 // storetest links no testcontainers package. Every Postgres-backed broker test binary links this
-// package, ciphertest's and cmd/cipher' among them, and testcontainers' internal/core init
+// package, ciphertest's and cmd/cipher's among them, and testcontainers' internal/core init
 // walks every process on the machine, before any test runs, to name its session: on a box running
 // 26,582 processes that took 9.8 s of an agent-secrets test binary's start (GODEBUG=inittrace=1),
 // past the 10 s a prompt test gives its helper process to start. storetest makes a database on a

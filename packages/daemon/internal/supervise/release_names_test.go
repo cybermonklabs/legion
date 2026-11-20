@@ -273,7 +273,7 @@ func TestARefusedClaimWriteFreesNoNameOfARelease(t *testing.T) {
 	}
 }
 
-// unlistedAnswer is the broker client's answer that was too long to read whole (cipher'
+// unlistedAnswer is the broker client's answer that was too long to read whole (cipher's
 // CarriedAnswerTooLargeError), as the machine sees it (UnlistedCarryError).
 type unlistedAnswer struct{}
 

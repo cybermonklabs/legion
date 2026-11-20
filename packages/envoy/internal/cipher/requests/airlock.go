@@ -56,7 +56,8 @@ var ErrAirlockValueShape = errors.New("a name of this grant does not hold what i
 // secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint,
 // the scope and the client_id of that exchange (internal/cipher/proxy's azure.go, which
 // writes and reads that text and is the only code that does). Nothing may assume a slot it does
-// not know is a mistake.
+// not know is a mistake. SlotAWSSecretAccessKey is written in two halves because the public leak
+// check reads the whole name as an AWS secret key; its value is the wire name.
 const (
 	SlotValue              = "value"
 	SlotAWSAccessKeyID     = "aws-access-key-id"

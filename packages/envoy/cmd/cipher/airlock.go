@@ -30,7 +30,8 @@ import (
 // database machine, and this CLI — which every agent box and pod installs — would link a
 // Postgres driver into its binary to borrow three constants. The set is open, and a slot this
 // file does not know is not a mistake: it is passed through in the name's own value and read by
-// whatever takes that value apart.
+// whatever takes that value apart. slotAWSSecretAccessKey is written in two halves because the
+// public leak check reads the whole name as an AWS secret key; its value is the wire name.
 const (
 	slotAWSAccessKeyID     = "aws-access-key-id"
 	slotAWSSecretAccessKey = "aws-" + "secret-access-key"

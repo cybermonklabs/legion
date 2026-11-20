@@ -38,7 +38,6 @@ const CORPUS_PATH = new URL(
  * test failure, which is how "the corpus is the whole of what a client reads" stays true.
  */
 const TOKEN_FIELD_NAMES = {
-  // fixture-secret-next-line: a field's name in the corpus, which no client holds
   accessToken: "access" + "_token",
   tokenType: "token_type",
   expiresAt: "expires_in",
@@ -321,7 +320,7 @@ test("the wire corpus holds this client", async () => {
   for (const exchange of corpus.exchanges) {
     // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
     // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
-    // (`broker-access-token-with-no-credential`) shares a run of ten characters with a later
+    // (`<broker-access-token-with-no-credential>`) shares a run of ten characters with a later
     // entry's refusal text, which the scrub would then withhold. A process of its own holds
     // nothing another one traded.
     forgetHeldSecrets();
