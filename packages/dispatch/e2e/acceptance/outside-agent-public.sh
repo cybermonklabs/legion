@@ -87,20 +87,29 @@ cell() {
 
 fails=0
 unknowns=0
-# row NAME WANT GOT VERDICT: prints the row and keeps its verdict as verdict_<NAME>.
+# row NAME WANT GOT VERDICT: prints the row and keeps its verdict as verdict_<NAME>, a dash in
+# NAME read as an underscore.
 row() {
   emit "$1$tab$(cell "$2")$tab$(cell "$3")$tab$4"
-  printf -v "verdict_$1" '%s' "$4"
+  printf -v "verdict_${1//-/_}" '%s' "$4"
   case $4 in
     FAIL) fails=$((fails + 1)) ;;
     UNKNOWN) unknowns=$((unknowns + 1)) ;;
   esac
 }
 passed() {
-  local name="verdict_$1"
+  local name="verdict_${1//-/_}"
   [ "${!name:-}" = PASS ]
 }
 say() { printf 'outside-agent-public: %s\n' "$1" >&2; }
+# text_of FILE: FILE's first 300 characters, on one line.
+text_of() {
+  local text
+  text=$(tr '\n' ' ' <"$1" 2>/dev/null)
+  printf '%s' "${text:0:300}"
+}
+# stamp: this runner's clock in Unix ms, to the second, which bash 3.2's date can give.
+stamp() { printf '%s000' "$(date -u '+%s')"; }
 
 emit "row${tab}want${tab}got${tab}verdict"
 
@@ -419,8 +428,6 @@ else
   env -i "${session_env[@]}" tmux -S "$tmux_socket" new-session -d -s outside-e2e -x 220 -y 50 \
     -c "$session_dir" omp </dev/null
   p4_started=$(now)
-  # stamp: this runner's clock in Unix ms, to the second, which bash 3.2's date can give.
-  stamp() { printf '%s000' "$(now)"; }
   # p4_send TEXT: the session sends TEXT to the peer. False when it was not sent, with
   # `send_problem` saying why and `send_verdict` FAIL for an edge that refused the send, UNKNOWN
   # for a send that got no answer.
@@ -740,6 +747,113 @@ else
   esac
 fi
 
+# --- The T5 window: the owner removes the test person from the project's access list, and the
+# person's live agent and browser stop. This leg opens the window by telling the peer, whose
+# tailnet leg then has the owner make the removal and keeps its time; the tailnet leg judges T5
+# from that time and the rows below, each of which carries the times it read (Unix seconds). For
+# up to OUTSIDE_T5_SECONDS (default 1200) the leg polls a fresh trade of P2's device login every
+# 10 s, and keeps a relay socket open with the newest token, opening another when one closes, as
+# the agent would; the window ends once a trade is refused and the socket open then has closed.
+# OUTSIDE_T5_COMMAND, the workflow's browser, runs beside it with OUTSIDE_T5_DEADLINE (Unix s) and
+# OUTSIDE_T5_TSV: it polls the person's cookie until it gets 401 and then tries the passkey sign-in,
+# writing rows T5-cookie and T5-passkey there, which are copied into this leg's TSV. ---
+t5_seconds=${OUTSIDE_T5_SECONDS:-1200}
+want_t5a="once the owner removes ${person:-<OUTSIDE_PERSON>}: a fresh trade of the device login is refused, and the relay socket open at that moment closes"
+want_t5c="the person's cookie answered 401 after the removal"
+want_t5p="the person's passkey sign-in refused after the removal"
+problem=$(lacking OUTSIDE_LISTENER_URL OUTSIDE_PEER_SESSION)
+[ -n "$problem" ] || problem=$(probe_problem)
+if [ -n "$problem" ]; then
+  row T5-agent "$want_t5a" "$problem" UNKNOWN
+  row T5-cookie "$want_t5c" "not run: the window did not open: $problem" UNKNOWN
+  row T5-passkey "$want_t5p" "not run: the window did not open: $problem" UNKNOWN
+else
+  opened=$(now)
+  deadline=$((opened + t5_seconds))
+  told=$(probe send "$peer" "outside-e2e t5-open $nonce at $(stamp)")
+  say "T5: window open until $(date -u -d "@$deadline" '+%H:%M:%SZ' 2>/dev/null || echo "$deadline"): $told"
+  t5_driver=''
+  if [ -n "${OUTSIDE_T5_COMMAND:-}" ]; then
+    : >"$work/t5.tsv"
+    set -f
+    # shellcheck disable=SC2086 # a command line, split on blanks on purpose
+    set -- $OUTSIDE_T5_COMMAND
+    set +f
+    OUTSIDE_T5_DEADLINE=$deadline OUTSIDE_T5_TSV="$work/t5.tsv" "$@" >"$work/t5-driver.log" 2>&1 </dev/null &
+    t5_driver=$!
+    background="$background $t5_driver"
+  fi
+  refused_at=''
+  refusal=''
+  socket_pid=''
+  socket_log=''
+  sockets=0
+  socket_unread=''
+  while [ "$(now)" -lt "$deadline" ]; do
+    answer=$(probe trade)
+    if [ "$(json_field traded "$answer")" = false ]; then
+      refused_at=$(now)
+      refusal=$answer
+      break
+    fi
+    # A socket that ended is opened again with a fresh token, as the agent's own would be.
+    if [ -z "$socket_unread" ] && { [ -z "$socket_pid" ] || ! kill -0 "$socket_pid" 2>/dev/null; }; then
+      sockets=$((sockets + 1))
+      socket_log="$work/t5-socket-$sockets.log"
+      probe_as="outside-e2e-t5-$nonce" probe hold "$t5_seconds" >"$socket_log" &
+      socket_pid=$!
+      background="$background $socket_pid"
+      sleep 3
+      case $(cat "$socket_log") in *'"unknown"'*) socket_unread=$(text_of "$socket_log") ;; esac
+    fi
+    sleep 10
+  done
+  # The socket open at the refusal: its close, within 325 s of it.
+  closed_at=''
+  close_code=''
+  if [ -n "$refused_at" ] && [ -z "$socket_unread" ] && [ -n "$socket_pid" ]; then
+    while kill -0 "$socket_pid" 2>/dev/null && [ "$(now)" -le $((refused_at + 325)) ]; do sleep 2; done
+    held=$(cat "$socket_log")
+    closed_at=$(json_field closed_at "$held")
+    close_code=$(json_field code "$held")
+    case $closed_at in '' | null) closed_at='' ;; *) closed_at=$((closed_at / 1000)) ;; esac
+  fi
+  marks="opened_at=$opened refused_at=${refused_at:-none} socket_closed_at=${closed_at:-none} code=${close_code:-none} sockets=$sockets"
+  if [ -z "$refused_at" ]; then
+    row T5-agent "$want_t5a" "no trade refused in the ${t5_seconds} s window, so no removal was seen; $marks" UNKNOWN
+  elif [ -n "$socket_unread" ]; then
+    row T5-agent "$want_t5a" "the trade was refused; the socket part was not read: $socket_unread; $marks" UNKNOWN
+  elif [ -z "$closed_at" ]; then
+    row T5-agent "$want_t5a" "the trade was refused, and the socket open then was still open 325 s later; $marks" FAIL
+  else
+    row T5-agent "$want_t5a" "the trade was refused (status $(json_field status "$refusal")) and the socket open then closed $close_code; $marks" PASS
+  fi
+  if [ -z "$t5_driver" ]; then
+    row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
+    row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
+  else
+    while kill -0 "$t5_driver" 2>/dev/null && [ "$(now)" -le $((deadline + 30)) ]; do sleep 2; done
+    for name in T5-cookie T5-passkey; do
+      line=''
+      while IFS= read -r each; do
+        case $each in "$name$tab"*) line=$each ;; esac
+      done <"$work/t5.tsv"
+      if [ -z "$line" ]; then
+        want=$want_t5c
+        [ "$name" = T5-cookie ] || want=$want_t5p
+        row "$name" "$want" "OUTSIDE_T5_COMMAND wrote no $name row: $(text_of "$work/t5-driver.log")" UNKNOWN
+        continue
+      fi
+      IFS="$tab" read -r _ want got verdict <<EOF
+$line
+EOF
+      case $verdict in PASS | FAIL | UNKNOWN) row "$name" "$want" "$got" "$verdict" ;; *)
+        row "$name" "$want" "the browser's row reads $verdict: $got" UNKNOWN ;;
+      esac
+    done
+  fi
+fi
+
 # --- The verdict. ---
 if [ "$fails" -gt 0 ]; then
   emit "verdict${tab}every row PASS${tab}$fails FAIL, $unknowns UNKNOWN${tab}FAIL"
@@ -748,5 +862,5 @@ elif [ "$unknowns" -gt 0 ]; then
   emit "verdict${tab}every row PASS${tab}$unknowns UNKNOWN${tab}UNKNOWN"
   exit 2
 fi
-emit "verdict${tab}every row PASS${tab}9 PASS${tab}PASS"
+emit "verdict${tab}every row PASS${tab}every row PASS${tab}PASS"
 exit 0

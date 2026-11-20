@@ -43,8 +43,7 @@
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
 #                                line. Or OUTSIDE_PUBLIC_COMMAND: a command line, split on blanks,
 #                                that runs the public leg here instead, for a local stack; it gets
-#                                OUTSIDE_TAILNET_USER_CODE, OUTSIDE_TAILNET_HOLD_CODE (the code of
-#                                T5's hold login, which it approves and does not revoke),
+#                                OUTSIDE_TAILNET_USER_CODE,
 #                                OUTSIDE_PEER_SESSION and OUTSIDE_PUBLIC_RESULTS in its environment
 #                                and writes outside-agent-public.tsv and
 #                                outside-edge-revocations.tsv there.
@@ -599,45 +598,6 @@ if [ -z "$foreign_problem" ]; then
   esac
 fi
 
-# --- T5's hold login: a device login of the test person, the one the outside agent runs, whose
-# code the public leg's browser approves and its last step leaves live (`tailnet_hold_code`). Its
-# key and refresh token live only in the scratch directory, which the cleanup removes, so no one
-# can trade it after this run. ---
-hold_dir="$work/hold"
-mkdir -p "$hold_dir/home"
-chmod 700 "$hold_dir" "$hold_dir/home"
-hold_file="$hold_dir/device-login.json"
-hold_env=(
-  "PATH=$tools:$PATH"
-  "HOME=$hold_dir/home"
-  "TMPDIR=${TMPDIR:-/tmp}"
-  "AGENT_SECRETS_URL=${OUTSIDE_TAILNET_BROKER_URL:-}"
-  "AGENT_SECRETS_MACHINE_IDENTITY=device-login"
-  "AGENT_SECRETS_DEVICE_LOGIN_FILE=$hold_file"
-  "AGENT_SECRETS_PROJECTS=$project"
-)
-hold_code=''
-hold_problem=$helper_problem
-dispatch_cli="$here/../../../envoy-client/bin/dispatch.ts"
-[ -n "$hold_problem" ] || hold_problem=$(tool_problem bun)
-[ -n "$hold_problem" ] || [ -f "$dispatch_cli" ] || hold_problem="no dispatch CLI at $dispatch_cli"
-if [ -z "$hold_problem" ]; then
-  (
-    env -i "${hold_env[@]}" bun "$dispatch_cli" login --device --person "$person" \
-      >"$work/hold.log" 2>&1 </dev/null
-    echo "$?" >"$work/hold.exit"
-  ) &
-  background="$background $!"
-  deadline=$(($(now) + 60))
-  while [ -z "$hold_code" ] && [ "$(now)" -lt "$deadline" ] && [ ! -f "$work/hold.exit" ]; do
-    while IFS= read -r line; do
-      case $line in *'and enter the code '*) hold_code=${line##*and enter the code } ;; esac
-    done <"$work/hold.log"
-    [ -n "$hold_code" ] || sleep 1
-  done
-  [ -n "$hold_code" ] || hold_problem="dispatch login --device printed no code within 60 s: $(text_of "$work/hold.log")"
-fi
-
 # --- The read sweep's full-member half (restricted-sweep.sh beside this file): a full member has
 # no cookie at the outside origin, and no full member's credential goes on the runner. So this box
 # runs the sweep's fills mode, which makes the full member's half of every row, and passes the file
@@ -696,7 +656,7 @@ elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
   set -- $OUTSIDE_PUBLIC_COMMAND
   set +f
   (
-    OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_TAILNET_HOLD_CODE=$hold_code OUTSIDE_PEER_SESSION=$peer \
+    OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PEER_SESSION=$peer \
       OUTSIDE_SWEEP_FILLS=$sweep_fills OUTSIDE_PUBLIC_RESULTS=$results \
       "$@" >"$work/public.log" 2>&1 </dev/null
     echo "$?" >"$work/public.exit"
@@ -709,7 +669,6 @@ else
     public_problem="not started: $problem"
   else
     fields=(-f checks=all -f "project=$project" -f "peer_session=$peer" -f "tailnet_user_code=$code")
-    [ -z "$hold_code" ] || fields+=(-f "tailnet_hold_code=$hold_code")
     [ -z "$sweep_fills" ] || fields+=(-f "sweep_fills=$sweep_fills")
     while IFS= read -r pair; do
       [ -z "$pair" ] || fields+=(-f "$pair")
@@ -830,6 +789,68 @@ else
   esac
 fi
 
+# --- T5's removal, during the public run's T5 window: the public leg tells the peer the window is
+# open (`outside-e2e t5-open <nonce> at <ms>`), this leg has the owner remove the test person from
+# the project's access list, on this terminal or with OUTSIDE_OWNER_REMOVE_COMMAND (a harness that
+# acts as the owner's browser), and keeps the time; T5 is judged after the run, below. The list is
+# read with this box's own credential at OUTSIDE_TAILNET_DISPATCH_URL, before (the control: the
+# person is on it) and after (the removal was made). ---
+# listed_now: whether the person is on the project's access list: true, false, or what was read.
+listed_now() {
+  local answer
+  answer=$(env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-access-$nonce" \
+    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="${OUTSIDE_TAILNET_DISPATCH_URL:-}" \
+    bun "$here/outside-agent-probe.ts" access "$project" "$person" 2>>"$work/probe.log" </dev/null)
+  case $(json_field listed "$answer") in
+    true | false) json_field listed "$answer" ;;
+    *) printf '%s' "${answer:0:200}" ;;
+  esac
+}
+# public_running: the public leg has not ended yet.
+public_running() {
+  if [ -n "$run_id" ]; then
+    case $(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json status --jq .status 2>/dev/null </dev/null) in
+      completed) return 1 ;;
+    esac
+    return 0
+  fi
+  [ ! -f "$work/public.exit" ]
+}
+removed_at=''
+t5_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL)
+[ -n "$t5_problem" ] || [ -z "$public_problem" ] || t5_problem="the public leg did not start: $public_problem"
+[ -n "$t5_problem" ] || [ -z "$peer_problem" ] || t5_problem="no peer, which the window is opened to: $peer_problem"
+[ -n "$t5_problem" ] || [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] || { : </dev/tty; } 2>/dev/null ||
+  t5_problem="there is no terminal to ask the owner for the removal on, and no OUTSIDE_OWNER_REMOVE_COMMAND"
+if [ -z "$t5_problem" ]; then
+  say "T5: waiting for the public leg to open its window"
+  opened=''
+  while [ -z "$opened" ] && public_running; do
+    case $(peer_text) in *'outside-e2e t5-open '*) opened=yes ;; *) sleep 5 ;; esac
+  done
+  before=$(listed_now)
+  if [ -z "$opened" ]; then
+    t5_problem="the public leg ended without opening its window"
+  elif [ "$before" != true ]; then
+    t5_problem="before the removal $person is not read on the access list ($before), so a refusal would prove nothing"
+  else
+    if [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
+      set -f
+      # shellcheck disable=SC2086 # a command line, split on blanks on purpose
+      set -- $OUTSIDE_OWNER_REMOVE_COMMAND
+      set +f
+      "$@" "$person" "$project" >"$work/t5.remove" 2>&1 </dev/null ||
+        say "T5: the removal command exited non-zero: $(text_of "$work/t5.remove")"
+    else
+      printf 'outside-agent-tailnet: T5: remove %s from %s'"'"'s access list now, then press Enter here.\n' \
+        "$person" "$project" >/dev/tty
+      read -r _ </dev/tty
+    fi
+    removed_at=$(now)
+    say "T5: the removal read at $(date -u '+%H:%M:%SZ')"
+  fi
+fi
+
 # --- The public leg's end, its TSV and its revocations. ---
 if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   say "waiting for run $run_id"
@@ -877,112 +898,68 @@ else
   fi
 fi
 
-# --- T5, last and operator-prompted: the owner removes the test person from the access list, and
-# the test person's agent stops. This box reads the part a developer box can: the hold login's
-# trades and its socket. The test person's browser (its cookie, its passkey sign-in) lives on the
-# public runner and has ended by now, so those parts are unread here and the row is UNKNOWN even
-# when every part read here passes. ---
-want_t5="once the owner removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list: the test person's cookie gets 401 at once and their passkey sign-in fails (the public runner's), a fresh trade of their live device login is refused, and a relay socket opened with the token traded at the removal is closed, each within 325 s"
-# hold_probe COMMAND...: the probe as the hold login's own session, at the edge listener.
-hold_probe() {
-  env -i "${hold_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-t5-$nonce" \
-    OUTSIDE_LISTENER_URL="${OUTSIDE_LISTENER_URL:-}" OUTSIDE_DISPATCH_URL="http://127.0.0.1:1" \
-    bun "$here/outside-agent-probe.ts" "$@" 2>>"$work/probe.log" </dev/null
-}
-# listed_now: whether the person is on the project's access list, read with this box's own
-# credential at Dispatch's private origin: true, false, or what the read printed.
-listed_now() {
-  local answer
-  answer=$(env -i "${probe_env[@]}" OUTSIDE_PROBE_SESSION="outside-e2e-access-$nonce" \
-    OUTSIDE_LISTENER_URL="http://127.0.0.1:1" OUTSIDE_DISPATCH_URL="${OUTSIDE_TAILNET_DISPATCH_URL:-}" \
-    bun "$here/outside-agent-probe.ts" access "$project" "$person" 2>>"$work/probe.log" </dev/null)
-  case $(json_field listed "$answer") in
-    true | false) json_field listed "$answer" ;;
-    *) printf '%s' "${answer:0:200}" ;;
-  esac
-}
-problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_LISTENER_URL)
-if [ -n "$problem" ]; then
-  row T5 "$want_t5" "$problem" UNKNOWN
-elif [ -n "$hold_problem" ]; then
-  row T5 "$want_t5" "not run: there is no hold login: $hold_problem" UNKNOWN
-elif [ "$(cat "$work/hold.exit" 2>/dev/null)" != 0 ] || [ ! -f "$hold_file" ]; then
-  row T5 "$want_t5" "not run: the hold login (code $hold_code) was not approved: $(text_of "$work/hold.log")" UNKNOWN
-elif [ -z "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then
-  row T5 "$want_t5" "not run: there is no terminal to ask the operator for the removal on, and no OUTSIDE_OWNER_REMOVE_COMMAND" UNKNOWN
-else
-  before=$(listed_now)
-  control=$(hold_probe trade)
-  if [ "$before" != true ]; then
-    row T5 "$want_t5" "not run: before the removal $person is not read on the access list ($before), so a refusal would prove nothing" UNKNOWN
-  elif [ "$(json_field traded "$control")" != true ]; then
-    row T5 "$want_t5" "not run: before the removal the hold login's trade was not answered: ${control:0:200}" UNKNOWN
-  else
-    if [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
-      # A harness that acts as the owner's browser session makes the removal.
-      set -f
-      # shellcheck disable=SC2086 # a command line, split on blanks on purpose
-      set -- $OUTSIDE_OWNER_REMOVE_COMMAND
-      set +f
-      "$@" "$person" "$project" >"$work/t5.remove" 2>&1 </dev/null ||
-        say "T5: the removal command exited non-zero: $(text_of "$work/t5.remove")"
-    else
-      printf 'outside-agent-tailnet: T5: remove %s from %s'"'"'s access list now, then press Enter here.\n' \
-        "$person" "$project" >/dev/tty
-      read -r _ </dev/tty
-    fi
-    removed_at=$(now)
-    say "T5: removal read at $(date -u '+%H:%M:%SZ'); watching for 325 s"
-    hold_probe hold 340 >"$work/t5.hold" &
-    hold_pid=$!
-    background="$background $hold_pid"
-    refused_at=''
-    refusal=''
-    while [ -z "$refused_at" ] && [ "$(now)" -le $((removed_at + 325)) ]; do
-      answer=$(hold_probe trade)
-      if [ "$(json_field traded "$answer")" = false ]; then
-        refused_at=$(now)
-        refusal=$answer
-      else
-        sleep 10
-      fi
-    done
-    wait "$hold_pid" 2>/dev/null
-    after=$(listed_now)
-    held=$(cat "$work/t5.hold" 2>/dev/null)
-    closed_at=$(json_field closed_at "$held")
-    close_code=$(json_field code "$held")
-    wrong=''
-    socket=''
-    unread=''
-    case $held in
-      *'"opened_at"'*)
-        if [ "$close_code" = null ] || [ -z "$closed_at" ] || [ "$closed_at" = null ]; then
-          wrong="the socket opened at the removal was still open 340 s later"
-        elif [ $((closed_at / 1000 - removed_at)) -gt 325 ]; then
-          wrong="the socket opened at the removal closed $close_code $((closed_at / 1000 - removed_at)) s after it"
-        else
-          socket="the socket opened at the removal closed $close_code $((closed_at / 1000 - removed_at)) s after it"
-        fi
-        ;;
-      # A trade already refused opens no socket: the stop came before the socket could.
-      *'no broker token'*) socket="no socket could be opened at the removal, its trade already refused" ;;
-      # Anything else (no relay socket served, no answer) says nothing of the stop.
-      *) unread="the socket part was not read: ${held:0:200}" ;;
+# --- T5, judged from the public leg's three T5 rows against this leg's removal time. Each part
+# must have stopped no earlier than the removal and within 325 s of it (a token lives at most 300 s,
+# and the edge checks an open socket every 20 s plus a 5 s cache), the cookie within 30 s. A part
+# that stopped before the removal stopped for some other reason, which says nothing of it. ---
+want_t5="once the owner removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list: the person's cookie gets 401 within 30 s, their passkey sign-in is refused, a fresh trade of their live device login is refused, and the relay socket open then closes, each within 325 s"
+# public_part NAME: the public TSV's NAME row as `verdict<TAB>got`, or nothing.
+public_part() {
+  local each rest
+  [ -f "$public_tsv" ] || return 0
+  while IFS= read -r each; do
+    case $each in "$1$tab"*)
+      rest=${each#*"$tab"*"$tab"}
+      printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
+      ;;
     esac
-    if [ "$after" = true ]; then
-      row T5 "$want_t5" "$person is still on $project's access list, so the removal was not made" UNKNOWN
-    elif [ "$after" != false ]; then
-      row T5 "$want_t5" "the access list could not be read after the removal: $after" UNKNOWN
-    elif [ -z "$refused_at" ]; then
-      row T5 "$want_t5" "a trade was still answered 325 s after the removal${wrong:+; $wrong}" FAIL
-    elif [ -n "$wrong" ]; then
-      row T5 "$want_t5" "$wrong; the trade was refused $((refused_at - removed_at)) s after the removal" FAIL
-    elif [ -n "$unread" ]; then
-      row T5 "$want_t5" "the trade was refused $((refused_at - removed_at)) s after the removal; $unread; the cookie and passkey parts are the public runner's and were not read" UNKNOWN
+  done <"$public_tsv"
+}
+# mark NAME TEXT: the number after `NAME=` in TEXT, or nothing.
+mark() {
+  local rest=${2#*"$1="}
+  [ "$rest" != "$2" ] || return 0
+  rest=${rest%%[!0-9]*}
+  printf '%s' "$rest"
+}
+if [ -n "$t5_problem" ]; then
+  row T5 "$want_t5" "$t5_problem" UNKNOWN
+else
+  after=$(listed_now)
+  lags=''
+  wrong=''
+  unread=''
+  for part in T5-agent:refused_at:325 T5-agent:socket_closed_at:325 T5-cookie:at:30 T5-passkey:at:325; do
+    name=${part%%:*}
+    rest=${part#*:}
+    key=${rest%%:*}
+    bound=${rest#*:}
+    read_row=$(public_part "$name")
+    verdict=${read_row%%"$tab"*}
+    got=${read_row#*"$tab"}
+    at=$(mark "$key" "$got")
+    if [ -z "$read_row" ]; then
+      unread="${unread:+$unread; }the public TSV has no $name row"
+    elif [ "$verdict" = FAIL ]; then
+      wrong="${wrong:+$wrong; }$name: $got"
+    elif [ "$verdict" != PASS ] || [ -z "$at" ]; then
+      unread="${unread:+$unread; }$name ($key) not read: ${got:0:200}"
+    elif [ "$at" -lt "$removed_at" ]; then
+      unread="${unread:+$unread; }$name ($key) stopped $((removed_at - at)) s before the removal, for another reason"
+    elif [ $((at - removed_at)) -gt "$bound" ]; then
+      wrong="${wrong:+$wrong; }$name ($key) $((at - removed_at)) s after the removal, past $bound s"
     else
-      row T5 "$want_t5" "the trade refused $((refused_at - removed_at)) s after the removal (status $(json_field status "$refusal")); $socket; the cookie and passkey parts are the public runner's and were not read. Re-adding $person is the operator's own act" UNKNOWN
+      lags="${lags:+$lags, }$name $key $((at - removed_at)) s"
     fi
+  done
+  if [ "$after" != false ]; then
+    row T5 "$want_t5" "after the run the access list reads $after, so the removal was not made" UNKNOWN
+  elif [ -n "$wrong" ]; then
+    row T5 "$want_t5" "$wrong${unread:+; $unread}" FAIL
+  elif [ -n "$unread" ]; then
+    row T5 "$want_t5" "$unread${lags:+; read: $lags}" UNKNOWN
+  else
+    row T5 "$want_t5" "after the removal: $lags. Re-adding $person is the owner's own act" PASS
   fi
 fi
 

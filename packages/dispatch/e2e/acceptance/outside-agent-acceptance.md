@@ -74,31 +74,29 @@ The tailnet leg does these steps, in this order:
    answers the public side. On a local stack with no model, `OUTSIDE_PEER=probe` runs the scripted
    peer (`outside-agent-probe.ts peer`) instead; only with `OUTSIDE_ALLOW_HTTP=1`. It also keeps
    a session outside the project, `<peer>-foreign`, registered at the private listener, for row P6.
-5. It starts T5's hold login: `dispatch login --device --person <person>` with the client of this
-   checkout, its file in the scratch directory. It reads the code.
-   Then the read sweep's full-member half: it runs `restricted-sweep.sh` (beside this file) in
+5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file) in
    its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
    `SWEEP_MEMBER`), and starts its writer, which comments on the scratch issue
    `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the public leg ends. No full member's credential
    goes to the runner: the fills file holds none, and is at most 40 KiB so that it fits one input.
-6. It starts the public leg, within the codes' 15 minutes: `gh workflow run` of
+6. It starts the public leg, within the code's 15 minutes: `gh workflow run` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, with
-   `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `tailnet_hold_code`,
+   `checks=all`, `project`, `peer_session`, `tailnet_user_code`,
    `sweep_fills` (the fills file, base64, when fills mode made one) and
    `OUTSIDE_WORKFLOW_INPUTS`. With `OUTSIDE_PUBLIC_COMMAND` set, it runs that command here
    instead, for a local stack.
 7. It waits for the scratch login to be approved, and runs rows T1-T3.
 8. It waits for the public run to end, downloads its artifacts `outside-agent-public` and
    `outside-edge-revocations`, and runs row T4.
-9. It runs row T5, last. It asks the operator on this terminal to remove the test person from the
-   project's access list, and waits for Enter; with `OUTSIDE_OWNER_REMOVE_COMMAND` set, it runs that
-   command instead, as a harness acting as the owner's browser does on a local stack. Re-adding the
-   person is the operator's own act.
-10. It prints rows P1-P9 and the gate, and reads the pins again. A pin that moved during the run
-    holds the gate.
-11. It stops the scratch helper, the peer and the hold login's probes, and removes its scratch
-    directory, with the hold login's only key in it.
+9. During the public run's T5 window it runs T5's removal. Once the peer is shown
+   `outside-e2e t5-open <nonce>`, it reads the test person on the access list (the control), asks the
+   owner on this terminal to remove them and waits for Enter; with `OUTSIDE_OWNER_REMOVE_COMMAND`
+   set, it runs that command instead, as a harness acting as the owner's browser does on a local
+   stack. It keeps the removal's time. Re-adding the person is the owner's own act.
+10. It judges T5 from the public leg's T5 rows and the removal's time, prints rows P1-P9, the sweep
+    and the gate, and reads the pins again. A pin that moved during the run holds the gate.
+11. It stops the scratch helper and the peer, and removes its scratch directory.
 
 ## The workflow's contract with the public leg
 
@@ -113,16 +111,22 @@ The workflow runs `outside-agent-public.sh` after its own sign-in, with:
 | `OUTSIDE_REPOSITORY` | The repository the scratch project's issue names. |
 | `OUTSIDE_PATH_TARGETS` | The target list of row P9. |
 | `OUTSIDE_AGENT_PUBLIC_TSV` | Where the leg writes its TSV. The workflow uploads it as artifact `outside-agent-public`. |
+| `OUTSIDE_T5_COMMAND` | The workflow's browser for the T5 window: a command line, run in the background with `OUTSIDE_T5_DEADLINE` (Unix seconds) and `OUTSIDE_T5_TSV` (a file). It polls the test person's cookie at most every 5 s until it gets 401, then tries the passkey sign-in, and writes rows `T5-cookie` and `T5-passkey` (`row want got verdict`), each `got` holding `at=<Unix seconds>` of the 401 and of the refused sign-in, before the deadline. |
+| `OUTSIDE_T5_SECONDS` | How long the T5 window stays open, at most (default 1200). |
 
 No model credential goes on the runner: the leg's two sends in P4 are scripted, and the model turn
 is the peer's, on the developer box.
 
-Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 20 minutes: P5 waits up to
-15 minutes for a GitHub event, beside P4 and P8, and P8 waits for a token to expire (300 s).
+Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 40 minutes: P5 waits up to
+15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to expire (300 s), and the T5
+window lasts up to 20 minutes.
 
-The browser step also approves `tailnet_hold_code`, T5's hold login, on the same page, and the
-workflow does not revoke it. The tailnet leg ends that login itself: its key and refresh token
-exist only in the tailnet leg's scratch directory, which the leg removes when it ends.
+After P9 the leg opens the T5 window. It tells the peer `outside-e2e t5-open <nonce> at <ms>`,
+starts `OUTSIDE_T5_COMMAND`, polls a fresh trade of P2's device login every 10 s, and keeps a relay
+socket open with the newest token, as the agent would. The window ends once a trade is refused and
+the socket open then has closed, or at the deadline. It prints rows `T5-agent` (with
+`refused_at=` and `socket_closed_at=` in Unix seconds), `T5-cookie` and `T5-passkey`; the
+tailnet leg judges T5 from them. The workflow's revocations come after the window.
 
 The workflow's last step revokes every other device login the run approved, the scratch helper's
 included. It uploads one row per revoke, `revoke-<credential id>`, as artifact
@@ -159,7 +163,7 @@ shim finds its program through the caller's HOME.
 | T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value. |
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's last step revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
-| T5 | Last. Before the prompt, which is the control: the test person is on the project's access list (read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and a trade of the hold login is answered. After the owner removes the person and Enter is pressed: the list no longer names them (else UNKNOWN), a fresh trade of the hold login is refused, and a relay socket opened at the edge with the token traded at the removal is closed, each within 325 s. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. The row also wants the test person's cookie answered 401 and their passkey sign-in refused; that browser is the public runner's and has ended by then, so the row reads UNKNOWN even when every part read here passes. No terminal, or no approved hold login, reads UNKNOWN. |
+| T5 | The owner's removal, made during the public run's T5 window; before it, the test person is on the project's access list (the control, read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows: the cookie got 401 within 30 s of the removal, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it, none before it. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something. With no such comment it reads UNKNOWN. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
@@ -196,6 +200,5 @@ same check must fail on that copy.
   machines keep time. The model peer stamps its answers by running `date` just before each send, so
   its stamps include the model's own time between the two calls: a lag can read longer than the
   delivery took, never shorter.
-- T5 reads the access-list removal through the test person's live device login: its trade and
-  its socket. The parts that need the test person's browser, which lives on the runner and has
-  ended by then (their cookie answered 401, their passkey sign-in refused), are not read.
+- T5 compares the runner's clock, which stamps the public leg's T5 rows, with this box's, which
+  stamps the removal, so its bounds hold only as well as both machines keep time.
