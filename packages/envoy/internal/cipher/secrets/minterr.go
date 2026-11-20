@@ -1,0 +1,162 @@
+package secrets
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// MintRequest is one release's input to a minter: the secret's stored value, its name, its type
+// and whether the policy snapshot checked for this release holds it as human tier. The Azure
+// minter requires that name to match its configured secret and HumanTier to be true. Type is the
+// secret's type tag, which the HTTP minters count their attempts under
+// (broker_mint_attempts_total).
+// GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
+// type leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
+// owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
+// google-service-account secret's scopes tag as the whole OAuth scope URLs
+// policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
+// every other type; the service-account minter then asks Google for the cloud-platform scope
+// alone, which is what it asked for before the tag existed.
+type MintRequest struct {
+	Name            string
+	Type            string
+	HumanTier       bool
+	Value           string
+	GitHubOwners    []string
+	GoogleScopes    []string
+	GitHubNarrowing *GitHubNarrowing
+
+	// Check asks the minter whether it could serve this request, without serving it; only the
+	// github-app minter reads it. A check of a narrowing that names repositories or read-only
+	// mints exactly what a release would mint, by the same calls in the same order but for a
+	// token request that may have reached GitHub and failed, which it does not send again where a
+	// release does, so such a request that GitHub served leaves one token live at GitHub, which
+	// nothing can name, until it lapses; a token request known to have failed before a connection
+	// (a name that did not resolve, a failed dial, a proxy's refused tunnel, a certificate the
+	// broker did not trust) is sent again. It releases no token: it sends GitHub the revoke of
+	// every token GitHub answers it with as soon as GitHub answers, among them a token whose
+	// answer it cannot use (cut off, past its cap, undecodable, with no expiry) wherever the part
+	// that arrived names it, and answers Minted{} with the error the release would have answered,
+	// nil where the release would have succeeded. The revoke of a whole answer's token runs under
+	// the caller's context; the revoke of a token whose answer it cannot use runs to a bound of its
+	// own, as a release's does, since the check's own bound is the likeliest thing to have cut that
+	// answer off. A revoke GitHub does not confirm is logged and leaves its token live until it
+	// lapses. A check of a narrowing to its owner alone mints nothing: it lists the App's
+	// installations and answers from that list alone, the refusal of an account with no
+	// installation or nil, since GitHub's answer to a token request with no access_tokens body can
+	// refuse the App but never the narrowing (GitHubApp.Mint). So a caller learns the verdict
+	// before it spends anything on the release itself. Check without GitHubNarrowing is a
+	// programming error: there is nothing to find out about a release the broker already makes
+	// owner-wide, and the minter refuses it before it asks GitHub anything.
+	Check bool
+}
+
+// Minted is one minted token: the value a release hands over, and when it stops working, zero
+// when the type's upstream does not say. The airlock's proxy mints again five minutes before
+// Expires, so no call starts on a token about to end.
+type Minted struct {
+	Value   string
+	Expires time.Time
+}
+
+// GitHubNarrowing narrows one github-app release to the installation of one account and, within
+// it, to named repositories of that account, to read access, or to both: GitHub's
+// POST /app/installations/{id}/access_tokens body. It can only narrow what the release would give
+// without it: Owner must be an account the secret's github-owners lists, and the only permissions
+// it names are contents, metadata, pull_requests, actions, checks and statuses, each at read,
+// which GitHub refuses past what the installation holds; an installation that does not hold
+// actions, checks or statuses is asked for the others (githubapp.go's
+// optionalReadOnlyPermissions).
+// policy.ParseGitHubNarrowing builds it from a caller's input.
+type GitHubNarrowing struct {
+	// Owner is the lowercase login of the one account whose installation the release mints for.
+	Owner string
+	// Repositories are names of Owner's repositories, without the owner, sorted and distinct: the
+	// token reaches those repositories alone, but keeps every permission the App holds, its
+	// organization permissions among them, unless ReadOnly is set too, since GitHub gives a token
+	// whose body names no permissions all of the App's. Empty leaves the token every repository
+	// the installation reaches.
+	Repositories []string
+	// ReadOnly limits the token to contents, metadata, pull_requests, actions, checks and
+	// statuses, each at read, less each of the last three the installation does not hold. A
+	// machine that must only read needs it, with or without Repositories.
+	ReadOnly bool
+}
+
+// MaxNarrowedRepositories is the most repositories a GitHubNarrowing names. GitHub's
+// access_tokens body takes 500, but its answer carries a full repository object for each one,
+// about 5 KB, and the minter reads that answer to a cap sized for this many
+// (accessTokensResponseLimit): a token GitHub minted whose answer the minter cannot read whole
+// cannot be released, and its revoke is sent only where the part it read names the token.
+const MaxNarrowedRepositories = 100
+
+// The classes of a minter's failure. Every error a minter returns wraps exactly one, so the
+// broker's log names the class an operator acts on without reading the message, which never
+// holds the stored value or a token.
+var (
+	// ErrMintStoredValue: the secret's stored value cannot be minted from (it does not decode, its
+	// key does not parse, it names no App id). Its owner stores a new value.
+	ErrMintStoredValue = errors.New("the stored value cannot be minted from")
+	// ErrMintRefused: the minter refuses the release (an Azure login that is not the configured
+	// human-tier secret), or GitHub or Google refused (a 4xx other than GitHub's 422 to a narrowed
+	// token, a Google login that needs a new sign-in, an App with no installation on a listed
+	// account, a 401 to the App's own JWT). A refusal of the narrowing a release asked for is
+	// ErrMintNarrowingRefused, and the one refusal that is about the account alone is
+	// ErrMintNoInstallation.
+	ErrMintRefused = errors.New("the upstream refused the mint")
+	// ErrMintNarrowingRefused: the narrowing the release asked for cannot be served: it names an
+	// account the secret's github-owners tag does not list, which requests.Machine.Values refuses
+	// before any minter runs and GitHubApp.Mint refuses again as a second barrier, or GitHub
+	// answered the narrowed token request 422, which it does for a repository the installation
+	// does not reach (a misspelled name among them) or a permission the App does not hold. The
+	// caller fixes the narrowing; neither the App nor the secret is at fault.
+	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
+	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
+	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes
+	// as wider than the narrowing asked, which GitHubApp.Mint revokes at GitHub before it refuses),
+	// or the broker's Azure projected token is unreadable, malformed or expired.
+	// The broker's operator looks at the projected volume, egress and the upstream's status.
+	ErrMintUpstream = errors.New("the upstream could not be asked")
+	// ErrMintNotBound: the google-service-account secret this release names is not bound to the
+	// account its stored value holds — the deployment's BROKER_SERVICE_ACCOUNT_SECRETS names
+	// another account for this secret, or names the secret not at all. Unlike ErrMintStoredValue,
+	// which the secret's owner fixes by storing a new value, this one is the deployment
+	// operator's to fix in that setting, which is why it is a class of its own; the mint is
+	// refused before any credential is resolved and before any call reaches Google.
+	ErrMintNotBound = errors.New("the deployment binds no such account to this secret")
+)
+
+// ErrMintNoInstallation is the one refusal of GitHub's that is about the account a release is
+// for: the App has no installation on the account the narrowing names, or on any account the
+// secret's github-owners tag lists (GitHubApp.Mint). It is no class of its own: it wraps
+// ErrMintRefused, so MintErrorClass still reads "refused" and a release still answers it as the
+// mint failure it is.
+//
+// It exists because the broker's narrowing check must tell this refusal from every other 4xx
+// GitHub answers (mintStatusError.Unwrap wraps them all in ErrMintRefused): a 401 to the App's
+// JWT, a 403 that is no rate limit and a 404 on the token route say nothing about the narrowing
+// the caller asked for, and a check that read them as a refusal would tell the caller to fix a
+// narrowing that is not at fault. Its own text is ErrMintRefused's, which it wraps, so a
+// refusal naming it reads word for word as it did when it named the class alone: a released
+// client matches "has no installation on" in those words (packages/daemon's appauth).
+var ErrMintNoInstallation = fmt.Errorf("%w", ErrMintRefused)
+
+// MintErrorClass names the class err wraps, for the broker's log line: "stored-value",
+// "refused", "narrowing", "binding", "upstream", or "unknown" for an error that wraps none.
+func MintErrorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrMintStoredValue):
+		return "stored-value"
+	case errors.Is(err, ErrMintNarrowingRefused):
+		return "narrowing"
+	case errors.Is(err, ErrMintRefused):
+		return "refused"
+	case errors.Is(err, ErrMintUpstream):
+		return "upstream"
+	case errors.Is(err, ErrMintNotBound):
+		return "binding"
+	default:
+		return "unknown"
+	}
+}

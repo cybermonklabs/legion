@@ -38,7 +38,7 @@ func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *
 		}
 	}
 
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("open over the earlier listener's keys: %v", err)
 	}

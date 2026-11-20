@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -54,7 +55,7 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 		{"SeedText", func() error { _, err := service.SeedText(unjoined, artifactID, "seeded", alice); return err }},
 		{"SnapshotVersion", func() error { _, err := service.SnapshotVersion(unjoined, artifactID, alice); return err }},
 		{"NamedVersion", func() error { _, err := service.NamedVersion(unjoined, artifactID, "named", alice); return err }},
-		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice); return err }},
+		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice, nil); return err }},
 		{"ApplyOps", func() error { _, err := service.ApplyOps(unjoined, artifactID, insert, alice, nil); return err }},
 		{"ApplyOps with a precondition", func() error {
 			_, err := service.ApplyOps(unjoined, artifactID, insert, alice, &model.EditPrecondition{Document: token})
@@ -182,6 +183,36 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 	}
 }
 
+// Every replacement names the token of the version it replaces, so the write refuses one that
+// names none, on the tree it has already read and under its own lock, and leaves the document as
+// it was; one that names the live token is taken. A replacement of a document whose live tree is
+// outside the Proof schema names no token either, and is taken, since such a tree has none for
+// any caller to name (TestRepairingUploadNeedsNoToken in api).
+func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "before\n")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	replace := func(markdown string, precondition *model.EditPrecondition) error {
+		return joinedWrite(service, func(ctx context.Context) error {
+			_, err := service.ReplaceText(ctx, artifactID, markdown, alice, precondition)
+			return err
+		})
+	}
+
+	if err := replace("after\n", nil); !errors.Is(err, ErrPreconditionRequired) {
+		t.Fatalf("a replacement naming no token = %v, want ErrPreconditionRequired", err)
+	}
+	if text := documentText(t, service, artifactID); text != "before\n" {
+		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
+	}
+	if err := replace("after\n", liveDocumentToken(t, service, artifactID)); err != nil {
+		t.Fatalf("a replacement naming the live token: %v", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the document reads %q after the replacement that named its token, want the replacement", text)
+	}
+}
+
 func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
@@ -192,7 +223,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	}
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -371,7 +402,11 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 			return err
 		},
 		"a text replacement": func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, "after", actor)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, "after", actor, precondition)
 			return err
 		},
 	} {
@@ -852,8 +887,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			var answered error
 			if err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
-				// The issue route holds the issue's row before it writes any document.
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				// The issue route holds the issue's owner lock before it writes any document.
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if answered = unchanged.write(ctx); answered != nil && !errors.Is(answered, ygws.ErrNoChanges) {

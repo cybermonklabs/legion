@@ -78,7 +78,7 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 			child:  {Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "todo", Parent: new(parent), LastSeq: 5},
 		}
 		sub := newLiveClaimIn(t, h, root, own, claim.RoleArchitect)
-		assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil),
+		refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil),
 			http.StatusConflict, "CHILD_RELEASE_STALLED")
 		if got := stalledOn(t, h, own); len(got) != 1 || !strings.Contains(got[0], child+" is todo but its parent "+parent+" has not reached the daemon") {
 			t.Fatalf("stalled notices on %s = %q, want one naming %s and %s", own, got, child, parent)

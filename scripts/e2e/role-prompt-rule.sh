@@ -39,7 +39,8 @@
 # starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is
 # on each process from the moment that process began.
 #
-# Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/role-prompt-rule.sh

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -440,24 +441,6 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 	return slices.Compact(ids), none, some, nil
 }
 
-// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
-// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
-// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
-// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
-// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
-// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
-// both meanings. nil is no bound.
-func microsecondCeiling(bound *time.Time) *time.Time {
-	if bound == nil {
-		return nil
-	}
-	ceiling := bound.Truncate(time.Microsecond)
-	if ceiling.Before(*bound) {
-		ceiling = ceiling.Add(time.Microsecond)
-	}
-	return &ceiling
-}
-
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
 // neither (the issues_claim_complete constraint), so either absent means unclaimed.
 type claimScan struct {
@@ -643,8 +626,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
-	arguments := []any{project, statuses, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
+	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -1145,6 +1128,16 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 // statement's 8,097 buffers on the measurement database. The two columns are functionally
 // determined by the key the walk already carries, so `union` removes exactly the rows it
 // removed before.
+//
+// A child's `needs`, the keys of the issues it waits on, are one lateral over issue_links keyed
+// by the child's own key, which the table's primary key (issue_key, kind, target_key) leads
+// with, so the statement makes one keyed read per child and no read of the table by anything
+// else: this is the single-issue read, where issueProgressLateral counts one issue's children
+// the same way and the listing counts its whole page's in one grouped read instead
+// (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
+// already names, the planner dropped the child keys from the condition and read issue_links by
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1
@@ -1160,27 +1153,41 @@ var issueChildrenStatement = `
 			from subtree s
 			group by s.root
 		)
-		select c.key, c.title, c.status, r.done, r.total, r.active_at,
+		select i.key, i.title, i.status, r.done, r.total, r.active_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = c.key), '[]')
-		from issues c join rollup r on r.root = c.key
-		where c.parent_key = $1 order by c.key
+		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       blockers.keys,
+		       ` + issueClaimColumns + `
+		from issues i join rollup r on r.root = i.key
+		left join lateral (
+			select array_agg(l.target_key order by l.target_key) as keys
+			from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'
+		) blockers on true
+		where i.parent_key = $1 order by i.key
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
-// a non-nil empty list, which the response carries as [].
+// a non-nil empty list, which the response carries as []. A child waiting on nothing scans a null
+// array, so its Needs stays nil and the answer leaves it out, as it does a claim nobody holds.
 func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	children := []model.IssueChild{}
 	for rows.Next() {
 		var child model.IssueChild
 		var links []byte
-		if err := rows.Scan(&child.Key, &child.Title, &child.Status,
-			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links); err != nil {
+		var claim claimScan
+		targets := []any{&child.Key, &child.Title, &child.Status,
+			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.Needs}
+		if err := rows.Scan(append(targets, claim.targets()...)...); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(links, &child.ExternalLinks); err != nil {
 			return nil, err
 		}
+		claimed, err := claim.resolve(child.Key)
+		if err != nil {
+			return nil, err
+		}
+		child.Claim = claimed
 		children = append(children, child)
 	}
 	return children, rows.Err()

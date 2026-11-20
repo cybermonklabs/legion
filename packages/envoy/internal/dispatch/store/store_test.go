@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"reflect"
@@ -815,9 +816,9 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	// appliedCheck is the runner's own statement text, which it prepared and cached on the pooled
-	// connection as it applied the set (applyMigrationOnce). Its text must match byte for byte, so
-	// pgx finds it in the connection's statement cache.
-	const appliedCheck = "select exists(select 1 from schema_migrations where version = $1::bigint)"
+	// connection as it applied the set (applyMigrationOnce, pgmigrate.RecheckRecorded). Its text
+	// must match byte for byte, so pgx finds it in the connection's statement cache.
+	const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 	var held []*pgxpool.Conn
 	for i := range poolSize {
 		conn, err := store.Pool.Acquire(ctx)
@@ -827,8 +828,8 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		held = append(held, conn)
 	}
 	for _, conn := range held {
-		var applied bool
-		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&applied); err != nil {
+		var name, checksum, applied *string
+		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&name, &checksum, &applied); err != nil {
 			t.Errorf("the runner's cached statement failed on a connection it reset: %v", err)
 		}
 	}
@@ -837,39 +838,81 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	}
 }
 
-// createVersionTable pins its transaction (pgmigrate.Pin), so the widen's ALTER TABLE, which takes
-// ACCESS EXCLUSIVE on schema_migrations, is bounded by LockTimeout. Here another connection holds
-// ACCESS SHARE on an integer schema_migrations in an open transaction, so the widen must wait for
-// it. With the pin the widen gives up after LockTimeout with a lock-timeout error (SQLSTATE 55P03)
-// rather than waiting without limit.
+// prepareVersionTable pins its transaction (pgmigrate.Pin), so the ALTER TABLE that gives an
+// earlier runner's schema_migrations the identity columns, and widens an integer version, takes
+// its ACCESS EXCLUSIVE lock within LockTimeout, and tries it again on a timeout, as a migration is
+// tried (pgmigrate.RetryVersionTableLockTimeouts). Here another connection holds ACCESS SHARE on
+// such a table in an open transaction, so the alter must wait for it. A holder that stays gives
+// every attempt up after LockTimeout, and the boot fails with a lock-timeout error (SQLSTATE 55P03)
+// after LockTimeoutAttempts of them rather than waiting without limit; a holder that ends after the
+// first attempt, as a pg_dump does, lets the next attempt through, and the boot goes on. The first
+// two rows are tables an earlier runner left: an integer version from before the timestamps,
+// under a set that holds one, which the alter widens and gives the columns; and a bigint version,
+// which it gives the columns alone.
 //
-// Control: remove the pgmigrate.Pin call from createVersionTable's callback and the widen waits
-// without limit; the context deadline below fires and the error is not a lock timeout.
-func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
-	store := openIsolatedStoreWithPool(t, 4)
-	setup := context.Background()
-	// An integer version column, as a database created before versions became timestamps has, so
-	// createVersionTable(widen) runs the ALTER TABLE.
-	if _, err := store.Pool.Exec(setup, "create table schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
-		t.Fatalf("seed an integer schema_migrations: %v", err)
-	}
-	holder := connectForTest(t, setup, store)
-	if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
-		t.Fatalf("hold a lock on schema_migrations: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+// Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
+// without limit; the context deadline below fires and the error is not a lock timeout. Remove the
+// retry, and the third row fails on the first attempt's timeout.
+func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
+	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
+	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
+	for name, tc := range map[string]struct {
+		versionType string
+		set         []pgmigrate.Migration
+		release     bool
+	}{
+		"widen and add the identity columns":         {"integer", []pgmigrate.Migration{{Version: 20261030120000, Name: "20261030120000_stamped.up.sql"}}, false},
+		"add the identity columns":                   {"bigint", nil, false},
+		"a holder that ends after the first attempt": {"bigint", nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openIsolatedStoreWithPool(t, 4)
+			setup := context.Background()
+			if _, err := store.Pool.Exec(setup, "create table schema_migrations (version "+tc.versionType+" primary key, applied_at timestamptz not null default now())"); err != nil {
+				t.Fatalf("seed an earlier runner's schema_migrations: %v", err)
+			}
+			holder := connectForTest(t, setup, store)
+			if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
+				t.Fatalf("hold a lock on schema_migrations: %v", err)
+			}
+			released := make(chan struct{})
+			if tc.release {
+				go func() {
+					defer close(released)
+					time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+					_, _ = holder.Exec(context.Background(), "rollback")
+				}()
+			} else {
+				close(released)
+				t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+			}
+			t.Cleanup(func() { <-released })
 
-	ctx, cancel := context.WithTimeout(setup, pgmigrate.LockTimeout+10*time.Second)
-	defer cancel()
-	started := time.Now()
-	err := store.createVersionTable(ctx, true)
-	elapsed := time.Since(started)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("createVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03): the widen was not bounded", err, elapsed)
-	}
-	if elapsed > pgmigrate.LockTimeout+5*time.Second {
-		t.Errorf("createVersionTable returned after %v; want about LockTimeout (%v): it waited past its bound", elapsed, pgmigrate.LockTimeout)
+			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
+			defer cancel()
+			started := time.Now()
+			err := store.prepareVersionTable(ctx, tc.set)
+			elapsed := time.Since(started)
+			if tc.release {
+				if err != nil {
+					t.Fatalf("prepareVersionTable returned %v after %v; want the attempt after the holder ended to go through", err, elapsed)
+				}
+				if elapsed < pgmigrate.LockTimeout {
+					t.Errorf("prepareVersionTable returned after %v; want it to have waited out the first attempt (%v)", elapsed, pgmigrate.LockTimeout)
+				}
+				return
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", pgmigrate.LockTimeoutAttempts)) {
+				t.Fatalf("prepareVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03) after %d attempts: the alter was not bounded", err, elapsed, pgmigrate.LockTimeoutAttempts)
+			}
+			if pgmigrate.IsRefusal(err) {
+				t.Errorf("prepareVersionTable = %v; a lock timeout reads as a refusal of the recorded rows", err)
+			}
+			if elapsed < attempts*pgmigrate.LockTimeout || elapsed > bound+5*time.Second {
+				t.Errorf("prepareVersionTable returned after %v; want about %v, every attempt's LockTimeout and the pauses between", elapsed, bound)
+			}
+		})
 	}
 }
 
@@ -951,25 +994,21 @@ func assertDatabaseObjectsAbsent(t *testing.T, ctx context.Context, pool *Pool, 
 func migrateThrough(t *testing.T, store *Store, maxVersion int) {
 	t.Helper()
 	ctx := context.Background()
-	// The runner's own DDL (createVersionTable), bigint included: a test that created the table
-	// as an integer would make the runner widen it, which is not what these tests are about.
-	if _, err := store.Pool.Exec(ctx, `
-		create table if not exists schema_migrations (
-			version bigint primary key,
-			applied_at timestamptz not null default now()
-		)
-	`); err != nil {
-		t.Fatalf("create schema migrations table: %v", err)
-	}
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
+	}
+	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
+	// that created the table as an integer would make the runner widen it, which is not what these
+	// tests are about.
+	if err := store.prepareVersionTable(ctx, migrations); err != nil {
+		t.Fatalf("prepare schema migrations table: %v", err)
 	}
 	for _, migration := range migrations {
 		if migration.Version > maxVersion {
 			break
 		}
-		if err := store.applyMigration(ctx, migration); err != nil {
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
@@ -1720,5 +1759,72 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// legionCurrentVersion is 20261117022936_legion_current, which creates legion_current, the newest
+// row of each field legion_observations holds, fills it from the rows already stored and gives
+// legion_observations the trigger that keeps it.
+const legionCurrentVersion = 20261117022936
+
+// TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt: a database that
+// held observations before 20261117022936 reads the same newest rows from legion_current as from
+// the history, its `null` rows included, whatever order the rows were inserted in; and every insert
+// after it moves a field's row only where the row it inserts is newer than the one held.
+func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, legionCurrentVersion-1)
+	hour := func(hours int) time.Time { return time.Date(2026, 11, 16, hours, 0, 0, 0, time.UTC) }
+	observe := func(issue, field, value string, at time.Time) {
+		t.Helper()
+		if _, err := store.Pool.Exec(ctx, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', $1, $2, $3::jsonb, $4)
+		`, issue, field, value, at); err != nil {
+			t.Fatalf("record %s's %s at %s: %v", issue, field, at, err)
+		}
+	}
+	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice@d.example')`); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	// Each field's newest row is inserted before an older one, so the fill must order by when a row
+	// was observed and not by when it was stored.
+	observe("INFRA-1", "phase", `"implementing"`, hour(2))
+	observe("INFRA-1", "phase", `"planning"`, hour(1))
+	observe("INFRA-1", "claim.planner", `null`, hour(2))
+	observe("INFRA-1", "claim.planner", `"working"`, hour(1))
+	observe("INFRA-2", "phase", `null`, hour(3))
+	observe("INFRA-2", "phase", `"testing"`, hour(1))
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through legion_current: %v", err)
+	}
+	current := func() []string {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, `
+			select issue_key || '/' || field || '=' || value::text || '@' || extract(hour from observed_at at time zone 'UTC')
+			from legion_current where project = 'INFRA' order by issue_key, field
+		`)
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		listed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		return listed
+	}
+	filled := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="implementing"@2`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, filled) {
+		t.Fatalf("legion_current after the migration = %v, want the newest row of each field the history holds, %v", got, filled)
+	}
+
+	// A newer row moves its field's row, and an older one leaves it, in the statement that wrote it.
+	observe("INFRA-1", "phase", `"reviewing"`, hour(4))
+	observe("INFRA-2", "phase", `"admitted"`, hour(0))
+	kept := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="reviewing"@4`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, kept) {
+		t.Fatalf("legion_current after two more rows = %v, want %v", got, kept)
 	}
 }

@@ -419,7 +419,11 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	agentAsk := "\n:::ask{#agent-ask urgency=\"high\" multiple=\"false\"}\nWhich database?\n:::\n"
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
 		return joinedWrite(service, func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, current+agentAsk, session)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, current+agentAsk, session, precondition)
 			return err
 		})
 	})
@@ -460,7 +464,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 	defer tx.Rollback(context.Background())
 	joined, ledger := service.Join(context.Background(), tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("agent joined edit: %v", err)
 	}
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
@@ -809,6 +813,14 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	})
 	settleCurrentGeneration(t, service, original)
 	requireOneOpenAskOn(t, service, "shared", copied)
+	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
+	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room
+	// is read once the settlement has ended, so its count is read after the forgetting.
+	waitFor(t, 10*time.Second, "the copy's settlement that opened its ask to end", func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.settling == 0
+	})
 	if author := blockAskAuthor(t, service, copied, "shared"); author != session {
 		t.Errorf("the copy's own ask names %#v, want the session that wrote the block", author)
 	}

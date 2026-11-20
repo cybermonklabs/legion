@@ -1,0 +1,31 @@
+-- 20261111091500_claim_pod_end.up.sql — the pod end a claim's process was last observed to have
+-- died of, kept on the claim so the failure the workflow is told can name it.
+--
+-- A pod the kubelet evicts — "The node was low on resource: ephemeral-storage" — kills every role
+-- of an issue through no fault of theirs. The runtime reads that reason and the kubelet's message
+-- off the pod (runtime.Observation.PodEnd); the supervisor charges the death and relaunches, and
+-- only when the relaunch budget runs out is the workflow told, in a worker-died notice. Until now
+-- that notice carried a kind, a role and a phase and nothing of the cause, because the only place
+-- the cause was written was the observation's Detail, which ends with a tail of the role's own log
+-- and is prose for an operator (INFRA-2009).
+--
+-- The column holds that reason and message alone, bounded where it is built
+-- (runtime.PodEndRunes), never the detail: the detail is kept whole beside it, in
+-- last_death_cause, and this is what the worker-died's reason names whole, on its one line
+-- (workflow's deathReason), so it holds the kubelet's words and nothing of the role's log, at a
+-- size the daemon chose.
+--
+-- It is written by each report of a death (supervise's Machine.died) and cleared with failure at
+-- each launch (launchNow), so a claim that comes back and later fails for something else carries
+-- nothing of the earlier end, and a failed claim that holds one failed with no launch since the
+-- death that wrote it. It is durable for the reason failure is: a failure whose fact no daemon
+-- applied — the live apply failed, or the daemon's stop cut it off after the claim's state was
+-- written — is applied at the next boot from the claim read back from this table
+-- (workflowRuntime.replayTerminal), and that fact names the pod end only where the column kept it.
+--
+-- Not null with an empty default, as failure is: a claim that has observed no pod end holds the
+-- empty string, so every read of it is one branch and no scan takes a pointer.
+--
+-- There is no down file: migrations here are forward-only. A rollback to an image before this one
+-- leaves the column in place, unread and unwritten, which costs the deployment nothing.
+alter table claims add column pod_end text not null default '';

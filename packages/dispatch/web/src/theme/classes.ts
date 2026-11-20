@@ -998,6 +998,8 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 }
 registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A check's command in a node's body: the muted grey on the mark grey (`NodeFacts.tsx`).
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
 // Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.
@@ -1102,6 +1104,15 @@ for (const ground of ["page-paper", "page-pane"] as const) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
   }
 }
+
+// The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
+// `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
+// (`shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// option's detail, muted words on the mark grey of its active row and of the row under the
+// pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
+// grey it turns.
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
+registerText("page-muted text on page-hair", pageColor("page-muted"), pageColor("page-hair"));
 
 /** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
  *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent
@@ -1211,6 +1222,13 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
+ * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
+ * equal.
+ */
+export const scrollFadeTrailingPx = 32;
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

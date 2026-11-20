@@ -18,12 +18,13 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
-// returns when a request fills its 32 KiB write buffer on a broken connection: natsWriter.flush
-// passes the socket's own *net.OpError through (nats.go:2118-2119, 2143-2145), and so do publish
-// and requestWithContext (nats.go:4406, context.go:60-62). Every other call goes to the real bucket.
+// brokenPipeReadKV is an interest bucket whose reads fail with a raw socket error. nats.go v1.55.0
+// reconnects after a partial write, but a caller can still receive an unwrapped *net.OpError from
+// another write failure. This double holds the listener's classification of that error. Every
+// other call goes to the real bucket.
 type brokenPipeReadKV struct {
 	nats.KeyValue
 }
@@ -101,7 +102,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("GET /v1/registry/%s with the interest read failing on a broken pipe: status %d, body %s; want 503", missed, recorder.Code, recorder.Body.String())
 		}
-		var refusal apiError
+		var refusal listenerwire.APIError
 		if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 			t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 		}
@@ -118,7 +119,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 			t.Fatalf("GET /v1/sessions with the interest read failing on a broken pipe: status %d, body %s; want the 200 the copies answer, since the listing reads no record",
 				recorder.Code, recorder.Body.String())
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 		}

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // unreadableRoleClaims are role claim records the bus holds and no read can decode
@@ -56,7 +57,7 @@ func assertUnreadableRoleClaimAnswer(t *testing.T, recorder *httptest.ResponseRe
 	if got := recorder.Header().Get("Retry-After"); got != "" {
 		t.Fatalf("Retry-After = %q, want none: a retry reads the same record", got)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -128,6 +129,27 @@ func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) 
 			} else if !errors.Is(err, nats.ErrTimeout) {
 				t.Fatalf("wait for an exception: %v", err)
 			}
+		})
+	}
+}
+
+// A soft claim of a role whose claim record no read can decode is answered as the lookup answers
+// it, a 500 with no Retry-After, and not the 503 the Legion claim boot claims again after
+// (packages/pi-shared/src/legion-claim-core.ts): the record will not change at the next try, so a
+// claimant that retried a 503 would claim it forever. The record is left as it was.
+func TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain(t *testing.T) {
+	const role, claimant = "reviewer", "ses_soft_claimant"
+	for _, tc := range unreadableRoleClaims {
+		t.Run(tc.name, func(t *testing.T) {
+			state, registry := openUnreadableRoleClaim(t, role, tc.record)
+			if err := state.sessions.Put(claimant, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+				t.Fatalf("register %s: %v", claimant, err)
+			}
+			deps := withRoleClaimDrain(t, state)
+			recorder := httptest.NewRecorder()
+			roleSetHandler(deps, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+				strings.NewReader(`{"session_id":"`+claimant+`","role":"`+role+`","soft":true}`)))
+			assertUnreadableRoleClaimAnswer(t, recorder, registry, role, tc.record, tc.detail)
 		})
 	}
 }

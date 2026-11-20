@@ -26,6 +26,7 @@ func TestReasonNamesEveryClass(t *testing.T) {
 		{"issuer", fmt.Errorf("%w: %q, want %q", ErrIssuer, "https://other", "https://mine"), "issuer"},
 		{"audience", fmt.Errorf("%w: %q, want %q", ErrAudience, []string{"dispatch"}, "envoy"), "audience"},
 		{"expired", fmt.Errorf("%w at 2026-01-01T00:00:00Z", ErrExpired), "expired"},
+		{"not yet valid", fmt.Errorf("%w: issued at 2026-01-01T00:00:00Z", ErrNotYetValid), "not-yet-valid"},
 		{"cancelled", fmt.Errorf("%w: %v", ErrCancelled, context.Canceled), "cancelled"},
 		{"issuer unavailable", fmt.Errorf("%w: %w", ErrIssuerUnavailable, fmt.Errorf("%w: https://issuer.example/keys answered 503", ErrKeySet)), "unavailable"},
 		{"signature", ErrSignature, "signature"},
@@ -108,8 +109,8 @@ func TestEndedRequestOutranksTheTokensOwnFault(t *testing.T) {
 	// A token bad by its claims, not its signature: the only fixture that tells
 	// "the context is read first" apart from "the context is read last, in the
 	// residue arm". Both report the forgery above as cancelled; only the first
-	// reports this one that way, and only the first makes AGENTS.md's "a bad
-	// token on a connection that is already gone lands here too" true.
+	// reports this one that way, and only the first makes Reason's "a genuinely
+	// bad token presented on an ended request reads cancelled" true.
 	wrongAudience := issuer.Claims(testSubject, testAudience)
 	wrongAudience["aud"] = []string{"somebody-else"}
 	claimBad := issuer.Mint(t, signing, wrongAudience)

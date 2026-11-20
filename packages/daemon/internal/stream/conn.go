@@ -82,7 +82,10 @@ const protocolVersion = 2
 // the caller's context and by the RPC timeout, whichever ends first.
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
-	seq        uint64
+	seq uint64
+	// generation is the launch the connection's hello was registered for (Hello.Generation),
+	// which each Answered it reads carries.
+	generation uint64
 	claim      claim.Token
 	nc         net.Conn
 	writer     *shimwire.Writer
@@ -494,8 +497,9 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // dispatch acts on one whole frame. A tool call starting or ending is pushed as the length and
 // the fingerprint of its arguments (ToolStep), which is everything the supervisor records of
 // them and the only thing computed here: their text stops at this reader, so no queue of the
-// daemon's holds a credential a shell command carried. OMP's other events — message updates,
-// errors — are not facts the daemon supervises on, and are dropped, except an extension's
+// daemon's holds a credential a shell command carried. An assistant message's end is pushed as
+// the model that answered and nothing of its text (answeredBy). OMP's other events — message
+// updates, errors — are not facts the daemon supervises on, and are dropped, except an extension's
 // failure, which leaves the agent running without what the extension gives it (the Legion
 // plugin's tool, when its session_start fails) and is on no other record the daemon reads, so it
 // is logged.
@@ -523,8 +527,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				Claim: c.claim, DeliveryID: delivery, AgentInvoked: frame.AgentInvoked, Error: frame.Reason(),
 			}
 			if frame.Error != nil {
-				// The whole of Oh My Pi's error object, not the message alone: the structured
-				// members are what a failure is judged on.
+				// Oh My Pi's error object, not the message alone: the structured members are what
+				// a failure is judged on. Code, its class of the failure, is left: no decision reads it.
 				event.Retryable = frame.Error.Retryable
 				event.HTTPStatus = frame.Error.HTTPStatus
 				event.Provider = frame.Error.Provider
@@ -535,7 +539,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.Response:
 		c.answer(frame)
 	case shimwire.Raw:
-		if frame.Type == "extension_error" {
+		switch frame.Type {
+		case "extension_error":
 			var event struct {
 				ExtensionPath string `json:"extensionPath"`
 				Event         string `json:"event"`
@@ -544,6 +549,10 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			_ = json.Unmarshal(frame.JSON, &event)
 			c.log.Warn("worker-stream: an extension of the worker's Oh My Pi failed", "claim", c.claim,
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
+		case "message_end":
+			if answered, ok := c.answeredBy(frame.JSON); ok {
+				c.events.push(answered)
+			}
 		}
 	case shimwire.AdoptWorkingCopyResult:
 		c.answerShim(frame.ID, frame)
@@ -567,6 +576,51 @@ func stepArgsHash(args []byte) string {
 	}
 	sum := sha256.Sum256(args)
 	return hex.EncodeToString(sum[:8])
+}
+
+// answeredBy is the Answered a message_end read on this connection makes, under the connection's
+// claim and the generation its hello was registered for: an assistant message whose message.model
+// is set and is not shimwire.SyntheticModel. A user's message, a tool's result and a message no
+// model wrote answer nothing, and neither does a frame that is not the shape Oh My Pi writes
+// (internal/testbin's omp frames, omp://rpc.md).
+//
+// A message whose provider or model holds U+0000 did answer, with a model no store can keep
+// (PostgreSQL's text and jsonb refuse that character), and the model an answer names is written
+// into the record of the step it served, in the transaction that ends the step, which would fail
+// with it. This is the one place a frame becomes an Answered, so every reader after it holds a
+// storable model: such a message is an Answered that names neither its provider nor its model,
+// with one line naming the claim and the field, never its text. So the model that answered before
+// it is not the last one, and the step's record names no model, as for an agent that named none.
+func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
+	var frame struct {
+		Message struct {
+			Role     string `json:"role"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return Answered{}, false
+	}
+	m := frame.Message
+	if m.Role != "assistant" || m.Model == "" || m.Model == shimwire.SyntheticModel {
+		return Answered{}, false
+	}
+	var unstorable []string
+	if strings.ContainsRune(m.Provider, 0) {
+		unstorable = append(unstorable, "message.provider")
+	}
+	if strings.ContainsRune(m.Model, 0) {
+		unstorable = append(unstorable, "message.model")
+	}
+	answered := Answered{Claim: c.claim, Generation: c.generation}
+	if len(unstorable) > 0 {
+		c.log.Warn("worker-stream: dropped the model a message_end named: it holds U+0000, which no store can keep",
+			"claim", c.claim, "field", strings.Join(unstorable, " and "))
+		return answered, true
+	}
+	answered.Provider, answered.Model = m.Provider, m.Model
+	return answered, true
 }
 
 // answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody

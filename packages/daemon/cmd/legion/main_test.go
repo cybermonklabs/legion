@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -29,6 +31,11 @@ import (
 // process; workspace-init's tests run several contending for one tree volume, the way two pods'
 // init containers do.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
+
+// testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
+// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
+// own reaches no network.
+const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
@@ -45,6 +52,15 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
+		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
+		// test binary reads the variable; the legion binary has none, and its guards run the
+		// system's own curl.
+		if curl := os.Getenv(testCurlEnv); curl != "" {
+			leakguardCurl = curl
+		}
+		// The environment these tests hand gh beside ghChildEnviron's allowlist
+		// (testGhChildEnviron); the legion binary has no such hook.
+		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the
@@ -54,12 +70,16 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	os.Exit(runWithoutTheOperatorsJJConfig(m))
+	// testpg.Main lets TestPauseCommands clone a migrated database of its own, and drops what it
+	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
+	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
+	os.Exit(testpg.Main("legion_cmd_test", func() int { return runWithoutTheOperatorsJJConfig(m) }))
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
-// their own and removes it afterwards. The removal is deferred, so it also runs when the setup
-// below panics. A run killed by a signal still keeps the directory, which nothing here can help.
+// their own, and a directory for the one `legion` the command-line tests build (legionBuild), and
+// removes both afterwards. The removal is deferred, so it also runs when the setup below panics.
+// A run killed by a signal still keeps the directories, which nothing here can help.
 func runWithoutTheOperatorsJJConfig(m *testing.M) int {
 	// Every test below starts isolated from the operator's own jj configuration — in particular
 	// fsmonitor.backend = "watchman" on this devbox: JJ_CONFIG names a file that does not exist,
@@ -79,6 +99,13 @@ func runWithoutTheOperatorsJJConfig(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)
 		return 1
 	}
+	buildDir, err := os.MkdirTemp("", "legion-test-build")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(buildDir)
+	legionBuildDir = buildDir
 	return m.Run()
 }
 
@@ -376,7 +403,7 @@ func TestStopRemovesTheEntryOfADaemonThatIsGone(t *testing.T) {
 	})
 
 	var out, errb bytes.Buffer
-	code := runStop(context.Background(), []string{"--config", legionConfig(t, "LEGION", 13370)}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "stop", "--config", legionConfig(t, "LEGION", 13370)}, &out, &errb)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr = %q", code, errb.String())
 	}
@@ -408,7 +435,7 @@ func TestStatusDialsTheAddressTheLegionRecorded(t *testing.T) {
 			})
 
 			var out, errb bytes.Buffer
-			code := runStatus(context.Background(), []string{"LEGION"}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "status", "LEGION"}, &out, &errb)
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0; stderr = %q", code, errb.String())
 			}
@@ -430,9 +457,9 @@ func TestUnknownSubcommandIsUsageError(t *testing.T) {
 	}
 }
 
-// `legion --help` is the one place the commands are listed, which the docs site's CLI reference is
-// generated from: every command, each on a line of its own, on stdout with exit 0; a bare `legion`
-// prints the same list as a usage error.
+// `legion --help` lists every command a person runs, each on a line of its own, on stdout with
+// exit 0, and none a program runs; a bare `legion` prints the same list as a usage error. Every
+// other rule of help on each command is clitest's (TestLegionConformance).
 func TestHelpListsEveryCommand(t *testing.T) {
 	for _, tc := range []struct {
 		argv   []string
@@ -453,70 +480,20 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for name := range commands {
-			if !strings.Contains(listed, "\n  "+name+" ") {
-				t.Errorf("%v does not list %s: %q", tc.argv, name, listed)
+		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
+				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}
 		}
 	}
 }
 
-// Every command answers -h, -help and --help with its usage, `usage: legion <command>…`, and exit
-// 0: the docs site's CLI generator fails the build on any other answer. It runs each help with no
-// LEGION_* variable, and so does this test: in a Legion pane, LEGION_GH_PATH would have `legion gh
-// --help` exec the real gh in place of the test binary.
-func TestEveryCommandAnswersHelp(t *testing.T) {
-	fixtureenv.Unset(t, "LEGION_GH_PATH")
-	for name := range commands {
-		for _, help := range []string{"-h", "-help", "--help"} {
-			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", name, help}, &out, &errb)
-			if code != 0 || !usageOf(errb.String(), name) {
-				t.Errorf("legion %s %s = %d, stderr %q; want exit 0 and its usage", name, help, code, errb.String())
-			}
-		}
-	}
-}
-
-// usageOf says whether help begins with the usage line of `legion <words…>`.
+// usageOf says whether help begins with the usage line of `legion <words…>`, as a pass-through
+// command's own help does.
 func usageOf(help string, words ...string) bool {
 	line, _, _ := strings.Cut(help, "\n")
 	fields := strings.Fields(line)
 	return len(fields) >= 2+len(words) && slices.Equal(fields[:2+len(words)], append([]string{"usage:", "legion"}, words...))
-}
-
-// A command with subcommands answers --help, exit 0, with a usage line naming every one of them —
-// every key of its table — as `legion <command> a|b|…`, the line the docs site's CLI generator
-// reads each subcommand from; and each subcommand answers --help with its own usage.
-func TestDispatchersAnswerHelpWithTheirSubcommands(t *testing.T) {
-	for _, tc := range []struct {
-		command string
-		table   map[string]command
-	}{
-		{"claims", claimsCommands},
-		{"workspace-init", workspaceInitCommands},
-		{"controller", controllerCommands},
-	} {
-		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"legion", tc.command, "--help"}, &out, &errb)
-		prefix := "usage: legion " + tc.command + " "
-		line, _, _ := strings.Cut(errb.String(), "\n")
-		if code != 0 || !strings.HasPrefix(line, prefix) {
-			t.Errorf("legion %s --help = %d, stderr %q; want exit 0 and stderr starting %q", tc.command, code, errb.String(), prefix)
-			continue
-		}
-		named := strings.Split(strings.Fields(strings.TrimPrefix(line, prefix))[0], "|")
-		for sub := range tc.table {
-			if !slices.Contains(named, sub) {
-				t.Errorf("legion %s --help names %v, not %s: %q", tc.command, named, sub, line)
-			}
-			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", tc.command, sub, "--help"}, &out, &errb)
-			if code != 0 || !usageOf(errb.String(), tc.command, sub) {
-				t.Errorf("legion %s %s --help = %d, stderr %q; want exit 0 and its usage", tc.command, sub, code, errb.String())
-			}
-		}
-	}
 }
 
 func TestVersionPrintsBuildInfo(t *testing.T) {
@@ -688,14 +665,19 @@ github_apps:
 	return path, marker
 }
 
-// tmuxCapabilityGaps are the two lines `legion start --check-config` prints after Config OK for a
+// tmuxCapabilityGaps are the two lines `legion config check` prints after Config OK for a
 // tmux configuration that decides neither: the tmux runtime enrolls nothing with the secrets broker
 // and sets no requests or limits, so both deployment capabilities are open until the file records
-// a decision (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps).
+// a decision (TestConfigCheckReportsTheConfigurationsCapabilityGaps).
 const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n" +
 	"capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: \"<reason>\"\n"
 
-// productionCheckTesterLine is the production-check line `legion start --check-config` prints
+// tmuxPauseUnavailable is the line `legion config check` prints after the capability gaps for
+// every tmux configuration: a pause stops and wakes roles through the idle release, which runs
+// only under kubernetes (pause.Unavailable, TestPauseCommands).
+const tmuxPauseUnavailable = "pause unavailable: runtime: tmux\n"
+
+// productionCheckTesterLine is the production-check line `legion config check` prints
 // for a project that names no `production_check` and so gets the tester, and deploysIgnoredLine
 // the warning it prints, and boot logs, for one that still sets `deploys`.
 func productionCheckTesterLine(key string) string {
@@ -708,13 +690,13 @@ func deploysIgnoredLine(key string) string {
 
 // demoProductionCheck is the production-check line of the one DEMO project workflowConfig and
 // kubernetesCheckConfig declare, which names no `production_check`
-// (TestStartCheckConfigPrintsEachProjectsProductionCheck); demoCheckConfigOK is it after the OK
+// (TestConfigCheckPrintsEachProjectsProductionCheck); demoCheckConfigOK is it after the OK
 // line, which is what every check here prints before its first capability line.
 var demoProductionCheck = productionCheckTesterLine("DEMO")
 
 var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
 
-// tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion start --check-config`
+// tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion config check`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
 // carry (with the keys written out, so no command runs at boot), and a deliberately unreachable
 // Postgres, as legionConfig's is — every test of it stops before a store is opened. `state_dir`
@@ -798,18 +780,18 @@ const twoProjectsWithDeploys = "projects:\n" +
 	"  OTHER:\n    deploys: []\n"
 
 // A file another deployment still writes `deploys` into is accepted and warned about, never
-// refused: `--check-config` prints one warning per project that names the key, immediately after
+// refused: `legion config check` prints one warning per project that names the key, immediately after
 // Config OK and before every other line, and exits 0, so the deprecation is the first thing an
 // operator reads.
-func TestStartCheckConfigWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
+func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 	legionState(t)
 	config := projectsConfig(t, twoProjectsWithDeploys)
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
-		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps
+		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -838,36 +820,36 @@ func TestStartLogsEachConfigurationWarningOnceAsItBoots(t *testing.T) {
 	}
 }
 
-// --check-config prints one `production_check` line per project, in key order: the word the file
+// `legion config check` prints one `production_check` line per project, in key order: the word the file
 // writes for the project that turns the check off, and the tester for the one that names no key.
-func TestStartCheckConfigPrintsEachProjectsProductionCheck(t *testing.T) {
+func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 	legionState(t)
 	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    production_check: off\n")
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck +
 		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" +
-		tmuxCapabilityGaps
+		tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 }
 
-// `legion start --check-config` validates the file the way boot does, says so, and exits: no App
+// `legion config check` validates the file the way boot does, says so, and exits: no App
 // key command runs, no store is opened (the configured Postgres is unreachable), and no team is
 // taken.
-func TestStartCheckConfigValidatesAndStartsNothing(t *testing.T) {
+func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
 	legions := legionState(t)
 	config, marker := workflowConfig(t, 13370, "")
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	if code != 0 {
-		t.Fatalf("legion start --check-config = %d, stderr %q", code, errb.String())
+		t.Fatalf("legion config check = %d, stderr %q", code, errb.String())
 	}
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; out.String() != want {
+	if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; out.String() != want {
 		t.Fatalf("stdout = %q, want %q", out.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -878,37 +860,12 @@ func TestStartCheckConfigValidatesAndStartsNothing(t *testing.T) {
 	}
 }
 
-// A file given as an argument is refused rather than ignored: before, `legion start --check-config
-// broken.yaml` checked ./legion.yaml instead and answered Config OK for the file it never read.
+// A file given as an argument is refused rather than ignored, by every command that reads only
+// --config: `legion config check broken.yaml` would otherwise check ./legion.yaml and answer
+// Config OK for a file it never read, and start, stop, state and probe-boot would act on the team
+// ./legion.yaml names.
 func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
-	legionState(t)
-	config, _ := workflowConfig(t, 13370, "")
-	dir := filepath.Dir(config)
-	if err := os.Rename(config, filepath.Join(dir, "legion.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("worker_cap: [\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
-
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "broken.yaml"}, &out, &errb)
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; stdout %q stderr %q", code, out.String(), errb.String())
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q, want nothing: the file checked was not the one named", out.String())
-	}
-	if !strings.Contains(errb.String(), `unexpected argument "broken.yaml"`) || !strings.Contains(errb.String(), "--config") {
-		t.Fatalf("stderr = %q, want it to name the argument and --config", errb.String())
-	}
-}
-
-// stop and state refuse a file given as an argument as start does: they too read only --config, so
-// `legion stop other.yaml` read ./legion.yaml instead and acted on the team that file names.
-func TestStopAndStateRefuseAConfigurationGivenAsAnArgument(t *testing.T) {
-	for _, command := range []string{"stop", "state"} {
+	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot"} {
 		t.Run(command, func(t *testing.T) {
 			legionState(t)
 			config, _ := workflowConfig(t, 13370, "")
@@ -916,30 +873,53 @@ func TestStopAndStateRefuseAConfigurationGivenAsAnArgument(t *testing.T) {
 			if err := os.Rename(config, filepath.Join(dir, "legion.yaml")); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "other.yaml"), []byte("worker_cap: [\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("worker_cap: [\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(dir)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", command, "other.yaml"}, &out, &errb)
+			argv := append(append([]string{"legion"}, strings.Fields(command)...), "broken.yaml")
+			code := run(context.Background(), argv, &out, &errb)
 			if code != 2 {
 				t.Fatalf("exit code = %d, want 2; stdout %q stderr %q", code, out.String(), errb.String())
 			}
 			if out.Len() != 0 {
 				t.Fatalf("stdout = %q, want nothing: ./legion.yaml was not the file named", out.String())
 			}
-			want := "legion " + command + `: unexpected argument "other.yaml"`
-			if !strings.Contains(errb.String(), want) || !strings.Contains(errb.String(), "--config") {
-				t.Fatalf("stderr = %q, want %q and --config", errb.String(), want)
+			want := "legion " + command + `: unexpected argument "broken.yaml"; name the configuration with --config <file>` + "\n" +
+				"Run 'legion " + command + " --help' for usage.\n"
+			if errb.String() != want {
+				t.Fatalf("stderr = %q, want %q", errb.String(), want)
 			}
 		})
 	}
 }
 
+// `legion start --check-config`, the check's old form, is refused naming the command it moved to,
+// rather than read as a start: it exits 2, prints nothing on stdout, runs no App key command and
+// takes no team.
+func TestStartRefusesItsMovedCheckConfigFlag(t *testing.T) {
+	legions := legionState(t)
+	config, marker := workflowConfig(t, 13370, "")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	want := "legion start: --check-config is now \"legion config check\"\n"
+	if code != 2 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 2, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+	if _, found, err := registry.Find(legions, "DEMO"); err != nil || found {
+		t.Fatalf("registry.Find = %v, %v, want no entry: the refused call takes no team", found, err)
+	}
+}
+
 // Every broken variant is refused naming its key, and the command exits non-zero — including a
 // key only boot read before (the Dispatch bearer's file, internal/daemon/workflow.go bind).
-func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
+func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
 	legionState(t)
 	for _, variant := range []struct{ extra, drop, says string }{
 		{extra: "worker_cap: 3\n", says: "worker_cap"},
@@ -967,7 +947,7 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 			}
 		}
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 		if code != 1 {
 			t.Fatalf("%+v: exit code = %d, want 1; stdout %q stderr %q", variant, code, out.String(), errb.String())
 		}
@@ -982,22 +962,22 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 
 // max_fix_attempts is the other kind: a setting that no longer exists and that the daemon accepts
 // all the same, since nothing reads it and a refusal here would stop a deployment over a word in
-// a file. --check-config exits 0, prints the warning after Config OK and before the project's
+// a file. `legion config check` exits 0, prints the warning after Config OK and before the project's
 // production-check line and the capability gaps, and the warning says what the refusal would
 // have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
 // own — what a settlement names is told to the roles that work the issue
 // (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// the one cap left that blocks a pull request. The refused keys of TestConfigCheckNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
-func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
+func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	legionState(t)
 	config, marker := workflowConfig(t, 13370, "max_fix_attempts: 3\n")
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1005,12 +985,14 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	}
 }
 
-// --check-config makes every refusal boot makes from the configuration, the environment and the
+// `legion config check` makes every refusal boot makes from the configuration, the environment and the
 // files they name before boot writes anything (daemon.CheckStart, which boot's prepare shares): the
-// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation and
-// the real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not.
-// Each is refused in boot's words, no App key command runs, and no state directory is made.
-func TestStartCheckConfigRefusesWhatBootRefuses(t *testing.T) {
+// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation, the
+// real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not, and a
+// postgres_dsn pgx cannot parse. Each is refused in boot's words, written through the URL rule boot
+// writes its own refusals through (printRefusal), so the refusal of such a DSN names neither the
+// DSN's user name nor its query. No App key command runs, and no state directory is made.
+func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
 		name   string
@@ -1020,25 +1002,25 @@ func TestStartCheckConfigRefusesWhatBootRefuses(t *testing.T) {
 	}{
 		{"a missing operator token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "operator-token")) },
 			func(dir string) string {
-				return "legion start: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
+				return "legion config check: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
 			}},
 		{"no operator token file", "", func(t *testing.T, dir string) {
 			rewrite(t, filepath.Join(dir, "legion.yaml"), "operator_token_file: ./operator-token\n", "")
 		},
 			func(string) string {
-				return "legion start: operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names\n"
+				return "legion config check: operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names\n"
 			}},
 		{"a missing Dispatch token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "dispatch-token")) },
 			func(dir string) string {
-				return "legion start: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
+				return "legion config check: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
 			}},
 		{"a missing instructions file", "instructions: ./instructions.md\n", func(*testing.T, string) {},
 			func(dir string) string {
-				return "legion start: instructions file " + filepath.Join(dir, "instructions.md") + " could not be read: "
+				return "legion config check: instructions file " + filepath.Join(dir, "instructions.md") + " could not be read: "
 			}},
 		{"no OMP invocation", "", func(t *testing.T, _ string) { t.Setenv("LEGION_OMP_PATH", "") },
 			func(string) string {
-				return "legion start: omp_invocation is not set: set it to 'mise x <tool> -- omp', or set LEGION_OMP_PATH to an absolute executable path\n"
+				return "legion config check: omp_invocation is not set: set it to 'mise x <tool> -- omp', or set LEGION_OMP_PATH to an absolute executable path\n"
 			}},
 		{"a script as the first gh on PATH", "", func(t *testing.T, dir string) {
 			shims := filepath.Join(dir, "shims")
@@ -1052,7 +1034,14 @@ func TestStartCheckConfigRefusesWhatBootRefuses(t *testing.T) {
 			t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
 		},
 			func(dir string) string {
-				return "legion start: the first gh on PATH, " + filepath.Join(dir, "shims", "gh") + ", is a script, not the real gh"
+				return "legion config check: the first gh on PATH, " + filepath.Join(dir, "shims", "gh") + ", is a script, not the real gh"
+			}},
+		{"a postgres_dsn pgx cannot parse", "", func(t *testing.T, dir string) {
+			replaceLine(t, filepath.Join(dir, "legion.yaml"), "postgres_dsn: ",
+				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
+		},
+			func(string) string {
+				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1061,8 +1050,16 @@ func TestStartCheckConfigRefusesWhatBootRefuses(t *testing.T) {
 			tc.change(t, dir)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
+			// Only the postgres_dsn row writes the DSN's user name and its query into the
+			// configuration; no other row's files hold them. Every row checks for both all the
+			// same, so each shows that its stderr prints neither.
+			for _, never := range []string{"legion-reader", "planted-query-token-4193"} {
+				if strings.Contains(errb.String(), never) {
+					t.Fatalf("stderr %q holds %q, which the URL rule removes", errb.String(), never)
+				}
+			}
 			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
@@ -1094,12 +1091,30 @@ func rewrite(t *testing.T, path, old, replacement string) {
 	}
 }
 
-// --check-config reads every launch secret the way boot does (daemon.CheckStart): the Envoy
+// replaceLine replaces the whole line of path that starts with prefix by line.
+func replaceLine(t *testing.T, path, prefix, line string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	start := strings.Index(string(body), "\n"+prefix)
+	if err != nil || start < 0 {
+		t.Fatalf("%s holds no line starting %q (%v)", path, prefix, err)
+	}
+	end := strings.IndexByte(string(body[start+1:]), '\n')
+	if end < 0 {
+		end = len(body) - start - 1
+	}
+	replaced := string(body[:start+1]) + line + string(body[start+1+end:])
+	if err := os.WriteFile(path, []byte(replaced), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// `legion config check` reads every launch secret the way boot does (daemon.CheckStart): the Envoy
 // bearer's file, and the NATS nkey seed (natsauth.Seed: the key's file over both variables, a file
 // the daemon owns held to 0600, a user's nkey seed or nothing). A file boot
 // would refuse fails the check with boot's refusal, and one it would take passes, the OK line
 // naming the seed's public key and never the seed.
-func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
+func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	legionState(t)
 	seed, public := testnkeys.User(t)
 	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
@@ -1141,7 +1156,7 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if strings.Contains(out.String()+errb.String(), seed) {
 				t.Fatalf("the check printed the seed: stdout %q stderr %q", out.String(), errb.String())
@@ -1150,12 +1165,12 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			if tc.key == seedKey {
 				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
 			}
-			want += tmuxCapabilityGaps
+			want += tmuxCapabilityGaps + tmuxPauseUnavailable
 			if tc.refusal == nil {
 				if code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
-			} else if want := "legion start: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1165,9 +1180,9 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	}
 }
 
-// --check-config reads the daemon's own seed as boot does, beside the pane seed: a refusal in boot's
+// `legion config check` reads the daemon's own seed as boot does, beside the pane seed: a refusal in boot's
 // words, or an OK line naming both users by public key, never either seed.
-func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
+func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	legionState(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	daemonSeed, daemonUser := testnkeys.User(t)
@@ -1203,16 +1218,16 @@ func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 			t.Setenv("NATS_DAEMON_NKEY_SEED", "hunter2") // the key's file outranks it, as at boot
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if printed := out.String() + errb.String(); strings.Contains(printed, daemonSeed) || strings.Contains(printed, paneSeed) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
 			if tc.refusal == nil {
-				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
-			} else if want := "legion start: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1222,10 +1237,10 @@ func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	}
 }
 
-// Under runtime: kubernetes, --check-config also makes boot's refusals of the runtime: an operator
+// Under runtime: kubernetes, `legion config check` also makes boot's refusals of the runtime: an operator
 // pod that collides with Legion's own (a mount at Legion's launcher token projection, refused naming both
 // paths), and a kubeconfig that cannot be read — with no App key command run.
-func TestStartCheckConfigRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
+func TestConfigCheckRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
 		name, runtime string
@@ -1235,16 +1250,16 @@ func TestStartCheckConfigRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
       volumes: [{name: creds, secret: {name: legion-creds}}]
       volume_mounts: [{volume: creds, mount_path: /var/run/legion/launcher}]
 `, func(string) string {
-			return "legion start: runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/launcher overlaps /var/run/legion/launcher, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
+			return "legion config check: runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/launcher overlaps /var/run/legion/launcher, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
 		}},
 		{"an operator mount reaching Legion's roles directory through the image's /var/run link", `    pod:
       volumes: [{name: creds, secret: {name: legion-creds}}]
       volume_mounts: [{volume: creds, mount_path: /run/legion/roles/implementer/private}]
 `, func(string) string {
-			return "legion start: runtime.kubernetes.pod.volume_mounts[0].mount_path /run/legion/roles/implementer/private overlaps /var/run/legion/roles (spelled /run/legion/roles/implementer/private against /run/legion/roles, through the worker image's directory links), which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
+			return "legion config check: runtime.kubernetes.pod.volume_mounts[0].mount_path /run/legion/roles/implementer/private overlaps /var/run/legion/roles (spelled /run/legion/roles/implementer/private against /run/legion/roles, through the worker image's directory links), which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's\n"
 		}},
 		{"a kubeconfig that cannot be read", "    kubeconfig: ./kubeconfig\n", func(dir string) string {
-			return "legion start: read runtime.kubernetes.kubeconfig " + filepath.Join(dir, "kubeconfig") + ": "
+			return "legion config check: read runtime.kubernetes.kubeconfig " + filepath.Join(dir, "kubeconfig") + ": "
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1286,7 +1301,7 @@ runtime:
 			}
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
@@ -1298,7 +1313,7 @@ runtime:
 	}
 }
 
-// kubernetesCheckConfig is a kubernetes configuration `legion start --check-config` passes: the
+// kubernetesCheckConfig is a kubernetes configuration `legion config check` passes: the
 // keys every pod needs (kubernetesCheckKeys, kubernetesCheckRuntime), a kubeconfig naming a
 // context the check never dials, and extra appended at the top level (a four-space-indented
 // line extends the runtime.kubernetes block, which comes last before it).
@@ -1322,7 +1337,7 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 	return config
 }
 
-// After Config OK, --check-config prints one line per deployment capability the file alone leaves
+// After Config OK, `legion config check` prints one line per deployment capability the file alone leaves
 // open (daemon.Deployment: secrets with no broker configured), each in the words boot logs it with
 // and naming the legion.yaml line that records a decision — and exits 0, because a gap is reported,
 // never refused. A decision quiets its row, and a configured broker's secrets row is boot's to
@@ -1331,7 +1346,7 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 // `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux cases
 // (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool capacity the
 // probe's run's, and neither is printed here.
-func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
+func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	legionState(t)
 	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1353,7 +1368,7 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if want := demoCheckConfigOK + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
@@ -1362,22 +1377,22 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
-// --check-config refuses a cpu or memory request above its limit and a request that is no
+// `legion config check` refuses a cpu or memory request above its limit and a request that is no
 // quantity, naming the key, with exit 1 and no Config OK.
-func TestStartCheckConfigRefusesARequestItCannotRender(t *testing.T) {
+func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
 		{"a memory request past its limit", "    resources: {issue: {memory: 32Gi, memory_request: 40Gi}}\n",
-			"legion start: runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi\n"},
+			"legion config check: runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi\n"},
 		{"a cpu request past the default limit", "    resources: {issue: {cpu_request: 4}}\n",
-			"legion start: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 3\n"},
+			"legion config check: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 3\n"},
 		{"a request that is no quantity", "    resources: {issue: {memory_request: lots}}\n",
-			"legion start: runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)\n"},
+			"legion config check: runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 			if code != 1 || out.Len() != 0 || errb.String() != tc.want {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), tc.want)
 			}
@@ -1385,12 +1400,12 @@ func TestStartCheckConfigRefusesARequestItCannotRender(t *testing.T) {
 	}
 }
 
-// --check-config's plugins line names the pair runtime.kubernetes.plugins sets, "from
+// `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
-// gap (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps's pluginsGap). When
+// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
 // whose plugin is the worker image's and never an install.
-func TestStartCheckConfigNamesTheResolvedPluginPair(t *testing.T) {
+func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
@@ -1415,7 +1430,7 @@ func TestStartCheckConfigNamesTheResolvedPluginPair(t *testing.T) {
 
 			config := kubernetesCheckConfig(t, tc.extra)
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
@@ -1426,12 +1441,12 @@ func TestStartCheckConfigNamesTheResolvedPluginPair(t *testing.T) {
 	}
 }
 
-// --check-config prints one more plain line, after Config OK and the capability gaps and before
+// `legion config check` prints one more plain line, after Config OK and the capability gaps and before
 // the plugins line, only when worker_boot_timeout_seconds pushes the image probe's attempt budget
 // above slow_command_timeout_seconds (daemon.ProbeBudget): a deployment whose
 // worker_boot_timeout_seconds reaches or exceeds slow_command_timeout_seconds prints it naming the
 // derived bound; the defaults, and a tmux configuration (which runs no probe), print nothing.
-func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
+func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
@@ -1447,7 +1462,7 @@ func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 		if want := demoCheckConfigOK + secretsGap + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
@@ -1456,7 +1471,7 @@ func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
 	t.Run("the defaults derive nothing", func(t *testing.T) {
 		config := kubernetesCheckConfig(t, "")
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 		if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
@@ -1465,27 +1480,27 @@ func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
 	t.Run("tmux runs no probe, and prints nothing", func(t *testing.T) {
 		config, _ := workflowConfig(t, 13370, "")
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+		if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
 }
 
-// defaultCacheLine is the line --check-config prints under kubernetes for the repository cache at
+// defaultCacheLine is the line `legion config check` prints under kubernetes for the repository cache at
 // its defaults, before the plugins line.
 const defaultCacheLine = "repository cache: a 20Gi volume per mapped repository, fetched from GitHub every 10 minutes, kept 168 hours after its repository leaves the mapping; its container reserves cpu 1, memory 4Gi, ephemeral storage 1Gi under 2Gi\n"
 
-// --check-config names the repository cache each mapped repository gets, as the file settles it:
+// `legion config check` names the repository cache each mapped repository gets, as the file settles it:
 // the defaults, or the file's own members over them, a raised limit alone requested in full and a
 // lower request named under its limit, as a role's.
-func TestStartCheckConfigNamesTheRepositoryCache(t *testing.T) {
+func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	config := kubernetesCheckConfig(t, "    repository_cache: {volume: 50Gi, refresh_minutes: 5, retain_hours: 24, resources: {cpu: \"2\", memory: 8Gi, memory_request: 4Gi}}\n")
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	cache := "repository cache: a 50Gi volume per mapped repository, fetched from GitHub every 5 minutes, kept 24 hours after its repository leaves the mapping; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
 	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
@@ -1495,17 +1510,17 @@ func TestStartCheckConfigNamesTheRepositoryCache(t *testing.T) {
 // A decision may name only a capability the daemon measures from the deployment: anything else is
 // refused as an unknown key naming the four, and a blank reason records nothing, so it is refused
 // too — each with exit 1 and no Config OK.
-func TestStartCheckConfigRefusesAnUnknownCapabilityDecision(t *testing.T) {
+func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion start: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
-		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion start: capabilities.decided.secrets must not be empty\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion config check: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, tc.extra)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if code != 1 || out.Len() != 0 || errb.String() != tc.want {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr %q", code, out.String(), errb.String(), tc.want)

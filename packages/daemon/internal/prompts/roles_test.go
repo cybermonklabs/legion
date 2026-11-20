@@ -381,13 +381,15 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 		}
 	}
 	// The pod half is what survives, and the two parts that carry it are listed rather than
-	// counted: a part that stopped telling a role how to answer an update round fails here.
+	// counted: a part that stopped telling a role how to answer an update round fails here, and so
+	// does one that lost the step that lets a role's own background work finish before it answers
+	// (dispatch://INFRA-4203 R2).
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
 		body, err := goParts.ReadFile(part)
 		if err != nil {
 			t.Fatalf("read %s: %v", part, err)
 		}
-		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles", "Step 2: let each subagent and each background job that you started finish."} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("%s does not say %q", part, want)
 			}
@@ -536,8 +538,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
 // would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
-	// (packages/pi-legion/src/skills-guard.test.ts).
+	// The phrase every part below carries for that rule. Outside these parts,
+	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
@@ -548,7 +550,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/tester.md", "Every check you record must be able to fail"},
 		// R3: after a fix or a forward merge, search the new head for each earlier finding's class.
 		{"core/implementer.md", "search the head you are about to push for the class of every finding of every earlier review round"},
-		{"core/tester.md", "An equal fingerprint still gets the class search"},
+		{"core/tester.md", "A forward merge still gets the class search"},
 		{"implementer.md", "`classSearch`, one entry per finding of every earlier review round"},
 		{"tester.md", "`classSearch`, one entry per finding of every earlier review round"},
 		// R4: the planner completes no phase with an open decision.

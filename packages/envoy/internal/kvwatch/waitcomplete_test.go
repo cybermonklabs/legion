@@ -133,7 +133,7 @@ func anotherBucketsStream(t *testing.T, conn *natsgo.Conn) string {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: bucket}); err != nil {
+	if _, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bucket}); err != nil {
 		t.Fatalf("create %s: %v", bucket, err)
 	}
 	return "KV_" + bucket

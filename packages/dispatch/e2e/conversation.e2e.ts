@@ -116,6 +116,7 @@ test("Conversation owns the route, lists one card per message newest first, and 
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts 1",
@@ -371,7 +372,10 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
   // it cannot share their round: a PATCH that arrives first answers
   // `404 unknown fixture session s1` and fails the row. Only the project is independent.
   await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
-  await setSessionSendStatus("s1", 404);
+  // The listener answers every send 503, past the take-over window too, so the attempt fails. A
+  // 404 would not do: Dispatch queues a targeted message for a session no store of the listener's
+  // holds, and a queued attempt is no failure.
+  await setSessionSendStatus("s1", 503);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
@@ -385,7 +389,9 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = turn(page, question);
-    await expect(card).toContainText("Failed: no live session s1");
+    await expect(card).toContainText(
+      "Failed: envoy listener: listener returned 503: service starting"
+    );
 
     // The receipt was wrong: the session did get the message and answers on that attempt.
     const answer = (await replyToMessageDelivery(
@@ -458,6 +464,49 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
     // just written stands at the end of it.
     await expect(replies.first()).toContainText("Thanks");
     await expect(replies.nth(1)).toContainText("Following up");
+  } finally {
+    await alice.close();
+  }
+});
+
+// The owner's case (INFRA-3677): a question its agent retracted still takes a reply in its
+// thread, and the reply is drawn under the ask.
+test("a retracted ask takes a reply in its thread, drawn under the ask", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Reply after a retraction" });
+  const ask = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
+  await resolveAsk(
+    ask.id,
+    { kind: "retracted", reason: "A newer question supersedes this one." },
+    agent
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const askTurn = page
+      .getByRole("region", { name: "Conversation" })
+      .locator(`[data-turn="ask:${ask.id}"]`);
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
+
+    const writeReply = askTurn.getByRole("button", { exact: true, name: "Write a reply" });
+    await expect(writeReply).toBeVisible();
+    await writeReply.click();
+    await askTurn.getByRole("textbox", { name: "Reply" }).fill("Noted. What replaced it?");
+    await askTurn.getByRole("button", { exact: true, name: "Reply" }).click();
+
+    const replies = askTurn.getByRole("region", { name: "Replies" }).locator("li");
+    await expect(replies).toHaveCount(1);
+    await expect(replies.first()).toContainText("Noted. What replaced it?");
+    // The server holds it under the ask, which stays retracted.
+    await expect
+      .poll(() => getAsk(ask.id))
+      .toMatchObject({
+        ask: { resolution: { kind: "retracted" }, state: "resolved" },
+        replies: [expect.objectContaining({ body: "Noted. What replaced it?" })],
+      });
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
   } finally {
     await alice.close();
   }

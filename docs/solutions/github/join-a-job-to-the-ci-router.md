@@ -372,7 +372,8 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test` and `go-envoy-infra`, and `go-notices` in
+  the order the item below gives). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
   there saves. A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),
@@ -385,6 +386,28 @@ the fills live in workflows that run there.
   go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
   stale entry costs a run only what changed. Share a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
+- `go-notices` is the one family keyed with the architecture before the OS
+  (`key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`,
+  `restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}`). Its entry holds
+  go-licenses, a program the notices step runs, so an entry one CPU built is of no use to a reader
+  on another. A run of a workflow file older than the architecture in the key restores by
+  `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3` starts with that
+  prefix: such a run restored main's arm64 go-licenses on x86_64 and failed with `Exec format
+  error` (run 44437023306). When the key of a family whose entry holds a program gains a part that
+  separates readers who cannot run each other's program (the CPU, the OS), put that part before
+  the end of the shortest `key` or `restore-keys` an older reader has, or rename the family:
+  GitHub matches both as prefixes, so no `key` or `restore-keys` of an older reader that cannot
+  run the new entries may be a prefix of their key. A part that readers can share, such as the Go
+  version, may follow the shared prefix: go-licenses sits in a directory that names its own
+  version and Go, so a restore of the last Go's entry still gives the modules, and the tool is
+  built again at the new Go's path rather than the old one run. Entries saved under the old shape
+  still match the older prefixes, and none is deleted by hand: GitHub removes an entry after 7
+  days with no read, or earlier, oldest read first, once the repository's caches reach their size
+  limit, and each older reader's restore is a read. An older reader that cannot run the entry,
+  on the entry's Go and tool versions, then fails on every run until its runs come from a commit
+  that carries the new key (a re-run keeps its old commit), or until a program deletes the entry
+  the way ci-caches.yaml's `envoy-infra-superseded` job deletes the `go-envoy-infra` entries a
+  fill superseded.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job
@@ -410,14 +433,16 @@ percentile. On the run that first moved this repository's jobs to arm64 (run 440
 turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
 the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
 zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
-and ci.yaml's "Runners" paragraph lists each one: a tool whose `.github/ci-tools.yaml` row is an
-x86_64 build alone, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built for
-linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that sets
-no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present and
-off for a cross build, so the same command links a different pair of binaries on each runner.
+and ci.yaml's "Runners" paragraph lists each one: a tool with no arm64 row in
+`.github/ci-tools.yaml`, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built
+for linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that
+sets no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present
+and off for a cross build, so the same command links a different pair of binaries on each runner.
 That is why envoy-go-checks, which packs the release's listener archives that way, stays on
-`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's arm64 row, and a Go cache
-family it restores needs a fill on that runner (the section above).
+`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's `<tool>-aarch64` row, which
+`check-ci-tools.sh` holds to the version of the `<tool>` row, an install action that picks the
+row from `uname -m`, and a case of that row in the tool-fallback-arm job; a Go cache family it
+restores needs a fill on that runner (the section above).
 
 ## The merge queue runs the router too
 
@@ -431,8 +456,8 @@ What skips a
 group does so on purpose, and worker-image is the one job that does (pull request only, so it is
 in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
-find-pr-payload.sh; pr-title.yaml runs on an edit and a review alone, and a group carries
-neither. The nine slow suites go the
+find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
+carries. The nine slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 when it carries the label `full-ci`. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's

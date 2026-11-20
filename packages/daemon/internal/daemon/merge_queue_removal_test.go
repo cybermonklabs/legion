@@ -53,11 +53,11 @@ const (
 
 // dequeueWait bounds each wait of this test on the daemon's own work: an event through the
 // intake, a read of GitHub, a fact, and an outbox row's tries, the longest of whose waits here is
-// the four seconds before a row's fourth try (the outbox's retryBackoff). It is the bound a fault
-// is reported at, far above that, so a slow machine is not a failure and a row that never
-// finishes fails its case in seconds rather than at the package's deadline. dequeuePoll is how
-// often a wait asks: each question is a read of the database or of the daemon's whole log, so it
-// is not asked a hundred times a second.
+// the four seconds before a row's fourth try (the outbox's backoff, record.RetryBackoff). It is
+// the bound a fault is reported at, far above that, so a slow machine is not a failure and a row
+// that never finishes fails its case in seconds rather than at the package's deadline.
+// dequeuePoll is how often a wait asks: each question is a read of the database or of the
+// daemon's whole log, so it is not asked a hundred times a second.
 const (
 	dequeueWait = 30 * time.Second
 	dequeuePoll = 50 * time.Millisecond
@@ -105,9 +105,11 @@ const dequeueRetry = 20 * time.Millisecond
 // (readIssuesAtStart), and logs no line when it ends, so the boot waits until GitHub has counted
 // that read and its reviews read, its last call, for every issue before any case publishes. The
 // per-issue read asks again only after a recorded handoff, and the merge-state ladder only after
-// an opened, synchronize, push, check, review or base-push fact, and no case records or applies
-// any of them. Each case then holds the count to the read executor's own lines (one per read), so
-// a read anything else made would fail it.
+// an opened, synchronize, push, check, review or base-push fact, a start read GitHub answered
+// `unknown`, or a second read of a conflicting head that read no answer, and no case records or
+// applies any of them: GitHub answers no read `unknown` and no head conflicting. Each case then
+// holds the count to the read executor's own lines (one per read), so a read anything else made
+// would fail it.
 //
 // Each case has an issue of its own, and each issue but the tenth's and the twelfth's is its own
 // tree root, so the sixteen share one daemon:
@@ -117,7 +119,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     resumed once; the listener refuses the woken merger's topic at the row's second try, and
 //     the session takes the topic only after it; and the session is then told once, of the pull
 //     request, the head, and that the event names no reason. A row that ended on that refusal, as
-//     a phase-ended message does, would leave the merger it woke untold. The removal moves no
+//     a hook prompt's does, would leave the merger it woke untold. The removal moves no
 //     phase and writes no slot.
 //  2. GitHub's merge queue reports a removal in the same second as the merge it makes, so the read
 //     decides: GitHub answers merged, and the issue closes as the webhook's merge would close it,
@@ -198,7 +200,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.wokenOnce(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		told := rig.told(t, issue)
 		if strings.Contains(told, "could not read") {
@@ -223,12 +225,12 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			return rig.phase(t, issue.key) == phase.Done
 		})
 		rig.await(t, "the read's row to finish", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 		})
 		rig.readsWere(t, issue, reads, 1)
 		rig.nothingOwed(t, issue)
 		rig.nothingPublished(t, issue)
-		if resumed := rig.podResumes(t, issue.key); resumed != 0 {
+		if resumed := podResumes(t, rig.pool, issue.key); resumed != 0 {
 			t.Fatalf("%d resumes are recorded for %s, want none: a merged pull request wakes no role", resumed, issue.key)
 		}
 	})
@@ -250,7 +252,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		if told := rig.told(t, issue); !strings.Contains(told, "could not read the pull request") {
 			t.Fatalf("the merger was told %q, want it told that the daemon could not read the pull request", told)
@@ -268,7 +270,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		applyFact(t, rig.pool, "api", "backward:"+issue.key, intake.BackwardMove{Issue: issue.key, Requester: claim.RoleMerger,
 			To: phase.Implementing, Reason: "the head needs work the merge queue showed"}, rig.engine)
 		rig.await(t, "the message's row to finish once the issue left merging", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		ended := rig.logged(t, dequeueLeftMerging, issue.key)
 		if len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), string(phase.Implementing)) {
@@ -301,13 +303,13 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			reads := rig.publish(t, issue, issue.head)
 			rig.await(t, "the message's row to end on the merger's claim", func() bool {
 				return len(rig.logged(t, dequeueMergerEnded, issue.key)) == 1 &&
-					rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+					outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 			})
 			if ended := rig.logged(t, dequeueMergerEnded, issue.key)[0]; ended["state"] != string(tc.state) {
 				t.Fatalf("the row ended on a merger whose claim is %v, want %s", ended["state"], tc.state)
 			}
 			rig.nothingPublished(t, issue)
-			if resumed := rig.podResumes(t, issue.key); resumed != 0 {
+			if resumed := podResumes(t, rig.pool, issue.key); resumed != 0 {
 				t.Fatalf("%d resumes are recorded for %s, want none: a %s claim is not woken", resumed, issue.key, tc.state)
 			}
 			rig.readsWere(t, issue, reads, 1)
@@ -323,7 +325,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "design gate") {
 			t.Fatalf("the message's row waits on %q, want the design gate", held)
 		}
-		if resumed, resumes := rig.podResumes(t, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
+		if resumed, resumes := podResumes(t, rig.pool, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
 			t.Fatalf("while the gate is closed %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
 		}
 		rig.nothingPublished(t, issue)
@@ -335,7 +337,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		rig.told(t, issue)
 		rig.readsWere(t, issue, reads, 1)
@@ -702,12 +704,12 @@ func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave 
 	})
 	r.publishAs(t, r.cfg.Project+"-dequeued-again-"+issue.key, issue, issue.head)
 	r.await(t, "the second removal's read queued behind the held one", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 2
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 2
 	})
 	leave(t, issue)
 	release()
 	r.await(t, "both reads' rows to finish", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 	})
 	r.readsWere(t, issue, reads, 1)
 	if ended := r.logged(t, dequeueReadFinished, issue.key); len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), why) {
@@ -722,7 +724,7 @@ func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave 
 // resume its merger.
 func (r *dequeueRig) nobodyWoken(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if resumed, resumes := r.podResumes(t, issue.key), len(resumesOf(r.rt, issue.merger)); resumed != 0 || resumes != 0 {
+	if resumed, resumes := podResumes(t, r.pool, issue.key), len(resumesOf(r.rt, issue.merger)); resumed != 0 || resumes != 0 {
 		t.Fatalf("%d resumes are recorded for %s and the runtime resumed its merger %d times, want neither", resumed, issue.key, resumes)
 	}
 }
@@ -799,7 +801,7 @@ func (r *dequeueRig) told(t *testing.T, issue dequeueIssue) string {
 // the merger recorded, no other resume of the issue, and one resume the runtime was asked for.
 func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	wakes, resumed, resumes := r.wakes(t, issue.key), r.podResumes(t, issue.key), len(resumesOf(r.rt, issue.merger))
+	wakes, resumed, resumes := r.wakes(t, issue.key), podResumes(t, r.pool, issue.key), len(resumesOf(r.rt, issue.merger))
 	if wakes != 1 || resumed != 1 || resumes != 1 {
 		t.Fatalf("%s holds %d delivery wakes of its merger among %d resumes, and the runtime resumed the merger %d times; want one of each",
 			issue.key, wakes, resumed, resumes)
@@ -809,22 +811,9 @@ func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 // logged is every line of the daemon's log about issue whose message starts with msg.
 func (r *dequeueRig) logged(t *testing.T, msg, issue string) []map[string]any {
 	t.Helper()
-	return slices.DeleteFunc(loggedLines(t, r.logs.String(), msg), func(entry map[string]any) bool {
-		text, _ := entry["msg"].(string)
-		return !strings.HasPrefix(text, msg) || entry["issue"] != issue
+	return slices.DeleteFunc(loggedMessages(t, r.logs.String(), msg), func(entry map[string]any) bool {
+		return entry["issue"] != issue
 	})
-}
-
-// rows is how many rows of kind the outbox holds for issue. A finished row is deleted
-// (record.Postgres.FinishOutbox).
-func (r *dequeueRig) rows(t *testing.T, issue string, kind record.OutboxKind) int {
-	t.Helper()
-	var rows int
-	if err := r.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
-		issue, string(kind)).Scan(&rows); err != nil {
-		t.Fatalf("read the %s rows of %s: %v", kind, issue, err)
-	}
-	return rows
 }
 
 // attempts is how many tries the outbox has made of issue's row of kind, 0 for none.
@@ -861,11 +850,11 @@ func (r *dequeueRig) wakes(t *testing.T, issue string) int {
 	return wakes
 }
 
-// podResumes is how many resumes of any role, of any kind, the record keeps for issue.
-func (r *dequeueRig) podResumes(t *testing.T, issue string) int {
+// podResumes is how many resumes of any role, of any kind, the record in pool keeps for issue.
+func podResumes(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var resumes int
-	if err := r.pool.QueryRow(context.Background(), `select count(*) from pod_resumes where issue = $1`, issue).Scan(&resumes); err != nil {
+	if err := pool.QueryRow(context.Background(), `select count(*) from pod_resumes where issue = $1`, issue).Scan(&resumes); err != nil {
 		t.Fatalf("read the resumes of %s: %v", issue, err)
 	}
 	return resumes
@@ -908,8 +897,7 @@ func (r *dequeueRig) phase(t *testing.T, key string) phase.Phase {
 // noticeListener, which takes every publish, with the 404 the listener answers for a role topic no
 // live session holds (writeRoleHolderError, packages/envoy/cmd/listener/api.go, which notify
 // decodes as ErrNoHolder) for each merger's topic, counted, until the test says a session holds
-// that topic (holds). It is conflict_no_takeover_live_test.go's conflictListener in a build of
-// the package every test run compiles, which that live proof's is not.
+// that topic (holds).
 type dequeueListener struct {
 	notices  *noticeListener
 	mu       sync.Mutex

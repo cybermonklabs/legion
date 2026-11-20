@@ -182,6 +182,34 @@ func TestAnotherSessionIsRefusedTheClaim(t *testing.T) {
 	h.wantState(StateRegistered)
 }
 
+// A daemon-launched controller whose Oh My Pi session changed (`/new`) registers the new session
+// with the daemon, and the fence refuses it (SameAgentRefusal, answered 409): the claim keeps its
+// recorded session and its state. The controller then exits (pi-legion's claimOnce), and the daemon
+// relaunches it on the session it recorded, which registers. So a session change never leaves a
+// ready controller registered under a session the daemon does not know, waiting on a role claim.
+// The control is the fence's session check taken out, which lets the new session register.
+func TestAControllersSessionChangeIsRefusedAndItIsRelaunchedOnItsRecordedSession(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+
+	err := h.handle(RequestRegister{Claim: testToken, Generation: h.generation(), Session: "ses_after_new", SessionFile: "/after-new.jsonl"})
+	if !errors.Is(err, claim.SameAgentRefusal) {
+		t.Fatalf("register as the session after /new returned %v, want the same-agent refusal", err)
+	}
+	if got := h.store.load(testToken).Session; got != session {
+		t.Fatalf("stored session %q after the refusal, want the recorded %q", got, session)
+	}
+	h.wantState(StateReady)
+
+	h.observe(runtime.Gone)
+	h.wantState(StateLaunching)
+	if got := h.claim().Session; got != session {
+		t.Fatalf("relaunched on session %q, want the recorded %q", got, session)
+	}
+	h.register()
+	h.wantState(StateRegistered)
+}
+
 func TestAStaleGenerationIsFenced(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -955,8 +983,8 @@ func TestTerminalCallbackRunsOnlyAfterReadyAndFailurePersist(t *testing.T) {
 }
 
 // A turn's start is reported to the daemon as a durable state of its own. It is the one
-// observation that a woken pod's role came back and took work: a wake for a notice or a
-// phase-ended message gives the role no delivery to confirm, so without this its resume would
+// observation that a woken pod's role came back and took work: a wake for a notice or a hook
+// prompt gives the role no delivery to confirm, so without this its resume would
 // never reach a first turn and the daemon would call the pod stuck and then strand its claim
 // (INFRA-945 R5). The state is reported after the claim's write, as ready and failed are.
 func TestATurnStartReportsTheWorkingClaim(t *testing.T) {

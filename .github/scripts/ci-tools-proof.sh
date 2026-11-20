@@ -12,7 +12,9 @@
 # means booting and running it, so the rig is part of the proof rather than a test beside it.
 #
 # THE VERBS, in the order the `tool-fallback` job runs them; `tool-fallback-arm` runs
-# `start-fault`, `probe`, `installed-bun` and `stop-fault`.
+# `installed-bun` and `version-answers` before the fault, then `start-fault`, `probe`,
+# `installed-bun`, `shorten-ladder`, and one `probe`, `version-answers` and `refusals` per
+# faulted install, then `stop-fault`.
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
@@ -82,7 +84,7 @@
 #   stop-fault
 #       The same four proxy variables, emptied in $GITHUB_ENV and printed. The steps after it
 #       must not go through a proxy that stops with the job: the ci-ok-report step every job
-#       ends with uploads an artifact.
+#       ends with can call GitHub's API with gh.
 #       The two bypass lists stay as `start-fault` wrote them, because with no proxy set
 #       nothing reads them.
 #
@@ -273,7 +275,8 @@ stand_in="$stand_in_bin/curl"
 
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
-# and no case installs them, so nothing would serve their payload.
+# and no case installs them, so nothing would serve their payload. The -aarch64 rows are the
+# `tool-fallback-arm` job's, whose installs read their real sources and no origin of this rig's.
 STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
@@ -1082,8 +1085,8 @@ start_fault() {
 
 # stop_fault: the four proxy variables emptied, which is where a job stops going through the
 # fault. The proxy process itself ends with the job; what must end before that is every later
-# step reading it, since the ci-ok-report step each job ends with uploads an artifact and a
-# proxy about to go would carry that upload.
+# step reading it, since the ci-ok-report step each job ends with can call GitHub's API with gh and a
+# proxy about to go would carry those calls.
 stop_fault() {
   [ "$#" -eq 0 ] || die "stop-fault takes no argument, and this call gave $#"
   note "no later step of this job goes through the fault proxy:"

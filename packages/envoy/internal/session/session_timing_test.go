@@ -33,7 +33,7 @@ func millisText(d time.Duration) string {
 // every reader of the registry judges a record's age by (Windows, registry.go): a registry given
 // no WithSessionLiveWindow resolves the package's own declaration.
 func TestSESSIONTESTTheRegistryResolvesTheDeclaredWindows(t *testing.T) {
-	registry, err := OpenSessionRegistry(setupNATS(t).Conn)
+	registry, err := OpenSessionRegistry(t.Context(), setupNATS(t).Conn)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

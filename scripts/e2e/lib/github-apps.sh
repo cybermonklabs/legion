@@ -289,10 +289,10 @@ require_app_inputs() {
 # for a person again. With it the approver reads the twelve hours on the card and decides them
 # once. The two `${…}` expansions are the command's own, expanded by the sh the daemon runs it
 # with: LEGION_GITHUB_OWNER, when set, narrows the release to that owner's installation
-# (--github-owner), and LEGION_GITHUB_READ_ONLY, when set, to contents, metadata, pull requests
-# and Actions read (--github-read-only). A release reaches every repository the installation
-# holds: the daemon asks for no narrowing by repository (INFRA-2543). It depends on nothing but
-# NAME.
+# (--github-owner), and LEGION_GITHUB_READ_ONLY, when set, to contents, metadata, pull requests,
+# Actions, checks and statuses read (--github-read-only). A release reaches every repository the
+# installation holds: the daemon asks for no narrowing by repository (INFRA-2543). It depends on
+# nothing but NAME.
 app_token_command() {
   # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
   printf 'agent-secrets %s --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c '\''printf %%s "$%s"'\''\n' "$1" "$1"

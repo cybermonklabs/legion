@@ -33,58 +33,88 @@ import (
 	"time"
 )
 
-// Which clone failures Fetch retries: git's fatal exit with a cause naming a connection that failed
-// or broke, or a status a server may not answer again. The texts are git's and curl's own: the
-// first three as the production fetch printed them; the statuses and the cut transfer as git
-// printed them against a local git http-backend over TLS; the rest curl's error strings, the TLS
-// ones both GnuTLS's (whose libcurl Debian's git links) and OpenSSL's. A curl error is told the
-// same way whichever request met it.
-func TestATransientCloneFailureIsToldFromAPermanentOne(t *testing.T) {
-	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
-	for _, tc := range []struct {
-		name      string
-		result    Result
-		transient bool
-	}{
-		{"an HTTP/2 stream cancelled mid-pack", fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"), true},
-		{"a 408 on the pack request", fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"), true},
-		{"a connect that timed out", fatal(access + "Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"), true},
-		{"a transfer cut short", fatal("error: RPC failed; curl 18 transfer closed with outstanding read data remaining\nerror: 32 bytes of body are still expected\nfatal: expected flush after ref listing\n"), true},
-		{"a 502 on a request of the transfer", fatal("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\nfatal: expected flush after ref listing\n"), true},
-		{"a TLS read that failed mid-transfer", fatal("error: RPC failed; curl 56 GnuTLS recv error (-9): Error decoding the received TLS packet.\nfatal: early EOF\n"), true},
-		{"a 408 on the first request", fatal("remote: nope\n" + access + "The requested URL returned error: 408\n"), true},
-		{"a 429 on the first request", fatal(access + "The requested URL returned error: 429\n"), true},
-		{"a 500 on the first request", fatal(access + "The requested URL returned error: 500\n"), true},
-		{"a 503 on the first request", fatal(access + "The requested URL returned error: 503\n"), true},
-		{"a host that did not resolve", fatal(access + "Could not resolve host: github.com\n"), true},
-		{"a connection refused", fatal(access + "Failed to connect to github.com port 443 after 3 ms: Couldn't connect to server\n"), true},
-		{"a connection reset", fatal(access + "Recv failure: Connection reset by peer\n"), true},
-		{"an empty reply", fatal(access + "Empty reply from server\n"), true},
-		{"a request that timed out", fatal(access + "Operation timed out after 300000 milliseconds with 0 out of 0 bytes received\n"), true},
-		{"a TLS handshake closed under GnuTLS", fatal(access + "gnutls_handshake() failed: The TLS connection was non-properly terminated.\n"), true},
-		{"a TLS handshake closed under OpenSSL", fatal(access + "OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443\n"), true},
-		{"an HTTP/2 stream on the first request", fatal(access + "HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)\n"), true},
-		{"a pack stream that ended early", fatal("fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"), true},
+// gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:
+// transient, whether Fetch runs the transfer again (transientCloneFailure), and outside, whether
+// the cause is outside the issue's volume (outsideVolumeFailure).
+type gitFailure struct {
+	name               string
+	result             Result
+	transient, outside bool
+}
 
-		{"the token refused", fatal("remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/acme/widgets/'\n"), false},
-		{"no credential reached git", fatal("fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"), false},
-		{"the repository not found", fatal("remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"), false},
-		{"a 403 on the first request", fatal("remote: Write access to repository not granted.\n" + access + "The requested URL returned error: 403\n"), false},
-		{"a 403 on a request of the transfer", fatal("error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\nfatal: expected flush after ref listing\n"), false},
-		{"a certificate GnuTLS did not verify", fatal(access + "server certificate verification failed. CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none\n"), false},
-		{"a certificate OpenSSL did not verify", fatal(access + "SSL certificate problem: unable to get local issuer certificate\n"), false},
-		{"a certificate refused on a request of the transfer", fatal("error: RPC failed; curl 60 SSL certificate problem: unable to get local issuer certificate\nfatal: expected flush after ref listing\n"), false},
-		{"a write that failed on a request of the transfer", fatal("error: RPC failed; curl 23 Failure writing output to destination\nfatal: early EOF\n"), false},
-		{"a curl error nobody has seen on a request of the transfer", fatal("error: RPC failed; curl 999 something nobody has seen\nfatal: early EOF\n"), false},
-		{"a destination already there", fatal("fatal: destination path '/legion/feed/acme/widgets.git.clone-1234' already exists and is not an empty directory.\n"), false},
-		{"a full disk", fatal("fatal: write error: No space left on device\nfatal: fetch-pack: invalid index-pack output\n"), false},
-		{"a transient text under another exit", Result{ExitCode: 1, Stderr: "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"}, false},
-		{"a clone killed by a signal", Result{ExitCode: -1, Stderr: "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"}, false},
-		{"a clone that timed out", Result{ExitCode: -1, TimedOut: true}, false},
-	} {
+// gitFailures are the failures two tests read. The texts are git's and curl's own. The first three
+// are as the production fetch printed them. The statuses and the cut transfer are as git printed
+// them against a local git http-backend over TLS. The rest are curl's error strings, the TLS ones
+// both GnuTLS's (whose libcurl Debian's git links) and OpenSSL's. Curl 23 has the two texts
+// libcurl holds for it. The bad object is what git 2.47.3's fetch printed from a remote that lacks
+// an object a ref of the feed names.
+var gitFailures = func() []gitFailure {
+	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
+	return []gitFailure{
+		{"an HTTP/2 stream cancelled mid-pack", fatal("error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"), true, true},
+		{"a 408 on the pack request", fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n"), true, true},
+		{"a connect that timed out", fatal(access + "Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"), true, true},
+		{"a transfer cut short", fatal("error: RPC failed; curl 18 transfer closed with outstanding read data remaining\nerror: 32 bytes of body are still expected\nfatal: expected flush after ref listing\n"), true, true},
+		{"a 502 on a request of the transfer", fatal("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\nfatal: expected flush after ref listing\n"), true, true},
+		{"a TLS read that failed mid-transfer", fatal("error: RPC failed; curl 56 GnuTLS recv error (-9): Error decoding the received TLS packet.\nfatal: early EOF\n"), true, true},
+		{"a 408 on the first request", fatal("remote: nope\n" + access + "The requested URL returned error: 408\n"), true, true},
+		{"a 429 on the first request", fatal(access + "The requested URL returned error: 429\n"), true, true},
+		{"a 500 on the first request", fatal(access + "The requested URL returned error: 500\n"), true, true},
+		{"a 503 on the first request", fatal(access + "The requested URL returned error: 503\n"), true, true},
+		{"a host that did not resolve", fatal(access + "Could not resolve host: github.com\n"), true, true},
+		{"a connection refused", fatal(access + "Failed to connect to github.com port 443 after 3 ms: Couldn't connect to server\n"), true, true},
+		{"a connection reset", fatal(access + "Recv failure: Connection reset by peer\n"), true, true},
+		{"an empty reply", fatal(access + "Empty reply from server\n"), true, true},
+		{"a request that timed out", fatal(access + "Operation timed out after 300000 milliseconds with 0 out of 0 bytes received\n"), true, true},
+		{"a TLS handshake closed under GnuTLS", fatal(access + "gnutls_handshake() failed: The TLS connection was non-properly terminated.\n"), true, true},
+		{"a TLS handshake closed under OpenSSL", fatal(access + "OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443\n"), true, true},
+		{"an HTTP/2 stream on the first request", fatal(access + "HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)\n"), true, true},
+		{"a pack stream that ended early", fatal("fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF\nfatal: fetch-pack: invalid index-pack output\n"), true, true},
+
+		{"the token refused", fatal("remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/acme/widgets/'\n"), false, true},
+		{"no credential reached git", fatal("fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"), false, false},
+		{"the repository not found", fatal("remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"), false, true},
+		{"a 403 on the first request", fatal("remote: Write access to repository not granted.\n" + access + "The requested URL returned error: 403\n"), false, true},
+		{"a 403 on a request of the transfer", fatal("error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\nfatal: expected flush after ref listing\n"), false, true},
+		{"a certificate GnuTLS did not verify", fatal(access + "server certificate verification failed. CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none\n"), false, false},
+		{"a certificate OpenSSL did not verify", fatal(access + "SSL certificate problem: unable to get local issuer certificate\n"), false, false},
+		{"a certificate refused on a request of the transfer", fatal("error: RPC failed; curl 60 SSL certificate problem: unable to get local issuer certificate\nfatal: expected flush after ref listing\n"), false, false},
+		{"a write that failed on a request of the transfer", fatal("error: RPC failed; curl 23 Failure writing output to destination\nfatal: early EOF\n"), false, false},
+		{"a write of received data that failed", fatal("error: RPC failed; curl 23 Failed writing received data to disk/application\n"), false, false},
+		{"a curl error nobody has seen on a request of the transfer", fatal("error: RPC failed; curl 999 something nobody has seen\nfatal: early EOF\n"), false, false},
+		{"a destination already there", fatal("fatal: destination path '/legion/feed/acme/widgets.git.clone-1234' already exists and is not an empty directory.\n"), false, false},
+		{"a full disk", fatal("fatal: write error: No space left on device\nfatal: fetch-pack: invalid index-pack output\n"), false, false},
+		{"a bad object in the feed", Result{ExitCode: 1, Stderr: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file:///tmp/bad-object/remote.git did not send all necessary objects\n"}, false, false},
+		{"a transient text under another exit", Result{ExitCode: 1, Stderr: "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"}, false, false},
+		{"a clone killed by a signal", Result{ExitCode: -1, Stderr: "error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8)\n"}, false, false},
+		{"a clone that timed out", Result{ExitCode: -1, TimedOut: true}, false, true},
+	}
+}()
+
+// Which clone failures Fetch retries: git's fatal exit with a cause naming a connection that failed
+// or broke, or a status a server may not answer again. A curl error is told the same way whichever
+// request met it.
+func TestATransientCloneFailureIsToldFromAPermanentOne(t *testing.T) {
+	for _, tc := range gitFailures {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := transientCloneFailure(tc.result); got != tc.transient {
 				t.Fatalf("transientCloneFailure(%q, exit %d) = %t, want %t", tc.result.Stderr, tc.result.ExitCode, got, tc.transient)
+			}
+		})
+	}
+}
+
+// Which failures from GitHub have a cause outside the issue's volume, so that a new volume does
+// not cure them: an attempt that ran out of its time, or git's fatal exit with a cause line that
+// names any HTTP status or a connection that failed or broke, a pack stream cut with no cause
+// line, a credential GitHub refused, or a repository GitHub did not find. Every other cause line
+// (curl 23, a write to the volume that failed, and curl 60), a credential git could not read, and
+// a bad object in the feed are not. The two tests read one set of git's lines (gitFailures).
+func TestAFailureOutsideTheVolumeIsReadFromGitsOutput(t *testing.T) {
+	for _, tc := range gitFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outsideVolumeFailure(tc.result); got != tc.outside {
+				t.Fatalf("outsideVolumeFailure(%q, exit %d, timed out %t) = %t, want %t", tc.result.Stderr, tc.result.ExitCode, tc.result.TimedOut, got, tc.outside)
 			}
 		})
 	}
@@ -661,7 +691,8 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 // whatever that pod's fetch has already done, and the kubelet rewrites the file projected from it
 // in place. Against a real git reaching the stand-in as github.com: a token file rewritten while
 // the fetch waits on the repository cache is the one the delta presents, the stand-in taking that
-// token alone; and one rewritten during a retry's backoff is the one the retry presents.
+// token alone; and one rewritten during a retry's backoff is the one the retry presents. A read
+// that fails, the first one or a renewal, fails the fetch for a cause outside the issue's volume.
 func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *testing.T) {
 	t.Run("rewritten during the wait on the repository cache", func(t *testing.T) {
 		github := newGitHubStandIn(t, false, "ghs_fresh")
@@ -703,6 +734,36 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 			t.Fatalf("git presented %q over %d attempts, want the first attempt's token, then the rewritten one alone", presented, github.attemptCount())
 		}
 	})
+	// A read of the token that fails is a cause outside the issue's volume (ErrOutsideVolume):
+	// Fetch's own first read, and a renewal before a retry, of a file removed during the backoff.
+	t.Run("unreadable when the fetch starts", func(t *testing.T) {
+		run := &failingClone{clock: newTestClock()}
+		req := fetchRequest(t)
+		req.Token = tokenFrom(filepath.Join(t.TempDir(), "LEGION_PROVISION_TOKEN"))
+		_, err := Fetch(context.Background(), run, req)
+		if err == nil || !strings.Contains(err.Error(), "no such file or directory") || !errors.Is(err, ErrOutsideVolume) {
+			t.Fatalf("Fetch = %v, want the failed read, outside the volume", err)
+		}
+		if len(run.attempts) != 0 {
+			t.Fatalf("Fetch ran %d transfers, want none", len(run.attempts))
+		}
+	})
+	t.Run("removed during a retry's backoff", func(t *testing.T) {
+		clock := newTestClock()
+		run := &failingClone{clock: clock, result: fatal("error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\nfatal: expected 'packfile'\n")}
+		req := fetchRequest(t)
+		file := tokenFile(t, "ghs_stale")
+		req.Token = tokenFrom(file)
+		req.Clock = &removingClock{testClock: clock, file: file}
+
+		_, err := Fetch(context.Background(), run, req)
+		if err == nil || !strings.Contains(err.Error(), "clone attempt 2: read the provisioning token: ") || !errors.Is(err, ErrOutsideVolume) {
+			t.Fatalf("Fetch = %v, want the retry's failed read, outside the volume", err)
+		}
+		if len(run.attempts) != 1 {
+			t.Fatalf("Fetch ran %d transfers, want the first alone", len(run.attempts))
+		}
+	})
 }
 
 // tokenFile is a provisioning token file holding token, as a pod mounts one.
@@ -735,6 +796,24 @@ func (c *rewritingClock) Sleep(ctx context.Context, d time.Duration) error {
 	if !c.rewritten {
 		c.rewritten = true
 		if err := os.WriteFile(c.file, []byte(c.token), 0o600); err != nil {
+			return err
+		}
+	}
+	return c.testClock.Sleep(ctx, d)
+}
+
+// removingClock is the test clock that removes file at its first wait: a token file that is gone
+// while the fetch waits to retry.
+type removingClock struct {
+	*testClock
+	file    string
+	removed bool
+}
+
+func (c *removingClock) Sleep(ctx context.Context, d time.Duration) error {
+	if !c.removed {
+		c.removed = true
+		if err := os.Remove(c.file); err != nil {
 			return err
 		}
 	}
@@ -1337,6 +1416,39 @@ func (r *killedClone) Run(ctx context.Context, command Command) (Result, error) 
 	return Result{ExitCode: 137, Stderr: "killed mid-transfer"}, nil
 }
 
+// A transfer a signal ended after git printed the provisioning token, as a `fatal: unable to
+// access` line naming the URL with its credential does, returns that line with the token scrubbed:
+// what a killed run printed goes under its error only in checkedResult, after the transfer has
+// scrubbed the Result's stderr, never inside the runner, whose error Fetch does not scrub. The
+// stand-in git prints the token it was handed and kills itself on a transfer from GitHub (the one
+// command that names the credential's file), and runs the real git for every other command.
+func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	fakeGit := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nif [ -n \"${" + provisioningTokenFileEnv + ":-}\" ]; then\n" +
+		"  echo \"fatal: unable to access 'https://x-access-token:$(cat \"$" + provisioningTokenFileEnv + "\")@github.com/acme/widgets/': The requested URL returned error: 502\" >&2\n" +
+		"  kill -KILL $$\nfi\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the stand-in git: %v", err)
+	}
+	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+
+	_, err = Fetch(context.Background(), run, fetchRequest(t))
+
+	if err == nil {
+		t.Fatal("Fetch succeeded through a transfer a signal ended")
+	}
+	if strings.Contains(err.Error(), testInstallationToken) {
+		t.Errorf("Fetch's error carries the provisioning token: %v", err)
+	}
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/'") {
+		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
+	}
+}
+
 // Feed configuration prevents automatic maintenance from competing with the token-holding fetch,
 // and keeps each fetched object in a pack for the repository cache to stream. The clone owns its
 // history, so a feed refresh cannot remove objects from it.
@@ -1782,7 +1894,7 @@ func TestFetchWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 
 // A cache that never becomes ready within CacheWaitTimeout fails the fetch, naming the cache and
 // what it last answered: there is no full clone from GitHub instead, so a cache that is down never
-// costs each new issue a full download.
+// costs each new issue a full download. The wait's failure is outside the issue's volume.
 func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1805,6 +1917,9 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 			_, err := Fetch(context.Background(), run, req)
 			if err == nil || !strings.Contains(err.Error(), "the repository cache "+req.CacheURL+" was not ready within "+CacheWaitTimeout.String()) || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Fetch = %v, want the wait's failure naming %q", err, tc.says)
+			}
+			if !errors.Is(err, ErrOutsideVolume) {
+				t.Errorf("Fetch = %v, want a failure outside the volume (ErrOutsideVolume)", err)
 			}
 			assertNothingFilledTheFeed(t, run, req)
 		})
@@ -1927,7 +2042,10 @@ func assertNothingFilledTheFeed(t *testing.T, run *recordingRunner, req FetchReq
 // is not a regular file or directory, the cache's own configuration, an alternates file, a loose
 // object — or whose history does not verify — a pack with a damaged object, a pack index damaged
 // or belonging to another pack, a history missing an object it reaches — fails the fetch, naming
-// the entry or the check: nothing of it reaches the feed, and nothing is cloned from GitHub.
+// the entry or the check: nothing of it reaches the feed, and nothing is cloned from GitHub. None
+// of these failures is a failed write: each is an entry that unpackEntry refuses by its name or
+// its type, or a failure of verifyCache. Fetch does not wrap either kind in ErrOutsideVolume, by
+// its own rule (Fetch), so none of them reads as a failure outside the issue's volume.
 func TestFetchRefusesARepositoryCacheItCannotUse(t *testing.T) {
 	const pack = "objects/pack/pack-1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
 	for _, tc := range []struct {
@@ -1969,6 +2087,9 @@ func TestFetchRefusesARepositoryCacheItCannotUse(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "fill the feed from the repository cache "+req.CacheURL) || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Fetch = %v, want the cache refused naming %q", err, tc.says)
 			}
+			if errors.Is(err, ErrOutsideVolume) {
+				t.Errorf("Fetch = %v, want a failure of what the cache streamed, not one outside the volume (ErrOutsideVolume)", err)
+			}
 			assertNothingFilledTheFeed(t, run, req)
 			if _, err := os.Stat(filepath.Join(req.Feed, "acme", "x")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("the tar wrote outside the feed (%v)", err)
@@ -1981,7 +2102,8 @@ func TestFetchRefusesARepositoryCacheItCannotUse(t *testing.T) {
 // cache whose answer names another repository — its /healthz, or the /tar itself, read before any
 // of the tar's content — and it presents that cache's token for the tar, which another
 // repository's cache refuses with 401. Each is refused at once, without waiting, and nothing
-// reaches the feed. A cache named without its token is refused before anything is asked.
+// reaches the feed. A cache named without its token is refused before anything is asked. Each
+// refusal is outside the issue's volume, and its text is the refusal's own.
 func TestFetchTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -2010,6 +2132,9 @@ func TestFetchTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), req.CacheURL) || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Fetch = %v, want a refusal naming %q", err, tc.says)
 			}
+			if !errors.Is(err, ErrOutsideVolume) {
+				t.Errorf("Fetch = %v, want a refusal outside the volume (ErrOutsideVolume)", err)
+			}
 			if tc.cache.healthAsked != tc.health || tc.cache.tarAsked != tc.tars || len(clock.waits) != 0 {
 				t.Errorf("Fetch asked /healthz %d and /tar %d times and waited %v, want %d, %d and no wait", tc.cache.healthAsked, tc.cache.tarAsked, clock.waits, tc.health, tc.tars)
 			}
@@ -2019,8 +2144,12 @@ func TestFetchTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 
 	req := fetchRequest(t)
 	req.CacheURL = "http://127.0.0.1:1"
-	if _, err := Fetch(context.Background(), newLocalRunner(t), req); err == nil || err.Error() != "workspace fetch: a repository cache needs its token" {
+	_, err := Fetch(context.Background(), newLocalRunner(t), req)
+	if err == nil || err.Error() != "workspace fetch: a repository cache needs its token" {
 		t.Fatalf("Fetch with a cache and no token = %v", err)
+	}
+	if !errors.Is(err, ErrOutsideVolume) {
+		t.Errorf("Fetch with a cache and no token = %v, want a refusal outside the volume (ErrOutsideVolume)", err)
 	}
 }
 

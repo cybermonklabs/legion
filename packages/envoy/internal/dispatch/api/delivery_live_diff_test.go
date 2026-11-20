@@ -21,9 +21,9 @@ import (
 )
 
 // updateFixtures is this package's one -update flag: a test binary takes one flag of a name, and
-// two tests here write a file the repository commits — the live frame fixtures under
-// packages/contracts/fixtures/live, and the route index at testdata/routes.txt.
-var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live and testdata/routes.txt")
+// three tests here write files the repository commits: packages/contracts/fixtures/live,
+// packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt.
+var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt")
 
 // liveJSONField is one JSON field of a struct as encoding/json writes it: its name and type.
 type liveJSONField struct {
@@ -53,7 +53,8 @@ func liveJSONFields(t reflect.Type) []liveJSONField {
 }
 
 func TestEveryResponseFieldHasOneClass(t *testing.T) {
-	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline} {
+	// Every kind the hub serves, so a kind added to deliveryLiveKinds is held to this at once.
+	for _, kind := range slices.Sorted(maps.Keys(deliveryLiveKinds)) {
 		classes, ok := deliveryLiveKinds[kind]
 		if !ok {
 			t.Fatalf("%s: no classes", kind)
@@ -127,6 +128,29 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestEveryLiveKindDeclaresItsBehaviourOnItsEntry: the hub reads a view's kind in one place, its
+// entry in deliveryLiveKinds, so a kind added there is parsed, read and refused by its own entry
+// rather than by an `if` in each of the hub's files. A new kind with no parse or no read would
+// reach a nil call at the first subscription; a new kind that names nothing it reads would tell a
+// sub nothing when its deployment is not configured (viewReads.refusal).
+func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
+	for _, kind := range slices.Sorted(maps.Keys(deliveryLiveKinds)) {
+		classes := deliveryLiveKinds[kind]
+		if classes.parse == nil {
+			t.Errorf("%s: no parse: a subscription of this kind resolves nothing", kind)
+		}
+		if classes.read == nil {
+			t.Errorf("%s: no read: a view of this kind answers nothing", kind)
+		}
+		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion {
+			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows or one project's daemon", kind, classes.reads)
+		}
+	}
+	if deliveryLiveKinds[legionBoardView].unownedP0 {
+		t.Error("the Legion board shows no unowned P0 list, so a P0 write must not mark it by itself")
 	}
 }
 

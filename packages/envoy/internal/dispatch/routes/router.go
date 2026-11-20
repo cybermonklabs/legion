@@ -32,7 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -119,7 +120,15 @@ type AppContextOptions struct {
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
-	Docs       docs.API
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
+	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
+	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
+	// machine's identity token every listener call presents in EnvoyToken's place instead
+	// (cmd/dispatch); empty presents none.
+	EnvoyGoogleAudience string
+	Docs                docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -132,8 +141,12 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	AgentStream  agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when no store
+	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
+	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
+	AgentPublisher api.AgentPublisher
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -161,6 +174,11 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
+	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
+	Metrics *metrics.Registry
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -203,6 +221,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
+		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
@@ -212,6 +232,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
+		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		Files:                  opts.Files,
@@ -221,6 +242,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		OutboxPublishes:        opts.OutboxPublishes,
+		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 	})
@@ -916,9 +939,13 @@ func publicOrigin(serverURL string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
+// enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
+// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
+// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
+// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
+		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}

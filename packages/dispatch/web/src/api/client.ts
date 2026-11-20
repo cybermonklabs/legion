@@ -12,6 +12,7 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -153,6 +154,26 @@ export type ReferenceSourceKind = NonNullable<
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
 
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
+ *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
+export { REFERENCE_TARGETS_MAX };
+
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`), except a
+ *  batch of one address longer than the budget, which goes alone and passes it: a batch of no
+ *  address would name nothing. `getReferenceTargets` itself writes every reference it is given
+ *  and applies no budget. The server bounds a batch by the count alone and says so
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): it
+ *  sets no limit on the request line itself, but a proxy in front of it can set one, and 16 KB is
+ *  one known such limit (an AWS load balancer's). A full batch of comment or message references
+ *  encodes to more than that, so a caller splits by the length it writes as well as by the
+ *  count, which is the two-request read that comment describes. The budget is the query alone,
+ *  which leaves the route, the verb and the version of the request line room of their own inside
+ *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
+export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
+
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
  *  under its key (`writeUnderKey`), is asked again. */
@@ -182,9 +203,9 @@ export type WriteMethod = (typeof WRITE_METHODS)[number];
  *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
  *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
  *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
- *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
- *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
- *  (`refusalFrom`) reach it.
+ *  reads it as it builds the headers, the write store as it records each write (`Write.keyed`),
+ *  and `keySpent` reads it to decide whether a key's age stops a write, which is how both the
+ *  retry loop (`writeUnderKey`) and a kept refusal (`refusalFrom`) reach it.
  */
 export function goesUnderKey(method: WriteMethod): boolean {
   return method === "POST" || method === "PATCH";
@@ -296,6 +317,37 @@ export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
 }
 
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`
@@ -345,6 +397,13 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
+// costs the database the whole bound each time, so an automatic retry only multiplies that cost
+// and shows nothing more. The page offers its own Retry instead.
+export function isReferencesTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
 // wrote it while two builds serve one database during a release. It is not a repairable state, and
 // a replacement would delete the element. A later read can reach a build that reads it, so the read
@@ -380,10 +439,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
+// definitive or too costly to send again at once; any other failure (dropped connection, a read
+// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
+// couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -391,7 +450,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
-    !isDocumentUnloadable(error)
+    !isDocumentUnloadable(error) &&
+    !isReferencesTimeout(error)
   );
 }
 
@@ -579,17 +639,27 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
  *  written in the browser and for a title typed with nothing under it, and a multipart form - the
  *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
  *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
- *  the name alone. */
+ *  the name alone. An upload that names the base it replaces carries it either way, as the field
+ *  `precondition`, which the form sends as the object's JSON text. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
   if (input.file === undefined) {
-    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
+    return {
+      actor: input.actor,
+      content: input.content,
+      name: input.name,
+      precondition: input.precondition,
+      summary: input.summary,
+    };
   }
   const form = new FormData();
   form.set("name", input.name);
   if (input.summary !== undefined) {
     form.set("summary", input.summary);
+  }
+  if (input.precondition !== undefined) {
+    form.set("precondition", JSON.stringify(input.precondition));
   }
   if (input.actor !== undefined) {
     form.set("actor", JSON.stringify(input.actor));
@@ -981,6 +1051,9 @@ export class DispatchApiClient {
     );
   }
 
+  /** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`: remove the repository's mapping. A
+   *  repository with no mapping answers the same 204, so a removal made again after one that
+   *  landed needs no `removedEvenIfGone`. */
   async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
@@ -1436,6 +1509,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
+   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  listSteps(key: string) {
+    return this.read("/api/v1/issues/{key}/steps", { key });
+  }
+
   /** `GET /api/v1/handoffs/{id}`: one handoff with the body its session wrote. */
   getHandoff(id: string) {
     return this.read("/api/v1/handoffs/{id}", { id });
@@ -1501,6 +1580,18 @@ export class DispatchApiClient {
 
   getArtifactText(id: string) {
     return this.read("/api/v1/artifacts/{id}/text", { id });
+  }
+
+  /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
+   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
+   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
+   *  of a name reads. A conversation holds files and pictures and no document at all, and
+   *  serves no such route, which is why its owner is not one this takes. */
+  ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
+    if ("issue" in owner) {
+      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+    }
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
   }
 
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
@@ -1628,6 +1719,16 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/collaborators", { key });
   }
 
+  /** What many `dispatch://` references point at, in one read: one member per `ref` in the
+   *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
+   *  all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
+   *  past that the server answers `400 CAP_EXCEEDED`. */
+  getReferenceTargets(refs: readonly string[]) {
+    return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
+  }
+
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {
@@ -1656,6 +1757,36 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
@@ -1743,7 +1874,9 @@ export class DispatchApiClient {
   /** `GET /api/v1/credential-requests?approver=me`: every request the viewer may decide - the
    *  ones naming the viewer, and the ones any signed-in person may decide - as the Inbox's
    *  credential-requests section lists them, each secret request with the secrets broker's page
-   *  where it is decided, or `null` when this Dispatch has no secrets broker. */
+   *  where it is decided, or `null` when this Dispatch has no secrets broker. The pending requests
+   *  come first, then the expired ones nobody has dismissed (`state: "expired"`), which nobody can
+   *  decide any more; a row with no `state`, from an older broker, is pending. */
   getCredentialPending() {
     return this.read("/api/v1/credential-requests", {}, { approver: "me" });
   }
@@ -1789,16 +1922,32 @@ export class DispatchApiClient {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
 
-  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
-   *  and every service's, whoever approved it, that are unexpired or expired with a session still
-   *  running. */
+  /** Dismiss an expired credential request as the signed-in viewer: one whose deadline passed
+   *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
+   *  the viewer as the person dismissing, and the request then leaves every list for good, a
+   *  shared one's included. The broker refuses one the viewer's list does not hold (403
+   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
+   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
+   *  answers the first one's values. */
+  async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
+    await this.post(
+      "/api/v1/credential-requests/{id}/dismiss",
+      { id: recordId },
+      undefined,
+      bounds
+    );
+  }
+
+  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
+   *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
+   *  or expired with a session still running. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
-   *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
-   *  with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
+   *  the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

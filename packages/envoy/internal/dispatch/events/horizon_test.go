@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,11 @@ import (
 // is not in xip -- which is exactly the case where a rule trusting one snapshot's in-progress
 // list would publish 8 while 7 can still commit. Only a later snapshot whose xmin has passed the
 // observer's own transaction id proves it.
+//
+// Gap tells the reader what each step waits for: the first observation alone is unproven, so
+// the reader observes again at once; the second finds T still running below the first observer's
+// id, so the gap is held until T ends; the third proves both and is unproven itself; the fourth
+// proves it and leaves nothing above H.
 func TestHorizonProvesAnObservationOnlyFromALaterSnapshot(t *testing.T) {
 	ctx := context.Background()
 	db := &scriptedHorizonDB{script: []scriptedObservation{
@@ -37,22 +43,95 @@ func TestHorizonProvesAnObservationOnlyFromALaterSnapshot(t *testing.T) {
 	}}
 	horizon := NewHorizon(db)
 	for step, want := range []struct {
-		safe    int64
-		pending bool
+		safe int64
+		gap  Gap
 	}{
-		{safe: 0, pending: true},
-		{safe: 0, pending: true},
-		{safe: 8, pending: true},
-		{safe: 9, pending: false},
+		{safe: 0, gap: GapUnproven},
+		{safe: 0, gap: GapHeld},
+		{safe: 8, gap: GapUnproven},
+		{safe: 9, gap: GapNone},
 	} {
 		safe, err := horizon.Safe(ctx)
 		if err != nil {
 			t.Fatalf("observation %d: %v", step+1, err)
 		}
-		if safe != want.safe || horizon.Pending() != want.pending {
-			t.Fatalf("after observation %d: Safe = %d, Pending = %v; want %d, %v",
-				step+1, safe, horizon.Pending(), want.safe, want.pending)
+		if gap := horizon.Gap(); safe != want.safe || gap != want.gap {
+			t.Fatalf("after observation %d: Safe = %d, Gap = %d; want %d, %d", step+1, safe, gap, want.safe, want.gap)
 		}
+	}
+}
+
+// A reader's read that leaves only its own observation unproven observes again at once, and that
+// second observation proves the first whenever no older transaction id is still running: the gap
+// closes on two observations with no wait between. One held by an older transaction id stays
+// held for as long as that transaction runs, however often the reader observes.
+func TestHorizonGapClosesOnAnImmediateSecondObservation(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		second scriptedObservation
+		safe   int64
+		gap    Gap
+	}{
+		{name: "no older transaction running", second: scriptedObservation{newest: 8, xmin: 102, xid: 102}, safe: 8, gap: GapNone},
+		{name: "an older transaction still running", second: scriptedObservation{newest: 8, xmin: 90, xid: 102}, safe: 0, gap: GapHeld},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db := &scriptedHorizonDB{script: []scriptedObservation{{newest: 8, xmin: 90, xid: 101}, c.second}}
+			horizon := NewHorizon(db)
+			if safe, err := horizon.Safe(ctx); err != nil || safe != 0 || horizon.Gap() != GapUnproven {
+				t.Fatalf("first observation: Safe = %d, %v, Gap = %d; want 0 and GapUnproven", safe, err, horizon.Gap())
+			}
+			if safe, err := horizon.Safe(ctx); err != nil || safe != c.safe || horizon.Gap() != c.gap {
+				t.Fatalf("second observation: Safe = %d, %v, Gap = %d; want %d and %d", safe, err, horizon.Gap(), c.safe, c.gap)
+			}
+		})
+	}
+}
+
+// Await shares the readers' cadence: while only its own observation is unproven it observes again
+// at once, so on a quiet instance it returns after two observations with no backoff between, and
+// it backs off (10 ms, then 20 ms, ...) only while an older transaction id holds its observation.
+func TestHorizonAwaitBacksOffOnlyWhileAnOlderTransactionHoldsIt(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		script []scriptedObservation
+		pauses []time.Duration
+	}{
+		{
+			name: "no older transaction running",
+			script: []scriptedObservation{
+				{newest: 8, xmin: 90, xid: 101},
+				{newest: 8, xmin: 102, xid: 102},
+			},
+		},
+		{
+			name: "an older transaction running for two backoffs",
+			script: []scriptedObservation{
+				{newest: 8, xmin: 90, xid: 101},
+				{newest: 8, xmin: 90, xid: 102},
+				{newest: 8, xmin: 90, xid: 103},
+				{newest: 8, xmin: 104, xid: 104},
+			},
+			pauses: []time.Duration{horizonBackoffMin, 2 * horizonBackoffMin},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db := &scriptedHorizonDB{script: c.script}
+			horizon := NewHorizon(db)
+			var pauses []time.Duration
+			horizon.pause = func(_ context.Context, d time.Duration) { pauses = append(pauses, d) }
+			if safe, err := horizon.Await(ctx); err != nil || safe != 8 {
+				t.Fatalf("Await = %d, %v; want 8", safe, err)
+			}
+			if len(db.script) != 0 {
+				t.Fatalf("Await returned with %d scripted observations left, want every one taken", len(db.script))
+			}
+			if !slices.Equal(pauses, c.pauses) {
+				t.Fatalf("Await paused %v, want %v", pauses, c.pauses)
+			}
+		})
 	}
 }
 
@@ -263,7 +342,7 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 	}
 }
 
-// A long-lived Await (the delivery hub's event seed, the relay's start and its reseed) waits on a
+// A long-lived Await (the event relay, at the start of each generation of it) waits on a
 // lifetime, so an observation that fails every time (a horizon pool that cannot dial) must reach
 // its caller as an error to log and retry on once observations have failed for
 // horizonAwaitFailFor, not only when ctx ends. One success between failures restarts the bound:
@@ -373,6 +452,141 @@ func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 	}
 }
 
+// On a quiet instance one observation proves itself: its snapshot lists nothing in progress and
+// its xmax is the observer's own transaction id, so every id below that id had ended before the
+// snapshot was taken, and the id the snapshot saw is final at once. H must then reach a freshly
+// committed event after a single Safe, with no gap left open and nothing to observe again for.
+//
+// Transaction ids are instance-wide, so another test's write (another package's tests share the
+// Postgres instance and run beside this one), or this process's background database drops, can
+// hold one while the observation runs and leave a snapshot that proves nothing. The quiet case is
+// therefore built again, pausing between attempts so those transactions can end, for up to
+// thirty seconds, and the test logs the attempt it took. Twenty attempts back to back were not
+// enough when the module's packages ran together on two CPUs.
+func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for attempt := 1; ; attempt++ {
+		horizon := NewHorizon(database.Pool)
+		id := commitHorizonEvent(ctx, t, database)
+		safe, err := horizon.Safe(ctx)
+		if err != nil {
+			t.Fatalf("observe: %v", err)
+		}
+		gap := horizon.Gap()
+		if safe >= id && gap == GapNone {
+			t.Logf("one observation proved itself on attempt %d: H = %d after committing id %d", attempt, safe, id)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after %d attempts over 30 s no single observation proved itself: Safe = %d after committing id %d, Gap = %d",
+				attempt, safe, id, gap)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A session holding a transaction id takes the shortcut away: the observer's snapshot lists that
+// id in progress, so it does not prove its own A however quiet the log is, and an event that
+// committed before that session even began waits for it. H moves once the session ends and a
+// later observation runs.
+func TestHorizonDoesNotProveItsOwnObservationWhileAnotherSessionHoldsAnID(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	horizon := NewHorizon(database.Pool)
+
+	id := commitHorizonEvent(ctx, t, database)
+	holder, holderXid := openEventWriter(ctx, t, database)
+	observation, _, err := horizon.take(ctx)
+	if err != nil {
+		t.Fatalf("take one observation: %v", err)
+	}
+	if observation.selfProven {
+		t.Fatalf("an observation proved itself while the session holding transaction id %d is open", holderXid)
+	}
+	if observation.newest < id {
+		t.Fatalf("the observation saw id %d, not the committed %d", observation.newest, id)
+	}
+	requireHorizonBelow(ctx, t, horizon, id)
+
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("end the session holding a transaction id: %v", err)
+	}
+	if safe, err := horizon.Await(ctx); err != nil || safe < id {
+		t.Fatalf("Await after the holder ended = %d, %v; want at least %d", safe, err, id)
+	}
+}
+
+// The xmax hole the package documentation names, built on a real Postgres: one session takes a
+// transaction id and stays open, a second takes a higher one, inserts an event and commits. An
+// observation taken now sees that event, and its own transaction id is above both, so neither
+// half of the shortcut can hold: the open session's id is in the snapshot's in-progress list
+// when it is below the snapshot's xmax, and the snapshot's xmax is below the observer's id when
+// it is not (the hole, which TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax builds with the
+// open session holding the higher id). Either way the observation does not prove itself, and H
+// stays below the event until the open session ends.
+func TestHorizonDoesNotProveAnObservationTakenBesideAnOpenLowerID(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	horizon := NewHorizon(database.Pool)
+
+	holder, holderXid := openEventWriter(ctx, t, database)
+	writer, writerXid := openEventWriter(ctx, t, database)
+	id := insertHorizonEvent(ctx, t, writer)
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("commit the event's writer: %v", err)
+	}
+	if writerXid <= holderXid {
+		t.Fatalf("the event's writer took transaction id %d, not above the open session's %d", writerXid, holderXid)
+	}
+
+	observation, _, err := horizon.take(ctx)
+	if err != nil {
+		t.Fatalf("take one observation: %v", err)
+	}
+	xmax, xipEmpty := snapshotShape(ctx, t, database)
+	t.Logf("snapshot xmax %d (in-progress list empty: %v) beside the open session's transaction id %d and the writer's %d",
+		xmax, xipEmpty, holderXid, writerXid)
+	if observation.newest < id {
+		t.Fatalf("the observation saw id %d, not the committed %d", observation.newest, id)
+	}
+	if observation.selfProven {
+		t.Fatalf("an observation proved itself while the session holding transaction id %d is open", holderXid)
+	}
+	requireHorizonBelow(ctx, t, horizon, id)
+
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("end the session holding a transaction id: %v", err)
+	}
+	if safe, err := horizon.Await(ctx); err != nil || safe < id {
+		t.Fatalf("Await after the holder ended = %d, %v; want at least %d", safe, err, id)
+	}
+}
+
+// snapshotShape reads one snapshot's xmax and whether its in-progress list is empty, the two
+// answers an observation's self-proof rests on, for a test's log line.
+func snapshotShape(ctx context.Context, t *testing.T, database *store.Store) (uint64, bool) {
+	t.Helper()
+	var xmaxText string
+	var xipEmpty bool
+	if err := database.Pool.QueryRow(ctx, `
+		select pg_snapshot_xmax(s.snapshot)::text, not exists (select 1 from pg_snapshot_xip(s.snapshot))
+		from (select pg_current_snapshot() as snapshot) s
+	`).Scan(&xmaxText, &xipEmpty); err != nil {
+		t.Fatalf("read one snapshot: %v", err)
+	}
+	xmax, err := strconv.ParseUint(xmaxText, 10, 64)
+	if err != nil {
+		t.Fatalf("parse snapshot xmax %q: %v", xmaxText, err)
+	}
+	return xmax, xipEmpty
+}
+
 // The xmax hole on a real Postgres. T2 takes its transaction id first; T takes a higher one
 // and draws the lower event id; T2 draws the higher id and commits. A snapshot taken then has its
 // xmax one past T2's id, the newest completed one, so T's id is not below it and T is missing
@@ -426,6 +640,16 @@ func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 		t.Logf("xmax hole reproduced: %v on attempt %d (snapshot xmax %d sees id %d; T holds xid %d and id %d)",
 			hole, attempt, xmax, visible, writerXid, lowerID)
 
+		// The hole is why an empty in-progress list alone proves nothing: the observer's own
+		// transaction id is above the snapshot's xmax here, so its observation cannot prove
+		// itself whether T is listed in progress or hidden above xmax.
+		observation, _, err := horizon.take(ctx)
+		if err != nil {
+			t.Fatalf("take one observation: %v", err)
+		}
+		if observation.selfProven {
+			t.Fatalf("an observation proved itself while T, holding id %d and transaction id %d, is open", lowerID, writerXid)
+		}
 		requireHorizonBelow(ctx, t, horizon, lowerID)
 		if err := writer.Commit(ctx); err != nil {
 			t.Fatalf("commit T: %v", err)
@@ -470,11 +694,13 @@ func TestHorizonResetForgetsTheOldLog(t *testing.T) {
 	resetEventLog(ctx, t, database)
 	head := commitHorizonEvent(ctx, t, database)
 	horizon.Reset()
-	if horizon.Pending() {
-		t.Fatal("Pending right after Reset")
+	if gap := horizon.Gap(); gap != GapNone {
+		t.Fatalf("Gap right after Reset = %d, want GapNone", gap)
 	}
-	if safe, err := horizon.Safe(ctx); err != nil || safe != 0 {
-		t.Fatalf("Safe right after Reset = %d, %v; want 0", safe, err)
+	// The first observation after Reset answers the new log alone: it reaches the new head when
+	// its own snapshot proves it, and 0 when it does not, never the old log's horizon.
+	if safe, err := horizon.Safe(ctx); err != nil || safe > head {
+		t.Fatalf("Safe right after Reset = %d, %v; want no more than the new log's head %d", safe, err, head)
 	}
 	if safe, err := horizon.Await(ctx); err != nil || safe != head {
 		t.Fatalf("Await after Reset = %d, %v; want the new head %d", safe, err, head)
@@ -517,9 +743,9 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 
 // Safe must not settle for an observation already in flight when it is called: that one's
 // snapshot can predate an event committed just before the call, and with its A at or below H it
-// leaves Pending false, so a reader would arm no re-read and the event would wait for the next
+// leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next
 // notification however long that takes. Whatever Safe returns, an event committed before the call
-// must be at or below H or keep Pending true.
+// must be at or below H or keep a gap open.
 func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -561,8 +787,8 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("Safe after committing id %d: %v", id, got.err)
 	}
-	if got.safe < id && !horizon.Pending() {
-		t.Fatalf("Safe after committing id %d = %d with Pending false: a reader would never re-read for it", id, got.safe)
+	if got.safe < id && horizon.Gap() == GapNone {
+		t.Fatalf("Safe after committing id %d = %d with no gap open: a reader would never re-read for it", id, got.safe)
 	}
 	horizon.mu.Lock()
 	observed := horizon.newest
@@ -573,46 +799,78 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 }
 
 // Every reader of a process calls Safe; concurrent calls must share observations, since each one
-// costs a round trip and a transaction id. Callers that arrive while one is in flight wait it out
-// and share the next.
+// costs a round trip and a transaction id. The first caller's observation is in flight before the
+// others call, so each of them needs the next one: Safe never settles for an observation already
+// in flight when it is called. All of them share that next one, which the gate holds until they
+// have all parked on it. So 8 calls run exactly 2 observations.
 func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
+	counting := &countingHorizonDB{HorizonDB: database.Pool}
+	for i := range counting.entered {
+		counting.entered[i], counting.release[i] = make(chan struct{}), make(chan struct{})
+	}
 	horizon := NewHorizon(counting)
 
 	const callers = 8
-	// Every caller but the one running the observation parks on it, and the test waits for all
-	// of them to be parked before it lets that observation end: a caller still on its way would
-	// find no observation in flight and run one of its own, which is the very thing this test
-	// says must not happen. Waiting on the parking itself is what the run's own machinery
-	// reports; a sleep long enough on an idle machine is not long enough on a loaded one.
-	parked := make(chan struct{}, callers)
+	// The test lets an observation end only once every caller that needs it has parked on it: a
+	// caller still on its way would find no observation in flight and run one of its own, which
+	// is the very thing this test says must not happen. Waiting on the parking itself is what the
+	// run's own machinery reports; a sleep long enough on an idle machine is not long enough on a
+	// loaded one.
+	parked := make(chan struct{}, 2*callers) // room for every caller to park on both observations
 	horizon.afterObservationParked = func() { parked <- struct{}{} }
-	errs := make(chan error, callers)
-	for range callers {
-		go func() {
-			_, err := horizon.Safe(ctx)
-			errs <- err
-		}()
-	}
-	<-counting.entered
-	for range callers - 1 {
+	awaitEntered := func(observation int) {
 		select {
-		case <-parked:
+		case <-counting.entered[observation-1]:
 		case <-ctx.Done():
-			t.Fatalf("only some of the %d concurrent Safe calls reached the observation in flight: %v", callers, ctx.Err())
+			t.Fatalf("observation %d never reached the database: %v", observation, ctx.Err())
 		}
 	}
-	close(counting.release)
-	for range callers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent Safe: %v", err)
+	awaitParked := func(observation, waiting int) {
+		for i := range waiting {
+			select {
+			case <-parked:
+			case <-ctx.Done():
+				t.Fatalf("only %d of the %d Safe calls waiting on observation %d parked on it: %v", i, waiting, observation, ctx.Err())
+			}
 		}
 	}
-	if observations := counting.batches.Load(); observations >= callers {
-		t.Fatalf("%d concurrent Safe calls ran %d observations, want fewer", callers, observations)
+	errs := make(chan error, callers)
+	call := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
+	}
+
+	// The first caller runs observation 1, and the gate holds it in flight.
+	go call()
+	awaitEntered(1)
+	// The others call only now, so none of them is satisfied by observation 1: each needs
+	// observation 2 or later, and parks on observation 1 to wait it out.
+	for range callers - 1 {
+		go call()
+	}
+	awaitParked(1, callers-1)
+	// Observation 1 ends and answers the first caller alone. The others wake and loop: one runs
+	// observation 2, which the gate holds, and the rest find it in flight and park on it.
+	close(counting.release[0])
+	awaitEntered(2)
+	awaitParked(2, callers-2)
+	// Observation 2 ends and answers every caller still waiting.
+	close(counting.release[1])
+	for i := range callers {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("concurrent Safe: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("only %d of the %d concurrent Safe calls returned: %v", i, callers, ctx.Err())
+		}
+	}
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("%d concurrent Safe calls ran %d observations, want 2", callers, observations)
 	}
 }
 
@@ -668,8 +926,8 @@ func requireHorizonBelow(ctx context.Context, t *testing.T, horizon *Horizon, id
 			t.Fatalf("Safe = %d while the write holding id %d is open", safe, id)
 		}
 	}
-	if !horizon.Pending() {
-		t.Fatalf("Pending is false while a committed id above the open write's %d is observed", id)
+	if horizon.Gap() == GapNone {
+		t.Fatalf("no gap open while a committed id above the open write's %d is observed", id)
 	}
 	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
@@ -739,11 +997,16 @@ type scriptedHorizonDB struct {
 	observed func()
 }
 
+// scriptedObservation is one observation's answer. Its snapshot's xmax is its own transaction id,
+// as it is when nothing took an id between the snapshot and the observer, and selfProves is
+// whether the snapshot lists nothing in progress, which is what makes an observation prove
+// itself. Without it the script alone decides which observation proves which.
 type scriptedObservation struct {
-	newest int64
-	xmin   uint64
-	xid    uint64
-	err    error
+	newest     int64
+	xmin       uint64
+	xid        uint64
+	selfProves bool
+	err        error
 }
 
 func (db *scriptedHorizonDB) SendBatch(context.Context, *pgx.Batch) pgx.BatchResults {
@@ -784,6 +1047,8 @@ func (r scriptedResults) QueryRow() pgx.Row {
 		*dest[1].(**time.Time) = nil
 		*dest[2].(*string) = strconv.FormatUint(r.observation.xmin, 10)
 		*dest[3].(*string) = strconv.FormatUint(r.observation.xid, 10)
+		*dest[4].(*bool) = r.observation.selfProves
+		*dest[5].(*string) = strconv.FormatUint(r.observation.xid, 10)
 		return nil
 	})
 }
@@ -792,18 +1057,20 @@ type scanRow func(dest ...any) error
 
 func (s scanRow) Scan(dest ...any) error { return s(dest...) }
 
-// countingHorizonDB counts observations and holds the first until release closes.
+// countingHorizonDB counts observations and holds each of the first two at its gate: the nth
+// closes entered[n-1] as it reaches the database and waits there until release[n-1] closes. Every
+// later one runs at once.
 type countingHorizonDB struct {
 	HorizonDB
 	batches atomic.Int32
-	entered chan struct{}
-	release chan struct{}
+	entered [2]chan struct{}
+	release [2]chan struct{}
 }
 
 func (db *countingHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if db.batches.Add(1) == 1 {
-		close(db.entered)
-		<-db.release
+	if n := int(db.batches.Add(1)); n <= len(db.entered) {
+		close(db.entered[n-1])
+		<-db.release[n-1]
 	}
 	return db.HorizonDB.SendBatch(ctx, batch)
 }
