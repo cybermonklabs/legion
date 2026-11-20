@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -122,13 +123,15 @@ func copiesOf(held []storedEnvelope, eventID string) int {
 	return copies
 }
 
-// markedFrame is a message's bytes as a row stores them on a subject, the shape it has, and its
+// markedFrame is a message's bytes as a row stores them on a subject, the shape it has, its
 // mark: the text a row finds it by in what a session received (hearMarks) and in a role's kept
-// lane (keptMarks), its payload summary where it is a JSON object with one, else its whole text.
+// lane (keptMarks), its payload summary where it is a JSON object with one, else its whole text -
+// and, for a role message, the issued_at its sender wrote, which every copy of it must carry.
 type markedFrame struct {
-	shape string
-	mark  string
-	data  []byte
+	shape    string
+	mark     string
+	data     []byte
+	issuedAt int64
 }
 
 // roleFramesTheStrictReadsMiss is a role message of role for each way a stored one, as the role
@@ -184,20 +187,29 @@ func roleFramesTheStrictReadsMiss(t testing.TB, role string) []markedFrame {
 		if err := decodeStoredEnvelope(data, &strict); err == nil && strict.Topic == topic {
 			t.Fatalf("the listener's envelope decode reads the %s frame %s as role %s's message; want it to refuse or misread it", shape.shape, data, role)
 		}
-		frames = append(frames, markedFrame{shape: shape.shape, mark: item.PayloadSummary, data: data})
+		frames = append(frames, markedFrame{shape: shape.shape, mark: item.PayloadSummary, data: data, issuedAt: item.IssuedAt})
 	}
 	return frames
 }
 
 // framesNoReadCanTellTheRoleOf is a message for each way a stored one can be one whose role no
-// read can tell: one that is not a JSON object, and one whose topic is a number with no role
-// mark. t fails for a shape that does not hold so.
+// read can tell (readRoleFrame): one that is not a JSON object, one whose topic is a number with
+// no role mark, one whose topic is a JSON object with no role mark, and one whose role mark is a
+// number under a topic that names no role. None of them is a role message to that read, so the
+// relay sends each to the session whose subject holds it. t fails for a shape that does not hold
+// so.
 func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
 	t.Helper()
 	notAnObject := "not a JSON object " + id.New()
-	item := listenerTestEnvelope("", roleForwardDedupePrefix+"topic-a-number-"+id.New())
-	item.PayloadSummary = "a topic that is a number " + id.New()
-	numberTopic := withFields(t, item, map[string]json.RawMessage{"topic": json.RawMessage(`5`)})
+	topicItem := listenerTestEnvelope("", roleForwardDedupePrefix+"topic-a-number-"+id.New())
+	topicItem.PayloadSummary = "a topic that is a number " + id.New()
+	numberTopic := withFields(t, topicItem, map[string]json.RawMessage{"topic": json.RawMessage(`5`)})
+	objectItem := listenerTestEnvelope("", "topic-an-object-"+id.New())
+	objectItem.PayloadSummary = "a topic that is a JSON object " + id.New()
+	objectTopic := withFields(t, objectItem, map[string]json.RawMessage{"topic": json.RawMessage(`{"name":"notifications.role.deliverer"}`)})
+	markItem := listenerTestEnvelope(contracts.AgentTopicPrefix+"ses_role_mark_a_number", "role-mark-a-number-"+id.New())
+	markItem.PayloadSummary = "a role mark that is a number " + id.New()
+	numberMark := withFields(t, markItem, map[string]json.RawMessage{"role": json.RawMessage(`7`)})
 	var fields map[string]json.RawMessage
 	if json.Unmarshal([]byte(notAnObject), &fields) == nil {
 		t.Fatalf("%q reads as a JSON object; want it not to", notAnObject)
@@ -205,10 +217,24 @@ func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
 	if got, isString := exactField(t, numberTopic, "topic"); isString || got != "5" {
 		t.Fatalf("the frame %s has the topic %q (a string: %t); want the number 5", numberTopic, got, isString)
 	}
-	return []markedFrame{
-		{shape: "a message that is not a JSON object", mark: notAnObject, data: []byte(notAnObject)},
-		{shape: "a topic that is a number, with no role mark", mark: item.PayloadSummary, data: numberTopic},
+	if _, isString := exactField(t, objectTopic, "topic"); isString {
+		t.Fatalf("the frame %s has a string topic; want a JSON object", objectTopic)
 	}
+	if got, isString := exactField(t, numberMark, "role"); isString || got != "7" {
+		t.Fatalf("the frame %s has the role mark %q (a string: %t); want the number 7", numberMark, got, isString)
+	}
+	frames := []markedFrame{
+		{shape: "a message that is not a JSON object", mark: notAnObject, data: []byte(notAnObject)},
+		{shape: "a topic that is a number, with no role mark", mark: topicItem.PayloadSummary, data: numberTopic},
+		{shape: "a topic that is a JSON object, with no role mark", mark: objectItem.PayloadSummary, data: objectTopic},
+		{shape: "a role mark that is a number, under a topic that names no role", mark: markItem.PayloadSummary, data: numberMark},
+	}
+	for _, frame := range frames {
+		if _, err := readRoleFrame(frame.data); !errors.Is(err, errRoleFrameUnreadable) {
+			t.Fatalf("readRoleFrame answers %v for %s; want errRoleFrameUnreadable", err, frame.shape)
+		}
+	}
+	return frames
 }
 
 // withFields is item's JSON with each of fields set to its raw value.
@@ -277,6 +303,24 @@ func eventIDOf(data []byte) string {
 	return eventID
 }
 
+// issuedAtOf is the issued_at of a message's bytes, read by its exact key as a JSON number, and -1
+// where it is not a JSON object or its issued_at is no number.
+func issuedAtOf(data []byte) int64 {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &fields) != nil {
+		return -1
+	}
+	var number json.Number
+	if json.Unmarshal(fields["issued_at"], &number) != nil {
+		return -1
+	}
+	value, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil {
+		return -1
+	}
+	return int64(value)
+}
+
 // hearMarks is sessionID's process on a connection of its own: it takes each relay frame as bytes,
 // records its event id and its mark (markOf) however little of it a read of the envelope would
 // take, and answers it received and done, as a session that wrote it does; it answers the
@@ -298,6 +342,7 @@ func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 			heard.mu.Lock()
 			heard.events = append(heard.events, eventIDOf(msg.Data))
 			heard.marks = append(heard.marks, markOf(msg.Data))
+			heard.issuedAt = append(heard.issuedAt, issuedAtOf(msg.Data))
 			heard.mu.Unlock()
 		}
 		// A reply that does not reach the relay leaves the frame to the relay's receipt wait,

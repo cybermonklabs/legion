@@ -534,7 +534,8 @@ holder's reader to judge, and an `issued_at` written as `1795191371979.0` is rea
 An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy
 leaves it out, and the holder reads the message with no `expects_reply`. A message
 that is not a JSON object, or whose topic or `role` is not a string and names no role, is not
-copied. The copy
+copied: it stays for the previous holder's own consumer, as a message that is no role message
+does. The kept lane's walk ends a copy of that kind, which no listener copies there. The copy
 is the envelope without the forward mark, with the message's event id and a dedupe key of its own
 in the minted form (32 hex digits of the SHA-256 of the message's key and the frame's stream
 sequence, after `publish.` when the message's key has it, as the publish route's keys do, and after
@@ -560,11 +561,10 @@ role message to the role's kept lane` with the session, the role, the holder and
 frame under such a claim that the listener's wire rules or the envelope's own refuse is copied the
 same way, with the values the copy keeps as above, and the walk forwards it. A frame whose role
 no read can tell (not a JSON object, or a topic or `role` that is not a string and names no role)
-reaches no session, whatever session's subject holds it: the relay acknowledges it with no claim
-read, logs `listener session relay ended a message whose role cannot be read` with the session,
-the stream sequence and why, and counts it in `envoy_role_kept_undecodable_total{path="relay"}`. A
-claim read or a copy that failed gives the frame back with a delay, neither delivered nor
-acknowledged. A frame that is no role message costs the read of its topic and role and nothing
+is sent to the session whose subject holds it, as a frame that is no role message is. So the relay
+ends no message: every role message it tells is copied or delivered. A claim read or a copy that
+failed gives the frame back with a delay, neither delivered nor acknowledged. A frame that is no
+role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was

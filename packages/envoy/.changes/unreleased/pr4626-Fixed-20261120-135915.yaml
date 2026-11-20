@@ -9,12 +9,9 @@ body: |-
   written as `1795191371979.0`, no longer ends it: when the role's claim names another session,
   or none, the relay copies it to the role's kept lane and the holder receives it, and a takeover
   copies it to the next holder. An `expects_reply` word the listener does not know is left out
-  of the copy. A message that is not a JSON object, or whose topic or `role` is
-  not a string and names no role, reaches no session: the relay acknowledges it with no claim
-  read, logs `listener session relay ended a message whose role cannot be read` once with the
-  session, the stream sequence and why, and counts it in
-  `envoy_role_kept_undecodable_total{path="relay"}`. A session that holds the role still
-  receives its role messages as before.
+  of the copy. A message that is not a JSON object, or whose topic or `role` is not a string and
+  names no role, is still delivered to the session whose subject holds it, as before. A session
+  that holds the role still receives its role messages as before.
 time: 2026-11-20T13:59:15.526158537Z
 custom:
     Issue: pr4626

@@ -590,42 +590,27 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and
 // reports whether it took the frame, which the relay then does not send. It reads the frame's role
 // first (readRoleFrame), from its topic and its role mark alone, each by its exact key: a frame
-// that is no role message is not taken, at the cost of that read. For a role message the relay
-// reads the role's claim from the role bucket (readRoleClaimHolder, within the role routes' bound
-// on a claim read): a claim naming sessionID leaves the frame to the relay, which sends it as it
-// sends every frame, so a holder that continues while it still holds its role receives its role
-// messages, and nothing more of it is read here. A claim naming another session, or none, has the
-// envelope read field by field (roleFrame.envelope, as a takeover pass and the kept lane's walk
-// read it) and the frame copied to the role's kept lane (keepTakenRoleFrame) and only then
-// acknowledged, with one line naming the session, the role, the holder and the event, and a
-// handover of the lane started (runKeptRoleDrain), so the role's holder receives it and not this
-// session. That holds for an envelope the listener's wire rules or the envelope's own refuse: the
-// walk forwards its copy, with each value the envelope can hold (roleFrame.envelope says which it
-// leaves out), and the holder's reader judges it. A frame whose role no read can tell -
-// not a JSON object, or a topic or role mark that is not a string and names no role - reaches no
-// session, since it may be a role message no claim can be read for. It is acknowledged with no
-// claim read, logged once with the session, its stream sequence and why, and counted
-// (envoy_role_kept_undecodable_total{path="relay"}), as the durable path ends a message it cannot
-// decode and the walk ends such a copy. A claim read or a copy that failed has the frame given
-// back to the server with the delay its deliveries earn (relayNakDelayFor), neither sent nor
-// acknowledged, so it is copied or sent once they answer.
+// that is no role message is not taken, at the cost of that read, and nor is a frame whose role
+// that read cannot tell - one that is not a JSON object, or whose topic or role mark is not a string
+// and names no role - which the relay sends to the session as it sends every frame that is no role
+// message, as it did before it told role messages apart. For a role message the relay reads the
+// role's claim from the role bucket (readRoleClaimHolder, within the role routes' bound on a claim
+// read): a claim naming sessionID leaves the frame to the relay, which sends it as it sends every
+// frame, so a holder that continues while it still holds its role receives its role messages, and
+// nothing more of it is read here. A claim naming another session, or none, has the envelope read
+// field by field (roleFrame.envelope, as a takeover pass and the kept lane's walk read it) and the
+// frame copied to the role's kept lane (keepTakenRoleFrame) and only then acknowledged, with one
+// line naming the session, the role, the holder and the event, and a handover of the lane started
+// (runKeptRoleDrain), so the role's holder receives it and not this session. That holds for an
+// envelope the listener's wire rules or the envelope's own refuse: the walk forwards its copy, with
+// each value the envelope can hold (roleFrame.envelope says which it leaves out), and the holder's
+// reader judges it. The field-by-field read takes every role message, so no role message the relay
+// tells is ended here. A claim read or a copy that failed has the frame given back to the server
+// with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
+// copied or sent once they answer.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
 	frame, err := readRoleFrame(msg.Data)
-	if err != nil {
-		if ackErr := msg.Ack(); ackErr != nil {
-			m.logger.Warn("listener session relay could not acknowledge a message whose role cannot be read",
-				slog.String("session_id", sessionID),
-				slog.Uint64("stream_seq", msg.StreamSeq),
-				slog.String("error", ackErr.Error()))
-		}
-		m.cfg.roleKeptUndecodable.Inc([2]string{"path", "relay"})
-		m.logger.Error("listener session relay ended a message whose role cannot be read",
-			slog.String("session_id", sessionID),
-			slog.Uint64("stream_seq", msg.StreamSeq),
-			slog.String("error", err.Error()))
-		return true
-	}
-	if frame.role == "" {
+	if err != nil || frame.role == "" {
 		return false
 	}
 	role := frame.role

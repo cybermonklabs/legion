@@ -2,7 +2,7 @@ package main
 
 // The one read of a stored message that the session relay (sessionRelays.takeOverFrame), a
 // takeover pass (takenRoleMessage) and the kept lane's walk (judgeKeptRoleCopy) share, so the
-// three tell a role message, and end a message, by one rule.
+// three tell a role message by one rule.
 
 import (
 	"bytes"

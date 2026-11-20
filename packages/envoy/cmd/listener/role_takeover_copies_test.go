@@ -827,6 +827,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 				if n := taker.countMark(frame.mark); n != 1 {
 					t.Errorf("%s received %q %d times; want once: it received %v", copiesTaker, frame.mark, n, taker.allMarks())
 				}
+				taker.requireIssuedAt(t, copiesTaker, frame)
 				if marked, _ := keptMarks(t, rig.harness.client, copiesRole, frame.mark); marked != 1 {
 					t.Errorf("role %s's kept lane holds %d copies of %q; want exactly one", copiesRole, marked, frame.mark)
 				}
