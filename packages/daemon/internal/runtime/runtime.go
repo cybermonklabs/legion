@@ -44,17 +44,21 @@ type Runtime interface {
 	// On an error the caller owns stopping any previous process of the claim, and Spawn has
 	// stopped any process it started itself.
 	Spawn(ctx context.Context, spec SpawnSpec) (Locator, error)
-	// Resume starts the same agent again from the session file the spec names, after waiting
-	// for the previous incarnation to be Gone. prev is the incarnation the caller recorded, nil
-	// when it recorded none, and a hint: a runtime that finds a claim's process by the claim's own
-	// place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever runs
-	// there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent on
-	// a claim that had one is the failure the same-agent refusal exists to catch. A session the
+	// Resume starts the same agent again from the session the spec names, by its file
+	// (ResumeSessionFile) or, for a claim that records no file of it, by its id (ResumeSession),
+	// after waiting for the previous incarnation to be Gone. prev is the incarnation the caller
+	// recorded, nil when it recorded none, and a hint: a runtime that finds a claim's process by the
+	// claim's own place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever
+	// runs there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent
+	// on a claim that had one is the failure the same-agent refusal exists to catch. A session the
 	// runtime looked for and did not find is ErrSessionFileMissing, and a session store that could
 	// not be asked at all is ErrSessionStore; every runtime answers both the same way, having
-	// started nothing, and the caller tells them apart by what it does next (supervise's start).
-	// On an error the caller owns stopping prev (Suspend), and Resume has stopped any process it
-	// started itself.
+	// started nothing, and the caller tells them apart by what it does next (supervise's start). A
+	// Resume by the id alone that the runtime could not send, because the pod's launcher has not
+	// said it can look a session up by its id, is ErrSessionLookupUnavailable, having started
+	// nothing; only the sandbox runtime answers it, and the caller's next Resume has the agent's own
+	// command resolve the id (ResumeByAgent). On an error the caller owns stopping prev (Suspend),
+	// and Resume has stopped any process it started itself.
 	Resume(ctx context.Context, prev *Locator, spec SpawnSpec) (Locator, error)
 	// Suspend stops the process gracefully, within the runtime's stop grace, and keeps everything
 	// a later Resume needs: the agent's session, and whatever the runtime holds for the claim. The
@@ -153,10 +157,11 @@ type Runtime interface {
 	CleanupTree(ctx context.Context, tree string) error
 }
 
-// ErrSessionFileMissing is a Resume whose spec.ResumeSessionFile is held by no store the runtime
-// can resume it from: no folder the tmux runtime searched holds that session, or the session table
-// the Kubernetes launcher reads has no row for it. The session is gone, not unreachable, so the
-// caller starts a fresh agent in its place, charged nothing and reported (supervise's start).
+// ErrSessionFileMissing is a Resume whose session, named by spec.ResumeSessionFile or by the id
+// spec.ResumeSession, is held by no store the runtime can resume it from: no folder the tmux
+// runtime searched holds that session, or the session table the Kubernetes launcher reads has no
+// row for it. The session is gone, not unreachable, so the caller starts a fresh agent in its
+// place, charged nothing and reported (supervise's start).
 // Nothing was started. Both runtimes answer this for that one fact, whatever else is configured —
 // the operator's takeover of another runtime's claims (`runtime.tmux.take_over`) changes which
 // sessions are found, never what a session found nowhere means.
@@ -173,7 +178,8 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // that the runtime did not send, because the pod's launcher has not said that it can look a
 // session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
 // caller may call Resume again with ResumeByAgent set, which has the agent's own command resolve
-// the id instead (supervise's start).
+// the id instead (supervise's start). The sandbox runtime wraps it in an error that names the
+// claim, the Sandbox and the pod uid.
 var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
