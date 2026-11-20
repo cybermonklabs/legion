@@ -11245,6 +11245,33 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
 });
 
+// The editing ends wherever the focus is once a read no longer draws the row being edited: in
+// Details too, where a press leaves the editing on, and the tree, drawn again with the focus
+// there, notes no row as holding it. The frame the editing's end asks for, to give the row the
+// focus back, finds no row, and the focus stays in Details. Left on, the page held the document's
+// editor for a row no read draws.
+test("a read that drops the row being edited ends the editing with the focus in Details, and leaves the focus there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { view } = await caretInStatement(user);
+  const card = cardInDetails();
+
+  await user.click(card);
+  // The press is over a task after its click.
+  await waitInAct(0);
+  expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
+  await dropStatement(view);
+  await waitFor(() =>
+    expect(
+      view.edited.at(-1),
+      "the editing of the row the read dropped went on with the focus in Details"
+    ).toBeUndefined()
+  );
+  // The frame the editing's end asks for comes.
+  await nextFrame();
+  expect(document.activeElement === card, "the focus left Details").toBe(true);
+});
+
 /** Draws the tree `caretInStatement` drew again as two reads do: one with a comment arrived after
  *  the statement, then one without the statement, the row being edited. Checks the statement's
  *  row is gone. */
@@ -11266,14 +11293,13 @@ async function dropStatement(view: {
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
 }
 
-// A press that ends the editing once it is over does so where the edited row is gone by then too.
-// The tree ends the editing itself where a read takes out the row that held the focus as the tree
-// was last drawn (above); a press on another row takes the focus there, and a read that draws the
-// tree again while the press is down - a comment arriving - leaves the focus noted there, so a
-// later read that takes the edited row out ends nothing of the tree's. The press's end ends it,
-// the focus where the press put it. Left on, the page held the document's editor for a row no
-// read draws.
-test("a press during which a read takes the row being edited out ends the editing once it is over", async () => {
+// A read that takes the row being edited out while a press on another row is held ends the
+// editing at once, as such a read does wherever the focus is (above), and not once the press is
+// over, as the press would: the editor's box has left the page with its row, so the editing's end
+// moves nothing under the pointer. The press lands where the pointer is all the same - its click
+// on the row it went down on - and the focus stays where the press put it. Left on until the
+// press was over, the page held the document's editor for a row no read draws.
+test("a read that takes the row being edited out during a press ends the editing at once, and the press lands where the pointer is", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
@@ -11281,61 +11307,35 @@ test("a press during which a read takes the row being edited out ends the editin
     "[data-node-words]"
   );
   if (words === null || words === undefined) throw new Error("the comment's row is not drawn");
+  let clicks = 0;
+  words.addEventListener("click", () => {
+    clicks += 1;
+  });
 
   await user.pointer({ keys: "[MouseLeft>]", target: words });
   expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
     "comment-1"
   );
   await dropStatement(view);
-  expect(view.edited.at(-1), "the editing ended before the press was over").toBe("artifact-spec");
-
-  await user.pointer({ keys: "[/MouseLeft]" });
-  // The press is over a task after its click.
-  await waitInAct(0);
-  await waitFor(() =>
-    expect(
-      view.edited.at(-1),
-      "the press's end left the editing of the row the read took out on"
-    ).toBeUndefined()
-  );
+  expect(
+    view.edited.at(-1),
+    "the read that took the row being edited out left its editing on while the press was held"
+  ).toBeUndefined();
   expect(
     document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
     "the editor's box is still drawn"
   ).toBeNull();
-  expect(focusedRow(view.container), "the focus left the row the press put it on").toBe(
+  expect(focusedRow(view.container), "the read took the focus off the row pressed").toBe(
     "comment-1"
   );
-});
 
-// A press in the tree ends the editing once it is over where the row being edited is no longer
-// drawn as the press goes down, too. The tree ends the editing itself where a read takes out the
-// row that held the focus as the tree was last drawn (above); here the focus is in Details, where
-// a press leaves the editing on, a read draws the tree again with the focus noted there, and a
-// later read takes the edited row out, which ends nothing of the tree's. A press on the tree's
-// blank space then ends it. Left on, the page held the document's editor for a row no read draws.
-test("a press in the tree while the row being edited is no longer drawn ends the editing once it is over", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { view } = await caretInStatement(user);
-  const card = cardInDetails();
-  const tree = view.container.querySelector<HTMLElement>('[role="tree"]');
-  if (tree === null) throw new Error("the outline is not drawn");
-
-  await user.click(card);
+  await user.pointer({ keys: "[/MouseLeft]" });
+  expect(clicks, "the press's click did not land on the row it went down on").toBe(1);
   // The press is over a task after its click.
   await waitInAct(0);
-  expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
-  await dropStatement(view);
-  expect(view.edited.at(-1), "the read that dropped the statement ended the editing").toBe(
-    "artifact-spec"
-  );
-
-  await user.click(tree);
-  await waitFor(() =>
-    expect(
-      view.edited.at(-1),
-      "a press in the tree, the row being edited no longer drawn, left the editing on"
-    ).toBeUndefined()
+  await nextFrame();
+  expect(focusedRow(view.container), "the focus left the row the press put it on").toBe(
+    "comment-1"
   );
 });
 

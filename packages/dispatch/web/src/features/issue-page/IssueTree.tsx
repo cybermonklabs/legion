@@ -1015,9 +1015,13 @@ export function IssueTree({
   // row go by the time this runs: the blur Chromium sends as React takes the focused row out comes
   // during React's commit, where React hears no event, so `leave` never runs for it.
   //
-  // A row being edited takes the editor's focus out with it, and its editing ends as Escape ends
-  // it (`stopEditing`), the page's editor of the document and its box with it, before the focus
-  // moves and wherever the focus is. Left on, the editing waited for a row no read draws
+  // A render that no longer draws the row being edited ends its editing as Escape ends it
+  // (`stopEditing`), the page's editor of the document and its box with it, wherever the focus
+  // is: in that row, which takes the editor's focus out with it, before the nearest row takes the
+  // focus (above); on another row; or out of the tree - in Details, where a press leaves the
+  // editing on (`useNodeEditing.ts`), with no row noted as holding the focus at the render
+  // before. The frame that end asks for, to give the row the focus back (`leaving`), then finds no
+  // row and moves no focus. Left on, the editing waited for a row no read draws
   // (`useNodeEditing.ts`), and the tree held every row the focus came to as the one being edited
   // (`useReleaseFocus`): a Tab out of the tree kept that row's body and its facts in Details.
   const heldRow = useRef<{ readonly index: number; readonly key: string } | undefined>(undefined);
@@ -1026,8 +1030,8 @@ export function IssueTree({
     const tree = body.current;
     const order = rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
     const held = heldRow.current;
+    if (editingRow !== undefined && !order.includes(editingRow)) stopEditing();
     if (held !== undefined && !order.includes(held.key)) {
-      if (held.key === editingRow) stopEditing();
       if (
         focusIsLoose(tree) &&
         opening.current.done &&

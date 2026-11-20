@@ -478,8 +478,9 @@ export function useNodeEditing({
     let handing: number | undefined;
     // Ends the editing with no caret placed - the reader moved on from the row first, or the
     // editor's hold on its edits cannot go on - and answers whether it did: a press ends it once
-    // it has ended (`press`), so nothing moves under it.
-    const endUnplaced = (row: HTMLElement, movedOn: boolean): boolean => {
+    // it has ended (`press`), so nothing moves under it. `rowsFocus` is whether the focus is the
+    // row's (`holdsRowsFocus`), as the look that ends it read it (`place`).
+    const endUnplaced = (row: HTMLElement, rowsFocus: boolean, movedOn: boolean): boolean => {
       if (press.pressing) return false;
       over = true;
       if (movedOn) {
@@ -497,7 +498,6 @@ export function useNodeEditing({
       // elsewhere - in Details, on the page's body - the reader is out of the row, and the
       // editing's end takes no focus: the row taking it from the page's body moved the reader
       // off where they were, and scrolled the page to it.
-      const rowsFocus = holdsRowsFocus(row);
       if (rowsFocus) row.focus();
       if (rowsFocus || box.contains(document.activeElement)) {
         report.current(KEY_REPORTS.editor_closed);
@@ -523,9 +523,12 @@ export function useNodeEditing({
         }
         return acts.signal.aborted;
       }
+      // Whether the focus is the row's, read once for this look: nothing in it moves the focus
+      // before the row takes it back as the editing ends (`endUnplaced`).
+      const rowsFocus = holdsRowsFocus(row);
       // The reader has acted and the focus is off the row: a press outside the tree puts off
       // the caret, once it has ended (above), and any other act moves on from the row.
-      const offRow = acts.signal.aborted && !holdsRowsFocus(row);
+      const offRow = acts.signal.aborted && !rowsFocus;
       if (!putOff && offRow && pressedOn !== undefined && !box.contains(pressedOn)) {
         if (press.pressing) return false;
         putOff = true;
@@ -552,22 +555,23 @@ export function useNodeEditing({
         // by the press rule's own test - one in the tree outside the box (`pressEndsEditing`) -
         // and else as a hold that cannot go on, which the row says.
         if (unheld) {
-          return endUnplaced(row, pressedOn !== undefined && pressEndsEditing(box, row, pressedOn));
+          return endUnplaced(
+            row,
+            rowsFocus,
+            pressedOn !== undefined && pressEndsEditing(box, row, pressedOn)
+          );
         }
         // The focus back in the row or its editor's box asks for the caret again, unless a press
         // that ends the editing brought it there: one in the tree outside the box, by the press
         // rule's own test (`pressEndsEditing`).
-        if (
-          holdsRowsFocus(row) &&
-          (pressedOn === undefined || !pressEndsEditing(box, row, pressedOn))
-        ) {
+        if (rowsFocus && (pressedOn === undefined || !pressEndsEditing(box, row, pressedOn))) {
           setEditing((held) => (held === editing ? { ...held } : held));
         }
         // Until the hold is on, the editor's drawing is watched on, so an editor never handed
         // over is seen as it draws the node's block (above).
         return hold.current === "on";
       }
-      if (offRow || unheld) return endUnplaced(row, offRow);
+      if (offRow || unheld) return endUnplaced(row, rowsFocus, offRow);
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
@@ -822,13 +826,7 @@ export function useNodeEditing({
       "mousedown",
       (event) => {
         const on = event.target instanceof Node ? event.target : null;
-        // A press outside the tree ends nothing, so the edited row is looked up for one in it.
-        if (box.contains(on)) {
-          const row = box.querySelector<HTMLElement>(rowSelector);
-          ends = pressEndsEditing(box, row, on);
-        } else {
-          ends = false;
-        }
+        ends = pressEndsEditing(box, box.querySelector<HTMLElement>(rowSelector), on);
         press.start();
       },
       { capture: true, signal: listening.signal }
