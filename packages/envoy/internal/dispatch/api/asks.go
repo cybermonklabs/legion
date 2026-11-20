@@ -490,7 +490,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, who, unlockedAsk.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1242,13 +1242,16 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // refresh - holds its owner's lock first, so two transitions of the same ask, and a reply against
 // a transition, run one after the other, and the ask read here holds still until this transaction
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
-// server serves anything.)
-func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
+// server serves anything.) The writer's 200 answers the ask this read returns, so the documents
+// beside it are joined as who, the writer, sees them (askRowFromSeenBy): a document of a project
+// the writer does not see is none. The ask.* event payload built from it is joined again for each
+// of its readers (attachAskDocumentArtifacts), so what this read joins reaches no other reader.
+func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
-		`+askRowFrom+`
+		`+askRowFromSeenBy("$2")+`
 		where a.id = $1
-	`, id))
+	`, id, refs.VisibilityArg(who)))
 	if err != nil {
 		return model.Ask{}, err
 	}
