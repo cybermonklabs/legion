@@ -511,9 +511,7 @@ const volumeDeleteFirstFD = 3
 // (trailing): what it keeps goes into errRemoverGone's text, and from there into the sweep's
 // stop reason and a line of the pod's log, so its size is this package's to choose rather than
 // the child's. The first bytes are the ones kept because they are the ones that say why: the
-// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. What it
-// kept is a child's text its bound may have cut, so trailing quotes it as redact.Read keeps a
-// bounded read.
+// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
