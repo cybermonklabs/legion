@@ -1419,8 +1419,8 @@ func (step DesignStep) Valid() bool {
 
 // Document is the document of its issue the step records, as a refusal or a task names it: the
 // words the architect's own guide uses for the three (skill://legion-architect/references/
-// design-gate.md, "The steps"). The caller supplies the possessive it needs - the issue's, or the
-// architect's own.
+// design-gate.md, "Which steps are gated"). The caller supplies the possessive it needs - the
+// issue's, or the architect's own.
 func (step DesignStep) Document() string {
 	switch step {
 	case DesignStepCriteria:

@@ -15,7 +15,7 @@ section can use the words without stopping to explain them.
   in, and starts and stops the agents that do the work. It keeps its own record in Postgres, so a
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
-- **Agents** are [Oh My Pi](https://github.com/sjawhar/oh-my-pi) sessions. Under the Kubernetes
+- **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
   and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
